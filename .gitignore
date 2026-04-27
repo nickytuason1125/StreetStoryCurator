@@ -1,0 +1,32 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+.env
+venv/
+.venv/
+*.log
+
+# Cache & generated outputs
+cache/
+output/
+crash.log
+
+# Frontend build (regenerated via npm run build)
+frontend/dist/
+frontend/node_modules/
+
+# Rust / Tauri build output
+frontend/src-tauri/target/
+
+# Large ML model files (too big for GitHub — keep locally)
+models/*.pt
+models/*.bin
+models/*.onnx
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Isolated Edge profile
+StreetStoryCurator/

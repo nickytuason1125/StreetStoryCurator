@@ -1,0 +1,26 @@
+{
+  "Street - Magnum": {
+    "visual_flow": 50,
+    "visual_diversity": 30,
+    "time_coherence": 20,
+    "description": "Balanced visual flow with increased diversity to prevent top images from dominating."
+  },
+  "Travel / Documentary": {
+    "visual_flow": 30,
+    "visual_diversity": 50,
+    "time_coherence": 20,
+    "description": "High diversity to avoid repetition of similar locations."
+  },
+  "Minimalist / Art": {
+    "visual_flow": 70,
+    "visual_diversity": 20,
+    "time_coherence": 10,
+    "description": "Tight visual consistency with some diversity, ignores time."
+  },
+  "Custom": {
+    "visual_flow": 50,
+    "visual_diversity": 30,
+    "time_coherence": 20,
+    "description": "User-defined tuning with balanced diversity."
+  }
+}
