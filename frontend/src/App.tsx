@@ -362,11 +362,13 @@ function GridView({
                       <span style={{ fontSize:9, fontWeight:700, color:C.accent }}>USED</span>
                     </div>
                   )}
+                  {p.grade !== 'Pending' && gl(p.grade) !== 'Unknown' && (
+                    <div style={{ position:'absolute', bottom:5, left:5, background:'rgba(0,0,0,.68)', backdropFilter:'blur(6px)', borderRadius:4, padding:'2px 7px', border:`1px solid ${gc(p.grade)}55` }}>
+                      <span style={{ fontSize:9.5, fontWeight:700, color:gc(p.grade), letterSpacing:'0.04em' }}>{gl(p.grade).toUpperCase()}</span>
+                    </div>
+                  )}
                 </div>
                 <div style={{ padding:'4px 6px', background:isChecked ? `oklch(64% .19 248 / .1)` : isCurrent ? C.surf3 : C.surf, display:'flex', alignItems:'center', gap:4 }}>
-                  {p.grade !== 'Pending' && gc(p.grade) !== C.text3 && (
-                    <div style={{ width:6, height:6, borderRadius:'50%', background:gc(p.grade), flexShrink:0 }}/>
-                  )}
                   <span style={{ fontSize:10.5, color:isChecked ? C.accent : C.text2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', fontFamily:"'SF Mono',monospace", flex:1 }}>
                     {(p.path.split(/[\\/]/).pop() ?? '').replace(/\.[^.]+$/, '')}
                   </span>
@@ -427,6 +429,11 @@ export default function App() {
   const [locked,     setLocked]     = useState<Set<string>>(new Set());
   const [used,       setUsed]       = useState<Set<string>>(new Set());
   const [redacted,   setRedacted]   = useState<Set<string>>(new Set());
+  const [folders,      setFolders]      = useState<string[]>([]);
+  const [browserMode,  setBrowserMode]  = useState<'open'|'add'>('open');
+  const [catalogBanner,setCatalogBanner]= useState(false);
+  const saveTimerRef       = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const skipFolderLoadRef  = useRef(false);
   const [showBrowser,setShowBrowser]= useState(false);
   const [bPath,      setBPath]      = useState("C:\\Users");
   const [bFolders,   setBFolders]   = useState<string[]>([]);
@@ -542,9 +549,10 @@ export default function App() {
     return () => window.removeEventListener('keydown', h);
   }, [photos, selId, filteredPhotos]);
 
-  /* load photos when folder changes */
+  /* load photos when folder changes (skipped when resuming from catalog) */
   useEffect(() => {
     if (!folder.trim()) return;
+    if (skipFolderLoadRef.current) { skipFolderLoadRef.current = false; return; }
     const load = async () => {
       setListLoading(true);
       try {
@@ -553,6 +561,7 @@ export default function App() {
         if (!rawPhotos.length) notify("No images found in selected folder", "info");
         const ps = rawPhotos.map((p, i) => ({ id:`p-${i}`, path:p.path, grade:'Pending', score:0, breakdown:{}, critique:'', stars:0, exif:p.exif||{} }));
         setPhotos(ps);
+        setFolders([folder]);
         setSelId(ps[0]?.id ?? null);
         setLoupeMode('grid');
       } catch (err: any) { notify(`❌ ${err.response?.data?.detail || "Failed to list photos"}`, "error"); }
@@ -567,6 +576,23 @@ export default function App() {
       .then(r => { setLocked(new Set(r.data.locked||[])); setUsed(new Set(r.data.used||[])); })
       .catch(() => {});
   }, []);
+
+  /* check for saved catalog on first load */
+  useEffect(() => {
+    axios.get(`${API}/api/catalog`)
+      .then(r => { if (r.data.exists && r.data.photos?.length) setCatalogBanner(true); })
+      .catch(() => {});
+  }, []);
+
+  /* auto-save catalog (debounced 2s) whenever graded photos or folder list changes */
+  useEffect(() => {
+    if (folders.length === 0 || !photos.some(p => p.grade !== 'Pending')) return;
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => {
+      const photosToSave = photos.map(({ id: _id, ...rest }) => rest);
+      axios.post(`${API}/api/catalog/save`, { photos: photosToSave, folders }).catch(() => {});
+    }, 2000);
+  }, [photos, folders]);
 
   /* folder browser */
   const loadBrowser = useCallback(async (path: string) => {
@@ -586,7 +612,43 @@ export default function App() {
     setBPath(p); loadBrowser(p);
   }, [bPath, loadBrowser]);
 
-  const openBrowser = useCallback(() => { setShowBrowser(true); loadBrowser(bPath); }, [bPath, loadBrowser]);
+  const openBrowser    = useCallback(() => { setBrowserMode('open'); setShowBrowser(true); loadBrowser(bPath); }, [bPath, loadBrowser]);
+  const openAddFolder  = useCallback(() => { setBrowserMode('add');  setShowBrowser(true); loadBrowser(bPath); }, [bPath, loadBrowser]);
+
+  const handleResume = useCallback(async () => {
+    try {
+      const r = await axios.get(`${API}/api/catalog`);
+      if (!r.data.exists || !r.data.photos?.length) return;
+      const ps = r.data.photos.map((p: any, i: number) => ({ ...p, id: `p-${i}` }));
+      const savedFolders: string[] = r.data.folders || [];
+      skipFolderLoadRef.current = true;
+      setFolder(savedFolders[0] || '');
+      setFolders(savedFolders);
+      setPhotos(ps);
+      setSelId(ps.find((p: any) => p.grade !== 'Pending')?.id ?? ps[0]?.id ?? null);
+      setLoupeMode('grid');
+      setCatalogBanner(false);
+      notify(`✅ Resumed — ${ps.length} photos from ${savedFolders.length} folder${savedFolders.length !== 1 ? 's' : ''}`, 'success');
+    } catch { notify('Failed to resume session', 'error'); }
+  }, [notify]);
+
+  const handleAddFolder = useCallback(async (newFolder: string) => {
+    setListLoading(true);
+    try {
+      const res = await axios.post(`${API}/api/list-folder`, { folder_path: sanitizePath(newFolder) });
+      const rawPhotos: {path:string;exif:any}[] = res.data.photos || [];
+      setPhotos(prev => {
+        const existing = new Set(prev.map(p => p.path));
+        const added = rawPhotos
+          .filter(p => !existing.has(p.path))
+          .map((p, i) => ({ id:`p-${prev.length + i}`, path:p.path, grade:'Pending', score:0, breakdown:{}, critique:'', stars:0, exif:p.exif||{} }));
+        return [...prev, ...added];
+      });
+      setFolders(prev => prev.includes(newFolder) ? prev : [...prev, newFolder]);
+      notify(`✅ Added ${rawPhotos.length} photos from ${newFolder.split(/[\\/]/).pop()}`, 'success');
+    } catch { notify('❌ Failed to add folder', 'error'); }
+    finally { setListLoading(false); }
+  }, [notify]);
 
   const pickFolder = useCallback(async () => {
     const pw = (window as any).pywebview;
@@ -648,7 +710,8 @@ export default function App() {
               group.filter((p: any) => p !== best).forEach((p: any) => autoRedacted.add(p.path));
             }
             setRedacted(autoRedacted);
-            setSelId(ps[0]?.id ?? null);
+            const firstVisible = ps.find((p: any) => !autoRedacted.has(p.path));
+            setSelId(firstVisible?.id ?? ps[0]?.id ?? null);
             setCarousel([]);
             setLoupeMode('loupe');
             setInfoTab('breakdown');
@@ -673,7 +736,7 @@ export default function App() {
     if (pool.length < 5) { notify(`Need 5+ graded images${filterNote} for a sequence`, 'error'); return; }
     setLoading(true);
     try {
-      const res = await axios.post(`${API}/api/generate`, { photos: pool, seed: Math.floor(Math.random()*999999) });
+      const res = await axios.post(`${API}/api/generate`, { photos: pool, seed: Math.floor(Math.random()*999999), avoid_paths: carousel.map((c: any) => c.path) });
       const d = res.data;
       setCarousel(Array.isArray(d) ? d : d.sequence);
       setSubjType(d.subject_type ?? null);
@@ -681,7 +744,7 @@ export default function App() {
       notify('✅ Sequence generated', 'success');
     } catch (err: any) { notify(`❌ ${err.response?.data?.detail || "Failed"}`, "error"); }
     setLoading(false);
-  }, [photos, notify]);
+  }, [photos, carousel, notify]);
 
   const handleExport = async () => {
     if (carousel.length < 5) return;
@@ -948,8 +1011,16 @@ export default function App() {
           title="Open folder"
           style={{ display:'flex', alignItems:'center', gap:6, padding:'0 10px', height:30, borderRadius:7, fontSize:13, fontWeight:600, cursor:'pointer', flexShrink:0, background:'transparent', border:`1px solid ${C.bdr2}`, color:C.text3 }}>
           <FolderOpen size={13}/>
-          {photos.length > 0 ? folder.split(/[\\/]/).pop() : 'Open Folder'}
+          {photos.length > 0 ? (folders.length > 1 ? `${folders.length} folders` : folder.split(/[\\/]/).pop()) : 'Open Folder'}
         </button>
+        {photos.length > 0 && (
+          <button onClick={openAddFolder}
+            title="Add another folder"
+            style={{ display:'flex', alignItems:'center', gap:5, padding:'0 10px', height:30, borderRadius:7, fontSize:13, fontWeight:600, cursor:'pointer', flexShrink:0, background:'transparent', border:`1px solid ${C.bdr2}`, color:C.text3 }}>
+            <span style={{ fontSize:16, lineHeight:1 }}>+</span>
+            Add Folder
+          </button>
+        )}
 
         <div style={{ flex:1 }}/>
 
@@ -1169,19 +1240,28 @@ export default function App() {
             {/* Center preview */}
             <div style={{ flex:1, background:'#060609', display:'flex', alignItems:'center', justifyContent:'center', overflow:'hidden', position:'relative', minHeight:0, minWidth:0 }}>
               {photos.length === 0 ? (
-                <button
-                  onClick={openBrowser}
-                  style={{
-                    display:'flex', flexDirection:'column', alignItems:'center', gap:16,
-                    padding:'48px 64px', borderRadius:16, cursor:'pointer', background:'transparent',
-                    border:`2px dashed ${dragOver ? '#3b82f6' : C.border}`,
-                    transition:'all .2s', outline:'none',
-                  }}>
-                  <FolderOpen size={48} strokeWidth={1.25} style={{ color: dragOver ? '#3b82f6' : C.text3, transition:'color .2s' }}/>
-                  <span style={{ fontSize:20, fontWeight:500, color: dragOver ? '#3b82f6' : C.text2, transition:'color .2s' }}>
-                    Select a folder or drag a folder here
-                  </span>
-                </button>
+                <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:12 }}>
+                  <button
+                    onClick={openBrowser}
+                    style={{
+                      display:'flex', flexDirection:'column', alignItems:'center', gap:16,
+                      padding:'48px 64px', borderRadius:16, cursor:'pointer', background:'transparent',
+                      border:`2px dashed ${dragOver ? '#3b82f6' : C.border}`,
+                      transition:'all .2s', outline:'none',
+                    }}>
+                    <FolderOpen size={48} strokeWidth={1.25} style={{ color: dragOver ? '#3b82f6' : C.text3, transition:'color .2s' }}/>
+                    <span style={{ fontSize:20, fontWeight:500, color: dragOver ? '#3b82f6' : C.text2, transition:'color .2s' }}>
+                      Select a folder or drag a folder here
+                    </span>
+                  </button>
+                  {catalogBanner && (
+                    <div style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 18px', background:C.surf2, border:`1px solid ${C.bdr2}`, borderRadius:10 }}>
+                      <span style={{ fontSize:13, color:C.text2 }}>Resume last session?</span>
+                      <button onClick={handleResume} style={{ padding:'4px 14px', fontSize:13, fontWeight:600, background:C.accent, color:'#fff', border:'none', borderRadius:7, cursor:'pointer' }}>Resume</button>
+                      <button onClick={() => { axios.post(`${API}/api/catalog/clear`); setCatalogBanner(false); }} style={{ padding:'4px 10px', fontSize:13, color:C.text3, background:'transparent', border:`1px solid ${C.bdr2}`, borderRadius:7, cursor:'pointer' }}>Discard</button>
+                    </div>
+                  )}
+                </div>
               ) : sel ? (
                 <>
                   <img
@@ -1651,9 +1731,6 @@ export default function App() {
                                   </div>
                                 )}
                               </div>
-                              {c.rationale && c.rationale !== 'Strong candidate.' && (
-                                <p style={{ fontSize:10.5, color:C.text3, lineHeight:1.55, marginTop:4, overflow:'hidden', display:'-webkit-box', WebkitLineClamp:2, WebkitBoxOrient:'vertical' as any }}>{c.rationale}</p>
-                              )}
                             </div>
                           </div>
                         </SortableItem>
@@ -1662,18 +1739,6 @@ export default function App() {
                   </div>
                   <p style={{ textAlign:'center', fontSize:12, color:C.text3, marginTop:16 }}>Drag cards to reorder · Click to view in Gallery</p>
 
-                  {/* ── Sequence narrative ── */}
-                  {sequenceNarrative && (
-                    <div style={{ maxWidth:1100, margin:'20px auto 0', padding:'16px 20px', background:C.surf, border:`1px solid ${C.border}`, borderRadius:10 }}>
-                      <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:10 }}>
-                        <span style={{ fontSize:11, fontWeight:700, letterSpacing:'.08em', textTransform:'uppercase', color:C.accent }}>Sequence Narrative</span>
-                        {nicheRec && (
-                          <span style={{ fontSize:11, color:C.text3, background:C.surf2, border:`1px solid ${C.bdr2}`, borderRadius:4, padding:'1px 6px' }}>{nicheRec.preset}</span>
-                        )}
-                      </div>
-                      <p style={{ fontSize:14, color:C.text2, lineHeight:1.85 }}>{sequenceNarrative}</p>
-                    </div>
-                  )}
                 </div>
               </SortableContext>
             </DndContext>
@@ -1748,10 +1813,17 @@ export default function App() {
               <button onClick={goUp} style={{ flexShrink:0, padding:'4px 10px', fontSize:13, color:'#9a9aaa', background:'#161b22', border:'1px solid #252d38', borderRadius:6, cursor:'pointer' }}>↑ Up</button>
               <span style={{ flex:1, fontSize:13, color:'#9a9aaa', fontFamily:'monospace', background:'#161b22', border:'1px solid #252d38', borderRadius:6, padding:'4px 10px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{bPath}</span>
               <button
-                onClick={() => { setFolder(bPath); setPhotos([]); setSelId(null); setShowBrowser(false); }}
+                onClick={() => {
+                  if (browserMode === 'add') {
+                    handleAddFolder(bPath);
+                  } else {
+                    setFolder(bPath); setPhotos([]); setSelId(null); setFolders([]);
+                  }
+                  setShowBrowser(false);
+                }}
                 disabled={bImages.length===0}
                 style={{ flexShrink:0, padding:'4px 12px', fontSize:13, fontWeight:600, background:'#2563eb', color:'#fff', borderRadius:7, border:'none', cursor:bImages.length>0?'pointer':'not-allowed', opacity:bImages.length>0?1:0.4 }}>
-                Use Folder{bImages.length>0 ? ` (${bImages.length})` : ''}
+                {browserMode === 'add' ? '+ Add' : 'Use Folder'}{bImages.length>0 ? ` (${bImages.length})` : ''}
               </button>
             </div>
             <div style={{ flex:1, display:'flex', overflow:'hidden' }}>

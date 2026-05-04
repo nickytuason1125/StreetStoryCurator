@@ -1546,6 +1546,40 @@ async def save_sequence(payload: dict):
     return {"success": True, "message": f"Sequence '{name}' saved"}
 
 
+_CATALOG_PATH = _DATA_DIR / "cache" / "catalog.json"
+
+@app.get("/api/catalog")
+async def get_catalog():
+    if not _CATALOG_PATH.exists():
+        return {"exists": False}
+    try:
+        data = json.loads(_CATALOG_PATH.read_text(encoding="utf-8"))
+        return {"exists": True, **data}
+    except Exception:
+        return {"exists": False}
+
+@app.post("/api/catalog/save")
+async def save_catalog(payload: dict):
+    photos  = payload.get("photos", [])
+    folders = payload.get("folders", [])
+    _CATALOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _CATALOG_PATH.write_text(
+        json.dumps({
+            "photos":    photos,
+            "folders":   folders,
+            "saved_at":  time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return {"ok": True}
+
+@app.post("/api/catalog/clear")
+async def clear_catalog():
+    if _CATALOG_PATH.exists():
+        _CATALOG_PATH.unlink()
+    return {"ok": True}
+
+
 @app.post("/api/flags/lock")
 async def toggle_lock(payload: dict):
     """Toggle lock flag for a photo."""
