@@ -40,9 +40,9 @@ The `LightweightStreetScorer` class in `src/lightweight_analyzer.py` is the hear
 The application uses preset-based scoring with configurable weights:
 
 #### Preset Profiles
-- Street - Magnum (decisive moments, layering)
+- Classic Street (decisive moments, layering)
 - Travel Editor (cultural authenticity)
-- World Press Doc (journalistic clarity)
+- Photojournalism (journalistic clarity)
 - Cinematic/Editorial (mood and tone)
 - Fine Art/Contemporary (abstraction)
 - Minimalist/Urbex (simplicity, negative space)

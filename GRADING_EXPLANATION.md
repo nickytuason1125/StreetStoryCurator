@@ -38,9 +38,9 @@ Street Story Curator uses a multi-dimensional analysis approach to grade photogr
 
 The application uses different competition presets that weight these dimensions differently:
 
-- **Magnum Editor**: Emphasizes decisive moments and layered compositions
+- **Classic Street**: Emphasizes decisive moments and layered compositions
 - **Travel Editor**: Prioritizes cultural authenticity and environmental storytelling
-- **World Press Doc**: Focuses on technical clarity and journalistic integrity
+- **Photojournalism**: Focuses on technical clarity and journalistic integrity
 - **Cinematic/Editorial**: Rewards mood, color tone, and narrative suggestion
 - **Fine Art/Contemporary**: Values abstraction and artistic intent
 - **Minimalist/Urbex**: Penalizes clutter and rewards simplicity

@@ -51,17 +51,59 @@ _log(f"Python: {sys.executable}")
 _log(f"Python version: {sys.version}")
 _log(f"Working directory: {os.getcwd()}")
 
+# Route pywebview's internal logger (WebView2 init errors etc.) into crash.log
+import logging as _logging
+_wv_log_handler = _logging.FileHandler(str(_LOG), mode="a", encoding="utf-8")
+_wv_log_handler.setFormatter(_logging.Formatter("[pywebview] %(levelname)s %(message)s"))
+_logging.getLogger("pywebview").addHandler(_wv_log_handler)
+_logging.getLogger("pywebview").setLevel(_logging.DEBUG)
+
+
+def _kill_port(port):
+    """Kill any process listening on the given port so we can bind to it."""
+    try:
+        import subprocess as _sp
+        out = _sp.check_output(
+            f"netstat -ano | findstr :{port}",
+            shell=True, text=True,
+            creationflags=0x08000000,
+        )
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 5 and parts[3] == "LISTENING":
+                pid = parts[4]
+                _sp.run(
+                    ["taskkill", "/F", "/PID", pid],
+                    creationflags=0x08000000,
+                    capture_output=True,
+                )
+                _log(f"Killed stale process PID {pid} on port {port}")
+    except Exception:
+        pass
+
 
 def _find_free_port(preferred=8000):
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        try:
-            s.bind(("127.0.0.1", preferred))
-            return preferred
-        except OSError:
-            pass
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    """Always try to use the preferred port; kill anything blocking it first."""
+    _kill_port(preferred)
+    import time as _t
+    _t.sleep(0.3)  # give the OS time to release the port
+    return preferred
+
+
+def _clear_webview2_cache():
+    """Remove stale WebView2 lock files from any pywebview temp dir under %TEMP%."""
+    import tempfile, glob as _glob
+    tmp = tempfile.gettempdir()
+    try:
+        for lockname in ("lockfile", "SingletonLock", "SingletonCookie"):
+            for lock_path in _glob.glob(os.path.join(tmp, "tmp*", "**", lockname), recursive=True):
+                try:
+                    os.unlink(lock_path)
+                    _log(f"Removed stale lock: {lock_path}")
+                except Exception:
+                    pass
+    except Exception as exc:
+        _log(f"_clear_webview2_cache: {exc}")
 
 
 def _run_server(port):
@@ -71,7 +113,7 @@ def _run_server(port):
         _log(f"uvicorn starting on port {port}")
         uvicorn.run(
             app, host="127.0.0.1", port=port,
-            log_level="warning",
+            log_level="info",
             # Route uvicorn's own log records into crash.log
             log_config={
                 "version": 1,
@@ -91,7 +133,7 @@ def _run_server(port):
                 "loggers": {
                     "uvicorn":        {"handlers": ["file"], "level": "WARNING", "propagate": False},
                     "uvicorn.error":  {"handlers": ["file"], "level": "WARNING", "propagate": False},
-                    "uvicorn.access": {"handlers": ["file"], "level": "WARNING", "propagate": False},
+                    "uvicorn.access": {"handlers": ["file"], "level": "INFO",    "propagate": False},
                 },
             },
         )
@@ -203,6 +245,7 @@ def _icon_watcher(icon_path: str) -> None:
 def main():
     url = ""
     try:
+        _clear_webview2_cache()
         _build_frontend_if_needed()
 
         port = _find_free_port()
@@ -214,6 +257,7 @@ def main():
             raise RuntimeError("Server did not become available in time.")
 
         import webview
+        webview.settings['REMOTE_DEBUGGING_PORT'] = 9222
 
         class FolderApi:
             def pick_folder(self):
@@ -243,10 +287,33 @@ def main():
             js_api=FolderApi(),
         )
 
-        # Also reapply on every page load — belt-and-suspenders for late resets.
-        win.events.loaded += lambda: _stamp_icon(_icon)
+        def _post_start():
+            """Called by webview.start() in its own thread after the webview loop starts."""
+            _log("[diag] _post_start called")
+            loaded = win.events.loaded.wait(5)
+            _log(f"[diag] loaded.wait returned {loaded}")
+            if not loaded:
+                _log("[diag] page never loaded!")
+                return
+            _stamp_icon(_icon)
 
-        webview.start(icon=_icon)
+            def _diag():
+                time.sleep(0.1)
+                try:
+                    root_kids = win.evaluate_js("document.getElementById('root')?.children?.length ?? -1")
+                    body_bg   = win.evaluate_js("getComputedStyle(document.body).backgroundColor")
+                    onerrors  = win.evaluate_js("JSON.stringify(window.__errors||[])")
+                    cerrors   = win.evaluate_js("JSON.stringify(window.__cerrors||[])")
+                    body_text = win.evaluate_js("document.body.innerText?.slice(0,200)")
+                    _log(f"[diag] bg={body_bg} root_children={root_kids}")
+                    _log(f"[diag] onerrors={onerrors}")
+                    _log(f"[diag] cerrors={cerrors}")
+                    _log(f"[diag] body_text={body_text}")
+                except Exception as exc:
+                    _log(f"[diag] error: {exc}")
+            threading.Thread(target=_diag, daemon=True).start()
+
+        webview.start(icon=_icon, func=_post_start)
         _log("pywebview window closed — exiting")
 
     except Exception:

@@ -246,7 +246,7 @@ class IncrementalHandler:
     """
 
     def __init__(self, analyzer, db: "LocalVectorDB | None" = None,
-                 preset: str = "Street - Magnum") -> None:
+                 preset: str = "Classic Street") -> None:
         self._analyzer = analyzer
         self._db       = db
         self._preset   = preset
@@ -299,7 +299,7 @@ class FolderWatcher:
     """
 
     def __init__(self, analyzer=None, db: "LocalVectorDB | None" = None,
-                 preset: str = "Street - Magnum",
+                 preset: str = "Classic Street",
                  callback=None) -> None:
         """
         If `analyzer` is given, uses IncrementalHandler for full auto-processing.
@@ -421,17 +421,22 @@ def export_metadata(path: str, meta: dict, out_dir: str | None = None) -> str:
 
 
 def _minimal_xmp(image_path: str, xmp: dict) -> str:
-    """Minimal XMP packet readable by Lightroom / Capture One."""
-    desc_parts = "\n    ".join(
-        f'<{k}>{v}</{k}>' for k, v in xmp.items()
+    """Minimal XMP sidecar readable by Lightroom / Capture One / Bridge."""
+    # Convert pyexiv2 dot-notation keys (e.g. "Xmp.xmp.Rating") to XML prefix:local
+    def _tag(key: str) -> str:
+        parts = key.split(".", 2)
+        return f"{parts[1]}:{parts[2]}" if len(parts) == 3 else key
+
+    desc_parts = "\n      ".join(
+        f"<{_tag(k)}>{v}</{_tag(k)}>" for k, v in xmp.items()
     )
     return f"""<?xpacket begin="\xef\xbb\xbf" id="W5M0MpCehiHzreSzNTczkc9d"?>
 <x:xmpmeta xmlns:x="adobe:ns:meta/">
   <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-    <rdf:Description rdf:about="{image_path}"
+    <rdf:Description rdf:about=""
       xmlns:xmp="http://ns.adobe.com/xap/1.0/"
       xmlns:dc="http://purl.org/dc/elements/1.1/">
-    {desc_parts}
+      {desc_parts}
     </rdf:Description>
   </rdf:RDF>
 </x:xmpmeta>

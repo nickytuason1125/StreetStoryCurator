@@ -10,11 +10,12 @@ Before installing the app, make sure these two programs are on your computer. Bo
 
 | Program | Why | Download |
 |---------|-----|----------|
-| **Python 3.11** | Runs the app engine | https://www.python.org/downloads/ |
+| **Python 3.12** | Runs the app engine | https://www.python.org/downloads/release/python-31210/ |
+| **Git** | Required to install the AI grading model | https://git-scm.com/download/win |
 | **Node.js (LTS)** | Builds the interface (first run only) | https://nodejs.org |
 
 ### Installing Python (Windows)
-1. Go to https://www.python.org/downloads/ and click **Download Python 3.11**
+1. Go to https://www.python.org/downloads/release/python-31210/ and click **Download Python 3.12**
 2. Run the installer
 3. **Important:** Tick the box that says **"Add Python to PATH"** before clicking Install
 4. Click Install Now
@@ -22,6 +23,10 @@ Before installing the app, make sure these two programs are on your computer. Bo
 ### Installing Python (Mac)
 1. Go to https://www.python.org/downloads/ and download the macOS installer
 2. Run the `.pkg` file and follow the steps
+
+### Installing Git (Windows)
+1. Go to https://git-scm.com/download/win and download the installer
+2. Run it with all default settings
 
 ### Installing Node.js
 1. Go to https://nodejs.org and click **Download LTS**

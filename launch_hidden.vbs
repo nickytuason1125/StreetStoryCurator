@@ -11,8 +11,9 @@ scriptPath  = appDir & "src\local_launcher.py"
 crashLog    = appDir & "crash.log"
 stampFile   = appDir & "venv\.setup_ok"
 
-' Kill any leftover pythonw and wait for it to exit before touching crash.log
+' Kill any leftover pythonw and WebView2 browser processes, then wait before touching crash.log
 shell.Run "cmd /c taskkill /F /FI ""IMAGENAME eq pythonw.exe"" >nul 2>&1", 0, True
+shell.Run "cmd /c taskkill /F /FI ""IMAGENAME eq msedgewebview2.exe"" >nul 2>&1", 0, True
 On Error Resume Next
 If fso.FileExists(crashLog) Then fso.DeleteFile crashLog, True
 On Error GoTo 0

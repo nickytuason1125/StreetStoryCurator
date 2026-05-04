@@ -1,0 +1,51 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            // Primary: start the FastAPI server (visible terminal, port 8000)
+            // Open http://127.0.0.1:8000 in a browser after this starts.
+            "name": "Run FastAPI Server",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/server.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "python": "${workspaceFolder}/venv/Scripts/python.exe",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            },
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            // Native desktop launcher (Edge app mode) — same as launch.bat but
+            // via debugpy so you can set breakpoints in native_launcher.py.
+            // Output goes to crash.log, not the terminal.
+            "name": "Run Native Launcher",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/native_launcher.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "python": "${workspaceFolder}/venv/Scripts/python.exe",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            },
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            // CLI: grade a folder and print results without launching the UI
+            "name": "Grade Folder (CLI)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/server.py",
+            "args": [],
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "python": "${workspaceFolder}/venv/Scripts/python.exe",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            },
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}

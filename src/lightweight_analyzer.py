@@ -1,4 +1,4 @@
-﻿import sys, cv2, numpy as np, json, os, random, threading, asyncio, gc
+﻿import sys, cv2, numpy as np, json, os, hashlib, random, threading, asyncio, gc
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from model_loader import get_sessions
@@ -53,7 +53,7 @@ def load_image_fast(path: str, max_side: int = 720) -> np.ndarray | None:
 PRESET_RULES = {
     # weights keys match _style_presets in _analyze exactly — "narrative" replaces old "auth"
     # so the displayed breakdown bars reflect what the scorer actually computed.
-    "Street - Magnum": {
+    "Classic Street": {
         "weights": {"tech":0.10, "comp":0.18, "light":0.15, "narrative":0.32, "human":0.25},
         "labels": {"tech":"Technical", "comp":"Composition", "light":"Lighting", "narrative":"Decisive Moment", "human":"Subject Isolation"},
         "guide": "Prioritises decisive moments, layering, and candid geometry.",
@@ -69,7 +69,7 @@ PRESET_RULES = {
         "critique_mid": "Good context; leaning slightly touristy. Capture more candid interaction.",
         "critique_low": "Feels staged or landmark-centric. Step closer to daily life or rituals."
     },
-    "World Press Doc": {
+    "Photojournalism": {
         "weights": {"tech":0.13, "comp":0.13, "light":0.14, "narrative":0.40, "human":0.20},
         "labels": {"tech":"News Sharpness", "comp":"Context", "light":"Natural Light", "narrative":"Journalistic Integrity", "human":"Human Impact"},
         "guide": "Prioritises factual clarity, impact, and minimal manipulation.",
@@ -128,7 +128,7 @@ PRESET_RULES = {
 }
 
 def get_preset_config(name):
-    return PRESET_RULES.get(name, PRESET_RULES["Street - Magnum"])
+    return PRESET_RULES.get(name, PRESET_RULES["Classic Street"])
 
 
 def detect_focal_hierarchy(gray):
@@ -156,12 +156,15 @@ def exif_compatibility(width, height, focal_proxy=35):
     return 1.0 - abs(ratio - 1.5) * 0.5
 
 
+_CACHE_VER     = 2                                    # bump to invalidate stale caches
+_MAX_FILE_MB   = 50                                   # hard cap per image
+_SAFE_PIL_FMTS = frozenset({"JPEG", "PNG", "WEBP", "TIFF", "BMP", "GIF"})
+
 class LightweightStreetScorer:
     def __init__(self, cache_path="cache/light_scores.json"):
         # Use absolute path relative to this file's directory
         self.cache_path = Path(__file__).parent.parent / cache_path
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-        self.cache = json.loads(self.cache_path.read_text(encoding="utf-8")) if self.cache_path.exists() else {}
         # ONNX sessions — lazy so startup stays instant
         self._ort_sessions  = None
         self._est_input     = None
@@ -170,22 +173,20 @@ class LightweightStreetScorer:
         self._seq_scorer    = None   # None until train_sequence_scorer.py has been run
         self._seq_input     = None
         # Face detection — YuNet ONNX (modern) with Haar cascade fallback
-        # Download: https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet
-        self._face_yn      = None   # cv2.FaceDetectorYN when models/face_detection_yunet_2023mar.onnx present
-        self._face_casc    = None
-        self._profile_casc = None
+        self._face_yn       = None
+        self._face_casc     = None
+        self._profile_casc  = None
         # Reference bank — loads from disk at startup, empty until user indexes exemplars
-        self._ref_bank     = ReferenceBank()
+        self._ref_bank      = ReferenceBank()
         # NicheClassifier — built lazily after first analyze_folder call
-        self._niche_clf    = None
+        self._niche_clf     = None
         # VLMNicheDetector — lazy; only instantiated when model file is present
-        self._vlm_instance = None
-        
-        # Style presets - class-level for use in _find_best_preset()
+        self._vlm_instance  = None
+        # Style presets for _find_best_preset()
         self._STYLE_PRESETS = {
-            "Street - Magnum":             {"tech": 0.10, "comp": 0.18, "light": 0.15, "narrative": 0.32, "human": 0.25},
+            "Classic Street":             {"tech": 0.10, "comp": 0.18, "light": 0.15, "narrative": 0.32, "human": 0.25},
             "Travel Editor":               {"tech": 0.12, "comp": 0.13, "light": 0.18, "narrative": 0.27, "human": 0.30},
-            "World Press Doc":             {"tech": 0.13, "comp": 0.13, "light": 0.14, "narrative": 0.40, "human": 0.20},
+            "Photojournalism":             {"tech": 0.13, "comp": 0.13, "light": 0.14, "narrative": 0.40, "human": 0.20},
             "Cinematic/Editorial":         {"tech": 0.10, "comp": 0.20, "light": 0.30, "narrative": 0.20, "human": 0.20},
             "Fine Art/Contemporary":       {"tech": 0.10, "comp": 0.25, "light": 0.20, "narrative": 0.15, "human": 0.30},
             "Minimalist/Urbex":            {"tech": 0.15, "comp": 0.30, "light": 0.20, "narrative": 0.10, "human": 0.25},
@@ -193,6 +194,28 @@ class LightweightStreetScorer:
             "Snapshot / Point-and-Shoot":  {"tech": 0.08, "comp": 0.12, "light": 0.15, "narrative": 0.40, "human": 0.25},
             "Landscape with Elements":     {"tech": 0.18, "comp": 0.32, "light": 0.35, "narrative": 0.05, "human": 0.10},
         }
+        self.cache = self._load_cache()
+
+    # ── Cache helpers ─────────────────────────────────────────────────────────
+
+    def _load_cache(self) -> dict:
+        """Load cache with version check and checksum verification."""
+        if not self.cache_path.exists():
+            return {}
+        try:
+            d = json.loads(self.cache_path.read_text(encoding="utf-8"))
+            if d.get("v") != _CACHE_VER:
+                return {}                              # stale version — rebuild
+            stored_chk = d.get("chk")
+            payload    = {k: v for k, v in d.items() if k != "chk"}
+            expected   = hashlib.md5(
+                json.dumps(payload, sort_keys=True).encode()
+            ).hexdigest()
+            if stored_chk != expected:
+                return {}                              # tampered / corrupt — rebuild
+            return {k: v for k, v in payload.items() if k != "v"}
+        except Exception:
+            return {}
 
     def _ensure_sessions(self):
         if self._ort_sessions is None:
@@ -231,8 +254,17 @@ class LightweightStreetScorer:
                 self._profile_casc.detectMultiScale(_w, 1.3, 3)
 
     def _save_cache(self):
-        try: self.cache_path.write_text(json.dumps(self.cache, indent=2, ensure_ascii=False), encoding="utf-8")
-        except: pass
+        """Atomic write with version tag and MD5 checksum for corruption detection."""
+        try:
+            payload = {**self.cache, "v": _CACHE_VER}
+            payload["chk"] = hashlib.md5(
+                json.dumps(payload, sort_keys=True).encode()
+            ).hexdigest()
+            tmp = self.cache_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(self.cache_path)              # atomic on POSIX; near-atomic on Windows
+        except Exception:
+            pass
 
     def _build_niche_anchors(self) -> int:
         """Build visual prototype anchors for NicheClassifier from cached embeddings."""
@@ -260,7 +292,21 @@ class LightweightStreetScorer:
         if t < 0.38 and c > 0.45 and l > 0.40: return "Documentary/Low-Key"
         return "Standard"
 
-    def _analyze(self, path, preset="Street - Magnum"):
+    def _analyze(self, path, preset="Classic Street"):
+        # ── Input safety gates ────────────────────────────────────────────────
+        try:
+            if os.path.getsize(path) > _MAX_FILE_MB * 1024 * 1024:
+                return self._fallback(f"File exceeds {_MAX_FILE_MB} MB limit")
+        except OSError:
+            return self._fallback("Cannot access file")
+        try:
+            from PIL import Image as _PILFmt
+            with _PILFmt.open(path) as _pf:
+                if _pf.format and _pf.format not in _SAFE_PIL_FMTS:
+                    return self._fallback(f"Unsupported format: {_pf.format}")
+        except Exception:
+            pass                                      # PIL can't read RAW — let cv2 try
+
         self._ensure_sessions()
         try:
             img = load_image_fast(path, max_side=720)
@@ -587,9 +633,9 @@ class LightweightStreetScorer:
             ))
 
             _style_presets = {
-                "Street - Magnum":             {"tech": 0.10, "comp": 0.18, "light": 0.15, "narrative": 0.32, "human": 0.25},
+                "Classic Street":             {"tech": 0.10, "comp": 0.18, "light": 0.15, "narrative": 0.32, "human": 0.25},
                 "Travel Editor":               {"tech": 0.12, "comp": 0.13, "light": 0.18, "narrative": 0.27, "human": 0.30},
-                "World Press Doc":             {"tech": 0.13, "comp": 0.13, "light": 0.14, "narrative": 0.40, "human": 0.20},
+                "Photojournalism":             {"tech": 0.13, "comp": 0.13, "light": 0.14, "narrative": 0.40, "human": 0.20},
                 "Cinematic/Editorial":         {"tech": 0.10, "comp": 0.20, "light": 0.30, "narrative": 0.20, "human": 0.20},
                 "Fine Art/Contemporary":       {"tech": 0.10, "comp": 0.25, "light": 0.20, "narrative": 0.15, "human": 0.30},
                 "Minimalist/Urbex":            {"tech": 0.15, "comp": 0.30, "light": 0.20, "narrative": 0.10, "human": 0.25},
@@ -603,7 +649,7 @@ class LightweightStreetScorer:
                 "Portrait/People":    "Fine Art/Contemporary",  # Human-focused, high human weight
                 "Portrait":           "Fine Art/Contemporary",
                 "Wedding/Event":      "Travel Editor",          # Human + light + comp
-                "Street/Urban":       "Street - Magnum",        # Narrative + human
+                "Street/Urban":       "Classic Street",        # Narrative + human
                 "Travel/Documentary": "Travel Editor",          # Human + narrative + light
                 "Architecture":       "Minimalist/Urbex",       # Comp + tech
                 "Real Estate":        "Cinematic/Editorial",    # Comp + light
@@ -612,11 +658,11 @@ class LightweightStreetScorer:
                 "Landscape/Nature":   "Landscape with Elements", # Light + comp
                 "Nature/Landscape":   "Landscape with Elements",
                 "Night/Nocturnal":    "Snapshot / Point-and-Shoot", # Narrative + human
-                "Sports/Action":      "World Press Doc",        # Narrative + human
+                "Sports/Action":      "Photojournalism",        # Narrative + human
                 "Macro/Detail":       "Minimalist/Urbex",       # Comp + tech
                 "Fine Art":           "Fine Art/Contemporary",  # Narrative + human
-                "Documentary/Low-Key":"World Press Doc",        # Narrative focused
-                "Street/Environmental":"Street - Magnum",       # Narrative + human
+                "Documentary/Low-Key":"Photojournalism",        # Narrative focused
+                "Street/Environmental":"Classic Street",       # Narrative + human
             }
             
             # Build breakdown dictionary for grading
@@ -635,7 +681,7 @@ class LightweightStreetScorer:
             
             # Use detected niche for adaptive preset
             adaptive_preset = _NICHE_PRESETS.get(detected_niche, preset)
-            pw = _style_presets.get(adaptive_preset, _style_presets["Street - Magnum"])
+            pw = _style_presets.get(adaptive_preset, _style_presets["Classic Street"])
             
             # Calculate score with median niche preset (kept for tracking)
             raw_median = (pw["tech"] * tech_adj + pw["comp"] * comp_adj + pw["light"] * light_adj
@@ -650,9 +696,9 @@ class LightweightStreetScorer:
             best_score = float(np.clip(1.0 - (1.0 - best_raw) ** 1.2, 0.0, 1.0))
 
             # Final score = average of the 5 independent base categories
-            # (Narrative is excluded — it's derived from Human/Culture, Mood/Color, and Lighting,
-            # so including it would double-count those dimensions and inflate every score)
-            raw = (tech_adj + comp_adj + light_adj + mood + human_env) / 5.0
+            # (Narrative excluded — derived from other dims, would double-count)
+            # 0.90 deflation factor reduces strong bias by ~10%
+            raw = (tech_adj + comp_adj + light_adj + mood + human_env) / 5.0 * 0.90
 
             if best_sharp < 60 and not intentional_soft:
                 raw = min(raw, 0.28)
@@ -769,7 +815,7 @@ class LightweightStreetScorer:
         and returns the one that gives the highest score for this specific image.
         """
         if not breakdown:
-            return "Street - Magnum", 0.0
+            return "Classic Street", 0.0
         
         # Extract scores from breakdown (handle label variations)
         def _get(b, keys):
@@ -782,7 +828,7 @@ class LightweightStreetScorer:
         narrative = _get(breakdown, self._AUTH_KEYS)
         
         # Calculate score for each preset
-        best_preset = "Street - Magnum"
+        best_preset = "Classic Street"
         best_score = 0.0
         
         for preset_name, weights in self._STYLE_PRESETS.items():
@@ -819,7 +865,7 @@ class LightweightStreetScorer:
         "Human/Culture","Sense of Place","Human Impact",
         "Character Presence","Emotional Resonance","Scale Element",
         "Presence","Scale & Life",
-        "Subject Isolation",   # Street - Magnum preset label
+        "Subject Isolation",   # Classic Street preset label
     })
     _LIGHT_KEYS = frozenset({
         "Lighting","Atmosphere","Natural Light","Mood & Tone",
@@ -1073,7 +1119,7 @@ class LightweightStreetScorer:
         # _analyze always picks the best-fitting preset internally via _find_best_preset,
         # so the preset parameter only affects the fallback niche label — not the score.
         # A separate first pass to detect the median niche is therefore redundant.
-        effective_preset = preset or "Street - Magnum"
+        effective_preset = preset or "Classic Street"
 
         # Grade with the selected preset
         new = all_paths if force_rescan else [p for p in all_paths if p not in self.cache]
@@ -1206,9 +1252,9 @@ class LightweightStreetScorer:
 
         return max(scores, key=scores.get)
 
-    # Maps subject type → pacing preset name (fallback: "Street - Magnum")
+    # Maps subject type → pacing preset name (fallback: "Classic Street")
     _PACING_MAP = {
-        "street":       "Street - Magnum",
+        "street":       "Classic Street",
         "nature":       "Travel / Documentary",
         "portrait":     "Travel / Documentary",
         "architecture": "Minimalist / Art",

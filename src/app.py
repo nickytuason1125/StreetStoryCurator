@@ -170,20 +170,20 @@ def detect_median_niche_sync(folder):
 _ARCHETYPES = {
     "Cinematic/Editorial":   {"tech":0.3, "comp":0.4, "light":0.9, "auth":0.5, "human":0.5},
     "Travel Editor":         {"tech":0.4, "comp":0.4, "light":0.6, "auth":0.9, "human":0.8},
-    "World Press Doc":       {"tech":0.8, "comp":0.5, "light":0.5, "auth":0.8, "human":0.7},
+    "Photojournalism":       {"tech":0.8, "comp":0.5, "light":0.5, "auth":0.8, "human":0.7},
     "Fine Art/Contemporary": {"tech":0.5, "comp":0.7, "light":0.6, "auth":0.4, "human":0.9},
     "Minimalist/Urbex":      {"tech":0.6, "comp":0.9, "light":0.5, "auth":0.3, "human":0.4},
     "Humanist/Everyday":     {"tech":0.4, "comp":0.5, "light":0.5, "auth":0.7, "human":0.8},
-    "Street - Magnum":       {"tech":0.6, "comp":0.7, "light":0.5, "auth":0.7, "human":0.6},
+    "Classic Street":       {"tech":0.6, "comp":0.7, "light":0.5, "auth":0.7, "human":0.6},
 }
 _ARCHETYPE_REASONS = {
     "Cinematic/Editorial":   "High atmospheric lighting & mood contrast detected.",
     "Travel Editor":         "Strong cultural authenticity & sense of place detected.",
-    "World Press Doc":       "High technical clarity & journalistic context detected.",
+    "Photojournalism":       "High technical clarity & journalistic context detected.",
     "Fine Art/Contemporary": "Strong geometric abstraction & emotional resonance detected.",
     "Minimalist/Urbex":      "High compositional purity & negative space detected.",
     "Humanist/Everyday":     "High candid intimacy & human warmth detected.",
-    "Street - Magnum":       "Balanced decisive moments & candid layering detected.",
+    "Classic Street":       "Balanced decisive moments & candid layering detected.",
 }
 
 def _detect_niche(results):
@@ -199,7 +199,7 @@ def _detect_niche(results):
     metrics = {"tech": 0.0, "comp": 0.0, "light": 0.0, "auth": 0.0, "human": 0.0}
     count = len(results)
     if count == 0:
-        return "Street - Magnum", 0.0, "No images."
+        return "Classic Street", 0.0, "No images."
     for _, d in results:
         breakdown = d.get("breakdown", {})
         for new_key, old_key in key_map.items():
@@ -207,7 +207,7 @@ def _detect_niche(results):
                 metrics[old_key] += breakdown[new_key]
     for k in metrics:
         metrics[k] /= count
-    best_preset, best_score = "Street - Magnum", -1.0
+    best_preset, best_score = "Classic Street", -1.0
     for name, ideal in _ARCHETYPES.items():
         dot    = sum(metrics[k] * ideal[k] for k in metrics.keys())
         norm_a = sum(v**2 for v in metrics.values()) ** 0.5 + 1e-6

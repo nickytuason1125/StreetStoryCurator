@@ -15,10 +15,60 @@ from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import List
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
+
+# ── Frozen (PyInstaller) path resolution ────────────────────────────────────
+if getattr(sys, 'frozen', False):
+    # Running as PyInstaller onedir bundle — exe lives at curator-api/curator-api.exe
+    # Set CWD to exe dir so relative paths (models/, frontend/dist/, cache/) resolve.
+    _EXE_DIR = Path(sys.executable).parent
+    os.chdir(_EXE_DIR)
+    # Redirect writable cache to user's AppData (Program Files is read-only)
+    _DATA_DIR = Path(os.environ.get('CURATOR_DATA_DIR', str(_EXE_DIR)))
+else:
+    _EXE_DIR = Path(__file__).parent
+    _DATA_DIR = _EXE_DIR
+
+# ---------------------------------------------------------------------------
+# Path-safety helpers
+# ---------------------------------------------------------------------------
+
+_IMAGE_EXTS = frozenset({
+    ".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff",
+    ".bmp", ".gif", ".heic", ".arw", ".cr2", ".nef", ".orf", ".rw2",
+})
+
+def _safe_image_path(raw: str) -> Path:
+    """Resolve symlinks, normalise, and verify the path is an existing image file.
+
+    User photos may live anywhere on disk — no prefix restriction is applied.
+    Raises HTTPException on traversal tricks (``..``), symlink escapes, missing
+    files, or non-image extensions.
+    """
+    try:
+        p = Path(raw).resolve(strict=False)
+    except (ValueError, OSError):
+        raise HTTPException(400, "Invalid path")
+    if not p.exists() or not p.is_file():
+        raise HTTPException(404, "File not found")
+    if p.suffix.lower() not in _IMAGE_EXTS:
+        raise HTTPException(400, "Not an image file")
+    return p
+
+
+def _safe_dir_path(raw: str) -> Path:
+    """Resolve symlinks, normalise, and verify the path is an existing directory."""
+    try:
+        p = Path(raw).resolve(strict=False)
+    except (ValueError, OSError):
+        raise HTTPException(400, "Invalid path")
+    if not p.is_dir():
+        raise HTTPException(400, "Not a valid directory")
+    return p
+
 
 RECENTLY_GENERATED: set = set()
 MAX_HISTORY = 25
@@ -74,12 +124,18 @@ app.add_middleware(
 )
 
 # Thumbnail cache served as static files
-THUMB_DIR = Path("cache/thumbs")
+THUMB_DIR = _DATA_DIR / "cache" / "thumbs"
 THUMB_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/thumbs", StaticFiles(directory=str(THUMB_DIR)), name="thumbs")
 
 
 def shutdown(signum, frame):
+    # Flush analyzer cache before exit so no in-flight results are lost
+    if _analyzer_instance is not None:
+        try:
+            _analyzer_instance._save_cache()
+        except Exception:
+            pass
     sys.exit(0)
 import threading as _threading
 if _threading.current_thread() is _threading.main_thread():
@@ -91,33 +147,52 @@ if _threading.current_thread() is _threading.main_thread():
 # Image helpers
 # ---------------------------------------------------------------------------
 
+_PREVIEW_DIR = _DATA_DIR / "cache" / "previews"
+_PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
+
+def _gen_preview(path: str) -> Path | None:
+    """Return a JPEG preview for RAW files; return None for browser-renderable formats."""
+    import hashlib
+    src = Path(path).resolve()
+    if src.suffix.lower() not in _RAW_EXTS:
+        return None  # browser can render JPEG/PNG/WebP directly
+    safe = hashlib.md5(str(src).encode()).hexdigest()[:10] + ".jpg"
+    dest = _PREVIEW_DIR / safe
+    if dest.exists():
+        return dest
+    try:
+        from PIL import Image as _PILImg
+        import rawpy, io
+        with rawpy.imread(str(src)) as raw:
+            try:
+                thumb = raw.extract_thumb()
+                if thumb.format == rawpy.ThumbFormat.JPEG:
+                    img = _PILImg.open(io.BytesIO(thumb.data))
+                else:
+                    img = _PILImg.fromarray(thumb.data)
+            except rawpy.LibRawNoThumbnailError:
+                rgb = raw.postprocess(use_camera_wb=True, half_size=True, no_auto_bright=False)
+                img = _PILImg.fromarray(rgb)
+        img.convert("RGB").save(str(dest), "JPEG", quality=90)
+        return dest
+    except Exception:
+        return None
+
 @app.get("/api/photo")
 async def serve_photo(path: str = Query(...)):
-    try:
-        # Resolve and normalize path
-        p = Path(path).resolve()
-        
-        # Security: ensure path is within allowed directories
-        allowed_dirs = [Path.cwd(), Path.cwd() / "cache", Path.cwd() / "output"]
-        if not any(str(p).startswith(str(d.resolve())) for d in allowed_dirs):
-            # Allow any path that exists (for user-selected folders)
-            if not p.exists() or not p.is_file():
-                raise HTTPException(404, "File not found")
-        
-        if not p.exists() or not p.is_file():
-            raise HTTPException(404, "File not found")
-        return FileResponse(str(p))
-    except Exception as e:
-        raise HTTPException(500, str(e))
+    p = _safe_image_path(path)
+    if p.suffix.lower() in _RAW_EXTS:
+        import asyncio
+        preview = await asyncio.get_event_loop().run_in_executor(None, _gen_preview, str(p))
+        if preview:
+            return FileResponse(str(preview), media_type="image/jpeg")
+    return FileResponse(str(p))
 
 
 @app.post("/api/browse-folder")
 async def browse_folder(body: dict):
     """Browse a folder — immediate, non-recursive scan of the current directory only."""
-    from pathlib import Path as _Path
-    folder = _Path(body.get("folder_path", ""))
-    if not folder.is_dir():
-        raise HTTPException(400, "Not a directory")
+    folder = _safe_dir_path(body.get("folder_path", ""))
 
     image_exts = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp", ".gif",
                   ".heic", ".arw", ".cr2", ".nef", ".orf", ".rw2"}
@@ -182,21 +257,39 @@ def _read_exif(path: str) -> dict:
         return {}
 
 
+_RAW_EXTS = {".arw", ".cr2", ".cr3", ".nef", ".orf", ".rw2", ".raf", ".dng", ".pef", ".srw"}
+
 def _gen_one_thumb(path: str) -> None:
     """Generate a single thumbnail into the cache directory (thread-safe)."""
     try:
         from PIL import Image as _PILImg
         import hashlib as _hl
-        src = Path(path)
-        if not src.exists():
+        src = Path(path).resolve()                        # always work with real path
+        if not src.exists() or src.suffix.lower() not in _IMAGE_EXTS:
             return
         safe = _hl.md5(str(src).encode()).hexdigest()[:10] + ".webp"
         dest = THUMB_DIR / safe
         if dest.exists():
             return
-        with _PILImg.open(src) as img:
+        if src.suffix.lower() in _RAW_EXTS:
+            import rawpy, numpy as np
+            with rawpy.imread(str(src)) as raw:
+                try:
+                    thumb = raw.extract_thumb()
+                    if thumb.format == rawpy.ThumbFormat.JPEG:
+                        import io
+                        img = _PILImg.open(io.BytesIO(thumb.data))
+                    else:
+                        img = _PILImg.fromarray(thumb.data)
+                except rawpy.LibRawNoThumbnailError:
+                    rgb = raw.postprocess(use_camera_wb=True, half_size=True, no_auto_bright=False)
+                    img = _PILImg.fromarray(rgb)
             img.thumbnail((600, 600), _PILImg.Resampling.LANCZOS)
             img.convert("RGB").save(str(dest), "WEBP", quality=75, optimize=True)
+        else:
+            with _PILImg.open(src) as img:
+                img.thumbnail((600, 600), _PILImg.Resampling.LANCZOS)
+                img.convert("RGB").save(str(dest), "WEBP", quality=75, optimize=True)
     except Exception:
         pass
 
@@ -205,10 +298,7 @@ def _gen_one_thumb(path: str) -> None:
 async def list_folder(body: dict):
     """Return image paths instantly — no EXIF, no blocking I/O on the hot path."""
     import asyncio
-    from pathlib import Path as _Path
-    folder = _Path(body.get("folder_path", ""))
-    if not folder.is_dir():
-        raise HTTPException(400, "Not a directory")
+    folder = _safe_dir_path(body.get("folder_path", ""))
 
     exts = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp", ".gif",
             ".heic", ".arw", ".cr2", ".nef", ".orf", ".rw2"}
@@ -236,25 +326,25 @@ async def list_folder(body: dict):
 async def get_exif(path: str = Query(...)):
     """Lazy EXIF loader — called by the frontend when a photo is selected."""
     import asyncio
+    p = _safe_image_path(path)
     loop = asyncio.get_event_loop()
-    data = await loop.run_in_executor(None, _read_exif, path)
+    data = await loop.run_in_executor(None, _read_exif, str(p))
     return data
 
 
 @app.get("/api/thumb")
 async def serve_thumb(path: str = Query(...)):
     import asyncio, hashlib
-    src = Path(path)
-    if not src.exists():
-        raise HTTPException(404, "Source not found")
+    src = _safe_image_path(path)                          # resolves symlinks
     safe = hashlib.md5(str(src).encode()).hexdigest()[:10] + ".webp"
     dest = THUMB_DIR / safe
     if not dest.exists():
-        # Use the dedicated on-demand executor — never blocked by pre-warm jobs.
         await asyncio.get_event_loop().run_in_executor(_THUMB_ONDEMAND, _gen_one_thumb, str(src))
         if not dest.exists():
-            # Thumbnail generation failed (e.g. RAW/HEIC) — serve full file.
-            return FileResponse(str(src))
+            return FileResponse(str(src))                 # fallback: already resolved
+    # Symlink-escape guard: ensure the cached thumb hasn't been tampered with
+    if not str(dest.resolve()).startswith(str(THUMB_DIR.resolve())):
+        raise HTTPException(403, "Forbidden")
     return FileResponse(str(dest))
 
 
@@ -264,8 +354,20 @@ async def serve_thumb(path: str = Query(...)):
 
 class GradeRequest(BaseModel):
     folder_path: str
-    preset: str = "Street - Magnum"
+    preset: str = "Classic Street"
     deep_review: bool = False
+
+    @field_validator("folder_path")
+    @classmethod
+    def validate_folder_path(cls, v: str) -> str:
+        # Resolve symlinks and normalise — user photos may live anywhere on disk
+        try:
+            p = Path(v).resolve(strict=False)
+        except (ValueError, OSError):
+            raise ValueError("Invalid path")
+        if not p.is_dir():
+            raise ValueError("Path is not a valid directory")
+        return str(p)
 
 
 def _run_vlm_deep_review(results: list) -> None:
@@ -349,7 +451,7 @@ async def grade_photos(req: GradeRequest):
         # Load any VLM critique results already on disk from a prior deep_review run.
         from pathlib import Path as _Path
         import json as _json
-        _grade_cache_path = _Path("cache/vlm_rationale_cache.json")
+        _grade_cache_path = _DATA_DIR / "cache" / "vlm_rationale_cache.json"
         _vlm_grades: dict = (
             _json.loads(_grade_cache_path.read_text(encoding="utf-8"))
             if _grade_cache_path.exists() else {}
@@ -415,7 +517,7 @@ async def grade_photos_stream(req: GradeRequest):
             )
             from pathlib import Path as _Path
             import json as _json
-            _grade_cache_path = _Path("cache/vlm_rationale_cache.json")
+            _grade_cache_path = _DATA_DIR / "cache" / "vlm_rationale_cache.json"
             _vlm_grades: dict = (
                 _json.loads(_grade_cache_path.read_text(encoding="utf-8"))
                 if _grade_cache_path.exists() else {}
@@ -430,7 +532,7 @@ async def grade_photos_stream(req: GradeRequest):
                 "sim_flag":    r[1].get("sim_flag", ""),
                 "cluster_id":  r[1].get("cluster_id", -1),
                 "faces":       r[1].get("faces", 0),
-                "vlm_critique": _vlm_grades.get(r[0]),
+                "rationale": _vlm_grades.get(r[0]),
             } for r in results]
             strong = sum(1 for g in gallery if "Strong" in g["grade"])
             mid    = sum(1 for g in gallery if "Mid"    in g["grade"])
@@ -535,7 +637,7 @@ async def generate_carousel(payload: dict):
         user_genre    = _override if (_override in _valid) else None
         detected_type = user_genre or analyzer.detect_subject_type(available)
         subject_type  = user_genre   # None = "Any" → sequence_story skips genre thresholds
-        _pacing_valid  = {"Street - Magnum", "Travel / Documentary", "Minimalist / Art", "Custom"}
+        _pacing_valid  = {"Classic Street", "Travel / Documentary", "Minimalist / Art", "Custom"}
         pacing_preset  = payload.get("pacing_preset") if payload.get("pacing_preset") in _pacing_valid else None
 
         # Inject pre-computed cluster labels if the cache is warm for this folder
@@ -623,7 +725,7 @@ async def analyze_niche(payload: dict):
 
     results = payload.get("photos", [])
     if not results:
-        return {"preset": "Street - Magnum", "confidence": 0, "reason": "No images provided."}
+        return {"preset": "Classic Street", "confidence": 0, "reason": "No images provided."}
 
     # ── Extract named breakdown values by label (not positional index) ────────
     LABEL_MAP = {
@@ -660,7 +762,7 @@ async def analyze_niche(payload: dict):
         n_items += 1
 
     if n_items == 0:
-        return {"preset": "Street - Magnum", "confidence": 0, "reason": "No scoreable images."}
+        return {"preset": "Classic Street", "confidence": 0, "reason": "No scoreable images."}
 
     avg = {k: (totals[k]/counts[k] if counts[k] else 0.5) for k in totals}
     t, c, l, a, h = avg["tech"], avg["comp"], avg["light"], avg["auth"], avg["human"]
@@ -705,7 +807,7 @@ async def analyze_niche(payload: dict):
     # Use min-of-three so any below-threshold dimension suppresses the score without
     # collapsing to near-zero when two dimensions are just above threshold.
     street_balance = min(clamp(a - 0.30), clamp(c - 0.30), clamp(h - 0.30))
-    raw["Street - Magnum"] = (
+    raw["Classic Street"] = (
         0.40 * clamp(street_balance * 5.0) +   # needs all three
         0.25 * clamp(a) +
         0.20 * clamp(h) +
@@ -714,7 +816,7 @@ async def analyze_niche(payload: dict):
 
     # WORLD PRESS DOC: tech + auth is the signature, human context required
     # Key: high tech AND high auth, people present
-    raw["World Press Doc"] = (
+    raw["Photojournalism"] = (
         0.40 * clamp(tech_x_auth * 2.0) +
         0.30 * clamp((t - 0.50) * 3.0) +        # tech must be genuinely high
         0.20 * clamp(h) +
@@ -804,9 +906,9 @@ async def analyze_niche(payload: dict):
     REASONS = {
         "Snapshot / Point-and-Shoot":
             "Batch shows raw immediacy — imperfect technique, high candid energy, variable quality. The moment is the priority.",
-        "Street - Magnum":
+        "Classic Street":
             "Decisive moments, deliberate framing, and human presence in balance. Classic street photography benchmark.",
-        "World Press Doc":
+        "Photojournalism":
             "High technical sharpness combined with strong authenticity and human impact. Aligns with documentary standards.",
         "Travel Editor":
             "Strong cultural presence and authentic immersion. People and place work together across the batch.",
@@ -826,7 +928,7 @@ async def analyze_niche(payload: dict):
 
     # ── Per-niche actionable guidance ──────────────────────────────────────────
     GUIDANCE = {
-        "Street - Magnum": {
+        "Classic Street": {
             "submit":  ["World Street Photography Awards", "LSPF Annual Open", "Burn Magazine", "Magnum Photos Open Call", "6 Mois"],
             "market":  "Editorial agencies (Magnum, Panos, VII), documentary publishers, photobook imprints, festival circuits (Visa Pour l'Image).",
             "study":   ["Vivian Maier", "Alex Webb", "Daido Moriyama"],
@@ -836,7 +938,7 @@ async def analyze_niche(payload: dict):
             "market":  "Travel magazines, tourism boards, airline in-flight media, hotel and hospitality brands.",
             "study":   ["Steve McCurry", "Ami Vitale", "Jonas Bendiksen"],
         },
-        "World Press Doc": {
+        "Photojournalism": {
             "submit":  ["World Press Photo", "POYi", "Pictures of the Year International", "Bayeux-Calvados Award", "W. Eugene Smith Grant"],
             "market":  "Wire agencies (AP, Reuters, Getty), daily newspapers, long-form digital editorial, documentary book publishers.",
             "study":   ["James Nachtwey", "Lynsey Addario", "Sebastião Salgado"],
@@ -1207,13 +1309,15 @@ async def export_metadata_endpoint(payload: dict):
     """
     from engine_utils import export_metadata
     photos  = payload.get("photos", [])
-    dest    = payload.get("dest") or None
+    raw_dest = payload.get("dest") or None
+    dest = str(_safe_dir_path(raw_dest)) if raw_dest else None
     if not photos:
         raise HTTPException(400, "No photos provided")
     results = []
     for p in photos:
         try:
-            sidecar = export_metadata(p["path"], p, out_dir=dest)
+            src = _safe_image_path(p["path"])
+            sidecar = export_metadata(str(src), p, out_dir=dest)
             results.append({"source": p["path"], "sidecar": sidecar})
         except Exception as e:
             results.append({"source": p["path"], "error": str(e)})
@@ -1239,7 +1343,7 @@ async def watch_start(payload: dict):
 
     global _folder_watcher, _watched_folder
     folder = payload.get("folder", "").strip()
-    preset = payload.get("preset", "Street - Magnum")
+    preset = payload.get("preset", "Classic Street")
     if not folder or not os.path.isdir(folder):
         raise HTTPException(400, "Invalid folder path")
 
@@ -1366,8 +1470,8 @@ def clear_exemplars():
 
 @app.post("/api/clear_cache")
 def clear_cache():
-    if os.path.exists("cache/light_scores.json"):
-        os.remove("cache/light_scores.json")
+    if os.path.exists(str(_DATA_DIR / "cache" / "light_scores.json")):
+        os.remove(str(_DATA_DIR / "cache" / "light_scores.json"))
         analyzer.cache.clear()
         return {"status": "cleared"}
     analyzer.cache.clear()
@@ -1398,14 +1502,14 @@ def save_preset(payload: dict):
 # Serve React frontend (catch-all — must be last)
 # ---------------------------------------------------------------------------
 
-DIST = Path("frontend/dist")
+DIST = _EXE_DIR / "frontend" / "dist"
 
 import json
 
 @app.get("/api/saved-sequences")
 async def get_saved_sequences():
     """Return list of saved sequences."""
-    sequences_file = Path("cache/saved_sequences.json")
+    sequences_file = _DATA_DIR / "cache" / "saved_sequences.json"
     if not sequences_file.exists():
         return {"sequences": []}
     try:
@@ -1422,8 +1526,8 @@ async def save_sequence(payload: dict):
     sequence = payload.get("sequence", [])
     if not name or not sequence:
         raise HTTPException(400, "Name and sequence required")
-    
-    sequences_file = Path("cache/saved_sequences.json")
+
+    sequences_file = _DATA_DIR / "cache" / "saved_sequences.json"
     sequences_file.parent.mkdir(exist_ok=True)
     
     try:
@@ -1446,7 +1550,7 @@ async def save_sequence(payload: dict):
 async def toggle_lock(payload: dict):
     """Toggle lock flag for a photo."""
     path = payload.get("path", "")
-    lock_file = Path("cache/photo_flags.json")
+    lock_file = _DATA_DIR / "cache" / "photo_flags.json"
     lock_file.parent.mkdir(exist_ok=True)
     try:
         if lock_file.exists():
@@ -1469,7 +1573,7 @@ async def toggle_lock(payload: dict):
 async def toggle_used(payload: dict):
     """Toggle used flag for a photo."""
     path = payload.get("path", "")
-    used_file = Path("cache/photo_flags.json")
+    used_file = _DATA_DIR / "cache" / "photo_flags.json"
     used_file.parent.mkdir(exist_ok=True)
     try:
         if used_file.exists():
@@ -1491,7 +1595,7 @@ async def toggle_used(payload: dict):
 @app.get("/api/flags/load")
 async def load_flags():
     """Load all photo flags."""
-    flags_file = Path("cache/photo_flags.json")
+    flags_file = _DATA_DIR / "cache" / "photo_flags.json"
     try:
         if flags_file.exists():
             with open(flags_file, "r") as f:

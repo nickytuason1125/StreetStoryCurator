@@ -18,10 +18,30 @@ import {
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
+// Block any accidental external analytics / tracking calls — this is a fully offline app.
+if (typeof window !== "undefined") {
+  const _origFetch = window.fetch.bind(window);
+  const _BLOCKED   = ["googleapis.com", "analytics", "sentry.io", "segment.io", "mixpanel", "hotjar"];
+  window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = input.toString();
+    if (_BLOCKED.some(h => url.includes(h))) return Promise.reject(new Error(`Blocked external request: ${url}`));
+    return _origFetch(input, init);
+  };
+}
+
 const API = import.meta.env.VITE_API_URL
-  || (typeof window !== "undefined" ? window.location.origin : "http://localhost:8000");
+  || (isTauri() ? "http://127.0.0.1:8000" : (typeof window !== "undefined" ? window.location.origin : "http://localhost:8000"));
 const thumbUrl = (p: string) => `${API}/api/thumb?path=${encodeURIComponent(p)}`;
 const photoUrl = (p: string) => `${API}/api/photo?path=${encodeURIComponent(p)}`;
+
+/** Strip traversal sequences and normalise separators before sending paths to the API. */
+const sanitizePath = (raw: string): string =>
+  raw.trim()
+    .replace(/[\/\\]+/g, "/")   // normalise separators
+    .split("/")
+    .filter(seg => seg !== "..")  // drop traversal segments
+    .join("/")
+    .replace(/^\//, match => match); // preserve leading slash (absolute paths)
 
 /* ── Design tokens ─────────────────────────────────────────────── */
 const C = {
@@ -185,12 +205,35 @@ function ExifBlock({ exif }: { exif: any }) {
 
 /* ── Export Modal ────────────────────────────────────────────────── */
 function ExportModal({ photos, filterGrade, onClose }: { photos: any[]; filterGrade: string | null; onClose: () => void }) {
+  const [xmpState, setXmpState] = useState<'idle'|'busy'|'done'|'error'>('idle');
+  const [xmpCount, setXmpCount] = useState(0);
+
   const handleDownload = (p: any) => {
     const a = document.createElement('a');
     a.href = photoUrl(p.path); a.download = p.path.split(/[\\/]/).pop() || 'photo.jpg';
     a.click();
   };
   const handleDownloadAll = () => photos.forEach((p, i) => setTimeout(() => handleDownload(p), i * 200));
+
+  const handleExportXmp = async () => {
+    setXmpState('busy');
+    try {
+      const res = await fetch(`${API}/api/export/metadata`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ photos: photos.map(p => ({
+          path: p.path, grade: p.grade, score: p.score,
+          critique: p.critique, breakdown: p.breakdown, nima_score: p.nima_score,
+        })) }),
+      });
+      const data = await res.json();
+      setXmpCount(data.exported ?? 0);
+      setXmpState('done');
+    } catch {
+      setXmpState('error');
+    }
+  };
+
   return (
     <div style={{ position:'fixed', inset:0, zIndex:500, background:'rgba(0,0,0,.75)', backdropFilter:'blur(8px)', display:'flex', alignItems:'center', justifyContent:'center' }}
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
@@ -221,6 +264,32 @@ function ExportModal({ photos, filterGrade, onClose }: { photos: any[]; filterGr
             </div>
           ))}
         </div>
+
+        {/* XMP sidecar section */}
+        <div style={{ padding:'10px 18px', borderTop:`1px solid ${C.border}`, background:C.surf2, flexShrink:0 }}>
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:10 }}>
+            <div style={{ minWidth:0 }}>
+              <p style={{ fontSize:12, fontWeight:600, color:C.text2 }}>XMP Sidecars</p>
+              <p style={{ fontSize:11, color:C.text3, marginTop:1 }}>
+                {xmpState === 'idle' && 'Write .xmp files next to each photo — readable by Lightroom & Capture One'}
+                {xmpState === 'busy' && 'Writing sidecars…'}
+                {xmpState === 'done' && `✓ ${xmpCount} sidecar${xmpCount !== 1 ? 's' : ''} written next to your photos`}
+                {xmpState === 'error' && '✕ Export failed — check the server log'}
+              </p>
+            </div>
+            <button onClick={handleExportXmp} disabled={xmpState === 'busy'}
+              style={{ display:'flex', alignItems:'center', gap:6, padding:'6px 14px', borderRadius:7, flexShrink:0,
+                background: xmpState === 'done' ? C.sLow : C.surf3,
+                border:`1px solid ${xmpState === 'done' ? 'oklch(65% .17 148 / .35)' : C.bdr2}`,
+                color: xmpState === 'done' ? C.strong : C.text2,
+                fontSize:12, fontWeight:700, cursor: xmpState === 'busy' ? 'wait' : 'pointer', transition:'all .15s' }}>
+              {xmpState === 'busy'
+                ? <><span style={{ width:10, height:10, borderRadius:'50%', border:`1.5px solid ${C.accent}`, borderTopColor:'transparent', animation:'spin .8s linear infinite', display:'inline-block' }}/> Writing…</>
+                : xmpState === 'done' ? 'Done' : 'Export XMP'}
+            </button>
+          </div>
+        </div>
+
         <div style={{ padding:'12px 18px', borderTop:`1px solid ${C.border}`, display:'flex', justifyContent:'flex-end', gap:8, flexShrink:0 }}>
           <button onClick={onClose} style={{ padding:'7px 16px', borderRadius:7, background:C.surf2, border:`1px solid ${C.bdr2}`, color:C.text2, fontSize:13, fontWeight:600, cursor:'pointer' }}>Cancel</button>
           <button onClick={handleDownloadAll}
@@ -341,7 +410,7 @@ function GridView({
 /* ── App ────────────────────────────────────────────────────────── */
 export default function App() {
   const [folder,     setFolder]     = useState("");
-  const [preset,     setPreset]     = useState("Street - Magnum");
+  const [preset,     setPreset]     = useState("Classic Street");
   const [photos,     setPhotos]     = useState<any[]>([]);
   const [carousel,   setCarousel]   = useState<any[]>([]);
   const [saved,      setSaved]      = useState<{name: string; sequence: any[]}[]>([]);
@@ -377,6 +446,8 @@ export default function App() {
   const [showStarSort, setShowStarSort] = useState(false);
   const [seqMinStars, setSeqMinStars]   = useState(0);
   const [dragOver,    setDragOver]      = useState(false);
+  const [backendReady, setBackendReady] = useState(false);
+  const [backendError, setBackendError] = useState(false);
 
   const filmRef    = useRef<HTMLDivElement>(null);
   const dragCounter = useRef(0);
@@ -394,6 +465,27 @@ export default function App() {
     const t = setTimeout(() => setToast(null), 3200);
     return () => clearTimeout(t);
   }, [toast]);
+
+  /* poll backend until it responds — shows loading screen until ready */
+  useEffect(() => {
+    let cancelled = false;
+    let timerId: ReturnType<typeof setTimeout>;
+    let attempts = 0;
+    const check = () => {
+      attempts++;
+      if (attempts > 100) { // 60 s timeout
+        if (!cancelled) setBackendError(true);
+        return;
+      }
+      fetch(`${API}/`)
+        .then(r => { if (r.ok && !cancelled) setBackendReady(true); })
+        .catch(() => {
+          if (!cancelled) timerId = setTimeout(check, 600);
+        });
+    };
+    check();
+    return () => { cancelled = true; clearTimeout(timerId); };
+  }, []);
 
   const sel = useMemo(() => photos.find(p => p.id === selId) ?? photos[0] ?? null, [photos, selId]);
 
@@ -421,6 +513,16 @@ export default function App() {
       el.scrollLeft += (br.left + br.width / 2) - (er.left + er.width / 2);
   }, [selId]);
 
+  const filteredPhotos = useMemo(() => {
+    const base = photos.filter(p => {
+      const gradeOk = !filterGrade || p.grade.includes(filterGrade);
+      const starsOk = filterStars === null || p.stars === filterStars;
+      return gradeOk && starsOk && !redacted.has(p.path);
+    });
+    if (!sortScore) return base;
+    return [...base].sort((a, b) => sortScore === 'desc' ? b.score - a.score : a.score - b.score);
+  }, [photos, filterGrade, filterStars, redacted, sortScore]);
+
   /* keyboard nav */
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
@@ -438,7 +540,7 @@ export default function App() {
     };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
-  }, [photos, selId]);
+  }, [photos, selId, filteredPhotos]);
 
   /* load photos when folder changes */
   useEffect(() => {
@@ -446,7 +548,7 @@ export default function App() {
     const load = async () => {
       setListLoading(true);
       try {
-        const res = await axios.post(`${API}/api/list-folder`, { folder_path: folder.trim() });
+        const res = await axios.post(`${API}/api/list-folder`, { folder_path: sanitizePath(folder) });
         const rawPhotos: {path:string;exif:any}[] = res.data.photos || res.data.paths?.map((p: string) => ({path:p,exif:{}})) || [];
         if (!rawPhotos.length) notify("No images found in selected folder", "info");
         const ps = rawPhotos.map((p, i) => ({ id:`p-${i}`, path:p.path, grade:'Pending', score:0, breakdown:{}, critique:'', stars:0, exif:p.exif||{} }));
@@ -507,14 +609,15 @@ export default function App() {
 
   /* grade — uses SSE stream so large folders never time out */
   const handleGrade = useCallback(async () => {
-    if (!folder.trim()) { notify("Paste a valid folder path first.", "error"); return; }
+    const safePath = sanitizePath(folder);
+    if (!safePath) { notify("Paste a valid folder path first.", "error"); return; }
     setLoading(true);
     setGradeProgress(0);
     try {
       const resp = await fetch(`${API}/api/grade/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ folder_path: folder.trim(), preset }),
+        body: JSON.stringify({ folder_path: safePath, preset }),
       });
       if (!resp.ok) throw new Error(`Server error ${resp.status}`);
       const reader = resp.body!.getReader();
@@ -535,6 +638,16 @@ export default function App() {
           if (msg.done) {
             const ps = msg.data.map((p: any, i: number) => ({ ...p, id: `p-${i}` }));
             setPhotos(ps);
+            const autoRedacted = new Set<string>();
+            const byCluster: Record<number, typeof ps> = {};
+            for (const p of ps) {
+              if (p.cluster_id >= 0) (byCluster[p.cluster_id] ??= []).push(p);
+            }
+            for (const group of Object.values(byCluster)) {
+              const best = group.find((p: any) => (p.sim_flag || '').includes('Best')) ?? group[0];
+              group.filter((p: any) => p !== best).forEach((p: any) => autoRedacted.add(p.path));
+            }
+            setRedacted(autoRedacted);
             setSelId(ps[0]?.id ?? null);
             setCarousel([]);
             setLoupeMode('loupe');
@@ -694,15 +807,6 @@ export default function App() {
     new Set([...Array.from(used), ...saved.flatMap(s => s.sequence.map((p: any) => p.path))]),
   [used, saved]);
   const rejects   = photos.filter(p => p.grade.includes('Weak')).length;
-  const filteredPhotos = useMemo(() => {
-    const base = photos.filter(p => {
-      const gradeOk = !filterGrade || p.grade.includes(filterGrade);
-      const starsOk = filterStars === null || p.stars === filterStars;
-      return gradeOk && starsOk && !redacted.has(p.path);
-    });
-    if (!sortScore) return base;
-    return [...base].sort((a, b) => sortScore === 'desc' ? b.score - a.score : a.score - b.score);
-  }, [photos, filterGrade, filterStars, redacted, sortScore]);
   // Star counts within the current grade filter (for the filter bar labels)
   const gradeFiltered = filterGrade ? photos.filter(p => p.grade.includes(filterGrade)) : photos;
   const starCounts = [0,1,2,3,4,5].map(n =>
@@ -750,9 +854,9 @@ export default function App() {
       human: 'human presence',
     };
     const nicheCtx: Record<string,string> = {
-      'Street - Magnum':       'The sequence carries the Magnum hallmarks: authentic gesture, layered framing, and a sense of life caught mid-breath.',
+      'Classic Street':       'The sequence carries the Magnum hallmarks: authentic gesture, layered framing, and a sense of life caught mid-breath.',
       'Travel Editor':         'The sequence reads like a dispatched edit — cultural immersion, sense of place, and subjects genuinely encountered rather than posed.',
-      'World Press Doc':       'The sequence holds documentary weight: technically grounded, contextually honest, anchored in authentic human stakes.',
+      'Photojournalism':       'The sequence holds documentary weight: technically grounded, contextually honest, anchored in authentic human stakes.',
       'Cinematic/Editorial':   'Light is the connective tissue. The sequence moves through moods rather than subjects — each frame builds atmosphere for the next.',
       'Fine Art/Contemporary': 'The sequence operates conceptually — compositional logic over candid impulse, tonal control over spontaneous capture.',
       'Minimalist/Urbex':      'Structure drives the sequence. Negative space and geometric restraint create rhythm without relying on human narrative.',
@@ -770,6 +874,31 @@ export default function App() {
     if (weakest !== strongest && avg[weakest] > 0) parts.push(`Area with most room to grow: ${dimLabels[weakest]}.`);
     return parts.join(' ');
   }, [carousel, nicheRec, preset]);
+
+  if (!backendReady) {
+    return (
+      <div style={{ position:'fixed', inset:0, background:'#0e0e13', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:20 }}>
+        {backendError ? (
+          <>
+            <span style={{ fontSize:28 }}>⚠️</span>
+            <span style={{ fontSize:14, color:'#e05', letterSpacing:'.05em', textAlign:'center', maxWidth:340 }}>
+              Could not connect to the backend.<br/>
+              <span style={{ color:'#888', fontSize:12 }}>Make sure the app is running correctly and try again.</span>
+            </span>
+            <button onClick={() => { setBackendError(false); window.location.reload(); }}
+              style={{ marginTop:8, padding:'6px 18px', borderRadius:6, border:'1px solid #333', background:'#1a1a22', color:'#aaa', cursor:'pointer', fontSize:13 }}>
+              Retry
+            </button>
+          </>
+        ) : (
+          <>
+            <div style={{ width:40, height:40, border:'3px solid #333', borderTopColor:'#7c6af7', borderRadius:'50%', animation:'spin .8s linear infinite' }}/>
+            <span style={{ fontSize:14, color:'#888', letterSpacing:'.05em' }}>Starting Street Story Curator…</span>
+          </>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div
@@ -815,30 +944,14 @@ export default function App() {
       {/* ── Header ─────────────────────────────────────────────── */}
       <header style={{ display:'flex', alignItems:'center', gap:8, padding:'0 14px', height:44, flexShrink:0, background:C.surf, borderBottom:`1px solid ${C.border}` }}>
 
-        {/* Logo */}
-        <div style={{ display:'flex', alignItems:'center', gap:7, flexShrink:0 }}>
-          <div style={{ width:22, height:22, borderRadius:6, background:C.accent, display:'flex', alignItems:'center', justifyContent:'center', color:'#fff' }}>
-            <Layers size={12}/>
-          </div>
-          <span style={{ fontSize:13, fontWeight:700, color:C.text2, letterSpacing:'.02em' }}>Street Story</span>
-        </div>
+        <button onClick={openBrowser}
+          title="Open folder"
+          style={{ display:'flex', alignItems:'center', gap:6, padding:'0 10px', height:30, borderRadius:7, fontSize:13, fontWeight:600, cursor:'pointer', flexShrink:0, background:'transparent', border:`1px solid ${C.bdr2}`, color:C.text3 }}>
+          <FolderOpen size={13}/>
+          {photos.length > 0 ? folder.split(/[\\/]/).pop() : 'Open Folder'}
+        </button>
 
-        <div style={{ width:1, height:18, background:C.bdr2, flexShrink:0 }}/>
-
-        {/* Folder path */}
-        <div style={{ flex:1, display:'flex', alignItems:'center', gap:6, minWidth:0, background:C.bg, border:`1px solid ${C.bdr2}`, borderRadius:7, padding:'0 8px', height:30 }}>
-          <FolderOpen size={12} style={{ color:C.text3, flexShrink:0 }}/>
-          <input
-            value={folder} onChange={e => setFolder(e.target.value)}
-            placeholder="Paste folder path or browse…"
-            onKeyDown={e => e.key === 'Enter' && handleGrade()}
-            style={{ flex:1, background:'none', border:'none', outline:'none', color:C.text, fontSize:13, fontFamily:"'SF Mono','Fira Code',monospace", minWidth:0 }}
-          />
-          <button onClick={openBrowser}
-            style={{ flexShrink:0, fontSize:13, fontWeight:500, padding:'0 8px', borderRadius:5, background:C.surf2, border:`1px solid ${C.bdr2}`, color:C.text2, cursor:'pointer', height:22 }}>
-            Browse
-          </button>
-        </div>
+        <div style={{ flex:1 }}/>
 
         {/* Preset — hidden; value retained for grading logic */}
 
@@ -1040,7 +1153,7 @@ export default function App() {
               <GridView
                 photos={filteredPhotos}
                 selId={selId}
-                onSelect={id => { setSelId(id); setLoupeMode('loupe'); }}
+                onSelect={id => { setSelId(id); if (isDone) setLoupeMode('loupe'); }}
                 usedPaths={allUsedPaths}
                 selectMode={selectMode}
                 setSelectMode={setSelectMode}
@@ -1055,7 +1168,21 @@ export default function App() {
 
             {/* Center preview */}
             <div style={{ flex:1, background:'#060609', display:'flex', alignItems:'center', justifyContent:'center', overflow:'hidden', position:'relative', minHeight:0, minWidth:0 }}>
-              {sel ? (
+              {photos.length === 0 ? (
+                <button
+                  onClick={openBrowser}
+                  style={{
+                    display:'flex', flexDirection:'column', alignItems:'center', gap:16,
+                    padding:'48px 64px', borderRadius:16, cursor:'pointer', background:'transparent',
+                    border:`2px dashed ${dragOver ? '#3b82f6' : C.border}`,
+                    transition:'all .2s', outline:'none',
+                  }}>
+                  <FolderOpen size={48} strokeWidth={1.25} style={{ color: dragOver ? '#3b82f6' : C.text3, transition:'color .2s' }}/>
+                  <span style={{ fontSize:20, fontWeight:500, color: dragOver ? '#3b82f6' : C.text2, transition:'color .2s' }}>
+                    Select a folder or drag a folder here
+                  </span>
+                </button>
+              ) : sel ? (
                 <>
                   <img
                     key={sel.path}
@@ -1100,15 +1227,17 @@ export default function App() {
             </div>
 
             {/* Resize handle */}
+            {photos.length > 0 && (
             <div
               onMouseDown={onResizeDown}
               style={{ width:3, cursor:'col-resize', flexShrink:0, background:'transparent', transition:'background .15s' }}
               onMouseEnter={e => (e.currentTarget.style.background = 'oklch(64% .19 248 / .3)')}
               onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
             />
+            )}
 
             {/* Right panel */}
-            <div style={{ width:rightW, flexShrink:0, background:C.surf, borderLeft:`1px solid ${C.border}`, display:'flex', flexDirection:'column', overflow:'hidden' }}>
+            {photos.length > 0 && <div style={{ width:rightW, flexShrink:0, background:C.surf, borderLeft:`1px solid ${C.border}`, display:'flex', flexDirection:'column', overflow:'hidden' }}>
 
               {/* Thumbnail */}
               {sel && (
@@ -1163,7 +1292,7 @@ export default function App() {
                 {infoTab === 'exif' && (
                   sel
                     ? <ExifBlock exif={sel.exif ?? {}}/>
-                    : <p style={{ fontSize:13, color:C.text3, lineHeight:1.6 }}>Select a photo to view EXIF data.</p>
+                    : null
                 )}
                 {infoTab === 'analysis' && (
                   isGrading ? (
@@ -1217,13 +1346,13 @@ export default function App() {
                 )}
               </div>
 
-            </div>
+            </div>}
 
             </>)}
           </div>
 
           {/* ── Filmstrip (loupe mode only) ─────────────────────── */}
-          {loupeMode === 'loupe' && (
+          {loupeMode === 'loupe' && photos.length > 0 && (
           <div style={{ flexShrink:0, background:C.surf, borderTop:`1px solid ${C.border}`, display:'flex', flexDirection:'column' }}>
             <div style={{ height:20, flexShrink:0, display:'flex', alignItems:'center', justifyContent:'space-between', padding:'0 12px', borderBottom:`1px solid ${C.border}` }}>
               <div style={{ display:'flex', alignItems:'center', gap:8 }}>

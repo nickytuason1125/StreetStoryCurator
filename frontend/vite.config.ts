@@ -1,27 +1,22 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-
-// pywebview 6 / WebView2 silently refuses to execute <script type="module"> from
-// localhost. This post-build transform rewrites to a plain deferred <script> so
-// the bundle runs as a classic script in any webview.
-const classicScript = {
-  name: 'classic-script',
-  enforce: 'post' as const,
-  transformIndexHtml(html: string) {
-    return html
-      .replace(/<script\s+type="module"\s+crossorigin\s+src=/g, '<script defer src=')
-      .replace(/<script\s+type="module"\s+src=/g, '<script defer src=')
-      .replace(/\s+crossorigin(?=[\s>])/g, '')
-  },
-}
+import path from 'path'
 
 export default defineConfig({
-  plugins: [react(), classicScript],
+  plugins: [react()],
   server: { open: false, port: 5173 },
+  resolve: {
+    // Force CJS builds of @dnd-kit to avoid ESM circular-dependency TDZ errors.
+    alias: {
+      '@dnd-kit/core': path.resolve(__dirname, 'node_modules/@dnd-kit/core/dist/index.js'),
+      '@dnd-kit/sortable': path.resolve(__dirname, 'node_modules/@dnd-kit/sortable/dist/index.js'),
+      '@dnd-kit/utilities': path.resolve(__dirname, 'node_modules/@dnd-kit/utilities/dist/index.js'),
+    },
+  },
   build: {
+    emptyOutDir: false,
     rollupOptions: {
       output: {
-        format: 'iife',
         entryFileNames: 'assets/[name]-[hash].js',
         chunkFileNames: 'assets/[name]-[hash].js',
         assetFileNames: 'assets/[name]-[hash][extname]',

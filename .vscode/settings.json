@@ -1,0 +1,48 @@
+{
+    // Python interpreter — points to local venv (Windows + Unix paths covered)
+    "python.defaultInterpreterPath": "${workspaceFolder}/venv/Scripts/python.exe",
+
+    // Format on save with Black
+    "editor.formatOnSave": true,
+    "[python]": {
+        "editor.defaultFormatter": "ms-python.black-formatter",
+        "editor.formatOnSave": true
+    },
+
+    // Black formatter settings
+    "black-formatter.args": ["--line-length", "100"],
+
+    // Pylance / IntelliSense
+    "python.analysis.typeCheckingMode": "basic",
+    "python.analysis.autoImportCompletions": true,
+
+    // Hide generated/runtime folders from Explorer and search
+    "files.exclude": {
+        "**/__pycache__": true,
+        "**/*.pyc": true,
+        "**/venv": true,
+        "**/.venv": true,
+        "**/cache": true,
+        "**/models": true,
+        "**/output": true,
+        "**/dist": true,
+        "**/build": true,
+        "**/*.egg-info": true
+    },
+    "search.exclude": {
+        "**/venv": true,
+        "**/.venv": true,
+        "**/cache": true,
+        "**/models": true,
+        "**/output": true,
+        "**/dist": true,
+        "**/build": true
+    },
+
+    // Editor quality-of-life
+    "editor.rulers": [100],
+    "editor.tabSize": 4,
+    "editor.insertSpaces": true,
+    "files.trimTrailingWhitespace": true,
+    "files.insertFinalNewline": true
+}

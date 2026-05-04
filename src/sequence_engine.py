@@ -38,7 +38,7 @@ class PacingManager:
         where all three values sum to 1.0.
         """
         # Copy so overrides never mutate the cached preset
-        base = dict(self.presets.get(preset_name) or self.presets.get("Street - Magnum") or {})
+        base = dict(self.presets.get(preset_name) or self.presets.get("Classic Street") or {})
         if custom_overrides:
             base.update(custom_overrides)
 

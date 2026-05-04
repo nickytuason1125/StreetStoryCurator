@@ -54,11 +54,20 @@ if not exist "venv\Scripts\python.exe" (
     )
 
     echo  [2/3] Installing CLIP...
+    where git >nul 2>&1
+    if %ERRORLEVEL% neq 0 (
+        echo.
+        echo  ERROR: Git is required to install the AI grading model but was not found.
+        echo  Download from: https://git-scm.com/download/win
+        echo  Install Git, restart this window, then try again.
+        echo.
+        pause & exit /b 1
+    )
     venv\Scripts\pip.exe install ^
         "clip @ git+https://github.com/openai/CLIP.git" --quiet
     if %ERRORLEVEL% neq 0 (
-        echo  WARNING: CLIP install failed (git may not be installed).
-        echo  Some grading features may be limited.
+        echo  ERROR: CLIP install failed. Check your internet connection.
+        pause & exit /b 1
     )
 
     echo  [3/3] Installing remaining dependencies...

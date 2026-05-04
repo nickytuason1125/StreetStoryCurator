@@ -1,0 +1,145 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+
+        // ────────────────────────────────────────────────────────────────────
+        // 1.  Start the app  (default — runs launch.bat which opens Edge)
+        // ────────────────────────────────────────────────────────────────────
+        {
+            "label": "Start App",
+            "type": "shell",
+            "windows": {
+                "command": "wscript",
+                "args": ["/b", "\"${workspaceFolder}\\launch_hidden.vbs\""]
+            },
+            "linux": {
+                "command": "bash",
+                "args": ["-c", "\"${workspaceFolder}/launch.bat\""]
+            },
+            "osx": {
+                "command": "bash",
+                "args": ["-c", "\"${workspaceFolder}/launch.bat\""]
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "never",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": []
+        },
+
+        // ────────────────────────────────────────────────────────────────────
+        // 2.  Start FastAPI server in the terminal (useful for dev/debugging)
+        // ────────────────────────────────────────────────────────────────────
+        {
+            "label": "Start FastAPI Server",
+            "type": "shell",
+            "command": "${workspaceFolder}/venv/Scripts/python.exe",
+            "args": ["${workspaceFolder}/server.py"],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": []
+        },
+
+        // ────────────────────────────────────────────────────────────────────
+        // 3.  Install Python dependencies
+        // ────────────────────────────────────────────────────────────────────
+        {
+            "label": "Install Dependencies",
+            "type": "shell",
+            "command": "${workspaceFolder}/venv/Scripts/pip.exe",
+            "args": ["install", "-r", "${workspaceFolder}/requirements.txt"],
+            "windows": {
+                "command": "${workspaceFolder}/venv/Scripts/pip.exe"
+            },
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            },
+            "problemMatcher": []
+        },
+
+        // ────────────────────────────────────────────────────────────────────
+        // 4.  Build React frontend
+        // ────────────────────────────────────────────────────────────────────
+        {
+            "label": "Build Frontend",
+            "type": "shell",
+            "command": "npm",
+            "args": ["run", "build"],
+            "options": {
+                "cwd": "${workspaceFolder}/frontend"
+            },
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": []
+        },
+
+        // ────────────────────────────────────────────────────────────────────
+        // 5.  Build Tauri binary  (requires build_tauri.bat via cmd.exe —
+        //     do NOT run from bash, MSVC link.exe must be on PATH)
+        // ────────────────────────────────────────────────────────────────────
+        {
+            "label": "Build Tauri App",
+            "type": "shell",
+            "windows": {
+                "command": "cmd",
+                "args": ["/c", "\"${workspaceFolder}\\build_tauri.bat\""]
+            },
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": []
+        },
+
+        // ────────────────────────────────────────────────────────────────────
+        // 6.  Clean build artefacts
+        // ────────────────────────────────────────────────────────────────────
+        {
+            "label": "Clean Build Artefacts",
+            "type": "shell",
+            "windows": {
+                "command": "cmd",
+                "args": [
+                    "/c",
+                    "if exist \"${workspaceFolder}\\build\" rmdir /s /q \"${workspaceFolder}\\build\" & if exist \"${workspaceFolder}\\dist\" rmdir /s /q \"${workspaceFolder}\\dist\" & echo Cleaned."
+                ]
+            },
+            "linux": {
+                "command": "bash",
+                "args": ["-c", "rm -rf '${workspaceFolder}/build' '${workspaceFolder}/dist' && echo Cleaned."]
+            },
+            "osx": {
+                "command": "bash",
+                "args": ["-c", "rm -rf '${workspaceFolder}/build' '${workspaceFolder}/dist' && echo Cleaned."]
+            },
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": false
+            },
+            "problemMatcher": []
+        }
+    ]
+}

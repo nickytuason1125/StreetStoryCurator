@@ -110,7 +110,7 @@ def main():
         _log(f"Port: {port}")
 
         # Start server
-        threading.Thread(target=_run_server, args=(port,), daemon=True).start()
+        threading.Thread(target=_run_server, args=(port,), daemon=False).start()
         if not _wait_for_server(url):
             raise RuntimeError("Server did not become available in time.")
 
@@ -128,15 +128,22 @@ def main():
                         _log(f"pick_folder error: {e}")
                     return None
 
-            webview.create_window(
+            kwargs = dict(
                 title="Street Story Curator",
                 url=url,
                 width=1400, height=900,
                 min_size=(960, 640),
                 resizable=True, text_select=False,
                 js_api=FolderApi(),
-                icon=str(_ROOT / "icon.ico"),
             )
+            icon_path = _ROOT / "icon.ico"
+            if icon_path.exists():
+                try:
+                    webview.create_window(**kwargs, icon=str(icon_path))
+                except TypeError:
+                    webview.create_window(**kwargs)
+            else:
+                webview.create_window(**kwargs)
             webview.start()
             _log("pywebview window closed — exiting")
             return  # Success, exit
