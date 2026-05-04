@@ -353,14 +353,16 @@ async def serve_thumb(path: str = Query(...)):
 # ---------------------------------------------------------------------------
 
 class GradeRequest(BaseModel):
-    folder_path: str
+    folder_path: str = ""
+    folder_paths: list[str] = []   # multi-folder support; takes priority when non-empty
     preset: str = "Classic Street"
     deep_review: bool = False
 
     @field_validator("folder_path")
     @classmethod
     def validate_folder_path(cls, v: str) -> str:
-        # Resolve symlinks and normalise — user photos may live anywhere on disk
+        if not v:
+            return v
         try:
             p = Path(v).resolve(strict=False)
         except (ValueError, OSError):
@@ -494,8 +496,13 @@ async def grade_photos_stream(req: GradeRequest):
 
     global GLOBAL_CLUSTER_CACHE
 
-    if not os.path.isdir(req.folder_path):
-        raise HTTPException(400, "Invalid folder path")
+    # Resolve which folders to grade — multi-folder takes priority
+    all_folders = [str(Path(fp).resolve()) for fp in req.folder_paths if os.path.isdir(fp)]
+    if not all_folders:
+        if req.folder_path and os.path.isdir(req.folder_path):
+            all_folders = [req.folder_path]
+        else:
+            raise HTTPException(400, "No valid folder path provided")
 
     loop: asyncio.AbstractEventLoop = asyncio.get_event_loop()
     aqueue: asyncio.Queue = asyncio.Queue()
@@ -508,13 +515,22 @@ async def grade_photos_stream(req: GradeRequest):
     async def _run() -> None:
         global GLOBAL_CLUSTER_CACHE
         try:
-            results = await loop.run_in_executor(
-                None,
-                lambda: analyzer.analyze_folder(
-                    req.folder_path, preset=req.preset,
-                    force_rescan=True, progress=_progress,
-                ),
-            )
+            # Grade each folder; combine all results
+            n = len(all_folders)
+            combined: list = []
+            for i, fp in enumerate(all_folders):
+                def _folder_progress(frac: float, desc: str = "", _i=i, _n=n) -> None:
+                    _progress((_i + frac) / _n, desc)
+                folder_results = await loop.run_in_executor(
+                    None,
+                    lambda _fp=fp: analyzer.analyze_folder(
+                        _fp, preset=req.preset,
+                        force_rescan=True, progress=_folder_progress,
+                    ),
+                )
+                combined.extend(folder_results)
+            results = combined
+
             from pathlib import Path as _Path
             import json as _json
             _grade_cache_path = _DATA_DIR / "cache" / "vlm_rationale_cache.json"
@@ -538,7 +554,7 @@ async def grade_photos_stream(req: GradeRequest):
             mid    = sum(1 for g in gallery if "Mid"    in g["grade"])
             weak   = sum(1 for g in gallery if "Weak"   in g["grade"])
             GLOBAL_CLUSTER_CACHE = {}
-            _BG_EXECUTOR.submit(_precompute_clusters, req.folder_path, results)
+            _BG_EXECUTOR.submit(_precompute_clusters, all_folders[0], results)
             if req.deep_review:
                 _BG_EXECUTOR.submit(_run_vlm_deep_review, results)
             await aqueue.put({

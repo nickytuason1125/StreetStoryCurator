@@ -672,14 +672,15 @@ export default function App() {
   /* grade — uses SSE stream so large folders never time out */
   const handleGrade = useCallback(async () => {
     const safePath = sanitizePath(folder);
-    if (!safePath) { notify("Paste a valid folder path first.", "error"); return; }
+    if (!safePath && folders.length === 0) { notify("Paste a valid folder path first.", "error"); return; }
     setLoading(true);
     setGradeProgress(0);
+    const allFolderPaths = folders.length > 0 ? folders.map(sanitizePath) : [safePath];
     try {
       const resp = await fetch(`${API}/api/grade/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ folder_path: safePath, preset }),
+        body: JSON.stringify({ folder_path: allFolderPaths[0], folder_paths: allFolderPaths, preset }),
       });
       if (!resp.ok) throw new Error(`Server error ${resp.status}`);
       const reader = resp.body!.getReader();
@@ -725,7 +726,7 @@ export default function App() {
     } catch (err: any) { notify(`❌ ${err.message || 'Failed'}`, 'error'); }
     setLoading(false);
     setGradeProgress(0);
-  }, [folder, preset, notify]);
+  }, [folder, folders, preset, notify]);
 
   /* generate sequence */
   const handleGenerate = useCallback(async () => {
