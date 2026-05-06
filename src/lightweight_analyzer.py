@@ -266,6 +266,38 @@ class LightweightStreetScorer:
         except Exception:
             pass
 
+    def _write_to_db_cache(self, paths: list) -> None:
+        """Bulk-write graded photos to DuckDB in one executemany call. Failures silently ignored."""
+        try:
+            from photo_cache import get_photo_cache
+            db = get_photo_cache()
+            rows = []
+            for p in paths:
+                data = self.cache.get(p)
+                if not data:
+                    continue
+                emb = np.array(data.get("embedding", []), dtype=np.float64)
+                if len(emb) == 0 or np.linalg.norm(emb) < 1e-6:
+                    continue
+                rows.append([
+                    p,
+                    float(data.get("score", 0.0)),
+                    float(data.get("human_perception", data.get("score", 0.0))),
+                    json.dumps(data.get("breakdown", {})),
+                    emb.tolist(),
+                    float(data.get("exif_ts") or 0.0),
+                ])
+            if rows:
+                with db._lock:
+                    db._connect().executemany(
+                        "INSERT OR REPLACE INTO photos"
+                        " (path, score, quality, breakdown, embedding, exif_ts)"
+                        " VALUES (?,?,?,?,?,?)",
+                        rows,
+                    )
+        except Exception:
+            pass
+
     def _build_niche_anchors(self) -> int:
         """Build visual prototype anchors for NicheClassifier from cached embeddings."""
         try:
@@ -373,12 +405,57 @@ class LightweightStreetScorer:
                 and (center_mean - float(gray.mean())) > 18  # centre clearly brighter
             )
 
+            # ── High-key detection ────────────────────────────────────────────
+            # High-key: intentionally bright/light tones — fashion, fine art, beauty.
+            # Signature: >50% pixels in the bright band (160–255), moderate blown,
+            # and not a night shot (which would look similar but reversed).
+            bright_frac = float(hist[160:].sum()) / total
+            is_high_key = (
+                bright_frac > 0.50
+                and blown   < 0.45    # not catastrophically overexposed
+                and float(hist[:60].sum()) / total < 0.25   # few deep shadows
+            )
+
+            # ── Backlit / silhouette detection ────────────────────────────────
+            # Silhouette: bright surround (sky, window, street lamp behind subject)
+            # with dark centre. Inverse of chiaroscuro.
+            # Signature: bright surround + centre darker than global mean.
+            is_backlit = (
+                blown > 0.10
+                and center_mean < float(gray.mean()) - 15   # centre darker than image avg
+                and center_mean < 110                        # centre actually dark
+                and bright_frac > 0.30
+            )
+
+            # ── Directional motion blur detection ────────────────────────────
+            # Panning shots, long exposures, and intentional motion blur produce
+            # strong anisotropy in gradients: energy concentrated in one axis.
+            # h_bias ≈ 0.5 = isotropic (sharp or uniform blur)
+            # h_bias > 0.72 or < 0.28 = strong directional bias = motion blur
+            try:
+                gx = cv2.Sobel(gray, cv2.CV_64F, 1, 0)
+                gy = cv2.Sobel(gray, cv2.CV_64F, 0, 1)
+                gx_e = float(np.mean(gx ** 2)) + 1e-9
+                gy_e = float(np.mean(gy ** 2)) + 1e-9
+                h_bias = gx_e / (gx_e + gy_e)
+                is_directional_blur = (
+                    (h_bias > 0.72 or h_bias < 0.28)
+                    and best_sharp < 160   # only matters if image is soft
+                )
+            except Exception:
+                h_bias = 0.5
+                is_directional_blur = False
+
             if chiaroscuro:
                 # Score on centre brightness, not the dark-biased global mean.
                 # Ignore the blocked penalty entirely — dark surround is intentional.
                 # Keep only a small blown penalty for the light source itself.
                 exp_qual     = float(np.clip(1.0 - abs(center_mean - 110) / 120.0, 0.0, 1.0))
                 exposure_pen = min(blown * 2.0, 0.15)
+            elif is_high_key or is_backlit:
+                # High-key / silhouette: treat blown highlights as intentional.
+                # Use a very gentle penalty — only flag extreme clipping.
+                exposure_pen = min(blown * 1.0, 0.12)
             else:
                 exposure_pen = min(blown * 4.0, 0.60) + min(blocked * 3.0, 0.40)
                 exposure_pen = min(exposure_pen, 0.70)
@@ -766,10 +843,23 @@ class LightweightStreetScorer:
 
             # Update breakdown with additional tracking fields
             bd["Style Context"] = style
-            bd["Applied_Preset"] = adaptive_preset  # Track which preset was used for median niche grading
-            bd["Best_Preset"] = best_preset  # Track the preset that gave the strongest score
-            bd["Median_Score"] = round(median_score, 3)  # Score with median niche preset
-            bd["Best_Score"] = round(best_score, 3)  # Score with optimal preset
+            bd["Applied_Preset"] = adaptive_preset
+            bd["Best_Preset"] = best_preset
+            bd["Median_Score"] = round(median_score, 3)
+            bd["Best_Score"]   = round(best_score,   3)
+            # Raw (pre-style-adjustment) technical quality — used by culling gates in
+            # qalign_grader.py._analyze_one().  tech_adj floors vary by style context
+            # (Street/Env → 0.40, Doc/Low-Key → 0.35) which hides true technical
+            # quality; _tech_raw reflects actual sharpness + exposure + noise.
+            bd["_tech_raw"]            = round(float(tech),           3)
+            bd["_intentional_soft"]    = bool(intentional_soft)
+            bd["_blown"]               = round(float(blown),          3)
+            bd["_best_sharp"]          = round(float(best_sharp),     1)
+            bd["_blur_cv"]             = round(float(blur_cv),        3)
+            bd["_high_key"]            = bool(is_high_key)
+            bd["_backlit"]             = bool(is_backlit)
+            bd["_directional_blur"]    = bool(is_directional_blur)
+            bd["_chiaroscuro"]         = bool(chiaroscuro)
             # Detected_Niche is already set from earlier in the function
 
             embedding = _cls_f32.astype(np.float64).tolist()
@@ -1137,35 +1227,50 @@ class LightweightStreetScorer:
                     completed[0] += 1
                     done = completed[0]
                 if progress:
-                    progress(done / len(new), desc=f"Grading: {done}/{len(new)}")
+                    # Reserve 0–85 % for per-photo grading; post-processing uses 85–100 %.
+                    progress(done / len(new) * 0.85, desc=f"Grading: {done}/{len(new)}")
                 return p, result
 
             workers = min(os.cpu_count() or 2, 8)
             BATCH = 50
             with ThreadPoolExecutor(max_workers=workers) as ex:
-                for i, (p, result) in enumerate(ex.map(_run, new)):
+                # as_completed yields each result the moment it finishes — avoids
+                # blocking on a slow photo while faster ones pile up behind it.
+                futs = {ex.submit(_run, p): p for p in new}
+                for i, fut in enumerate(as_completed(futs)):
+                    p, result = fut.result()
                     with lock:
                         self.cache[p] = result
                     if i % BATCH == BATCH - 1:
                         gc.collect()
 
+        if progress: progress(0.87, desc="Applying grades…")
         batch_results = [{"path": p, **self.cache[p]} for p in all_paths]
         self._apply_batch_grades(batch_results)
+
+        if progress: progress(0.90, desc="Detecting similar shots…")
         self._detect_similar_shots(batch_results)
 
         for g in batch_results:
             p = g.pop("path")
             self.cache[p].update(g)
+
+        if progress: progress(0.93, desc="Saving cache…")
         self._save_cache()
+        self._write_to_db_cache(all_paths)
+
+        if progress: progress(0.95, desc="Building niche model…")
         self._build_niche_anchors()
+
+        if progress: progress(0.97, desc="Niche sweep…")
         self._apply_niche_sweep(all_paths)
-        
-        # Detect median niche and apply to all images
+
+        if progress: progress(0.99, desc="Finalizing…")
         median_niche = self._detect_median_niche(batch_results)
         for p in all_paths:
             if p in self.cache:
                 self.cache[p]["breakdown"]["Median_Niche"] = median_niche
-        
+
         return [(p, self.cache[p]) for p in all_paths]
 
     def detect_subject_type(self, photos):
@@ -1474,7 +1579,7 @@ class LightweightStreetScorer:
 
     def sequence_story(self, results, target=5, subject_type=None, avoid_paths=None,
                         seed=None, pacing_preset=None, cached_labels=None,
-                        locked_slots=None):
+                        locked_slots=None, custom_shot_roles=None):
         import random
 
         rng         = random.Random(seed if seed is not None else 42)
@@ -1623,6 +1728,42 @@ class LightweightStreetScorer:
             raw = float(_sim_p20 + (float(t) - 0.25) / 0.30 * (_sim_p75 - _sim_p20))
             return float(np.clip(raw, _sim_p20, 0.70))
 
+        # ── 2c. Event segmentation + burst consolidation ──────────────────────
+        # Group photos by EXIF time gap (15 min threshold = distinct shooting events).
+        # Within each event, collapse near-duplicate burst frames to one best frame.
+        # This prevents the pool from being dominated by nearly-identical shots
+        # and lets slot assignment draw from distinct moments in the day.
+        from sequence_engine import (segment_events as _seg_events,
+                                      consolidate_bursts as _consol_bursts,
+                                      SHOT_ROLES as _SHOT_ROLES)
+
+        _seg_records = [
+            {
+                "_vi":      vi,
+                "path":     r[0],
+                "exif_ts":  r[1].get("exif_ts") or 0.0,
+                "embedding": embs[vi].tolist(),
+                "score":    float(scores[vi]),
+            }
+            for vi, r in enumerate(valid)
+        ]
+        _events = _seg_events(_seg_records, gap_threshold=900)
+
+        # _consolidated_vi: valid-array indices that are event-burst representatives
+        # _photo_event_idx: valid-array index → event group index (all photos, not just heroes)
+        _consolidated_vi: set = set()
+        _photo_event_idx: dict = {}
+        for _ev_i, _event_group in enumerate(_events):
+            _heroes = _consol_bursts(_event_group)
+            for _h in _heroes:
+                _consolidated_vi.add(_h["_vi"])
+            for _rec in _event_group:
+                _photo_event_idx[_rec["_vi"]] = _ev_i
+
+        # Fallback: if consolidation reduced pool below minimum, include all valid
+        if len(_consolidated_vi) < target:
+            _consolidated_vi = set(range(len(valid)))
+
         # Dimension weights for narrative distance blend: [comp, tech, human, light, narrative]
         _DIM_W = np.array([0.15, 0.10, 0.30, 0.25, 0.20], dtype=np.float32)
 
@@ -1678,45 +1819,46 @@ class LightweightStreetScorer:
                 ("Quiet Close",        lambda c,t,h,l,a: l*0.44 + c*0.34 + t*0.22, 0.28, 0.50),
             ],
         }
-        _SLOT_CONFIG = _SLOT_CONFIGS.get(stype_label, [
-            ("Opening Frame",
-                lambda c,t,h,l,a: c*0.42 + l*0.28 + t*0.18 + a*0.12, 0.10, None),
-            ("Focal Subject",
-                lambda c,t,h,l,a: h*0.46 + a*0.36 + t*0.18,          0.28, 0.50),
-            ("Supporting Detail",
-                lambda c,t,h,l,a: t*0.42 + c*0.38 + l*0.20,          0.32, 0.40),
-            ("Contrast/Shift",
-                lambda c,t,h,l,a: a*0.36 + l*0.34 + c*0.30,          0.45, 0.25),
-            ("Closing Mood",
-                lambda c,t,h,l,a: l*0.46 + a*0.36 + c*0.18,          0.28, 0.45),
-        ])
+        # Build street/auto slot config from SHOT_ROLES weights (single source of truth).
+        # custom_shot_roles (from Art Director) overrides the defaults when provided.
+        # dim_cache tuple order: (comp=c, tech=t, human=h, light/mood=l, auth=a)
+        # comp_weight→c, human_weight→h, mood_weight→l  (light covers atmosphere/tone/mood)
+        _ROLE_LABELS_S  = ["Opening Frame", "Focal Subject", "Supporting Detail", "Contrast/Shift", "Closing Mood"]
+        _ROLE_SIMS_S    = [None, 0.50, 0.40, 0.25, 0.45]
+        _effective_roles = custom_shot_roles if custom_shot_roles is not None else _SHOT_ROLES
+        _street_slots = [
+            (lbl,
+             (lambda c, t, h, l, a, cw=rw["comp_weight"], hw=rw["human_weight"], mw=rw["mood_weight"]:
+              c * cw + h * hw + l * mw),
+             rw["diversity_penalty"],
+             tsim)
+            for (_, rw), lbl, tsim in zip(_effective_roles.items(), _ROLE_LABELS_S, _ROLE_SIMS_S)
+        ]
+        _SLOT_CONFIGS["street"] = _street_slots
+        _SLOT_CONFIGS["auto"]   = _street_slots
+        _SLOT_CONFIG = _SLOT_CONFIGS.get(stype_label, _street_slots)
 
         # ── 5. Candidate pool: adaptive score floor with diversity enhancement ───────────────────────────
         # Floor = folder's own 25th-percentile score, minimum 0.25, to include more diverse candidates.
         # Fallback minimum is 5× target (25 for 5 slots) to ensure each slot has ample choice for diversity.
-        score_floor = max(0.20, float(np.percentile(scores, 15)))  # Lower floor for more diversity
-        pool = [i for i in np.argsort(-scores).tolist() if scores[i] >= score_floor]
-        if len(pool) < target * 5:  # Increased from 4× to 5× for better diversity
-            # Include a mix of top and diverse candidates
-            top_count = min(len(scores), target * 3)
-            top_candidates = np.argsort(-scores)[:top_count].tolist()  # Top scoring candidates
-            # Add some randomly selected candidates to increase diversity
-            remaining_indices = [i for i in range(len(scores)) if i not in top_candidates]
-            if remaining_indices and len(remaining_indices) > target * 2:
-                # Randomly sample from remaining candidates to add diversity
-                rng.shuffle(remaining_indices)
-                diverse_count = min(len(remaining_indices), target * 2)
-                diverse_candidates = remaining_indices[:diverse_count]
-            else:
-                diverse_candidates = remaining_indices if remaining_indices else []
-            pool = list(set(top_candidates + diverse_candidates))  # Combine and deduplicate
-            # Sort by score to maintain some quality preference
+        # Pool = burst-consolidated candidates above quality floor.
+        # Fallback widens to all valid when consolidation leaves too few candidates.
+        _eligible = _consolidated_vi
+        _eligible_scores = scores[np.array(sorted(_eligible), dtype=np.int32)]
+        score_floor = max(0.20, float(np.percentile(_eligible_scores, 15)))
+        pool = [i for i in np.argsort(-scores).tolist() if i in _eligible and scores[i] >= score_floor]
+        if len(pool) < target * 5:
+            top_count   = min(len(_eligible), target * 3)
+            top_cands   = sorted(_eligible, key=lambda i: scores[i], reverse=True)[:top_count]
+            remaining   = [i for i in _eligible if i not in set(top_cands)]
+            if len(remaining) > target * 2:
+                rng.shuffle(remaining)
+                remaining = remaining[:target * 2]
+            pool = list(set(top_cands + remaining))
             pool.sort(key=lambda i: scores[i], reverse=True)
-            # Limit to reasonable size
-            pool = pool[:min(len(scores), target * 5)]
-        # Ensure we have enough candidates by adding top scorers if needed
+            pool = pool[:min(len(_eligible), target * 5)]
         if len(pool) < target:
-            pool = np.argsort(-scores)[:min(len(scores), target)].tolist()
+            pool = sorted(_eligible, key=lambda i: scores[i], reverse=True)[:target]
         
 
         # ── 5a. Niche balancing: guarantee MIN_PER_NICHE per niche ────────────
@@ -1864,7 +2006,16 @@ class LightweightStreetScorer:
                 [rng.uniform(-0.12, 0.12) for _ in cands], dtype=np.float32
             )
 
-            combined = role_arr * role_w + qual_arr * qual_w + div_arr * div_w + h_thread + jitter
+            # Event diversity bonus: prefer candidates from a different temporal event
+            # than the last filled slot, nudging the sequence across distinct moments.
+            _ev_bonus = np.zeros(len(cands), dtype=np.float32)
+            if _filled and len(_events) > 1:
+                _prev_ev = _photo_event_idx.get(_filled[-1], -1)
+                for _ci_i, _ci_idx in enumerate(cands):
+                    if _photo_event_idx.get(_ci_idx, -2) != _prev_ev:
+                        _ev_bonus[_ci_i] = 0.07
+
+            combined = role_arr * role_w + qual_arr * qual_w + div_arr * div_w + h_thread + _ev_bonus + jitter
             pick     = cands[int(np.argmax(combined))]
             seq[slot_idx] = pick
             used.add(pick)

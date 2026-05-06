@@ -14,6 +14,7 @@ import {
   ImageOff, X, Sparkles, Copy, Flag,
   LayoutGrid, RectangleHorizontal, SlidersHorizontal,
   Download, CheckSquare, ArrowUpDown, ArrowUp, ArrowDown,
+  Wand2,
 } from "lucide-react";
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -180,23 +181,31 @@ function ExifBlock({ exif }: { exif: any }) {
   if (!exif || !Object.keys(exif).length) return (
     <p style={{ fontSize:12, color:C.text3, lineHeight:1.7 }}>No EXIF data available for this photo.</p>
   );
-  const rows: [string, string][] = [
-    ['Camera',   exif.camera],
-    ['Lens',     exif.lens],
-    ['Focal',    exif.focal],
-    ['Aperture', exif.aperture],
-    ['Shutter',  exif.shutter],
-    ['ISO',      exif.iso],
-    ['Date',     exif.date],
-    ['Time',     exif.time],
-  ].filter(([, v]) => v) as [string, string][];
+  const ORDER: [string, string][] = [
+    ['camera',        'Camera'],
+    ['lens',          'Lens'],
+    ['focal',         'Focal Length'],
+    ['focal_35mm',    '35mm Equiv.'],
+    ['aperture',      'Aperture'],
+    ['shutter',       'Shutter'],
+    ['iso',           'ISO'],
+    ['ev',            'Exp. Bias'],
+    ['program',       'Mode'],
+    ['metering',      'Metering'],
+    ['white_balance', 'White Balance'],
+    ['flash',         'Flash'],
+    ['date',          'Date'],
+    ['time',          'Time'],
+    ['gps',           'GPS'],
+  ];
+  const rows = ORDER.filter(([k]) => exif[k] != null).map(([k, label]) => [label, String(exif[k])] as [string,string]);
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:0 }}>
       <p style={{ fontSize:11, fontWeight:700, letterSpacing:'.08em', textTransform:'uppercase', color:C.text3, marginBottom:8 }}>EXIF Data</p>
       {rows.map(([k, v]) => (
         <div key={k} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'6px 0', borderBottom:`1px solid ${C.border}` }}>
           <span style={{ fontSize:12, color:C.text3, fontWeight:500 }}>{k}</span>
-          <span style={{ fontSize:12, color:C.text, fontWeight:600, fontVariantNumeric:'tabular-nums', fontFamily:"'SF Mono',monospace" }}>{v}</span>
+          <span style={{ fontSize:12, color:C.text, fontWeight:600, fontVariantNumeric:'tabular-nums', fontFamily:"'SF Mono',monospace", textAlign:'right', maxWidth:'60%', wordBreak:'break-word' }}>{v}</span>
         </div>
       ))}
     </div>
@@ -424,6 +433,15 @@ export default function App() {
   const [nicheRec,   setNicheRec]   = useState<any>(null);
   const [infoTab,    setInfoTab]    = useState<"exif"|"analysis"|"breakdown">("exif");
   const [mainTab,    setMainTab]    = useState<"gallery"|"sequence"|"duplicates">("gallery");
+  const [seqMode,    setSeqMode]    = useState<'auto'|'director'>('auto');
+  const [directorPrompt,  setDirectorPrompt]  = useState('');
+  const [directorResult,  setDirectorResult]  = useState<any>(null);
+  const [directorLoading, setDirectorLoading] = useState(false);
+  const [directorPool,    setDirectorPool]    = useState<any[]>([]);
+  const [mogcoTarget,     setMogcoTarget]     = useState(5);
+  const [mogcoMinScore,   setMogcoMinScore]   = useState(0.45);
+  const [uploadLoading,   setUploadLoading]   = useState(false);
+  const [uploadDragOver,  setUploadDragOver]  = useState(false);
   const [loupeMode,  setLoupeMode]  = useState<"loupe"|"grid">("loupe");
   const [subjType,   setSubjType]   = useState<string | null>(null);
   const [locked,     setLocked]     = useState<Set<string>>(new Set());
@@ -455,6 +473,18 @@ export default function App() {
   const [dragOver,    setDragOver]      = useState(false);
   const [backendReady, setBackendReady] = useState(false);
   const [backendError, setBackendError] = useState(false);
+
+  // ── Creative Direction state ──────────────────────────────────────────────
+  const [creativeAnchor,   setCreativeAnchor]   = useState<string | null>(null);
+  const [creativePrompt,   setCreativePrompt]   = useState("");
+  const [creativeMode,     setCreativeMode]     = useState<"canny"|"depth">("canny");
+  const [creativeLoading,  setCreativeLoading]  = useState(false);
+  const [creativeProgress, setCreativeProgress] = useState(0);
+  const [creativeStage,    setCreativeStage]    = useState("");
+  const [creativeResults,     setCreativeResults]     = useState<any[]>([]);
+  const [creativeOutDir,      setCreativeOutDir]      = useState("");
+  const [creativeShowOriginal,setCreativeShowOriginal]= useState(false);
+  const [dupPanelOpen,        setDupPanelOpen]        = useState(true);
 
   const filmRef    = useRef<HTMLDivElement>(null);
   const dragCounter = useRef(0);
@@ -520,6 +550,20 @@ export default function App() {
       el.scrollLeft += (br.left + br.width / 2) - (er.left + er.width / 2);
   }, [selId]);
 
+  const dupGroups = useMemo(() => {
+    const byCluster: Record<number, any[]> = {};
+    for (const p of photos) {
+      if (p.cluster_id >= 0) (byCluster[p.cluster_id] ??= []).push(p);
+    }
+    return Object.values(byCluster)
+      .map(g => {
+        const best = g.find(p => (p.sim_flag || '').includes('Best')) ?? g[0];
+        const rest = g.filter(p => p !== best);
+        return { best, rest, all: [best, ...rest] };
+      })
+      .sort((a, b) => b.all.length - a.all.length);
+  }, [photos]);
+
   const filteredPhotos = useMemo(() => {
     const base = photos.filter(p => {
       const gradeOk = !filterGrade || p.grade.includes(filterGrade);
@@ -533,7 +577,7 @@ export default function App() {
   /* keyboard nav */
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      if (['INPUT','SELECT'].includes((document.activeElement as HTMLElement)?.tagName)) return;
+      if (['INPUT','SELECT','TEXTAREA'].includes((document.activeElement as HTMLElement)?.tagName)) return;
       const ids = filteredPhotos.map(p => p.id);
       const i = ids.indexOf(selId ?? '');
       if (e.key === 'ArrowRight' || e.key === 'l') { e.preventDefault(); if (i < ids.length-1) setSelId(ids[i+1]); }
@@ -563,6 +607,7 @@ export default function App() {
         setPhotos(ps);
         setFolders([folder]);
         setSelId(ps[0]?.id ?? null);
+        setMainTab('gallery');
         setLoupeMode('grid');
       } catch (err: any) { notify(`❌ ${err.response?.data?.detail || "Failed to list photos"}`, "error"); }
       finally { setListLoading(false); }
@@ -677,7 +722,7 @@ export default function App() {
     setGradeProgress(0);
     const allFolderPaths = folders.length > 0 ? folders.map(sanitizePath) : [safePath];
     try {
-      const resp = await fetch(`${API}/api/grade/stream`, {
+      const resp = await fetch(`${API}/api/grade/v2/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ folder_path: allFolderPaths[0], folder_paths: allFolderPaths, preset }),
@@ -701,24 +746,29 @@ export default function App() {
           if (msg.done) {
             const ps = msg.data.map((p: any, i: number) => ({ ...p, id: `p-${i}` }));
             setPhotos(ps);
-            const autoRedacted = new Set<string>();
-            const byCluster: Record<number, typeof ps> = {};
-            for (const p of ps) {
-              if (p.cluster_id >= 0) (byCluster[p.cluster_id] ??= []).push(p);
-            }
-            for (const group of Object.values(byCluster)) {
-              const best = group.find((p: any) => (p.sim_flag || '').includes('Best')) ?? group[0];
-              group.filter((p: any) => p !== best).forEach((p: any) => autoRedacted.add(p.path));
-            }
+            const autoRedacted = new Set<string>(
+              ps.filter((p: any) => p.reject).map((p: any) => p.path)
+            );
             setRedacted(autoRedacted);
             const firstVisible = ps.find((p: any) => !autoRedacted.has(p.path));
             setSelId(firstVisible?.id ?? ps[0]?.id ?? null);
-            setCarousel([]);
+            // Populate carousel from MOGCO result if present, else clear it
+            if (msg.mogco_sequence?.length > 0) {
+              setCarousel(msg.mogco_sequence);
+              setSubjType('mogco-beam');
+            } else {
+              setCarousel([]);
+            }
+            setMainTab('gallery');
             setLoupeMode('loupe');
             setInfoTab('breakdown');
-            notify(`✅ Graded ${msg.total} images`, 'success');
-            const rec = await axios.post(`${API}/api/recommend`, { photos: msg.data });
-            setNicheRec(rec.data);
+            setLoading(false);
+            setGradeProgress(0);
+            const mogcoNote = msg.mogco_sequence?.length > 0 ? ` · ${msg.mogco_sequence.length}-frame MOGCO sequence ready` : '';
+            notify(`✅ Graded ${msg.total} images${mogcoNote}`, 'success');
+            axios.post(`${API}/api/recommend`, { photos: msg.data })
+              .then(rec => setNicheRec(rec.data))
+              .catch(() => {});
             break outer;
           }
         }
@@ -772,6 +822,61 @@ export default function App() {
   const handleDeleteSaved = useCallback((idx: number) => {
     setSaved(prev => prev.filter((_, i) => i !== idx));
   }, []);
+
+  const handleRunCreativeDirection = useCallback(async () => {
+    if (!creativeAnchor) { notify('Select an anchor image first', 'error'); return; }
+    const strongCount = photos.filter(p => p.grade.includes('Strong')).length;
+    if (strongCount === 0) { notify('No Strong images found. Grade your folder first.', 'error'); return; }
+    setCreativeLoading(true);
+    setCreativeProgress(0);
+    setCreativeStage('Initialising…');
+    setCreativeResults([]);
+    try {
+      const resp = await fetch(`${API}/api/creative-direction/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          anchor_path:    sanitizePath(creativeAnchor),
+          folder_path:    sanitizePath(folders[0] || folder),
+          style_prompt:   creativePrompt,
+          structure_mode: creativeMode,
+        }),
+      });
+      if (!resp.ok) throw new Error(`Server error ${resp.status}`);
+      const reader  = resp.body!.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      outer: while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop() ?? '';
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          let msg: any;
+          try { msg = JSON.parse(line.slice(6)); } catch { continue; }
+          if (msg.progress !== undefined) setCreativeProgress(msg.progress);
+          if (msg.desc)                   setCreativeStage(msg.desc);
+          if (msg.error) throw new Error(msg.error);
+          if (msg.done) {
+            const outputs = msg.data?.outputs ?? [];
+            setCreativeResults(outputs);
+            setCreativeOutDir(msg.data?.output_dir ?? '');
+            const ok = outputs.filter((r: any) => r.success).length;
+            notify(`✅ Creative Direction complete — ${ok}/${outputs.length} images styled`, 'success');
+            break outer;
+          }
+        }
+      }
+    } catch (err: any) {
+      notify(`❌ Creative Direction failed: ${err.message || err}`, 'error');
+    } finally {
+      setCreativeLoading(false);
+      setCreativeProgress(0);
+      setCreativeStage('');
+    }
+  }, [creativeAnchor, creativePrompt, creativeMode, photos, folder, folders, notify]);
 
   const handleSortByStars = useCallback((n: number) => {
     setCarousel(prev => [...prev].sort((a, b) => {
@@ -864,13 +969,17 @@ export default function App() {
 
   const isGrading = loading;
   const isDone    = !loading && photos.length > 0 && photos.some(p => p.grade !== 'Pending');
+  // If grading is reset/cleared, don't stay on a post-grade tab
+  useEffect(() => {
+    if (!isDone && mainTab === 'sequence') setMainTab('gallery');
+  }, [isDone, mainTab]);
   const picks     = photos.filter(p => p.grade.includes('Strong')).length;
   const mids      = photos.filter(p => p.grade.includes('Mid')).length;
   // Paths marked as used: server flags + photos committed to any saved sequence
   const allUsedPaths = useMemo(() =>
     new Set([...Array.from(used), ...saved.flatMap(s => s.sequence.map((p: any) => p.path))]),
   [used, saved]);
-  const rejects   = photos.filter(p => p.grade.includes('Weak')).length;
+  const rejects   = photos.filter(p => p.reject).length;
   // Star counts within the current grade filter (for the filter bar labels)
   const gradeFiltered = filterGrade ? photos.filter(p => p.grade.includes(filterGrade)) : photos;
   const starCounts = [0,1,2,3,4,5].map(n =>
@@ -1084,24 +1193,27 @@ export default function App() {
 
         {isDone && <div style={{ width:1, height:18, background:C.bdr2, flexShrink:0 }}/>}
 
-        {/* Tab switcher: Gallery / Sequence / Duplicates */}
-        {isDone && (() => {
+        {/* Tab switcher: Gallery / Sequence / Duplicates / Director */}
+        {(() => {
           const dupCount = photos.filter(p => p.cluster_id >= 0 && !(p.sim_flag||'').includes('Best')).length;
-          const hasDups  = photos.some(p => p.cluster_id >= 0 && (p.sim_flag||'').includes('Best'));
+          const hasDups  = isDone && photos.some(p => p.cluster_id >= 0 && (p.sim_flag||'').includes('Best'));
           const tabs: [string, string, React.ReactNode][] = [
-            ['gallery',    'Gallery',                                  <LayoutGrid size={11}/>],
-            ['sequence',   `Sequence${carousel.length ? ` (${carousel.length})` : ''}`, <Layers size={11}/>],
-            ...(hasDups ? [['duplicates', `Duplicates (${dupCount})`, <ImageOff size={11}/>] as [string,string,React.ReactNode]] : []),
+            ...(isDone ? [
+              ['gallery',    'Gallery',                                  <LayoutGrid size={11}/>],
+              ...(hasDups ? [['duplicates', `Duplicates (${dupCount})`, <ImageOff size={11}/>] as [string,string,React.ReactNode]] : []),
+              ['sequence', `Sequence${carousel.length ? ` (${carousel.length})` : ''}`, <Layers size={11}/>],
+              ['creative', `Creative${creativeResults.length ? ` (${creativeResults.filter((r:any)=>r.success).length})` : ''}`, <Wand2 size={11}/>],
+            ] as [string,string,React.ReactNode][] : []),
           ];
           return (
             <div style={{ display:'flex', background:C.bg, borderRadius:6, border:`1px solid ${C.bdr2}`, overflow:'hidden', flexShrink:0, animation:'fadeIn .2s' }}>
-              {tabs.map(([id, label, icon]) => (
+              {tabs.map(([id, label, icon], ti) => (
                 <button key={id} onClick={() => { setMainTab(id as any); if (id === 'gallery') setLoupeMode('loupe'); }}
                   style={{ display:'flex', alignItems:'center', gap:5, padding:'0 11px', height:30, cursor:'pointer',
                     fontWeight:600, fontSize:13,
                     background: mainTab === id ? C.surf3 : 'transparent',
                     color: mainTab === id ? C.text : C.text3,
-                    borderRight: id !== (hasDups ? 'duplicates' : 'sequence') ? `1px solid ${C.bdr2}` : 'none',
+                    borderRight: ti < tabs.length - 1 ? `1px solid ${C.bdr2}` : 'none',
                     border:'none', outline:'none', transition:'background .12s, color .12s',
                   }}>
                   {icon}{label}
@@ -1132,6 +1244,28 @@ export default function App() {
           <button onClick={() => setExportModal(true)}
             style={{ display:'flex', alignItems:'center', gap:5, padding:'0 10px', height:30, borderRadius:7, fontSize:13, fontWeight:600, cursor:'pointer', flexShrink:0, background:C.aLow, border:`1px solid ${C.aBdr}`, color:C.accent }}>
             <Download size={11}/> Export
+          </button>
+        )}
+
+        {/* Sort Files button — appears after grading */}
+        {isDone && (
+          <button
+            onClick={async () => {
+              try {
+                const res = await axios.post(`${API}/api/manage/sort-files`, {
+                  folder_path: folders[0] || folder,
+                  gallery: photos,
+                  copy: false,
+                });
+                notify(`✅ Sorted ${res.data.moved} files into Strong / Mid / Weak`, 'success');
+              } catch (err: any) {
+                notify(`❌ Sort failed: ${err?.response?.data?.detail ?? err.message}`, 'error');
+              }
+            }}
+            style={{ display:'flex', alignItems:'center', gap:5, padding:'0 10px', height:30,
+              borderRadius:7, fontSize:13, fontWeight:600, cursor:'pointer', flexShrink:0,
+              background:C.surf2, border:`1px solid ${C.bdr2}`, color:C.text2 }}>
+            <ArrowUpDown size={11}/> Sort Files
           </button>
         )}
 
@@ -1217,6 +1351,92 @@ export default function App() {
       {/* ── Body ───────────────────────────────────────────────── */}
       {mainTab === 'gallery' ? (
         <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden', minHeight:0 }}>
+
+          {/* ── Duplicates panel (top of gallery) ─────────────────── */}
+          {isDone && dupGroups.length > 0 && (
+            <div style={{ flexShrink:0, borderBottom:`1px solid ${C.border}`, background:C.surf }}>
+              {/* Header row */}
+              <div style={{ display:'flex', alignItems:'center', gap:8, padding:'6px 14px', cursor:'pointer' }}
+                onClick={() => setDupPanelOpen(o => !o)}>
+                <ImageOff size={13} style={{ color:C.text3, flexShrink:0 }}/>
+                <span style={{ fontSize:12, fontWeight:700, color:C.text2 }}>
+                  {dupGroups.length} duplicate group{dupGroups.length !== 1 ? 's' : ''}
+                </span>
+                <span style={{ fontSize:11, color:C.text3 }}>
+                  — {dupGroups.reduce((s,g)=>s+g.rest.length,0)} photos auto-hidden
+                </span>
+                <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:8 }}>
+                  {dupGroups.some(g => g.rest.some(p => !redacted.has(p.path))) && (
+                    <button onClick={e => { e.stopPropagation();
+                      setRedacted(prev => { const next = new Set(prev); dupGroups.forEach(g => g.rest.forEach(p => next.add(p.path))); return next; }); }}
+                      style={{ fontSize:11, fontWeight:700, color:C.strong, padding:'2px 8px', borderRadius:4,
+                        border:`1px solid oklch(65% .17 148 / .35)`, background:'oklch(65% .17 148 / .10)', cursor:'pointer' }}>
+                      Keep all best
+                    </button>
+                  )}
+                  <span style={{ fontSize:11, color:C.text3 }}>{dupPanelOpen ? '▲' : '▼'}</span>
+                </div>
+              </div>
+
+              {/* Groups strip */}
+              {dupPanelOpen && (
+                <div style={{ overflowX:'auto', display:'flex', gap:10, padding:'8px 14px 10px', alignItems:'flex-start' }}>
+                  {dupGroups.map((g, gi) => (
+                    <div key={gi} style={{ flexShrink:0, background:C.bg, border:`1px solid ${C.border}`, borderRadius:7, overflow:'hidden', minWidth:0 }}>
+                      <div style={{ padding:'4px 8px', borderBottom:`1px solid ${C.border}`, display:'flex', alignItems:'center', gap:6 }}>
+                        <span style={{ fontSize:10, fontWeight:700, color:C.text3, textTransform:'uppercase', letterSpacing:'.06em' }}>
+                          Group {gi+1}
+                        </span>
+                        <span style={{ fontSize:10, color:C.text3 }}>{g.all.length} shots</span>
+                        {g.rest.some(p => redacted.has(p.path)) ? (
+                          <button onClick={() => setRedacted(prev => { const next = new Set(prev); g.rest.forEach(p => next.delete(p.path)); return next; })}
+                            style={{ marginLeft:'auto', fontSize:10, color:C.text3, padding:'1px 6px', borderRadius:3,
+                              border:`1px solid ${C.bdr2}`, background:'transparent', cursor:'pointer' }}>Restore</button>
+                        ) : (
+                          <button onClick={() => setRedacted(prev => { const next = new Set(prev); g.rest.forEach(p => next.add(p.path)); return next; })}
+                            style={{ marginLeft:'auto', fontSize:10, fontWeight:600, color:C.strong, padding:'1px 6px', borderRadius:3,
+                              border:`1px solid oklch(65% .17 148 / .35)`, background:'oklch(65% .17 148 / .10)', cursor:'pointer' }}>Keep best</button>
+                        )}
+                      </div>
+                      <div style={{ display:'flex', gap:6, padding:6 }}>
+                        {g.all.map((p: any) => {
+                          const isBest = p === g.best;
+                          const gradeColor = gc(p.grade);
+                          return (
+                            <div key={p.id}
+                              onClick={() => { setSelId(p.id); setLoupeMode('loupe'); }}
+                              style={{ width:90, flexShrink:0, cursor:'pointer', borderRadius:5, overflow:'hidden',
+                                border: isBest ? `2px solid ${gradeColor}` : `1px solid ${C.border}`,
+                                opacity: redacted.has(p.path) ? 0.3 : 1, transition:'opacity .2s',
+                                background: isBest ? `${gradeColor}18` : C.surf }}>
+                              <div style={{ position:'relative', width:'100%', height:64, overflow:'hidden' }}>
+                                <img src={thumbUrl(p.path)} alt="" loading="lazy" decoding="async"
+                                  style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
+                                {isBest && (
+                                  <div style={{ position:'absolute', top:3, left:3, background:`${gradeColor}dd`,
+                                    borderRadius:3, padding:'1px 4px', fontSize:8, fontWeight:800, color:'#fff', letterSpacing:'.06em' }}>
+                                    BEST
+                                  </div>
+                                )}
+                                <div style={{ position:'absolute', top:3, right:3, background:'rgba(0,0,0,.6)',
+                                  borderRadius:3, padding:'1px 4px', fontSize:8, color:'#fff' }}>
+                                  {(p.score*100).toFixed(0)}
+                                </div>
+                              </div>
+                              <p style={{ fontSize:9, margin:'3px 4px', color: isBest ? gradeColor : C.text3,
+                                fontWeight: isBest ? 700 : 400, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
+                                {p.path.split(/[\\/]/).pop()}
+                              </p>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Middle row: grid view OR loupe (preview + right panel) */}
           <div style={{ flex:1, display:'flex', minHeight:0, overflow:'hidden' }}>
@@ -1350,6 +1570,42 @@ export default function App() {
                     </button>
                   </div>
                   <StarRating stars={sel.stars ?? 0} onSet={n => handleSetStars(sel.id, n)}/>
+                  {/* Grade override — also trains the PersonalHead when V2 is active */}
+                  {isDone && (
+                    <div style={{ display:'flex', gap:4, marginTop:8 }}>
+                      {(['Strong ✅','Mid ⚠️','Weak ❌'] as const).map(g => {
+                        const isActive = sel.grade === g;
+                        const col = g.includes('Strong') ? C.strong : g.includes('Mid') ? C.mid : C.weak;
+                        return (
+                          <button key={g}
+                            onClick={async () => {
+                              if (isActive) return;
+                              const prevGrade = sel.grade;
+                              // Optimistic local update
+                              setPhotos(ps => ps.map(p => p.id === sel.id ? {...p, grade: g} : p));
+                              // Train PersonalHead with a ranking pair
+                              try {
+                                const partner = photos.find(p =>
+                                  p.id !== sel.id && p.grade !== g && p.grade !== prevGrade
+                                ) ?? photos.find(p => p.id !== sel.id);
+                                if (partner) {
+                                  await axios.post(`${API}/api/personal/update`, {
+                                    path1: sel.path,     grade1: g,
+                                    path2: partner.path, grade2: partner.grade,
+                                  });
+                                }
+                              } catch { /* non-blocking */ }
+                            }}
+                            style={{ flex:1, padding:'3px 0', borderRadius:5, fontSize:11, fontWeight:700, cursor: isActive ? 'default' : 'pointer',
+                              background: isActive ? `${col}22` : 'transparent',
+                              border: `1px solid ${isActive ? col : C.bdr2}`,
+                              color: isActive ? col : C.text3, transition:'all .12s' }}>
+                            {gl(g)}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1617,18 +1873,398 @@ export default function App() {
           );
         })()
 
+      ) : mainTab === 'creative' ? (
+        /* ── Creative Direction view ───────────────────────────── */
+        (() => {
+          const ROLE_COLORS: Record<string, string> = {
+            subject:  'oklch(65% .17 148)',   // green
+            opener:   'oklch(60% .20 250)',   // blue
+            closer:   'oklch(60% .20 290)',   // purple
+            contrast: 'oklch(65% .20 55)',    // orange
+            detail:   'oklch(68% .16 90)',    // yellow-green
+          };
+          const roleColor = (r: string) => ROLE_COLORS[r] ?? C.text3;
+
+          // Sort photos: Strong first, then Mid, then Weak — best anchors on top
+          const anchorCandidates = [...photos].sort((a, b) => {
+            const rank = (p: any) => p.grade.includes('Strong') ? 0 : p.grade.includes('Mid') ? 1 : 2;
+            return rank(a) - rank(b) || b.score - a.score;
+          });
+
+          return (
+          <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden', background:C.bg }}>
+
+            {/* Toolbar */}
+            <div style={{ flexShrink:0, display:'flex', alignItems:'center', justifyContent:'space-between', padding:'10px 18px', borderBottom:`1px solid ${C.border}`, background:C.surf }}>
+              <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                <span style={{ fontSize:15, fontWeight:700 }}>Creative Direction</span>
+                <span style={{ fontSize:12, color:C.text3 }}>Flux 2 [klein] · ControlNet · MOGCO-II</span>
+              </div>
+              <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                {creativeOutDir && creativeResults.filter((r:any)=>r.success).length > 0 && (
+                  <span style={{ fontSize:11, color:C.text3, fontFamily:"'SF Mono',monospace", maxWidth:280, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                    {creativeOutDir}
+                  </span>
+                )}
+                <button
+                  disabled={creativeLoading || !creativeAnchor}
+                  onClick={handleRunCreativeDirection}
+                  style={{
+                    display:'flex', alignItems:'center', gap:6, padding:'5px 14px',
+                    background: creativeLoading ? C.surf2 : C.aLow,
+                    border:`1px solid ${C.aBdr}`, borderRadius:7,
+                    color: C.accent, fontSize:13, fontWeight:700,
+                    cursor: creativeLoading || !creativeAnchor ? 'not-allowed' : 'pointer',
+                    opacity: !creativeAnchor ? 0.5 : 1,
+                  }}>
+                  {creativeLoading
+                    ? <><div style={{ width:11,height:11,border:`2px solid ${C.accent}`,borderTopColor:'transparent',borderRadius:'50%',animation:'spin .8s linear infinite' }}/> Stylizing…</>
+                    : <><Wand2 size={11}/> Run Creative Direction</>}
+                </button>
+              </div>
+            </div>
+
+            <div style={{ flex:1, overflowY:'auto', padding:'18px 24px', display:'flex', flexDirection:'column', gap:18 }}>
+
+              {/* GPU warning */}
+              <div style={{ background:'oklch(50% .18 55 / .12)', border:'1px solid oklch(50% .18 55 / .4)', borderRadius:7, padding:'8px 14px', fontSize:12, color:'oklch(70% .18 55)', display:'flex', gap:8, alignItems:'flex-start' }}>
+                <span style={{ flexShrink:0, fontWeight:700 }}>⚠ GPU required</span>
+                <span>Flux 2 [klein] needs CUDA (4–6 GB VRAM) with INT4 quantization. Running on CPU will OOM or take hours. The pipeline will auto-detect and warn if CUDA is unavailable.</span>
+              </div>
+
+              {/* Config row */}
+              <div style={{ display:'flex', gap:14, flexWrap:'wrap', alignItems:'flex-start' }}>
+
+                {/* Anchor selector */}
+                <div style={{ flex:'0 0 auto', minWidth:200 }}>
+                  <p style={{ fontSize:11, fontWeight:700, letterSpacing:'.08em', textTransform:'uppercase', color:C.text3, marginBottom:8 }}>
+                    Anchor Image <span style={{ color:C.accent }}>*</span>
+                    <span style={{ fontWeight:400, textTransform:'none', marginLeft:6 }}>— sets the visual style</span>
+                  </p>
+                  {creativeAnchor ? (
+                    <div style={{ position:'relative', width:180, borderRadius:8, overflow:'hidden', border:`2px solid ${C.accent}`, cursor:'pointer' }}
+                      onClick={() => setCreativeAnchor(null)}>
+                      <img src={thumbUrl(creativeAnchor)} alt=""
+                        style={{ width:'100%', aspectRatio:'3/2', objectFit:'cover', display:'block' }}/>
+                      <div style={{ position:'absolute', inset:0, background:'rgba(0,0,0,.55)', display:'flex', alignItems:'center', justifyContent:'center', opacity:0, transition:'opacity .15s' }}
+                        onMouseEnter={e=>(e.currentTarget.style.opacity='1')}
+                        onMouseLeave={e=>(e.currentTarget.style.opacity='0')}>
+                        <span style={{ color:'#fff', fontSize:12, fontWeight:600 }}>Change anchor</span>
+                      </div>
+                      <div style={{ position:'absolute', top:5, left:5, background:C.accent, borderRadius:4, padding:'2px 7px', fontSize:10, fontWeight:700, color:'#fff' }}>ANCHOR</div>
+                    </div>
+                  ) : (
+                    <div style={{ width:180, aspectRatio:'3/2', border:`2px dashed ${C.bdr2}`, borderRadius:8, display:'flex', alignItems:'center', justifyContent:'center', flexDirection:'column', gap:6 }}>
+                      <Wand2 size={20} style={{ color:C.text3 }}/>
+                      <span style={{ fontSize:11, color:C.text3, textAlign:'center', padding:'0 10px' }}>
+                        Click any image below to set as anchor
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Options */}
+                <div style={{ flex:1, display:'flex', flexDirection:'column', gap:12, minWidth:280 }}>
+                  <div>
+                    <p style={{ fontSize:11, fontWeight:700, letterSpacing:'.08em', textTransform:'uppercase', color:C.text3, marginBottom:8 }}>
+                      Style Brief <span style={{ color:C.text3, fontWeight:400 }}>(optional)</span>
+                    </p>
+                    <textarea
+                      value={creativePrompt}
+                      onChange={e => setCreativePrompt(e.target.value)}
+                      placeholder={"Describe the visual look to apply…\n\nExamples:\n• \"cinematic grain, deep shadows, film noir\"\n• \"golden hour warmth, soft bokeh, editorial\"\n• Leave blank to use the anchor image as the sole style reference"}
+                      style={{
+                        width:'100%', boxSizing:'border-box', minHeight:90, resize:'vertical',
+                        background:C.surf, border:`1px solid ${C.bdr2}`, borderRadius:8,
+                        padding:'10px 14px', fontSize:13, color:C.text, lineHeight:1.6,
+                        outline:'none', fontFamily:'inherit',
+                      }}
+                      onFocus={e => { e.currentTarget.style.borderColor=C.aBdr; }}
+                      onBlur={e =>  { e.currentTarget.style.borderColor=C.bdr2; }}
+                    />
+                  </div>
+                  <div style={{ display:'flex', alignItems:'center', gap:16 }}>
+                    <p style={{ fontSize:11, fontWeight:700, letterSpacing:'.08em', textTransform:'uppercase', color:C.text3, flexShrink:0 }}>Structure</p>
+                    {(['canny','depth'] as const).map(m => (
+                      <button key={m} onClick={() => setCreativeMode(m)}
+                        style={{
+                          display:'flex', alignItems:'center', gap:5, padding:'4px 12px', borderRadius:6, fontSize:12, fontWeight:600, cursor:'pointer', transition:'all .12s',
+                          background: creativeMode===m ? C.aLow : 'transparent',
+                          border:`1px solid ${creativeMode===m ? C.aBdr : C.bdr2}`,
+                          color: creativeMode===m ? C.accent : C.text3,
+                        }}>
+                        {m === 'canny' ? 'Canny Edges' : 'Depth Map'}
+                      </button>
+                    ))}
+                    <span style={{ fontSize:11, color:C.text3, marginLeft:4 }}>
+                      {creativeMode==='canny' ? 'Fast · no extra model' : 'MiDaS small · ~80 MB'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Anchor picker — all photos, Strong first */}
+              {anchorCandidates.length > 0 && (
+                <div>
+                  <p style={{ fontSize:11, fontWeight:700, letterSpacing:'.08em', textTransform:'uppercase', color:C.text3, marginBottom:8 }}>
+                    All Photos · click to set anchor <span style={{ fontWeight:400, textTransform:'none' }}>(Strong first)</span>
+                  </p>
+                  <div style={{ display:'flex', flexWrap:'wrap', gap:8 }}>
+                    {anchorCandidates.map(p => {
+                      const isAnchor = p.path === creativeAnchor;
+                      const gradeColor = gc(p.grade);
+                      return (
+                        <button key={p.id}
+                          onClick={() => setCreativeAnchor(isAnchor ? null : p.path)}
+                          style={{
+                            position:'relative', width:110, height:74, padding:0, border:'none',
+                            borderRadius:6, overflow:'hidden', cursor:'pointer',
+                            outline: isAnchor ? `2px solid ${C.accent}` : `2px solid ${gradeColor}44`,
+                            outlineOffset:1, transition:'outline .12s',
+                          }}>
+                          <img src={thumbUrl(p.path)} alt=""
+                            style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
+                          <div style={{ position:'absolute', bottom:0, left:0, right:0, height:18, background:'rgba(0,0,0,.65)', display:'flex', alignItems:'center', justifyContent:'space-between', padding:'0 5px' }}>
+                            <span style={{ fontSize:8, fontWeight:700, color:gradeColor, letterSpacing:'.05em' }}>{gl(p.grade)}</span>
+                            <span style={{ fontSize:8, color:'#aaa' }}>{(p.score*100).toFixed(0)}</span>
+                          </div>
+                          {isAnchor && (
+                            <div style={{ position:'absolute', inset:0, background:`${C.accent}44`, display:'flex', alignItems:'center', justifyContent:'center' }}>
+                              <div style={{ width:22, height:22, borderRadius:'50%', background:C.accent, display:'flex', alignItems:'center', justifyContent:'center' }}>
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20,6 9,17 4,12"/></svg>
+                              </div>
+                            </div>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Progress */}
+              {creativeLoading && (
+                <div style={{ background:C.surf, border:`1px solid ${C.bdr2}`, borderRadius:8, padding:'12px 16px' }}>
+                  <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:8 }}>
+                    <div style={{ width:12,height:12,border:`2px solid ${C.accent}`,borderTopColor:'transparent',borderRadius:'50%',animation:'spin .8s linear infinite',flexShrink:0 }}/>
+                    <span style={{ fontSize:13, color:C.text2, fontWeight:500 }}>{creativeStage || 'Processing…'}</span>
+                    <span style={{ marginLeft:'auto', fontSize:12, color:C.text3, fontVariantNumeric:'tabular-nums' }}>{Math.round(creativeProgress*100)}%</span>
+                  </div>
+                  <div style={{ height:3, background:C.bdr2, borderRadius:2, overflow:'hidden' }}>
+                    <div style={{ height:'100%', width:`${Math.round(creativeProgress*100)}%`, background:`linear-gradient(90deg,${C.accent},oklch(70% .19 205))`, borderRadius:2, transition:'width .3s ease' }}/>
+                  </div>
+                </div>
+              )}
+
+              {/* MOGCO-II parameter cards */}
+              {creativeResults.length > 0 && (
+                <div>
+                  <p style={{ fontSize:11, fontWeight:700, letterSpacing:'.08em', textTransform:'uppercase', color:C.text3, marginBottom:10 }}>
+                    MOGCO-II Parameters
+                  </p>
+                  <div style={{ display:'flex', flexWrap:'wrap', gap:6, marginBottom:16 }}>
+                    {creativeResults.filter((r:any)=>r.success).map((r:any, i:number) => {
+                      const obj  = r.params?.mogco_objectives;
+                      const role = r.params?.role ?? '';
+                      const rc   = roleColor(role);
+                      return (
+                        <div key={i} style={{ background:C.surf, border:`1px solid ${C.bdr2}`, borderRadius:6, padding:'6px 10px', fontSize:11, display:'flex', flexDirection:'column', gap:2, minWidth:130 }}>
+                          <span style={{ color:C.text2, fontWeight:600, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:120 }}>
+                            {r.source_path?.split(/[\\/]/).pop()}
+                          </span>
+                          <span style={{ color:C.text3 }}>str {r.params?.strength?.toFixed(2)} · gd {r.params?.guidance?.toFixed(1)} · ctrl {r.params?.ctrl_weight?.toFixed(2)}</span>
+                          <span style={{ fontWeight:700, color:rc, fontSize:10, textTransform:'uppercase', letterSpacing:'.06em' }}>{role}</span>
+                          {obj && (
+                            <div style={{ display:'flex', gap:4, marginTop:2 }}>
+                              {(['style_fidelity','struct_integrity','set_cohesion'] as const).map(k => (
+                                <span key={k} style={{ fontSize:9, background:C.surf2, borderRadius:3, padding:'1px 4px', color:C.text3 }}>
+                                  {k.replace(/_/g,' ').slice(0,6)} {((obj[k]??0)*100).toFixed(0)}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Final Portfolio grid */}
+              {creativeResults.filter((r:any)=>r.success).length > 0 ? (
+                <div>
+                  <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10 }}>
+                    <p style={{ fontSize:11, fontWeight:700, letterSpacing:'.08em', textTransform:'uppercase', color:C.text3, margin:0 }}>
+                      Final Portfolio — {creativeResults.filter((r:any)=>r.success).length} images
+                    </p>
+                    {creativeResults.some((r:any)=>!r.success) && (
+                      <span style={{ fontSize:11, color:C.weak }}>{creativeResults.filter((r:any)=>!r.success).length} failed</span>
+                    )}
+                    <button onClick={() => setCreativeShowOriginal(o => !o)}
+                      style={{ marginLeft:'auto', fontSize:11, fontWeight:600, padding:'3px 10px', borderRadius:5, cursor:'pointer', transition:'all .12s',
+                        background: creativeShowOriginal ? C.surf3 : 'transparent',
+                        border:`1px solid ${C.bdr2}`,
+                        color: creativeShowOriginal ? C.text : C.text3 }}>
+                      {creativeShowOriginal ? 'Showing originals' : 'Show originals'}
+                    </button>
+                  </div>
+                  <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(200px, 1fr))', gap:12 }}>
+                    {creativeResults.filter((r:any)=>r.success).map((r:any, i:number) => {
+                      const role = r.params?.role ?? '';
+                      const rc   = roleColor(role);
+                      const displayPath = creativeShowOriginal ? r.source_path : r.output_path;
+                      return (
+                        <div key={i} style={{ borderRadius:8, overflow:'hidden', border:`1px solid ${C.border}`, background:C.surf }}>
+                          <div style={{ position:'relative', aspectRatio:'3/2', overflow:'hidden', background:C.bg }}>
+                            <img src={photoUrl(displayPath)} alt="" loading="lazy" decoding="async"
+                              style={{ width:'100%', height:'100%', objectFit:'cover', display:'block', transition:'opacity .2s' }}/>
+                            {/* Role badge */}
+                            <div style={{ position:'absolute', top:6, left:6, background:`${rc}dd`, borderRadius:4, padding:'2px 7px', fontSize:9, fontWeight:800, color:'#fff', letterSpacing:'.07em' }}>
+                              {role.toUpperCase()}
+                            </div>
+                            {/* Before/after label */}
+                            {creativeShowOriginal && (
+                              <div style={{ position:'absolute', bottom:6, left:6, background:'rgba(0,0,0,.7)', borderRadius:3, padding:'2px 6px', fontSize:9, color:'#fff', fontWeight:600 }}>
+                                ORIGINAL
+                              </div>
+                            )}
+                            <a href={photoUrl(r.output_path)} download={r.filename}
+                              onClick={e => e.stopPropagation()}
+                              style={{ position:'absolute', top:6, right:6, background:'rgba(0,0,0,.7)', borderRadius:4, padding:'3px 6px', fontSize:10, color:'#fff', textDecoration:'none', display:'flex', alignItems:'center', gap:3 }}>
+                              <Download size={9}/> Save
+                            </a>
+                          </div>
+                          <div style={{ padding:'6px 9px' }}>
+                            <p style={{ fontSize:10.5, color:C.text3, margin:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                              {(r.source_path ?? '').split(/[\\/]/).pop()}
+                            </p>
+                            <p style={{ fontSize:10, color:C.text3, margin:'2px 0 0', opacity:.7 }}>
+                              str {r.params?.strength?.toFixed(2)} · gd {r.params?.guidance?.toFixed(1)} · ctrl {r.params?.ctrl_weight?.toFixed(2)}
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : !creativeLoading && (
+                <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:12, color:C.text3, paddingTop:32 }}>
+                  <Wand2 size={32} strokeWidth={1}/>
+                  <div style={{ textAlign:'center', maxWidth:440, lineHeight:1.7 }}>
+                    <p style={{ fontSize:14, color:C.text2, fontWeight:600, marginBottom:6 }}>Creative Direction</p>
+                    <p style={{ fontSize:13, margin:0 }}>
+                      Select an <strong style={{ color:C.accent }}>anchor image</strong> from your photos above.<br/>
+                      MOGCO-II assigns each photo a narrative role and tunes Flux 2 [klein]<br/>
+                      parameters to balance <strong>style fidelity</strong> · <strong>structure</strong> · <strong>set cohesion</strong>.
+                    </p>
+                  </div>
+                  {photos.length === 0 && (
+                    <p style={{ fontSize:12, color:C.weak, marginTop:4 }}>
+                      No photos loaded — open and grade a folder first.
+                    </p>
+                  )}
+                </div>
+              )}
+
+            </div>
+          </div>
+          );
+        })()
+
       ) : (
         /* ── Sequence view ─────────────────────────────────────── */
         <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden', background:C.bg }}>
           {/* Toolbar */}
           <div style={{ flexShrink:0, display:'flex', alignItems:'center', justifyContent:'space-between', padding:'10px 18px', borderBottom:`1px solid ${C.border}`, background:C.surf }}>
             <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-              <span style={{ fontSize:15, fontWeight:700 }}>Story Sequence</span>
-              {subjType && <span style={{ fontSize:12, color:C.text3 }}>{subjType}</span>}
-              {carousel.length > 0 && <span style={{ fontSize:13, color:C.text3 }}>{carousel.length} frames</span>}
+              <span style={{ fontSize:15, fontWeight:700 }}>Sequence</span>
+              {/* Auto / Directed mode toggle */}
+              <div style={{ display:'flex', background:C.bg, borderRadius:6, border:`1px solid ${C.bdr2}`, overflow:'hidden' }}>
+                {(['auto','director'] as const).map(m => (
+                  <button key={m} onClick={() => setSeqMode(m)}
+                    style={{ display:'flex', alignItems:'center', gap:4, padding:'3px 10px', fontSize:12, fontWeight:600, cursor:'pointer', border:'none', outline:'none', transition:'all .12s',
+                      background: seqMode===m ? C.surf3 : 'transparent',
+                      color: seqMode===m ? C.text : C.text3,
+                      borderRight: m==='auto' ? `1px solid ${C.bdr2}` : 'none',
+                    }}>
+                    {m==='auto' ? <Layers size={10}/> : <Sparkles size={10}/>}
+                    {m==='auto' ? 'Auto' : 'Directed'}
+                  </button>
+                ))}
+              </div>
+              {seqMode==='auto' && subjType && <span style={{ fontSize:12, color:C.text3 }}>{subjType}</span>}
+              {seqMode==='auto' && carousel.length > 0 && <span style={{ fontSize:13, color:C.text3 }}>{carousel.length} frames</span>}
+              {seqMode==='director' && directorPool.length > 0 && <span style={{ fontSize:12, color:C.text3 }}>{directorPool.length} uploaded</span>}
+              {seqMode==='director' && <span style={{ fontSize:12, color:C.text3 }}>mogco-beam</span>}
+              {seqMode==='director' && directorResult?.sequence?.length > 0 && <span style={{ fontSize:12, color:C.accent }}>{directorResult.sequence.length} frames</span>}
+              {seqMode==='director' && directorResult?.global_score != null && <span style={{ fontSize:12, color:C.text3 }}>score {(directorResult.global_score*100).toFixed(1)}</span>}
             </div>
             <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-              {carousel.some(c => c.stars > 0) && (
+              {seqMode==='director' && (
+                <button
+                  disabled={directorLoading || (directorPool.length === 0 && photos.length === 0)}
+                  onClick={async () => {
+                    setDirectorLoading(true);
+                    setDirectorResult(null);
+                    try {
+                      const source = directorPool.length > 0 ? directorPool : photos;
+
+                      if (directorPrompt.trim()) {
+                        // Brief provided: director visually selects candidates → MOGCO sequences them
+                        const dirRes = await axios.post(`${API}/api/director`, {
+                          prompt: directorPrompt, photos: source, target: mogcoTarget,
+                        });
+                        if (dirRes.data.error) throw new Error(dirRes.data.error);
+                        const pool = dirRes.data.sequence?.length >= mogcoTarget
+                          ? dirRes.data.sequence : source;
+                        // MOGCO pareto mode orders the director's picks by flow + role fit
+                        const mogcoRes = await axios.post(`${API}/api/sequence/mogco`, {
+                          photos: pool, target: mogcoTarget, min_score: mogcoMinScore, mode: 'pareto',
+                        });
+                        setDirectorResult({
+                          ...mogcoRes.data,
+                          director_note: dirRes.data.director_note ?? null,
+                          style_tags:    dirRes.data.style_tags ?? [],
+                        });
+                      } else {
+                        // No brief: pure MOGCO beam search from DuckDB
+                        const mogcoRes = await axios.post(`${API}/api/sequence/mogco`, {
+                          photos: source, target: mogcoTarget, min_score: mogcoMinScore, mode: 'beam',
+                        });
+                        setDirectorResult(mogcoRes.data);
+                      }
+                    } catch(err: any) {
+                      notify(`Generation error: ${err?.response?.data?.detail ?? err.message}`, 'error');
+                    } finally { setDirectorLoading(false); }
+                  }}
+                  style={{ display:'flex', alignItems:'center', gap:6, padding:'5px 12px',
+                    background: directorLoading ? C.surf2 : C.aLow,
+                    border:`1px solid ${C.aBdr}`, borderRadius:7, color:C.accent,
+                    fontSize:13, fontWeight:700, cursor: directorLoading ? 'not-allowed' : 'pointer',
+                    opacity: (directorPool.length===0 && photos.length===0) ? 0.4 : 1,
+                  }}>
+                  {directorLoading
+                    ? <><div style={{ width:11,height:11,border:`2px solid ${C.accent}`,borderTopColor:'transparent',borderRadius:'50%',animation:'spin .8s linear infinite' }}/> Generating…</>
+                    : <><Sparkles size={11}/> Generate</>}
+                </button>
+              )}
+              {seqMode==='director' && directorResult?.sequence?.length > 0 && (
+                <button
+                  onClick={async () => {
+                    const name = `Story ${saved.length + 1}`;
+                    try {
+                      await axios.post(`${API}/api/save-sequence`, { name, sequence: directorResult.sequence });
+                      setSaved(prev => [...prev, { name, sequence: directorResult.sequence }]);
+                      notify(`✅ Saved as "${name}"`, 'success');
+                    } catch (err: any) { notify(`❌ ${err?.response?.data?.detail || "Failed"}`, 'error'); }
+                  }}
+                  style={{ display:'flex', alignItems:'center', gap:6, padding:'5px 14px',
+                    background:C.aLow, border:`1px solid ${C.aBdr}`, borderRadius:7,
+                    color:C.accent, fontSize:13, fontWeight:700, cursor:'pointer' }}>
+                  <Flag size={12}/> Save Story
+                </button>
+              )}
+              {seqMode==='auto' && carousel.some(c => c.stars > 0) && (
                 <div style={{ position:'relative', flexShrink:0 }}>
                   <button onClick={() => setShowStarSort(v => !v)}
                     style={{ display:'flex', alignItems:'center', gap:5, padding:'5px 11px', background:showStarSort ? C.surf3 : C.surf2, border:`1px solid ${showStarSort ? C.aBdr : C.bdr2}`, borderRadius:7, color:showStarSort ? C.accent : C.text2, fontSize:13, fontWeight:600, cursor:'pointer' }}>
@@ -1661,7 +2297,8 @@ export default function App() {
                   )}
                 </div>
               )}
-              {/* Min-star pool filter (sequence toolbar) */}
+              {seqMode==='auto' && (<>
+              {/* Min-star pool filter */}
               <div style={{ display:'flex', alignItems:'center', gap:3, background:C.surf2, border:`1px solid ${C.bdr2}`, borderRadius:7, padding:'3px 6px' }}>
                 <span style={{ fontSize:11, color:C.text3, marginRight:2, whiteSpace:'nowrap' }}>Pool:</span>
                 {([0,1,2,3,4,5] as const).map(n => (
@@ -1686,14 +2323,16 @@ export default function App() {
                 style={{ display:'flex', alignItems:'center', gap:6, padding:'5px 14px', background:C.aLow, border:`1px solid ${C.aBdr}`, borderRadius:7, color:C.accent, fontSize:13, fontWeight:700, cursor:'pointer', opacity:!carousel.length?0.4:1 }}>
                 <Flag size={12}/> Save Story
               </button>
+              </>)}
             </div>
           </div>
 
+          {seqMode === 'auto' ? (<>
           {/* Sequence cards */}
           {carousel.length === 0 ? (
             <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center', flexDirection:'column', gap:12, color:C.text3 }}>
               <Layers size={32} strokeWidth={1}/>
-              <p style={{ fontSize:14 }}>No sequence yet — click Generate Sequence</p>
+              <p style={{ fontSize:14 }}>{isDone ? 'No sequence yet — click Regenerate' : 'Grade a folder first to build an auto-sequence'}</p>
             </div>
           ) : (
             <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
@@ -1739,7 +2378,6 @@ export default function App() {
                     })}
                   </div>
                   <p style={{ textAlign:'center', fontSize:12, color:C.text3, marginTop:16 }}>Drag cards to reorder · Click to view in Gallery</p>
-
                 </div>
               </SortableContext>
             </DndContext>
@@ -1759,7 +2397,6 @@ export default function App() {
                     onClick={() => { setCarousel(s.sequence); notify(`Loaded "${s.name}"`, 'info'); }}
                     onMouseEnter={e => (e.currentTarget.style.border = `1px solid ${C.aBdr}`)}
                     onMouseLeave={e => (e.currentTarget.style.border = `1px solid ${C.bdr2}`)}>
-                    {/* Thumbnail strip */}
                     <div style={{ display:'flex', height:52, overflow:'hidden' }}>
                       {s.sequence.slice(0, 5).map((c: any, j: number) => (
                         <div key={j} style={{ flex:1, position:'relative', overflow:'hidden', borderRight: j < 4 ? `1px solid ${C.border}` : 'none' }}>
@@ -1768,7 +2405,6 @@ export default function App() {
                         </div>
                       ))}
                     </div>
-                    {/* Label row */}
                     <div style={{ display:'flex', alignItems:'center', padding:'6px 9px', gap:4 }}>
                       <div style={{ flex:1 }}>
                         <p style={{ fontSize:13, fontWeight:700, color:C.text }}>{s.name}</p>
@@ -1784,6 +2420,188 @@ export default function App() {
                 ))}
               </div>
             </div>
+          )}
+          </>) : (
+          /* ── Directed mode ─────────────────────────────────────── */
+          <div style={{ flex:1, overflowY:'auto', padding:'18px 24px', display:'flex', flexDirection:'column', gap:16 }}>
+
+            {/* MOGCO params + upload row */}
+            <div style={{ display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' }}>
+              <label style={{ display:'flex', alignItems:'center', gap:5, fontSize:12, color:C.text2 }}>
+                Frames
+                <input type="number" min={3} max={12} value={mogcoTarget}
+                  onChange={e => setMogcoTarget(Math.max(3, Math.min(12, parseInt(e.target.value)||5)))}
+                  style={{ width:46, padding:'3px 6px', background:C.surf, border:`1px solid ${C.bdr2}`, borderRadius:5, color:C.text, fontSize:12, textAlign:'center', outline:'none' }}/>
+              </label>
+              <label style={{ display:'flex', alignItems:'center', gap:5, fontSize:12, color:C.text2 }}>
+                Min score
+                <input type="number" min={0} max={1} step={0.05} value={mogcoMinScore}
+                  onChange={e => setMogcoMinScore(Math.max(0, Math.min(1, parseFloat(e.target.value)||0.45)))}
+                  style={{ width:52, padding:'3px 6px', background:C.surf, border:`1px solid ${C.bdr2}`, borderRadius:5, color:C.text, fontSize:12, textAlign:'center', outline:'none' }}/>
+              </label>
+              {!isDone && <span style={{ fontSize:12, color:'#f5c842', marginLeft:4 }}>Grade a folder first to populate the cache.</span>}
+            </div>
+
+            {/* Upload zone — compact row */}
+            <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
+              <div
+                onDragOver={e => { e.preventDefault(); setUploadDragOver(true); }}
+                onDragLeave={() => setUploadDragOver(false)}
+                onDrop={async e => {
+                  e.preventDefault(); setUploadDragOver(false);
+                  const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
+                  if (!files.length) return;
+                  setUploadLoading(true);
+                  try {
+                    const fd = new FormData();
+                    files.forEach(f => fd.append('files', f));
+                    const res = await axios.post(`${API}/api/director/upload-grade`, fd, { headers:{ 'Content-Type':'multipart/form-data' } });
+                    setDirectorPool(res.data.photos ?? []);
+                  } catch(err: any) { notify(`Upload failed: ${err?.response?.data?.detail ?? err.message}`, 'error'); }
+                  finally { setUploadLoading(false); }
+                }}
+                onClick={() => {
+                  const inp = document.createElement('input');
+                  inp.type='file'; inp.multiple=true; inp.accept='image/*';
+                  inp.onchange = async () => {
+                    const files = Array.from(inp.files ?? []);
+                    if (!files.length) return;
+                    setUploadLoading(true);
+                    try {
+                      const fd = new FormData();
+                      files.forEach(f => fd.append('files', f));
+                      const res = await axios.post(`${API}/api/director/upload-grade`, fd, { headers:{ 'Content-Type':'multipart/form-data' } });
+                      setDirectorPool(res.data.photos ?? []);
+                    } catch(err: any) { notify(`Upload failed: ${err?.response?.data?.detail ?? err.message}`, 'error'); }
+                    finally { setUploadLoading(false); }
+                  };
+                  inp.click();
+                }}
+                style={{
+                  display:'flex', alignItems:'center', gap:8, padding:'8px 14px',
+                  border:`1.5px dashed ${uploadDragOver ? C.accent : C.bdr2}`,
+                  borderRadius:8, background: uploadDragOver ? C.aLow : C.surf,
+                  cursor:'pointer', transition:'all .15s', flexShrink:0,
+                }}>
+                {uploadLoading
+                  ? <><div style={{ width:12,height:12,border:`2px solid ${C.accent}`,borderTopColor:'transparent',borderRadius:'50%',animation:'spin .8s linear infinite' }}/><span style={{ fontSize:12,color:C.text3 }}>Grading…</span></>
+                  : directorPool.length > 0
+                    ? <>{directorPool.slice(0,4).map((p:any) => <img key={p.path} src={`${API}/api/thumb?path=${encodeURIComponent(p.path)}`} style={{ width:28,height:20,objectFit:'cover',borderRadius:2,border:`1px solid ${C.border}` }}/>)}
+                       <span style={{ fontSize:12,color:C.text2,fontWeight:600 }}>{directorPool.length} uploaded</span></>
+                    : <><Download size={12} style={{ color:C.text3 }}/><span style={{ fontSize:12,color:C.text3 }}>Upload competition photos <span style={{ color:C.accent }}>optional</span></span></>
+                }
+              </div>
+              {directorPool.length > 0 && (
+                <button onClick={() => { axios.post(`${API}/api/director/clear-pool`).catch(()=>{}); setDirectorPool([]); }}
+                  style={{ fontSize:11,color:C.text3,background:'transparent',border:`1px solid ${C.bdr2}`,borderRadius:5,padding:'4px 10px',cursor:'pointer' }}>
+                  Clear
+                </button>
+              )}
+              <span style={{ fontSize:12,color:C.text3,marginLeft:'auto' }}>
+                {directorPool.length > 0 ? `Using ${directorPool.length} uploaded photos` : isDone ? `Using ${photos.filter((p:any)=>!p.reject).length} graded picks` : 'Grade a folder or upload photos'}
+              </span>
+            </div>
+
+            {/* Brief — optional, AI narrative layer over MOGCO frames */}
+            <textarea
+              value={directorPrompt}
+              onChange={e => setDirectorPrompt(e.target.value)}
+              placeholder={"Optional: describe your vision to layer an AI narrative note over the sequence…\n\nExamples:\n• \"Open wide, build to intimate portraits, close quietly\"\n• \"Street, 7 frames, moody and high-contrast\"\n• \"Lead with technically strong openers, faces first\""}
+              style={{
+                width:'100%', boxSizing:'border-box', minHeight:90, resize:'vertical',
+                background:C.surf, border:`1px solid ${C.bdr2}`, borderRadius:8,
+                padding:'10px 14px', fontSize:13, color:C.text, lineHeight:1.6,
+                outline:'none', fontFamily:'inherit',
+              }}
+              onFocus={e => { e.currentTarget.style.borderColor=C.aBdr; }}
+              onBlur={e => { e.currentTarget.style.borderColor=C.bdr2; }}
+            />
+
+            {/* Director's note */}
+            {directorResult?.director_note && (
+              <div style={{ background:C.aLow, border:`1px solid ${C.aBdr}`, borderRadius:8, padding:'10px 14px', display:'flex', gap:10, alignItems:'flex-start' }}>
+                <Sparkles size={13} style={{ color:C.accent, flexShrink:0, marginTop:2 }}/>
+                <div>
+                  <p style={{ fontSize:13,color:C.text2,margin:0,lineHeight:1.6 }}>{directorResult.director_note}</p>
+                  {directorResult.style_tags?.length > 0 && (
+                    <div style={{ display:'flex',gap:5,flexWrap:'wrap',marginTop:6 }}>
+                      {directorResult.style_tags.map((t:string) => (
+                        <span key={t} style={{ fontSize:11,background:C.surf3,border:`1px solid ${C.bdr2}`,borderRadius:12,padding:'2px 8px',color:C.text2 }}>{t}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Generated sequence */}
+            {directorResult?.sequence?.length > 0 && (
+              <div>
+                <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10 }}>
+                  <span style={{ fontSize:11,fontWeight:700,color:C.text3,textTransform:'uppercase',letterSpacing:'.07em' }}>
+                    {directorResult.engine ?? 'Generated'} · {directorResult.sequence.length} frames
+                  </span>
+                  {directorResult.global_score != null && (
+                    <span style={{ fontSize:11, color:C.accent, fontWeight:600 }}>
+                      global {(directorResult.global_score*100).toFixed(1)}
+                    </span>
+                  )}
+                </div>
+                <div style={{ display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:14, maxWidth:1100 }}>
+                  {directorResult.sequence.map((frame:any, i:number) => {
+                    const score = typeof frame.score==='number' ? frame.score : (frame.composite ?? 0);
+                    const gc = score>=0.72?'#5acd7a':score>=0.5?'#f5c842':'#e05b5b';
+                    const canJump = photos.some((p:any)=>p.path===frame.path);
+                    return (
+                      <div key={frame.path??i}
+                        onClick={() => { if(canJump){ setMainTab('gallery'); setSelId(frame.id??frame.path); setLoupeMode('loupe'); } }}
+                        style={{ borderRadius:8, overflow:'hidden', border:`1px solid ${C.border}`, background:C.surf, cursor:canJump?'pointer':'default', transition:'transform .1s,box-shadow .1s' }}
+                        onMouseEnter={e=>{e.currentTarget.style.transform='translateY(-2px)';e.currentTarget.style.boxShadow='0 6px 20px rgba(0,0,0,.4)';}}
+                        onMouseLeave={e=>{e.currentTarget.style.transform='';e.currentTarget.style.boxShadow='';}}>
+                        <div style={{ position:'relative', aspectRatio:'2/3', overflow:'hidden' }}>
+                          <img src={`${API}/api/thumb?path=${encodeURIComponent(frame.path)}`}
+                            alt="" loading="lazy" decoding="async"
+                            style={{ width:'100%',height:'100%',objectFit:'cover',display:'block' }}/>
+                          <div style={{ position:'absolute',top:6,left:6,background:'rgba(0,0,0,.72)',borderRadius:3,padding:'2px 6px',fontSize:9,fontWeight:700,color:'#fff',letterSpacing:'.07em',textTransform:'uppercase' }}>
+                            {i+1}. {frame.slot??frame.role??''}
+                          </div>
+                          <div style={{ position:'absolute',top:6,right:6,background:`${gc}dd`,borderRadius:3,padding:'2px 6px',fontSize:9,fontWeight:700,color:'#fff' }}>
+                            {(score*100).toFixed(0)}
+                          </div>
+                        </div>
+                        <div style={{ padding:'6px 9px 8px' }}>
+                          <p style={{ fontSize:10.5,color:C.text3,margin:0,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis' }}>
+                            {(frame.path??'').split(/[\\/]/).pop()}
+                          </p>
+                          {frame.mogco_objectives && (
+                            <div style={{ display:'flex', gap:5, marginTop:4, flexWrap:'wrap' }}>
+                              {(['quality','role_fit','flow'] as const).map(k => (
+                                <span key={k} style={{ fontSize:9,color:C.text3,background:C.surf2,borderRadius:3,padding:'1px 4px' }}>
+                                  {k.replace('_',' ')} {((frame.mogco_objectives[k]??0)*100).toFixed(0)}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Empty state */}
+            {!directorResult && !directorLoading && (
+              <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:10, color:C.text3, paddingTop:24 }}>
+                <Layers size={26} strokeWidth={1}/>
+                <p style={{ fontSize:13,textAlign:'center',maxWidth:400,lineHeight:1.7,margin:0 }}>
+                  <strong style={{ color:C.text2 }}>MOGCO</strong> selects frames using quality, role fit, and visual flow.<br/>
+                  Add an optional brief above to layer an AI narrative note.
+                </p>
+              </div>
+            )}
+
+          </div>
           )}
         </div>
       )}
