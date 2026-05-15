@@ -14,7 +14,7 @@ import {
   ImageOff, X, Sparkles, Copy, Flag,
   LayoutGrid, RectangleHorizontal, SlidersHorizontal,
   Download, CheckSquare, ArrowUpDown, ArrowUp, ArrowDown,
-  Wand2,
+  Wand2, Zap,
 } from "lucide-react";
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -30,8 +30,7 @@ if (typeof window !== "undefined") {
   };
 }
 
-const API = import.meta.env.VITE_API_URL
-  || (isTauri() ? "http://127.0.0.1:8000" : (typeof window !== "undefined" ? window.location.origin : "http://localhost:8000"));
+const API = import.meta.env.VITE_API_URL || (isTauri() ? "http://127.0.0.1:8000" : "http://127.0.0.1:8000");
 const thumbUrl = (p: string) => `${API}/api/thumb?path=${encodeURIComponent(p)}`;
 const photoUrl = (p: string) => `${API}/api/photo?path=${encodeURIComponent(p)}`;
 
@@ -117,7 +116,7 @@ const FilmThumb = memo(function FilmThumb({
       }}
     >
       <div style={{ position: 'relative', width: w - 4, height: h - 4, overflow: 'hidden', borderRadius: 2, background: C.bg, flexShrink: 0 }}>
-        <img src={thumbUrl(p.path)} alt="" decoding="async"
+        <img src={thumbUrl(p.path)} alt="" decoding="async" loading="lazy"
           style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}/>
         {isUsed && (
           <div style={{ position: 'absolute', top: 3, left: 3, background: 'rgba(0,0,0,.75)', backdropFilter: 'blur(4px)', borderRadius: 3, padding: '1px 4px', display: 'flex', alignItems: 'center', gap: 2 }}>
@@ -167,7 +166,7 @@ function StarRating({ stars, onSet, size = 22, gap = 4 }: { stars: number; onSet
           <svg width={size} height={size} viewBox="0 0 24 24"
             fill={n <= display ? 'oklch(70% .18 72)' : 'oklch(30% .04 72)'}
             stroke="none"
-            style={{ transition:'fill .1s' }}>
+            style={{ transition:'fill .2s ease' }}>
             <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26"/>
           </svg>
         </button>
@@ -246,7 +245,7 @@ function ExportModal({ photos, filterGrade, onClose }: { photos: any[]; filterGr
   return (
     <div style={{ position:'fixed', inset:0, zIndex:500, background:'rgba(0,0,0,.75)', backdropFilter:'blur(8px)', display:'flex', alignItems:'center', justifyContent:'center' }}
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
-      <div style={{ background:C.surf, border:`1px solid ${C.bdr2}`, borderRadius:12, width:560, maxHeight:'80vh', display:'flex', flexDirection:'column', boxShadow:'0 24px 80px rgba(0,0,0,.8)', overflow:'hidden', animation:'slideUp .22s cubic-bezier(.2,0,0,1)' }}>
+      <div style={{ background:C.surf, border:`1px solid ${C.bdr2}`, borderRadius:12, width:560, maxHeight:'80vh', display:'flex', flexDirection:'column', boxShadow:'0 24px 80px rgba(0,0,0,.8)', overflow:'hidden', animation:'slideUp .3s cubic-bezier(.2,0,0,1)' }}>
         <div style={{ display:'flex', alignItems:'center', padding:'14px 18px', borderBottom:`1px solid ${C.border}`, flexShrink:0 }}>
           <div style={{ flex:1 }}>
             <p style={{ fontSize:15, fontWeight:700, color:C.text }}>Export Photos</p>
@@ -291,7 +290,7 @@ function ExportModal({ photos, filterGrade, onClose }: { photos: any[]; filterGr
                 background: xmpState === 'done' ? C.sLow : C.surf3,
                 border:`1px solid ${xmpState === 'done' ? 'oklch(65% .17 148 / .35)' : C.bdr2}`,
                 color: xmpState === 'done' ? C.strong : C.text2,
-                fontSize:12, fontWeight:700, cursor: xmpState === 'busy' ? 'wait' : 'pointer', transition:'all .15s' }}>
+                fontSize:12, fontWeight:700, cursor: xmpState === 'busy' ? 'wait' : 'pointer', transition:'all .25s cubic-bezier(.2,0,0,1)' }}>
               {xmpState === 'busy'
                 ? <><span style={{ width:10, height:10, borderRadius:'50%', border:`1.5px solid ${C.accent}`, borderTopColor:'transparent', animation:'spin .8s linear infinite', display:'inline-block' }}/> Writing…</>
                 : xmpState === 'done' ? 'Done' : 'Export XMP'}
@@ -329,7 +328,7 @@ function GridView({
       <div style={{ flexShrink:0, height:36, display:'flex', alignItems:'center', justifyContent:'space-between', padding:'0 14px', background:C.surf, borderBottom:`1px solid ${C.border}` }}>
         <div style={{ display:'flex', alignItems:'center', gap:8 }}>
           <button onClick={() => { setSelectMode(!selectMode); setSelectedIds(new Set()); }}
-            style={{ display:'flex', alignItems:'center', gap:5, padding:'4px 10px', borderRadius:6, fontSize:12, fontWeight:700, cursor:'pointer', background:selectMode ? C.aLow : 'transparent', border:`1px solid ${selectMode ? C.aBdr : C.bdr2}`, color:selectMode ? C.accent : C.text3, transition:'all .15s' }}>
+            style={{ display:'flex', alignItems:'center', gap:5, padding:'4px 10px', borderRadius:6, fontSize:12, fontWeight:700, cursor:'pointer', background:selectMode ? C.aLow : 'transparent', border:`1px solid ${selectMode ? C.aBdr : C.bdr2}`, color:selectMode ? C.accent : C.text3, transition:'all .25s cubic-bezier(.2,0,0,1)' }}>
             <CheckSquare size={11}/>{selectMode ? `Select (${selectedIds.size})` : 'Select'}
           </button>
           {selectMode && selectedIds.size > 0 && (
@@ -355,13 +354,14 @@ function GridView({
                   position:'relative', display:'flex', flexDirection:'column',
                   background:'transparent', borderRadius:4, overflow:'hidden', cursor:'pointer',
                   outline: isChecked ? `2px solid ${C.accent}` : isCurrent ? `2px solid rgba(255,255,255,.5)` : `2px solid transparent`,
-                  outlineOffset:1, padding:0, border:'none', transition:'outline .1s',
+                  outlineOffset:1, padding:0, border:'none', transition:'outline .2s ease',
+                  contentVisibility:'auto', containIntrinsicSize:'0 120px',
                 }}>
                 <div style={{ position:'relative', width:'100%', aspectRatio:'3/2', background:C.surf2, overflow:'hidden' }}>
                   <img src={thumbUrl(p.path)} alt="" decoding="async" loading="lazy"
                     style={{ width:'100%', height:'100%', objectFit:'cover', display:'block', opacity: selectMode && !isChecked ? 0.55 : 1, transition:'opacity .15s' }}/>
                   {selectMode && (
-                    <div style={{ position:'absolute', top:6, left:6, width:16, height:16, borderRadius:4, background:isChecked ? C.accent : 'rgba(0,0,0,.6)', border:`1.5px solid ${isChecked ? C.accent : 'rgba(255,255,255,.4)'}`, display:'flex', alignItems:'center', justifyContent:'center', transition:'all .15s' }}>
+                    <div style={{ position:'absolute', top:6, left:6, width:16, height:16, borderRadius:4, background:isChecked ? C.accent : 'rgba(0,0,0,.6)', border:`1.5px solid ${isChecked ? C.accent : 'rgba(255,255,255,.4)'}`, display:'flex', alignItems:'center', justifyContent:'center', transition:'all .25s cubic-bezier(.2,0,0,1)' }}>
                       {isChecked && <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20,6 9,17 4,12"/></svg>}
                     </div>
                   )}
@@ -371,9 +371,15 @@ function GridView({
                       <span style={{ fontSize:9, fontWeight:700, color:C.accent }}>USED</span>
                     </div>
                   )}
-                  {p.grade !== 'Pending' && gl(p.grade) !== 'Unknown' && (
-                    <div style={{ position:'absolute', bottom:5, left:5, background:'rgba(0,0,0,.68)', backdropFilter:'blur(6px)', borderRadius:4, padding:'2px 7px', border:`1px solid ${gc(p.grade)}55` }}>
-                      <span style={{ fontSize:9.5, fontWeight:700, color:gc(p.grade), letterSpacing:'0.04em' }}>{gl(p.grade).toUpperCase()}</span>
+                  {p.grade !== 'Pending' && p.score > 0 && (
+                    <div style={{ position:'absolute', bottom:5, left:5,
+                      background:'rgba(0,0,0,.68)', backdropFilter:'blur(8px)',
+                      borderRadius:5, padding:'3px 7px', display:'flex', alignItems:'center', gap:4,
+                      border:`1px solid ${gc(p.grade)}44`, pointerEvents:'none' }}>
+                      <div style={{ width:6, height:6, borderRadius:'50%', background:gc(p.grade), flexShrink:0 }}/>
+                      <span style={{ fontSize:12, fontWeight:800, color:'#fff', lineHeight:1, letterSpacing:'-.01em', fontVariantNumeric:'tabular-nums' }}>
+                        {Math.round(p.score * 100)}
+                      </span>
                     </div>
                   )}
                 </div>
@@ -401,7 +407,7 @@ function GridView({
 
       {/* Selection action bar */}
       {selectMode && selectedIds.size > 0 && (
-        <div style={{ position:'absolute', bottom:16, left:'50%', transform:'translateX(-50%)', display:'flex', alignItems:'center', gap:10, background:C.surf, border:`1px solid ${C.bdr2}`, borderRadius:12, padding:'10px 18px', boxShadow:'0 8px 40px rgba(0,0,0,.7)', backdropFilter:'blur(12px)', zIndex:50, whiteSpace:'nowrap', animation:'slideUp .22s cubic-bezier(.2,0,0,1)' }}>
+        <div style={{ position:'absolute', bottom:16, left:'50%', transform:'translateX(-50%)', display:'flex', alignItems:'center', gap:10, background:C.surf, border:`1px solid ${C.bdr2}`, borderRadius:12, padding:'10px 18px', boxShadow:'0 8px 40px rgba(0,0,0,.7)', backdropFilter:'blur(12px)', zIndex:50, whiteSpace:'nowrap', animation:'slideUp .3s cubic-bezier(.2,0,0,1)' }}>
           <span style={{ fontSize:14, fontWeight:700, color:C.text }}>{selectedIds.size} selected</span>
           <div style={{ width:1, height:16, background:C.bdr2 }}/>
           <button onClick={onCreateSequence}
@@ -428,11 +434,13 @@ export default function App() {
   const [loading,      setLoading]      = useState(false);
   const [listLoading,  setListLoading]  = useState(false);
   const [gradeProgress, setGradeProgress] = useState(0);
+  const [gradeDesc,     setGradeDesc]     = useState("");
   const [toast,      setToast]      = useState<{msg: string; type: "success"|"error"|"info"} | null>(null);
   const [selId,      setSelId]      = useState<string | null>(null);
   const [nicheRec,   setNicheRec]   = useState<any>(null);
-  const [infoTab,    setInfoTab]    = useState<"exif"|"analysis"|"breakdown">("exif");
-  const [mainTab,    setMainTab]    = useState<"gallery"|"sequence"|"duplicates">("gallery");
+  const [infoTab,    setInfoTab]    = useState<"exif"|"analysis"|"reasoning">("analysis");
+  const [scanMode,   setScanMode]   = useState(false);
+  const [mainTab,    setMainTab]    = useState<"gallery"|"duplicates"|"creative">("gallery");
   const [seqMode,    setSeqMode]    = useState<'auto'|'director'>('auto');
   const [directorPrompt,  setDirectorPrompt]  = useState('');
   const [directorResult,  setDirectorResult]  = useState<any>(null);
@@ -456,6 +464,8 @@ export default function App() {
   const [bPath,      setBPath]      = useState("C:\\Users");
   const [bFolders,   setBFolders]   = useState<string[]>([]);
   const [bImages,    setBImages]    = useState<string[]>([]);
+  const [bSelFolders, setBSelFolders] = useState<Set<string>>(new Set());
+  const [lastBClick, setLastBClick] = useState<number | null>(null);
   const [bLoading,   setBLoading]   = useState(false);
   const [copied,     setCopied]     = useState(false);
   const [rightW,     setRightW]     = useState(280);
@@ -471,20 +481,21 @@ export default function App() {
   const [showStarSort, setShowStarSort] = useState(false);
   const [seqMinStars, setSeqMinStars]   = useState(0);
   const [dragOver,    setDragOver]      = useState(false);
-  const [backendReady, setBackendReady] = useState(false);
-  const [backendError, setBackendError] = useState(false);
-
+  const [backendReady,   setBackendReady]   = useState(false);
+  const [backendError,   setBackendError]   = useState(false);
   // ── Creative Direction state ──────────────────────────────────────────────
   const [creativeAnchor,   setCreativeAnchor]   = useState<string | null>(null);
   const [creativePrompt,   setCreativePrompt]   = useState("");
   const [creativeMode,     setCreativeMode]     = useState<"canny"|"depth">("canny");
+  const [creativeCount,    setCreativeCount]    = useState(7);
   const [creativeLoading,  setCreativeLoading]  = useState(false);
   const [creativeProgress, setCreativeProgress] = useState(0);
   const [creativeStage,    setCreativeStage]    = useState("");
   const [creativeResults,     setCreativeResults]     = useState<any[]>([]);
   const [creativeOutDir,      setCreativeOutDir]      = useState("");
   const [creativeShowOriginal,setCreativeShowOriginal]= useState(false);
-  const [dupPanelOpen,        setDupPanelOpen]        = useState(true);
+  const [usedCount,           setUsedCount]           = useState(0);
+  const [sequenceSaving,      setSequenceSaving]      = useState(false);
 
   const filmRef    = useRef<HTMLDivElement>(null);
   const dragCounter = useRef(0);
@@ -524,6 +535,14 @@ export default function App() {
     return () => { cancelled = true; clearTimeout(timerId); };
   }, []);
 
+  /* fetch excluded-photo count from the server */
+  useEffect(() => {
+    fetch(`${API}/api/creative-direction/used-count`)
+      .then(r => r.json())
+      .then(d => setUsedCount(d.count ?? 0))
+      .catch(() => {});
+  }, []);
+
   const sel = useMemo(() => photos.find(p => p.id === selId) ?? photos[0] ?? null, [photos, selId]);
 
   useEffect(() => {
@@ -550,29 +569,19 @@ export default function App() {
       el.scrollLeft += (br.left + br.width / 2) - (er.left + er.width / 2);
   }, [selId]);
 
-  const dupGroups = useMemo(() => {
-    const byCluster: Record<number, any[]> = {};
-    for (const p of photos) {
-      if (p.cluster_id >= 0) (byCluster[p.cluster_id] ??= []).push(p);
-    }
-    return Object.values(byCluster)
-      .map(g => {
-        const best = g.find(p => (p.sim_flag || '').includes('Best')) ?? g[0];
-        const rest = g.filter(p => p !== best);
-        return { best, rest, all: [best, ...rest] };
-      })
-      .sort((a, b) => b.all.length - a.all.length);
-  }, [photos]);
 
   const filteredPhotos = useMemo(() => {
+    const carouselPaths = new Set(carousel.map((c: any) => c.path));
     const base = photos.filter(p => {
-      const gradeOk = !filterGrade || p.grade.includes(filterGrade);
+      if (redacted.has(p.path)) return false;                  // non-best duplicates always hidden
       const starsOk = filterStars === null || p.stars === filterStars;
-      return gradeOk && starsOk && !redacted.has(p.path);
+      if (filterGrade) return gl(p.grade) === filterGrade && starsOk;
+      if (carouselPaths.has(p.path)) return true;              // sequence photos always visible when no grade filter
+      return starsOk;
     });
     if (!sortScore) return base;
     return [...base].sort((a, b) => sortScore === 'desc' ? b.score - a.score : a.score - b.score);
-  }, [photos, filterGrade, filterStars, redacted, sortScore]);
+  }, [photos, filterGrade, filterStars, redacted, sortScore, carousel]);
 
   /* keyboard nav */
   useEffect(() => {
@@ -592,6 +601,15 @@ export default function App() {
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
   }, [photos, selId, filteredPhotos]);
+
+  /* clear creative state when folder changes */
+  useEffect(() => {
+    setCreativeResults([]);
+    setCreativeAnchor(null);
+    setCreativePrompt('');
+    setCreativeOutDir('');
+    setCreativeShowOriginal(false);
+  }, [folder]);
 
   /* load photos when folder changes (skipped when resuming from catalog) */
   useEffect(() => {
@@ -657,6 +675,23 @@ export default function App() {
     setBPath(p); loadBrowser(p);
   }, [bPath, loadBrowser]);
 
+  const handleBrowserFolderClick = useCallback((e: MouseEvent, path: string, _idx: number) => {
+    const isCtrl = (e as any).ctrlKey || (e as any).metaKey;
+    if (isCtrl) {
+      // Ctrl+click toggles folder selection (for multi-add)
+      setBSelFolders(prev => {
+        const next = new Set(prev);
+        if (next.has(path)) next.delete(path); else next.add(path);
+        return next;
+      });
+    } else {
+      // Single click navigates into the folder
+      setBPath(path);
+      loadBrowser(path);
+      setBSelFolders(new Set());
+    }
+  }, [loadBrowser]);
+
   const openBrowser    = useCallback(() => { setBrowserMode('open'); setShowBrowser(true); loadBrowser(bPath); }, [bPath, loadBrowser]);
   const openAddFolder  = useCallback(() => { setBrowserMode('add');  setShowBrowser(true); loadBrowser(bPath); }, [bPath, loadBrowser]);
 
@@ -715,17 +750,18 @@ export default function App() {
   }, [notify]);
 
   /* grade — uses SSE stream so large folders never time out */
-  const handleGrade = useCallback(async () => {
+  const handleGrade = useCallback(async (forceRescan = false) => {
     const safePath = sanitizePath(folder);
     if (!safePath && folders.length === 0) { notify("Paste a valid folder path first.", "error"); return; }
     setLoading(true);
     setGradeProgress(0);
+    setGradeDesc("");
     const allFolderPaths = folders.length > 0 ? folders.map(sanitizePath) : [safePath];
     try {
       const resp = await fetch(`${API}/api/grade/v2/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ folder_path: allFolderPaths[0], folder_paths: allFolderPaths, preset }),
+        body: JSON.stringify({ folder_path: allFolderPaths[0], folder_paths: allFolderPaths, preset, scan_mode: scanMode, force_rescan: forceRescan }),
       });
       if (!resp.ok) throw new Error(`Server error ${resp.status}`);
       const reader = resp.body!.getReader();
@@ -742,15 +778,21 @@ export default function App() {
           let msg: any;
           try { msg = JSON.parse(line.slice(6)); } catch { continue; }
           if (msg.progress !== undefined) setGradeProgress(msg.progress);
+          if (msg.desc)                   setGradeDesc(msg.desc);
           if (msg.error) throw new Error(msg.error);
           if (msg.done) {
             const ps = msg.data.map((p: any, i: number) => ({ ...p, id: `p-${i}` }));
             setPhotos(ps);
+            // Auto-redact only non-best duplicates — weak photos are NOT redacted here;
+            // they are hidden in the default view via filteredPhotos grade logic.
             const autoRedacted = new Set<string>(
-              ps.filter((p: any) => p.reject).map((p: any) => p.path)
+              ps.filter((p: any) => p.cluster_id >= 0 && !(p.sim_flag || '').startsWith('★'))
+                .map((p: any) => p.path)
             );
             setRedacted(autoRedacted);
-            const firstVisible = ps.find((p: any) => !autoRedacted.has(p.path));
+            const firstVisible = ps.find((p: any) =>
+              !autoRedacted.has(p.path) && !((p.grade as string)?.includes('Weak'))
+            ) ?? ps.find((p: any) => !autoRedacted.has(p.path));
             setSelId(firstVisible?.id ?? ps[0]?.id ?? null);
             // Populate carousel from MOGCO result if present, else clear it
             if (msg.mogco_sequence?.length > 0) {
@@ -761,9 +803,10 @@ export default function App() {
             }
             setMainTab('gallery');
             setLoupeMode('loupe');
-            setInfoTab('breakdown');
+            setInfoTab('analysis');
             setLoading(false);
             setGradeProgress(0);
+            setGradeDesc("");
             const mogcoNote = msg.mogco_sequence?.length > 0 ? ` · ${msg.mogco_sequence.length}-frame MOGCO sequence ready` : '';
             notify(`✅ Graded ${msg.total} images${mogcoNote}`, 'success');
             axios.post(`${API}/api/recommend`, { photos: msg.data })
@@ -791,7 +834,7 @@ export default function App() {
       const d = res.data;
       setCarousel(Array.isArray(d) ? d : d.sequence);
       setSubjType(d.subject_type ?? null);
-      setMainTab('sequence');
+      setMainTab('gallery');
       notify('✅ Sequence generated', 'success');
     } catch (err: any) { notify(`❌ ${err.response?.data?.detail || "Failed"}`, "error"); }
     setLoading(false);
@@ -825,8 +868,7 @@ export default function App() {
 
   const handleRunCreativeDirection = useCallback(async () => {
     if (!creativeAnchor) { notify('Select an anchor image first', 'error'); return; }
-    const strongCount = photos.filter(p => p.grade.includes('Strong')).length;
-    if (strongCount === 0) { notify('No Strong images found. Grade your folder first.', 'error'); return; }
+    if (photos.length === 0) { notify('No photos loaded.', 'error'); return; }
     setCreativeLoading(true);
     setCreativeProgress(0);
     setCreativeStage('Initialising…');
@@ -840,6 +882,7 @@ export default function App() {
           folder_path:    sanitizePath(folders[0] || folder),
           style_prompt:   creativePrompt,
           structure_mode: creativeMode,
+          n_target:       creativeCount,
         }),
       });
       if (!resp.ok) throw new Error(`Server error ${resp.status}`);
@@ -860,11 +903,16 @@ export default function App() {
           if (msg.desc)                   setCreativeStage(msg.desc);
           if (msg.error) throw new Error(msg.error);
           if (msg.done) {
+            if (msg.data?.error) throw new Error(msg.data.error);
             const outputs = msg.data?.outputs ?? [];
             setCreativeResults(outputs);
             setCreativeOutDir(msg.data?.output_dir ?? '');
             const ok = outputs.filter((r: any) => r.success).length;
-            notify(`✅ Creative Direction complete — ${ok}/${outputs.length} images styled`, 'success');
+            if (ok === 0 && outputs.length === 0) {
+              notify('Creative Direction ran but produced no outputs.', 'info');
+            } else {
+              notify(`✅ Creative Direction — ${ok}/${outputs.length} images styled`, 'success');
+            }
             break outer;
           }
         }
@@ -876,7 +924,44 @@ export default function App() {
       setCreativeProgress(0);
       setCreativeStage('');
     }
-  }, [creativeAnchor, creativePrompt, creativeMode, photos, folder, folders, notify]);
+  }, [creativeAnchor, creativePrompt, creativeMode, creativeCount, photos, folder, folders, notify]);
+
+  const handleSaveSequence = useCallback(async () => {
+    const successes = creativeResults.filter((r: any) => r.success);
+    if (!successes.length) return;
+    setSequenceSaving(true);
+    try {
+      const resp = await fetch(`${API}/api/creative-direction/save-sequence`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ outputs: successes, base_dir: creativeOutDir }),
+      });
+      const data = await resp.json();
+      if (data.ok) {
+        notify(`Sequence saved — ${data.count} images in ${data.story_dir.split(/[\\/]/).pop()}`, 'success');
+        setUsedCount(data.used_total ?? 0);
+      } else {
+        notify(`Save failed: ${data.error}`, 'error');
+      }
+    } catch (err: any) {
+      notify(`Save error: ${err.message}`, 'error');
+    } finally {
+      setSequenceSaving(false);
+    }
+  }, [creativeResults, creativeOutDir, notify]);
+
+  const handleClearUsed = useCallback(async () => {
+    try {
+      const resp = await fetch(`${API}/api/creative-direction/clear-used`, { method: 'POST' });
+      const data = await resp.json();
+      if (data.ok) {
+        setUsedCount(0);
+        notify('History cleared — all photos eligible again', 'success');
+      }
+    } catch (err: any) {
+      notify(`Clear failed: ${err.message}`, 'error');
+    }
+  }, [notify]);
 
   const handleSortByStars = useCallback((n: number) => {
     setCarousel(prev => [...prev].sort((a, b) => {
@@ -971,17 +1056,17 @@ export default function App() {
   const isDone    = !loading && photos.length > 0 && photos.some(p => p.grade !== 'Pending');
   // If grading is reset/cleared, don't stay on a post-grade tab
   useEffect(() => {
-    if (!isDone && mainTab === 'sequence') setMainTab('gallery');
+    if (!isDone && mainTab !== 'gallery') setMainTab('gallery');
   }, [isDone, mainTab]);
-  const picks     = photos.filter(p => p.grade.includes('Strong')).length;
-  const mids      = photos.filter(p => p.grade.includes('Mid')).length;
+  const picks     = photos.filter(p => gl(p.grade) === 'Strong' && !redacted.has(p.path)).length;
+  const mids      = photos.filter(p => gl(p.grade) === 'Mid'    && !redacted.has(p.path)).length;
   // Paths marked as used: server flags + photos committed to any saved sequence
   const allUsedPaths = useMemo(() =>
     new Set([...Array.from(used), ...saved.flatMap(s => s.sequence.map((p: any) => p.path))]),
   [used, saved]);
-  const rejects   = photos.filter(p => p.reject).length;
+  const rejects   = photos.filter(p => gl(p.grade) === 'Weak'    && !redacted.has(p.path)).length;
   // Star counts within the current grade filter (for the filter bar labels)
-  const gradeFiltered = filterGrade ? photos.filter(p => p.grade.includes(filterGrade)) : photos;
+  const gradeFiltered = filterGrade ? photos.filter(p => gl(p.grade) === filterGrade) : photos;
   const starCounts = [0,1,2,3,4,5].map(n =>
     n === 0 ? gradeFiltered.filter(p => !p.stars).length
             : gradeFiltered.filter(p => p.stars === n).length
@@ -1101,7 +1186,7 @@ export default function App() {
           padding:'7px 16px', borderRadius:8, fontSize:13, fontWeight:500, whiteSpace:'nowrap',
           background: toast.type==='success' ? 'oklch(20% .1 148)' : toast.type==='error' ? 'oklch(18% .1 18)' : C.surf2,
           border:`1px solid ${toast.type==='success' ? 'oklch(48% .14 148)' : toast.type==='error' ? 'oklch(44% .14 18)' : C.bdr2}`,
-          color:C.text, boxShadow:'0 8px 32px rgba(0,0,0,.7)', animation:'slideUp .22s cubic-bezier(.2,0,0,1)',
+          color:C.text, boxShadow:'0 8px 32px rgba(0,0,0,.7)', animation:'slideUp .3s cubic-bezier(.2,0,0,1)',
         }}>{toast.msg}</div>
       )}
 
@@ -1138,7 +1223,7 @@ export default function App() {
 
         {/* Detected niche */}
         {nicheRec?.preset && (
-          <div style={{ display:'flex', flexDirection:'column', justifyContent:'center', flexShrink:0, padding:'0 10px', height:30, borderRadius:6, background:C.surf2, border:`1px solid ${C.bdr2}`, animation:'fadeIn .2s', lineHeight:1 }}>
+          <div style={{ display:'flex', flexDirection:'column', justifyContent:'center', flexShrink:0, padding:'0 10px', height:30, borderRadius:6, background:C.surf2, border:`1px solid ${C.bdr2}`, animation:'fadeIn .32s cubic-bezier(.2,0,0,1)', lineHeight:1 }}>
             <span style={{ fontSize:9, fontWeight:700, letterSpacing:'.1em', textTransform:'uppercase', color:C.text3 }}>Detected niche</span>
             <span style={{ fontSize:13, fontWeight:600, color:C.text, marginTop:2 }}>{nicheRec.preset}</span>
           </div>
@@ -1146,33 +1231,24 @@ export default function App() {
 
         {/* Grade filter pills — only after grading */}
         {isDone && (
-          <div style={{ display:'flex', alignItems:'center', gap:3, flexShrink:0, animation:'fadeIn .2s' }}>
-            {([['Strong', picks, C.strong] as const, ['Mid', mids, C.mid] as const, ['Weak', rejects, C.weak] as const]).map(([label, count, col]) => (
-              <button key={label} onClick={() => {
-                const next = filterGrade === label ? null : label;
-                setFilterGrade(next);
-                setLoupeMode('loupe');
-                if (next) {
-                  const first = photos.find(p => p.grade.includes(next));
-                  if (first) setSelId(first.id);
-                }
-              }}
-                style={{ display:'flex', alignItems:'center', gap:5, padding:'0 9px', height:26, borderRadius:5, cursor:'pointer', fontSize:13, fontWeight:600,
-                  background: filterGrade === label ? `${col}22` : 'transparent',
-                  border:`1px solid ${filterGrade === label ? `${col}66` : C.bdr2}`,
-                  color: filterGrade === label ? col : C.text3,
-                  transition:'all .15s' }}>
-                <div style={{ width:6, height:6, borderRadius:'50%', background:col, flexShrink:0 }}/>
-                {label}
-                <span style={{ fontWeight:400, opacity:.7 }}>{count}</span>
-              </button>
-            ))}
-            {filterGrade && (
-              <button onClick={() => setFilterGrade(null)}
-                style={{ fontSize:13, color:C.text3, padding:'0 7px', height:26, borderRadius:5, border:`1px solid ${C.bdr2}`, background:'transparent', cursor:'pointer' }}>
-                ✕
-              </button>
-            )}
+          <div style={{ display:'flex', alignItems:'center', gap:3, flexShrink:0, animation:'fadeIn .32s cubic-bezier(.2,0,0,1)' }}>
+            {([['Strong', picks, C.strong] as const, ['Mid', mids, C.mid] as const, ['Weak', rejects, C.weak] as const]).map(([label, count, col]) => {
+              const active = filterGrade === label;
+              return (
+                <button key={label}
+                  onClick={() => setFilterGrade(active ? null : label)}
+                  style={{ display:'flex', alignItems:'center', gap:5, padding:'0 9px', height:26, borderRadius:5, fontSize:13, fontWeight:600,
+                    cursor:'pointer', border:'none', outline:'none',
+                    background: active ? `${col}22` : 'transparent',
+                    boxShadow: active ? `0 0 0 1px ${col}66` : `0 0 0 1px ${C.bdr2}`,
+                    color: active ? col : C.text3,
+                    transition:'all .22s cubic-bezier(.2,0,0,1)' }}>
+                  <div style={{ width:6, height:6, borderRadius:'50%', background:col, flexShrink:0 }}/>
+                  {label}
+                  <span style={{ fontWeight:400, opacity:.7 }}>{count}</span>
+                </button>
+              );
+            })}
           </div>
         )}
 
@@ -1182,7 +1258,7 @@ export default function App() {
         {isDone && (
           <button onClick={() => setSortScore(s => s === null ? 'desc' : s === 'desc' ? 'asc' : null)}
             title={sortScore === 'desc' ? 'Sorted: Strong → Weak' : sortScore === 'asc' ? 'Sorted: Weak → Strong' : 'Sort by score'}
-            style={{ display:'flex', alignItems:'center', gap:4, padding:'0 9px', height:26, borderRadius:5, cursor:'pointer', fontSize:12, fontWeight:600, flexShrink:0, transition:'all .15s',
+            style={{ display:'flex', alignItems:'center', gap:4, padding:'0 9px', height:26, borderRadius:5, cursor:'pointer', fontSize:12, fontWeight:600, flexShrink:0, transition:'all .25s cubic-bezier(.2,0,0,1)',
               background: sortScore ? C.surf3 : 'transparent',
               border: `1px solid ${sortScore ? C.aBdr : C.bdr2}`,
               color: sortScore ? C.accent : C.text3 }}>
@@ -1201,20 +1277,19 @@ export default function App() {
             ...(isDone ? [
               ['gallery',    'Gallery',                                  <LayoutGrid size={11}/>],
               ...(hasDups ? [['duplicates', `Duplicates (${dupCount})`, <ImageOff size={11}/>] as [string,string,React.ReactNode]] : []),
-              ['sequence', `Sequence${carousel.length ? ` (${carousel.length})` : ''}`, <Layers size={11}/>],
               ['creative', `Creative${creativeResults.length ? ` (${creativeResults.filter((r:any)=>r.success).length})` : ''}`, <Wand2 size={11}/>],
             ] as [string,string,React.ReactNode][] : []),
           ];
           return (
-            <div style={{ display:'flex', background:C.bg, borderRadius:6, border:`1px solid ${C.bdr2}`, overflow:'hidden', flexShrink:0, animation:'fadeIn .2s' }}>
+            <div style={{ display:'flex', background:C.bg, borderRadius:6, border:`1px solid ${C.bdr2}`, overflow:'hidden', flexShrink:0, animation:'fadeIn .32s cubic-bezier(.2,0,0,1)' }}>
               {tabs.map(([id, label, icon], ti) => (
-                <button key={id} onClick={() => { setMainTab(id as any); if (id === 'gallery') setLoupeMode('loupe'); }}
+                <button key={id} onClick={() => { setMainTab(id as "gallery"|"duplicates"|"creative"); if (id === 'gallery') setLoupeMode('loupe'); }}
                   style={{ display:'flex', alignItems:'center', gap:5, padding:'0 11px', height:30, cursor:'pointer',
                     fontWeight:600, fontSize:13,
                     background: mainTab === id ? C.surf3 : 'transparent',
                     color: mainTab === id ? C.text : C.text3,
                     borderRight: ti < tabs.length - 1 ? `1px solid ${C.bdr2}` : 'none',
-                    border:'none', outline:'none', transition:'background .12s, color .12s',
+                    border:'none', outline:'none', transition:'background .22s ease, color .22s ease',
                   }}>
                   {icon}{label}
                 </button>
@@ -1232,7 +1307,7 @@ export default function App() {
                   background: loupeMode===m ? C.surf3 : 'transparent',
                   color: loupeMode===m ? C.text : C.text3,
                   borderRight: m==='loupe' ? `1px solid ${C.bdr2}` : 'none',
-                  border:'none', transition:'all .12s' }}>
+                  border:'none', transition:'all .22s cubic-bezier(.2,0,0,1)' }}>
                 {icon}
               </button>
             ))}
@@ -1269,24 +1344,46 @@ export default function App() {
           </button>
         )}
 
+        {/* Scan mode toggle */}
+        {!isGrading && (
+          <button
+            onClick={() => setScanMode(v => !v)}
+            title={scanMode
+              ? 'Low-Latency Scan: 1.5B drafts all shots, 7B Architect reviews top 20% only. Click to switch to Full.'
+              : 'Full: 7B Architect reviews any shot where draft confidence ≤ 0.85. Click to switch to Scan.'}
+            style={{
+              display:'flex', alignItems:'center', gap:5, padding:'0 10px', height:30,
+              borderRadius:7, fontSize:12, fontWeight:600, cursor:'pointer', flexShrink:0,
+              background: scanMode ? 'oklch(72% .18 65 / .15)' : C.surf2,
+              border:`1px solid ${scanMode ? 'oklch(72% .18 65 / .45)' : C.bdr2}`,
+              color: scanMode ? 'oklch(72% .18 65)' : C.text3,
+              transition:'background .25s ease, border-color .25s ease, color .25s ease',
+            }}>
+            <Zap size={11} fill={scanMode ? 'currentColor' : 'none'}/>
+            Scan
+          </button>
+        )}
+
         {/* Grade button */}
         {isGrading ? (
-          <div style={{ display:'flex', alignItems:'center', gap:7, padding:'0 14px', height:30, borderRadius:7, background:C.surf2, border:`1px solid ${C.bdr2}`, color:C.text2, fontSize:13, fontWeight:600, flexShrink:0 }}>
+          <div style={{ display:'flex', alignItems:'center', gap:7, padding:'0 12px', height:30, borderRadius:7, background:C.surf2, border:`1px solid ${C.bdr2}`, color:C.text2, fontSize:12, fontWeight:600, flexShrink:0, minWidth:0 }}>
             <span style={{ width:10, height:10, borderRadius:'50%', border:`1.5px solid ${C.accent}`, borderTopColor:'transparent', animation:'spin .7s linear infinite', display:'inline-block', flexShrink:0 }}/>
-            Grading…
+            <span style={{ fontVariantNumeric:'tabular-nums', flexShrink:0 }}>{Math.round(gradeProgress * 100)}%</span>
+            {gradeDesc && <span style={{ color:C.text3, fontSize:11, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:160 }}>{gradeDesc}</span>}
           </div>
         ) : (
-          <button onClick={handleGrade}
+          <button onClick={() => handleGrade(isDone)}
+            title={isDone ? 'Re-grade all images (force full rescan)' : 'Grade new images only — already-graded images are skipped'}
             style={{
               display:'flex', alignItems:'center', gap:6, padding:'0 14px', height:30,
               borderRadius:7, flexShrink:0, fontSize:13, fontWeight:700, cursor:'pointer',
-              background: isDone ? C.surf2 : C.accent,
+              background: isDone ? C.surf2 : (scanMode ? 'oklch(72% .18 65)' : C.accent),
               border:`1px solid ${isDone ? C.bdr2 : 'transparent'}`,
               color: isDone ? C.text2 : '#fff',
               animation: !isDone ? 'pulse 2.8s ease-in-out infinite' : 'none',
             }}>
-            <Sparkles size={12}/>
-            {isDone ? 'Re-grade' : 'Grade'}
+            {scanMode ? <Zap size={12} fill="currentColor"/> : <Sparkles size={12}/>}
+            {isDone ? (scanMode ? 'Re-scan' : 'Re-grade') : (scanMode ? 'Scan' : 'Grade')}
           </button>
         )}
       </header>
@@ -1297,7 +1394,7 @@ export default function App() {
           <div style={{ position:'absolute', top:0, height:'100%', background:`linear-gradient(90deg,transparent,${C.accent},transparent)`, animation:'sweep 1.2s ease-in-out infinite' }}/>
         )}
         {!listLoading && isGrading && (
-          <div style={{ height:'100%', width:`${Math.max(4, gradeProgress * 100)}%`, background:`linear-gradient(90deg,${C.accent},oklch(70% .19 205))`, transition:'width .25s ease' }}/>
+          <div style={{ height:'100%', width:`${Math.max(4, gradeProgress * 100)}%`, background:`linear-gradient(90deg,${C.accent},oklch(70% .19 205))`, transition:'width .35s cubic-bezier(.2,0,0,1)' }}/>
         )}
         {!listLoading && !isGrading && isDone && (
           <div style={{ height:'100%', width:'100%', background:`linear-gradient(90deg,${C.accent},oklch(70% .19 205))` }}/>
@@ -1314,7 +1411,7 @@ export default function App() {
               const active = filterStars === n;
               return (
                 <button key={n} onClick={() => setFilterStars(active ? null : n)}
-                  style={{ display:'flex', alignItems:'center', gap:5, padding:'3px 9px', borderRadius:5, cursor:'pointer', transition:'all .15s',
+                  style={{ display:'flex', alignItems:'center', gap:5, padding:'3px 9px', borderRadius:5, cursor:'pointer', transition:'all .25s cubic-bezier(.2,0,0,1)',
                     background: active ? 'oklch(70% .18 72 / .14)' : 'transparent',
                     border: `1px solid ${active ? 'oklch(70% .18 72 / .5)' : C.bdr2}` }}>
                   <div style={{ display:'flex', gap:1.5 }}>
@@ -1333,7 +1430,7 @@ export default function App() {
           </div>
           <div style={{ width:1, height:14, background:C.bdr2, flexShrink:0 }}/>
           <button onClick={() => setFilterStars(filterStars === 0 ? null : 0)}
-            style={{ display:'flex', alignItems:'center', gap:5, padding:'3px 9px', borderRadius:5, cursor:'pointer', transition:'all .15s',
+            style={{ display:'flex', alignItems:'center', gap:5, padding:'3px 9px', borderRadius:5, cursor:'pointer', transition:'all .25s cubic-bezier(.2,0,0,1)',
               background: filterStars === 0 ? `${C.surf3}` : 'transparent',
               border: `1px solid ${filterStars === 0 ? C.bdr2 : C.bdr2}`, color: filterStars === 0 ? C.text2 : C.text3, fontSize:11, fontWeight:600 }}>
             Unrated <span style={{ color:C.text3, marginLeft:2 }}>{starCounts[0]}</span>
@@ -1351,92 +1448,6 @@ export default function App() {
       {/* ── Body ───────────────────────────────────────────────── */}
       {mainTab === 'gallery' ? (
         <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden', minHeight:0 }}>
-
-          {/* ── Duplicates panel (top of gallery) ─────────────────── */}
-          {isDone && dupGroups.length > 0 && (
-            <div style={{ flexShrink:0, borderBottom:`1px solid ${C.border}`, background:C.surf }}>
-              {/* Header row */}
-              <div style={{ display:'flex', alignItems:'center', gap:8, padding:'6px 14px', cursor:'pointer' }}
-                onClick={() => setDupPanelOpen(o => !o)}>
-                <ImageOff size={13} style={{ color:C.text3, flexShrink:0 }}/>
-                <span style={{ fontSize:12, fontWeight:700, color:C.text2 }}>
-                  {dupGroups.length} duplicate group{dupGroups.length !== 1 ? 's' : ''}
-                </span>
-                <span style={{ fontSize:11, color:C.text3 }}>
-                  — {dupGroups.reduce((s,g)=>s+g.rest.length,0)} photos auto-hidden
-                </span>
-                <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:8 }}>
-                  {dupGroups.some(g => g.rest.some(p => !redacted.has(p.path))) && (
-                    <button onClick={e => { e.stopPropagation();
-                      setRedacted(prev => { const next = new Set(prev); dupGroups.forEach(g => g.rest.forEach(p => next.add(p.path))); return next; }); }}
-                      style={{ fontSize:11, fontWeight:700, color:C.strong, padding:'2px 8px', borderRadius:4,
-                        border:`1px solid oklch(65% .17 148 / .35)`, background:'oklch(65% .17 148 / .10)', cursor:'pointer' }}>
-                      Keep all best
-                    </button>
-                  )}
-                  <span style={{ fontSize:11, color:C.text3 }}>{dupPanelOpen ? '▲' : '▼'}</span>
-                </div>
-              </div>
-
-              {/* Groups strip */}
-              {dupPanelOpen && (
-                <div style={{ overflowX:'auto', display:'flex', gap:10, padding:'8px 14px 10px', alignItems:'flex-start' }}>
-                  {dupGroups.map((g, gi) => (
-                    <div key={gi} style={{ flexShrink:0, background:C.bg, border:`1px solid ${C.border}`, borderRadius:7, overflow:'hidden', minWidth:0 }}>
-                      <div style={{ padding:'4px 8px', borderBottom:`1px solid ${C.border}`, display:'flex', alignItems:'center', gap:6 }}>
-                        <span style={{ fontSize:10, fontWeight:700, color:C.text3, textTransform:'uppercase', letterSpacing:'.06em' }}>
-                          Group {gi+1}
-                        </span>
-                        <span style={{ fontSize:10, color:C.text3 }}>{g.all.length} shots</span>
-                        {g.rest.some(p => redacted.has(p.path)) ? (
-                          <button onClick={() => setRedacted(prev => { const next = new Set(prev); g.rest.forEach(p => next.delete(p.path)); return next; })}
-                            style={{ marginLeft:'auto', fontSize:10, color:C.text3, padding:'1px 6px', borderRadius:3,
-                              border:`1px solid ${C.bdr2}`, background:'transparent', cursor:'pointer' }}>Restore</button>
-                        ) : (
-                          <button onClick={() => setRedacted(prev => { const next = new Set(prev); g.rest.forEach(p => next.add(p.path)); return next; })}
-                            style={{ marginLeft:'auto', fontSize:10, fontWeight:600, color:C.strong, padding:'1px 6px', borderRadius:3,
-                              border:`1px solid oklch(65% .17 148 / .35)`, background:'oklch(65% .17 148 / .10)', cursor:'pointer' }}>Keep best</button>
-                        )}
-                      </div>
-                      <div style={{ display:'flex', gap:6, padding:6 }}>
-                        {g.all.map((p: any) => {
-                          const isBest = p === g.best;
-                          const gradeColor = gc(p.grade);
-                          return (
-                            <div key={p.id}
-                              onClick={() => { setSelId(p.id); setLoupeMode('loupe'); }}
-                              style={{ width:90, flexShrink:0, cursor:'pointer', borderRadius:5, overflow:'hidden',
-                                border: isBest ? `2px solid ${gradeColor}` : `1px solid ${C.border}`,
-                                opacity: redacted.has(p.path) ? 0.3 : 1, transition:'opacity .2s',
-                                background: isBest ? `${gradeColor}18` : C.surf }}>
-                              <div style={{ position:'relative', width:'100%', height:64, overflow:'hidden' }}>
-                                <img src={thumbUrl(p.path)} alt="" loading="lazy" decoding="async"
-                                  style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
-                                {isBest && (
-                                  <div style={{ position:'absolute', top:3, left:3, background:`${gradeColor}dd`,
-                                    borderRadius:3, padding:'1px 4px', fontSize:8, fontWeight:800, color:'#fff', letterSpacing:'.06em' }}>
-                                    BEST
-                                  </div>
-                                )}
-                                <div style={{ position:'absolute', top:3, right:3, background:'rgba(0,0,0,.6)',
-                                  borderRadius:3, padding:'1px 4px', fontSize:8, color:'#fff' }}>
-                                  {(p.score*100).toFixed(0)}
-                                </div>
-                              </div>
-                              <p style={{ fontSize:9, margin:'3px 4px', color: isBest ? gradeColor : C.text3,
-                                fontWeight: isBest ? 700 : 400, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
-                                {p.path.split(/[\\/]/).pop()}
-                              </p>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
 
           {/* Middle row: grid view OR loupe (preview + right panel) */}
           <div style={{ flex:1, display:'flex', minHeight:0, overflow:'hidden' }}>
@@ -1468,10 +1479,10 @@ export default function App() {
                       display:'flex', flexDirection:'column', alignItems:'center', gap:16,
                       padding:'48px 64px', borderRadius:16, cursor:'pointer', background:'transparent',
                       border:`2px dashed ${dragOver ? '#3b82f6' : C.border}`,
-                      transition:'all .2s', outline:'none',
+                      transition:'all .28s cubic-bezier(.2,0,0,1)', outline:'none',
                     }}>
-                    <FolderOpen size={48} strokeWidth={1.25} style={{ color: dragOver ? '#3b82f6' : C.text3, transition:'color .2s' }}/>
-                    <span style={{ fontSize:20, fontWeight:500, color: dragOver ? '#3b82f6' : C.text2, transition:'color .2s' }}>
+                    <FolderOpen size={48} strokeWidth={1.25} style={{ color: dragOver ? '#3b82f6' : C.text3, transition:'color .28s ease' }}/>
+                    <span style={{ fontSize:20, fontWeight:500, color: dragOver ? '#3b82f6' : C.text2, transition:'color .28s ease' }}>
                       Select a folder or drag a folder here
                     </span>
                   </button>
@@ -1489,7 +1500,7 @@ export default function App() {
                     key={sel.path}
                     src={photoUrl(sel.path)}
                     alt=""
-                    style={{ maxWidth:'100%', maxHeight:'100%', objectFit:'contain', display:'block', userSelect:'none', animation:'fadeIn .2s ease-out', outline: selectedIds.has(selId ?? '') ? `3px solid ${C.accent}` : 'none', outlineOffset:'-3px', transition:'outline .15s' }}
+                    style={{ maxWidth:'100%', maxHeight:'100%', objectFit:'contain', display:'block', userSelect:'none', animation:'fadeIn .35s cubic-bezier(.2,0,0,1)', outline: selectedIds.has(selId ?? '') ? `3px solid ${C.accent}` : 'none', outlineOffset:'-3px', transition:'outline .22s ease' }}
                   />
                   <button onClick={() => hasPrev && setSelId(filteredPhotos[selIdx-1].id)} disabled={!hasPrev}
                     style={{ position:'absolute', left:12, top:'50%', transform:'translateY(-50%)', width:34, height:34, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', background:'rgba(0,0,0,.55)', backdropFilter:'blur(12px)', color:hasPrev?C.text:C.text3, opacity:hasPrev?1:0, border:'1px solid rgba(255,255,255,.07)', pointerEvents:hasPrev?'auto':'none', cursor:'pointer', fontSize:18 }}>‹</button>
@@ -1500,7 +1511,7 @@ export default function App() {
                     const isSel = selectedIds.has(selId);
                     return (
                       <button onClick={() => setSelectedIds(prev => { const next = new Set(prev); next.has(selId) ? next.delete(selId) : next.add(selId); return next; })}
-                        style={{ position:'absolute', bottom:16, left:16, display:'flex', alignItems:'center', gap:6, padding:'6px 12px', borderRadius:20, cursor:'pointer', transition:'all .15s', background:isSel ? C.accent : 'rgba(0,0,0,.6)', backdropFilter:'blur(12px)', border:`1px solid ${isSel ? C.accent : 'rgba(255,255,255,.12)'}`, color:'#fff', fontSize:12, fontWeight:700 }}>
+                        style={{ position:'absolute', bottom:16, left:16, display:'flex', alignItems:'center', gap:6, padding:'6px 12px', borderRadius:20, cursor:'pointer', transition:'all .25s cubic-bezier(.2,0,0,1)', background:isSel ? C.accent : 'rgba(0,0,0,.6)', backdropFilter:'blur(12px)', border:`1px solid ${isSel ? C.accent : 'rgba(255,255,255,.12)'}`, color:'#fff', fontSize:12, fontWeight:700 }}>
                         <div style={{ width:14, height:14, borderRadius:3, flexShrink:0, background:isSel?'#fff':'transparent', border:`1.5px solid ${isSel?C.accent:'rgba(255,255,255,.6)'}`, display:'flex', alignItems:'center', justifyContent:'center' }}>
                           {isSel && <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke={C.accent} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20,6 9,17 4,12"/></svg>}
                         </div>
@@ -1510,7 +1521,7 @@ export default function App() {
                   })()}
                   {/* Floating action bar */}
                   {selectedIds.size > 0 && (
-                    <div style={{ position:'absolute', bottom:16, left:'50%', transform:'translateX(-50%) translateX(40px)', display:'flex', alignItems:'center', gap:10, background:C.surf, border:`1px solid ${C.bdr2}`, borderRadius:12, padding:'10px 18px', boxShadow:'0 8px 40px rgba(0,0,0,.7)', backdropFilter:'blur(12px)', zIndex:50, whiteSpace:'nowrap', animation:'slideUp .22s cubic-bezier(.2,0,0,1)' }}>
+                    <div style={{ position:'absolute', bottom:16, left:'50%', transform:'translateX(-50%) translateX(40px)', display:'flex', alignItems:'center', gap:10, background:C.surf, border:`1px solid ${C.bdr2}`, borderRadius:12, padding:'10px 18px', boxShadow:'0 8px 40px rgba(0,0,0,.7)', backdropFilter:'blur(12px)', zIndex:50, whiteSpace:'nowrap', animation:'slideUp .3s cubic-bezier(.2,0,0,1)' }}>
                       <span style={{ fontSize:14, fontWeight:700, color:C.text }}>{selectedIds.size} selected</span>
                       <div style={{ width:1, height:16, background:C.bdr2 }}/>
                       <button onClick={handleCreateFromSelection}
@@ -1531,7 +1542,7 @@ export default function App() {
             {photos.length > 0 && (
             <div
               onMouseDown={onResizeDown}
-              style={{ width:3, cursor:'col-resize', flexShrink:0, background:'transparent', transition:'background .15s' }}
+              style={{ width:3, cursor:'col-resize', flexShrink:0, background:'transparent', transition:'background .25s ease' }}
               onMouseEnter={e => (e.currentTarget.style.background = 'oklch(64% .19 248 / .3)')}
               onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
             />
@@ -1544,7 +1555,7 @@ export default function App() {
               {sel && (
                 <div style={{ flexShrink:0, position:'relative', aspectRatio:'3/2', background:C.bg, overflow:'hidden' }}>
                   <img key={sel.path} src={thumbUrl(sel.path)} alt=""
-                    style={{ width:'100%', height:'100%', objectFit:'cover', display:'block', animation:'fadeIn .2s' }}/>
+                    style={{ width:'100%', height:'100%', objectFit:'cover', display:'block', animation:'fadeIn .32s cubic-bezier(.2,0,0,1)' }}/>
                   {isGraded && (
                     <div style={{ position:'absolute', inset:0, background:'linear-gradient(to top,rgba(0,0,0,.85) 0%,transparent 55%)', display:'flex', alignItems:'flex-end', padding:'10px 12px' }}>
                       <div style={{ display:'flex', alignItems:'center', gap:6, background:'rgba(0,0,0,.6)', backdropFilter:'blur(8px)', borderRadius:6, padding:'6px 12px', border:`1px solid ${gc(sel.grade)}44` }}>
@@ -1565,47 +1576,46 @@ export default function App() {
                       {sel.path.split(/[\\/]/).pop()}
                     </span>
                     <button onClick={handleCopyPath} title="Copy path"
-                      style={{ display:'flex', alignItems:'center', gap:4, padding:'4px 7px', borderRadius:5, background:copied ? C.sLow : C.surf2, border:`1px solid ${C.bdr2}`, color:copied ? C.strong : C.text3, fontSize:11, cursor:'pointer', transition:'all .15s' }}>
+                      style={{ display:'flex', alignItems:'center', gap:4, padding:'4px 7px', borderRadius:5, background:copied ? C.sLow : C.surf2, border:`1px solid ${C.bdr2}`, color:copied ? C.strong : C.text3, fontSize:11, cursor:'pointer', transition:'all .25s cubic-bezier(.2,0,0,1)' }}>
                       <Copy size={10}/>{copied ? 'Copied!' : ''}
                     </button>
                   </div>
                   <StarRating stars={sel.stars ?? 0} onSet={n => handleSetStars(sel.id, n)}/>
-                  {/* Grade override — also trains the PersonalHead when V2 is active */}
+                  {/* Grade display — read-only */}
                   {isDone && (
                     <div style={{ display:'flex', gap:4, marginTop:8 }}>
                       {(['Strong ✅','Mid ⚠️','Weak ❌'] as const).map(g => {
                         const isActive = sel.grade === g;
                         const col = g.includes('Strong') ? C.strong : g.includes('Mid') ? C.mid : C.weak;
                         return (
-                          <button key={g}
-                            onClick={async () => {
-                              if (isActive) return;
-                              const prevGrade = sel.grade;
-                              // Optimistic local update
-                              setPhotos(ps => ps.map(p => p.id === sel.id ? {...p, grade: g} : p));
-                              // Train PersonalHead with a ranking pair
-                              try {
-                                const partner = photos.find(p =>
-                                  p.id !== sel.id && p.grade !== g && p.grade !== prevGrade
-                                ) ?? photos.find(p => p.id !== sel.id);
-                                if (partner) {
-                                  await axios.post(`${API}/api/personal/update`, {
-                                    path1: sel.path,     grade1: g,
-                                    path2: partner.path, grade2: partner.grade,
-                                  });
-                                }
-                              } catch { /* non-blocking */ }
-                            }}
-                            style={{ flex:1, padding:'3px 0', borderRadius:5, fontSize:11, fontWeight:700, cursor: isActive ? 'default' : 'pointer',
+                          <div key={g}
+                            style={{ flex:1, padding:'3px 0', borderRadius:5, fontSize:11, fontWeight:700,
+                              textAlign:'center', userSelect:'none', pointerEvents:'none',
                               background: isActive ? `${col}22` : 'transparent',
                               border: `1px solid ${isActive ? col : C.bdr2}`,
-                              color: isActive ? col : C.text3, transition:'all .12s' }}>
+                              color: isActive ? col : C.text3 }}>
                             {gl(g)}
-                          </button>
+                          </div>
                         );
                       })}
                     </div>
                   )}
+                  {/* Duplicate badge — shown when this photo is the best in a group */}
+                  {isDone && sel.cluster_id >= 0 && (sel.sim_flag || '').startsWith('★') && (() => {
+                    const m = (sel.sim_flag as string).match(/Best of (\d+)/);
+                    const count = m ? parseInt(m[1]) : 2;
+                    return (
+                      <button
+                        onClick={() => setMainTab('duplicates')}
+                        style={{ display:'flex', alignItems:'center', gap:5, marginTop:8, width:'100%',
+                          padding:'5px 10px', borderRadius:6, cursor:'pointer',
+                          background:'oklch(64% .19 248 / .08)', border:`1px solid ${C.aBdr}`,
+                          color:C.accent, fontSize:11, fontWeight:600, transition:'all .22s cubic-bezier(.2,0,0,1)' }}>
+                        <Layers size={10} style={{ flexShrink:0 }}/>
+                        Best of {count} similar shots — view duplicates
+                      </button>
+                    );
+                  })()}
                 </div>
               )}
 
@@ -1613,11 +1623,11 @@ export default function App() {
               {sel && (
                 <div style={{ flexShrink:0, display:'flex', borderBottom:`1px solid ${C.border}` }}>
                   {(isDone
-                    ? [['breakdown','Breakdown'],['analysis','Analysis'],['exif','EXIF']]
+                    ? [['analysis','Analysis'],['reasoning','Reasoning'],['exif','EXIF']]
                     : [['exif','EXIF']]
                   ).map(([id, label]) => (
                     <button key={id} onClick={() => setInfoTab(id as any)}
-                      style={{ flex:1, height:34, fontSize:12.5, fontWeight:600, cursor:'pointer', background:'none', border:'none', borderBottom:`2px solid ${infoTab===id ? C.accent : 'transparent'}`, color:infoTab===id ? C.accent : C.text3, transition:'all .15s', letterSpacing:'.03em', marginBottom:-1 }}>
+                      style={{ flex:1, height:34, fontSize:12.5, fontWeight:600, cursor:'pointer', background:'none', border:'none', borderBottom:`2px solid ${infoTab===id ? C.accent : 'transparent'}`, color:infoTab===id ? C.accent : C.text3, transition:'all .25s cubic-bezier(.2,0,0,1)', letterSpacing:'.03em', marginBottom:-1 }}>
                       {label}
                     </button>
                   ))}
@@ -1638,7 +1648,61 @@ export default function App() {
                       <p style={{ fontSize:13, color:C.text3 }}>Analysing…</p>
                     </div>
                   ) : isGraded ? (
-                    <p style={{ fontSize:13, color:C.text2, lineHeight:1.85, animation:'fadeIn .25s' }}>{sel?.critique || 'No critique available.'}</p>
+                    (() => {
+                      const raw: Record<string,number> = sel?.breakdown ?? {};
+                      // Strip meta-scores — only keep real CLIP aspect dimensions
+                      // Fixed 5-dimension order — always shown uniformly on every photo
+                      const ASPECT_KEYS = ['Technical','Composition','Lighting','Narrative','Human/Culture'] as const;
+                      const META_KEYS = new Set(['aesthetic','personal','nima']);
+                      // Merge raw breakdown; fall back to 0 so every bar is always present
+                      const aspectMap: Record<string,number> = {};
+                      Object.entries(raw).forEach(([k,v]) => {
+                        if (!META_KEYS.has(k.toLowerCase())) aspectMap[k] = v as number;
+                      });
+                      // Build sorted list: known keys first in fixed order, then any extras
+                      const known = ASPECT_KEYS.map(k => [k, aspectMap[k] ?? 0] as [string,number]);
+                      const extra = Object.entries(aspectMap).filter(([k]) => !(ASPECT_KEYS as readonly string[]).includes(k));
+                      const aspects = [...known, ...extra].sort((a,b) => b[1]-a[1]);
+                      const gradeColor = gc(sel?.grade ?? '');
+                      const pct  = Math.round((sel?.score ?? 0) * 100);
+                      const tier = gl(sel?.grade ?? '');
+                      const best    = aspects[0]?.[0] ?? '';
+                      const weakest = aspects[aspects.length - 1]?.[0] ?? '';
+                      return (
+                        <div style={{ display:'flex', flexDirection:'column', gap:16, animation:'fadeIn .32s cubic-bezier(.2,0,0,1)' }}>
+                          {/* Aspect bars */}
+                          {aspects.length > 0 && (
+                            <div style={{ display:'flex', flexDirection:'column', gap:9 }}>
+                              {aspects.map(([k, v], idx) => {
+                                const isTop = idx === 0;
+                                const isBot = idx === aspects.length - 1;
+                                const barCol = isTop ? C.strong : isBot ? C.weak : C.accent;
+                                const labelCol = isTop ? C.strong : isBot ? C.weak : C.text2;
+                                const vpct = Math.round(v * 100);
+                                return (
+                                  <div key={k}>
+                                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom:4 }}>
+                                      <span style={{ fontSize:11, fontWeight:600, color:labelCol, letterSpacing:'.01em' }}>{k}</span>
+                                      <span style={{ fontSize:11, fontWeight:700, color:labelCol, fontVariantNumeric:'tabular-nums' }}>{vpct}</span>
+                                    </div>
+                                    <div style={{ height:3, background:C.surf3, borderRadius:2, overflow:'hidden' }}>
+                                      <div style={{ height:'100%', width:`${vpct}%`, background:barCol, borderRadius:2, transition:'width .45s cubic-bezier(.2,0,0,1)' }}/>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                          {/* Best / weakest callout */}
+                          {best && weakest && best !== weakest && (
+                            <div style={{ display:'flex', gap:6 }}>
+                              <span style={{ fontSize:11, color:C.strong, fontWeight:600, background:`${C.strong}18`, borderRadius:4, padding:'2px 7px' }}>↑ {best}</span>
+                              <span style={{ fontSize:11, color:C.weak,   fontWeight:600, background:`${C.weak}18`,   borderRadius:4, padding:'2px 7px' }}>↓ {weakest}</span>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()
                   ) : (
                     <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:8, padding:'20px 0' }}>
                       <Layers size={24} strokeWidth={1} style={{ color:C.text3 }}/>
@@ -1646,38 +1710,22 @@ export default function App() {
                     </div>
                   )
                 )}
-                {infoTab === 'breakdown' && (
+                {infoTab === 'reasoning' && (
                   isGraded ? (
-                    <div style={{ display:'flex', flexDirection:'column', gap:12, animation:'fadeIn .25s' }}>
-                      {Object.entries(sel?.breakdown || {}).filter(([k, v]) => typeof v === 'number' && isFinite(v as number) && !['Median_Score','Best_Score','Applied_Preset','Best_Preset'].includes(k)).map(([k, v]) => {
-                        const pct = Math.round((v as number)*100);
-                        const col = pct>59 ? C.strong : pct>40 ? C.mid : C.weak;
-                        return (
-                          <div key={k}>
-                            <div style={{ display:'flex', justifyContent:'space-between', marginBottom:5 }}>
-                              <span style={{ fontSize:12, color:C.text2, fontWeight:500 }}>{k}</span>
-                              <span style={{ fontSize:12, fontWeight:700, color:col, fontVariantNumeric:'tabular-nums' }}>{pct}%</span>
-                            </div>
-                            <div style={{ height:2.5, background:C.bdr2, borderRadius:2, overflow:'hidden' }}>
-                              <div style={{ height:'100%', width:`${pct}%`, background:col, borderRadius:2, transition:'width .6s cubic-bezier(.2,0,0,1)' }}/>
-                            </div>
-                          </div>
-                        );
-                      })}
-                      <div style={{ borderTop:`1px solid ${C.bdr2}`, paddingTop:10, marginTop:2 }}>
-                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-                          <span style={{ fontSize:12, color:C.text2, fontWeight:600, letterSpacing:'.03em' }}>Total Average</span>
-                          <span style={{ fontSize:14, fontWeight:800, color: Math.round((sel?.score||0)*100)>59 ? C.strong : Math.round((sel?.score||0)*100)>40 ? C.mid : C.weak, fontVariantNumeric:'tabular-nums' }}>{Math.round((sel?.score||0)*100)}%</span>
-                        </div>
-                        <div style={{ height:3, background:C.bdr2, borderRadius:2, overflow:'hidden', marginTop:6 }}>
-                          <div style={{ height:'100%', width:`${Math.round((sel?.score||0)*100)}%`, background: Math.round((sel?.score||0)*100)>59 ? C.strong : Math.round((sel?.score||0)*100)>40 ? C.mid : C.weak, borderRadius:2, transition:'width .6s cubic-bezier(.2,0,0,1)' }}/>
-                        </div>
-                      </div>
+                    <div style={{ display:'flex', flexDirection:'column', gap:10, animation:'fadeIn .32s cubic-bezier(.2,0,0,1)' }}>
+                      <p style={{ fontSize:12.5, color:C.text2, lineHeight:1.9, fontFamily:'monospace', whiteSpace:'pre-wrap', wordBreak:'break-word' }}>
+                        {(() => {
+                          const log = sel?.reasoning_log || '';
+                          if (!log) return 'No reasoning log for this image.';
+                          // Strip leading "Strong  87%" / "Mid  52%" / "Weak  38%" grade header
+                          return log.replace(/^(Strong|Mid|Weak)\s+\d+%\s*\n?/i, '').trimStart();
+                        })()}
+                      </p>
                     </div>
                   ) : (
                     <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:8, padding:'20px 0' }}>
                       <Layers size={24} strokeWidth={1} style={{ color:C.text3 }}/>
-                      <p style={{ fontSize:13, color:C.text3, textAlign:'center', lineHeight:1.6 }}>Grade your folder to see breakdown.</p>
+                      <p style={{ fontSize:13, color:C.text3, textAlign:'center', lineHeight:1.6 }}>Grade your folder to see reasoning.</p>
                     </div>
                   )
                 )}
@@ -1696,7 +1744,7 @@ export default function App() {
                 <span style={{ fontSize:10.5, color:C.text3, fontWeight:600, letterSpacing:'.08em', textTransform:'uppercase' }}>Library</span>
                 {/* Tweaks toggle */}
                 <button title="Filmstrip settings" onClick={() => setShowTweaks(v => !v)}
-                  style={{ display:'flex', alignItems:'center', justifyContent:'center', width:18, height:16, cursor:'pointer', background:showTweaks ? C.surf3 : 'transparent', color:showTweaks ? C.accent : C.text3, border:'none', borderRadius:3, transition:'all .15s' }}>
+                  style={{ display:'flex', alignItems:'center', justifyContent:'center', width:18, height:16, cursor:'pointer', background:showTweaks ? C.surf3 : 'transparent', color:showTweaks ? C.accent : C.text3, border:'none', borderRadius:3, transition:'all .25s cubic-bezier(.2,0,0,1)' }}>
                   <SlidersHorizontal size={9}/>
                 </button>
               </div>
@@ -1720,8 +1768,8 @@ export default function App() {
                 <div style={{ display:'flex', alignItems:'center', gap:6 }}>
                   <span style={{ fontSize:11, color:C.text3 }}>Filenames</span>
                   <button onClick={() => setShowFilename(v => !v)}
-                    style={{ position:'relative', width:28, height:16, borderRadius:8, border:'none', cursor:'pointer', padding:0, background:showFilename ? C.accent : C.bdr2, transition:'background .15s' }}>
-                    <span style={{ position:'absolute', top:2, left:showFilename ? 13 : 2, width:12, height:12, borderRadius:'50%', background:'#fff', transition:'left .15s', boxShadow:'0 1px 2px rgba(0,0,0,.3)' }}/>
+                    style={{ position:'relative', width:28, height:16, borderRadius:8, border:'none', cursor:'pointer', padding:0, background:showFilename ? C.accent : C.bdr2, transition:'background .25s ease' }}>
+                    <span style={{ position:'absolute', top:2, left:showFilename ? 13 : 2, width:12, height:12, borderRadius:'50%', background:'#fff', transition:'left .22s cubic-bezier(.2,0,0,1)', boxShadow:'0 1px 2px rgba(0,0,0,.3)' }}/>
                   </button>
                 </div>
               </div>
@@ -1738,7 +1786,6 @@ export default function App() {
       ) : mainTab === 'duplicates' ? (
         /* ── Duplicates view ───────────────────────────────────── */
         (() => {
-          // Build groups: cluster_id → [photo, ...], best first
           const byCluster: Record<number, any[]> = {};
           for (const p of photos) {
             if (p.cluster_id < 0) continue;
@@ -1747,125 +1794,132 @@ export default function App() {
           const groups = Object.values(byCluster)
             .map(g => {
               const best = g.find(p => (p.sim_flag||'').includes('Best')) ?? g[0];
-              const rest = g.filter(p => p !== best);
+              const rest = g.filter(p => p !== best).sort((a,b) => b.score - a.score);
               return { best, rest, all: [best, ...rest] };
             })
             .sort((a, b) => b.all.length - a.all.length);
           const totalDups = groups.reduce((s, g) => s + g.rest.length, 0);
-          const redactGroup = (g: {rest: any[]}) => {
-            setRedacted(prev => { const next = new Set(prev); g.rest.forEach(p => next.add(p.path)); return next; });
-          };
-          const redactAll = () => {
-            setRedacted(prev => {
-              const next = new Set(prev);
-              groups.forEach(g => g.rest.forEach(p => next.add(p.path)));
-              return next;
-            });
-          };
-          const redactedInGroups = groups.reduce((s, g) => s + g.rest.filter(p => redacted.has(p.path)).length, 0);
+          const redactedCount = groups.reduce((s, g) => s + g.rest.filter(p => redacted.has(p.path)).length, 0);
+          const keepAll = () => setRedacted(prev => {
+            const n = new Set(prev); groups.forEach(g => g.rest.forEach(p => n.add(p.path))); return n;
+          });
+          const restoreAll = () => setRedacted(prev => {
+            const n = new Set(prev); groups.forEach(g => g.rest.forEach(p => n.delete(p.path))); return n;
+          });
 
           return (
             <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden', background:C.bg }}>
               {/* Header */}
               <div style={{ flexShrink:0, display:'flex', alignItems:'center', gap:10, padding:'10px 18px', borderBottom:`1px solid ${C.border}`, background:C.surf }}>
-                <span style={{ fontSize:15, fontWeight:700 }}>Similar / Duplicates</span>
-                <span style={{ fontSize:12, color:C.text3 }}>{groups.length} group{groups.length!==1?'s':''}</span>
-                {nicheRec?.preset && (
-                  <span style={{ fontSize:11, color:C.accent, background:C.aLow, border:`1px solid ${C.aBdr}`, borderRadius:4, padding:'2px 8px', fontWeight:600 }}>
-                    {nicheRec.preset}
-                  </span>
-                )}
+                <span style={{ fontSize:15, fontWeight:700 }}>Duplicates</span>
+                <span style={{ fontSize:12, color:C.text3 }}>
+                  {groups.length} group{groups.length!==1?'s':''} · {totalDups} duplicates
+                </span>
                 <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:8 }}>
-                  {redactedInGroups > 0 && (
-                    <button onClick={() => setRedacted(new Set())}
-                      style={{ fontSize:13, color:C.text3, padding:'0 10px', height:28, borderRadius:6, border:`1px solid ${C.bdr2}`, background:'transparent', cursor:'pointer' }}>
-                      Restore {redactedInGroups} hidden
+                  {redactedCount > 0 && (
+                    <button onClick={restoreAll}
+                      style={{ fontSize:12, color:C.text3, padding:'0 10px', height:28, borderRadius:6, border:`1px solid ${C.bdr2}`, background:'transparent', cursor:'pointer' }}>
+                      Restore all
                     </button>
                   )}
-                  {totalDups > 0 && (
-                    <button onClick={redactAll}
-                      style={{ display:'flex', alignItems:'center', gap:6, fontSize:13, fontWeight:700, color:'#fff', padding:'0 14px', height:30, borderRadius:6, border:'none', background:C.strong, cursor:'pointer' }}>
-                      <CheckSquare size={13}/>
-                      Keep all best
-                    </button>
-                  )}
+                  <button onClick={keepAll} disabled={redactedCount === totalDups && totalDups > 0}
+                    style={{ display:'flex', alignItems:'center', gap:6, fontSize:12, fontWeight:700, color:'#fff', padding:'0 14px', height:28, borderRadius:6, border:'none', background:C.strong, cursor:'pointer', opacity: redactedCount===totalDups&&totalDups>0 ? 0.4 : 1 }}>
+                    <CheckSquare size={11}/> Keep all best
+                  </button>
+                  <button onClick={() => setExportModal(true)}
+                    style={{ display:'flex', alignItems:'center', gap:5, padding:'0 10px', height:28, borderRadius:6, fontSize:12, fontWeight:600, cursor:'pointer', background:C.aLow, border:`1px solid ${C.aBdr}`, color:C.accent }}>
+                    <Download size={11}/> Export
+                  </button>
                 </div>
               </div>
 
-              {/* Groups */}
-              <div style={{ flex:1, overflowY:'auto', padding:'14px 16px', display:'flex', flexDirection:'column', gap:12 }}>
-                {groups.map((g, gi) => (
-                  <div key={gi} style={{ background:C.surf, border:`1px solid ${C.border}`, borderRadius:8 }}>
-                    {/* Group label */}
-                    <div style={{ padding:'6px 10px 6px 12px', borderBottom:`1px solid ${C.border}`, display:'flex', alignItems:'center', gap:8 }}>
-                      <span style={{ fontSize:11, fontWeight:700, color:C.text3, letterSpacing:'.07em', textTransform:'uppercase' }}>Group {gi + 1}</span>
-                      <span style={{ fontSize:11, color:C.text3 }}>{g.all.length} similar</span>
-                      {g.rest.some(p => redacted.has(p.path)) ? (
-                        <button onClick={() => setRedacted(prev => { const next = new Set(prev); g.rest.forEach(p => next.delete(p.path)); return next; })}
-                          style={{ marginLeft:'auto', fontSize:12, color:C.text3, padding:'2px 8px', borderRadius:4, border:`1px solid ${C.bdr2}`, background:'transparent', cursor:'pointer' }}>
-                          Restore
-                        </button>
-                      ) : (
-                        <button onClick={() => redactGroup(g)}
-                          style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:5, fontSize:12, fontWeight:600, color:C.strong, padding:'2px 8px', borderRadius:4, border:`1px solid oklch(65% .17 148 / .35)`, background:'oklch(65% .17 148 / .10)', cursor:'pointer' }}>
-                          <CheckSquare size={11}/>
-                          Keep best
-                        </button>
-                      )}
-                    </div>
-
-                    {/* Thumbnail grid — wraps, no horizontal scroll */}
-                    <div style={{ padding:10, display:'flex', flexWrap:'wrap', gap:8 }}>
-                      {g.all.map((p) => {
-                        const isBest = p === g.best;
-                        const gradeLabel = gl(p.grade);
-                        const gradeColor = gc(p.grade);
-                        const gradeBg    = gLow(p.grade);
-                        return (
-                          <div key={p.id} onClick={() => { setMainTab('gallery'); setSelId(p.id); setLoupeMode('loupe'); }}
-                            style={{
-                              width:160, flexShrink:0, cursor:'pointer', borderRadius:6, overflow:'hidden',
-                              border: isBest ? `2px solid ${gradeColor}` : `1px solid ${C.border}`,
-                              background: isBest ? gradeBg : C.bg,
-                              opacity: redacted.has(p.path) ? 0.35 : 1,
-                              transition:'opacity .2s',
-                            }}>
-                            <div style={{ position:'relative', width:'100%', height:110, overflow:'hidden' }}>
-                              <img src={thumbUrl(p.path)} alt="" loading="lazy" decoding="async"
-                                style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
-                              {/* Grade label */}
-                              {gradeLabel !== 'Pending' && (
-                                <div style={{
-                                  position:'absolute', top:5, left:5,
-                                  background: `${gradeColor}dd`,
-                                  borderRadius:3, padding:'2px 6px', fontSize:9, fontWeight:700, color:'#fff', letterSpacing:'.07em',
-                                }}>
-                                  {gradeLabel}
+              {/* Groups list */}
+              <div style={{ flex:1, overflowY:'auto', padding:'12px 18px', display:'flex', flexDirection:'column', gap:8 }}>
+                {groups.map((g, gi) => {
+                  const bestColor = gc(g.best.grade);
+                  const groupKept = g.rest.every(p => redacted.has(p.path));
+                  return (
+                    <div key={gi} style={{ background:C.surf, border:`1px solid ${C.border}`, borderRadius:10, overflow:'hidden' }}>
+                      {/* Group header */}
+                      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'8px 12px', borderBottom:`1px solid ${C.border}`, background:C.surf2 }}>
+                        <span style={{ fontSize:11, fontWeight:700, color:C.text2 }}>
+                          {g.all.length} similar shots
+                        </span>
+                        {groupKept ? (
+                          <button onClick={() => setRedacted(prev => { const n=new Set(prev); g.rest.forEach(p=>n.delete(p.path)); return n; })}
+                            style={{ fontSize:10, color:C.text3, padding:'3px 10px', borderRadius:4, border:`1px solid ${C.bdr2}`, background:'transparent', cursor:'pointer' }}>
+                            Show all
+                          </button>
+                        ) : (
+                          <button onClick={() => setRedacted(prev => { const n=new Set(prev); g.rest.forEach(p=>n.add(p.path)); return n; })}
+                            style={{ display:'flex', alignItems:'center', gap:4, fontSize:10, fontWeight:600, color:C.strong, padding:'3px 10px', borderRadius:4, border:`1px solid oklch(65% .17 148/.35)`, background:'oklch(65% .17 148/.08)', cursor:'pointer' }}>
+                            <CheckSquare size={9}/> Keep best
+                          </button>
+                        )}
+                      </div>
+                      {/* Photo row — uniform 120 px image height across all cards */}
+                      <div style={{ display:'flex', gap:10, overflowX:'auto', padding:'12px 14px', alignItems:'stretch' }}>
+                        {[g.best, ...g.rest].map((p, pi) => {
+                          const isBest   = pi === 0;
+                          const dc       = gc(p.grade);
+                          const isHidden = !isBest && redacted.has(p.path);
+                          return (
+                            <div key={p.id}
+                              onClick={() => { setMainTab('gallery'); setSelId(p.id); setLoupeMode('loupe'); }}
+                              style={{ flexShrink:0, cursor:'pointer', display:'flex', flexDirection:'column',
+                                borderRadius:8, overflow:'hidden',
+                                border: isBest ? `2px solid ${dc}` : `1px solid ${C.border}`,
+                                width: isBest ? 160 : 140,
+                                opacity: isHidden ? 0.45 : 1,
+                                transition:'opacity .2s' }}>
+                              {/* Image */}
+                              <div style={{ position:'relative', height:120, flexShrink:0 }}>
+                                <img src={thumbUrl(p.path)} alt="" loading="lazy"
+                                  style={{ width:'100%', height:'100%', objectFit:'cover', display:'block',
+                                    filter: isHidden ? 'grayscale(55%)' : 'none' }}/>
+                                {/* BEST badge */}
+                                {isBest && (
+                                  <div style={{ position:'absolute', top:5, left:5, background:dc, borderRadius:3,
+                                    padding:'2px 6px', fontSize:9, fontWeight:800, color:'#000', letterSpacing:'.05em' }}>
+                                    BEST
+                                  </div>
+                                )}
+                                {/* hidden badge */}
+                                {isHidden && (
+                                  <div style={{ position:'absolute', top:5, right:5, background:'rgba(0,0,0,.65)',
+                                    borderRadius:3, padding:'2px 5px', fontSize:8, color:'#aaa', letterSpacing:'.03em' }}>
+                                    hidden
+                                  </div>
+                                )}
+                                {/* Score pill */}
+                                <div style={{ position:'absolute', bottom:5, left:5, background:'rgba(0,0,0,.72)',
+                                  backdropFilter:'blur(6px)', borderRadius:4, padding:'2px 6px',
+                                  display:'flex', alignItems:'center', gap:3 }}>
+                                  <div style={{ width:5, height:5, borderRadius:'50%', background:dc, flexShrink:0 }}/>
+                                  <span style={{ fontSize:isBest ? 12 : 11, fontWeight:800, color:'#fff',
+                                    fontVariantNumeric:'tabular-nums' }}>
+                                    {Math.round(p.score * 100)}
+                                  </span>
                                 </div>
-                              )}
-                              <div style={{ position:'absolute', top:5, right:5, background:'rgba(0,0,0,.65)', borderRadius:3, padding:'2px 5px', fontSize:9, color:C.text2 }}>
-                                {(p.score*100).toFixed(0)}
+                              </div>
+                              {/* Caption */}
+                              <div style={{ padding:'5px 8px', background:C.surf2, flex:1, display:'flex', alignItems:'center' }}>
+                                <span style={{ fontSize:9, color:C.text3, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                                  {p.path.split(/[/\\]/).pop()}
+                                </span>
                               </div>
                             </div>
-                            <div style={{ padding:'5px 8px' }}>
-                              <p style={{ fontSize:10.5, color: isBest ? gradeColor : C.text3, fontWeight: isBest ? 700 : 400, margin:0, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
-                                {p.path.split(/[\\/]/).pop()}
-                              </p>
-                              <p style={{ fontSize:10, color: gradeColor, margin:'2px 0 0', opacity: isBest ? 1 : 0.7 }}>
-                                {isBest ? 'Best of group' : gradeLabel}
-                              </p>
-                            </div>
-                          </div>
-                        );
-                      })}
+                          );
+                        })}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
 
                 {groups.length === 0 && (
                   <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', flex:1, gap:10, color:C.text3, paddingTop:60 }}>
                     <ImageOff size={32} strokeWidth={1}/>
-                    <p style={{ fontSize:14 }}>No duplicates found in this folder.</p>
+                    <p style={{ fontSize:14 }}>No duplicates detected.</p>
                   </div>
                 )}
               </div>
@@ -1887,7 +1941,7 @@ export default function App() {
 
           // Sort photos: Strong first, then Mid, then Weak — best anchors on top
           const anchorCandidates = [...photos].sort((a, b) => {
-            const rank = (p: any) => p.grade.includes('Strong') ? 0 : p.grade.includes('Mid') ? 1 : 2;
+            const rank = (p: any) => gl(p.grade) === 'Strong' ? 0 : gl(p.grade) === 'Mid' ? 1 : 2;
             return rank(a) - rank(b) || b.score - a.score;
           });
 
@@ -1896,120 +1950,154 @@ export default function App() {
 
             {/* Toolbar */}
             <div style={{ flexShrink:0, display:'flex', alignItems:'center', justifyContent:'space-between', padding:'10px 18px', borderBottom:`1px solid ${C.border}`, background:C.surf }}>
-              <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+              <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                <Wand2 size={15} style={{ color:C.accent }}/>
                 <span style={{ fontSize:15, fontWeight:700 }}>Creative Direction</span>
-                <span style={{ fontSize:12, color:C.text3 }}>Flux 2 [klein] · ControlNet · MOGCO-II</span>
+                {creativeResults.filter((r:any)=>r.success).length > 0 && (
+                  <span style={{ fontSize:11, color:C.text3, background:C.surf2, borderRadius:4, padding:'2px 8px' }}>
+                    {creativeResults.filter((r:any)=>r.success).length} styled
+                  </span>
+                )}
               </div>
               <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                {creativeOutDir && creativeResults.filter((r:any)=>r.success).length > 0 && (
-                  <span style={{ fontSize:11, color:C.text3, fontFamily:"'SF Mono',monospace", maxWidth:280, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                    {creativeOutDir}
-                  </span>
+                {/* Excluded photos indicator */}
+                {usedCount > 0 && (
+                  <div style={{ display:'flex', alignItems:'center', gap:5, background:C.surf2, border:`1px solid ${C.bdr2}`, borderRadius:6, padding:'3px 8px' }}>
+                    <span style={{ fontSize:11, color:C.text3 }}>{usedCount} excluded</span>
+                    <button onClick={handleClearUsed}
+                      style={{ fontSize:10, color:C.accent, background:'none', border:'none', cursor:'pointer', padding:0, fontWeight:600 }}>
+                      Reset
+                    </button>
+                  </div>
+                )}
+                {/* Save Sequence */}
+                {creativeResults.filter((r:any)=>r.success).length > 0 && !creativeLoading && (
+                  <button
+                    disabled={sequenceSaving}
+                    onClick={handleSaveSequence}
+                    style={{
+                      display:'flex', alignItems:'center', gap:5, padding:'5px 12px',
+                      background: 'transparent', border:`1px solid ${C.bdr2}`, borderRadius:7,
+                      color: C.text2, fontSize:12, fontWeight:600,
+                      cursor: sequenceSaving ? 'wait' : 'pointer', transition:'all .15s',
+                    }}
+                    onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.borderColor = C.accent; (e.currentTarget as HTMLButtonElement).style.color = C.accent; }}
+                    onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.borderColor = C.bdr2; (e.currentTarget as HTMLButtonElement).style.color = C.text2; }}>
+                    <Download size={11}/> {sequenceSaving ? 'Saving…' : 'Save Sequence'}
+                  </button>
                 )}
                 <button
                   disabled={creativeLoading || !creativeAnchor}
                   onClick={handleRunCreativeDirection}
                   style={{
-                    display:'flex', alignItems:'center', gap:6, padding:'5px 14px',
-                    background: creativeLoading ? C.surf2 : C.aLow,
-                    border:`1px solid ${C.aBdr}`, borderRadius:7,
-                    color: C.accent, fontSize:13, fontWeight:700,
+                    display:'flex', alignItems:'center', gap:6, padding:'6px 16px',
+                    background: creativeLoading ? C.surf2 : C.accent,
+                    border:'none', borderRadius:7,
+                    color: creativeLoading ? C.text3 : '#fff', fontSize:13, fontWeight:700,
                     cursor: creativeLoading || !creativeAnchor ? 'not-allowed' : 'pointer',
-                    opacity: !creativeAnchor ? 0.5 : 1,
+                    opacity: !creativeAnchor ? 0.4 : 1,
+                    transition:'all .18s',
                   }}>
                   {creativeLoading
-                    ? <><div style={{ width:11,height:11,border:`2px solid ${C.accent}`,borderTopColor:'transparent',borderRadius:'50%',animation:'spin .8s linear infinite' }}/> Stylizing…</>
-                    : <><Wand2 size={11}/> Run Creative Direction</>}
+                    ? <><div style={{ width:11,height:11,border:'2px solid #888',borderTopColor:'transparent',borderRadius:'50%',animation:'spin .8s linear infinite' }}/> Stylizing…</>
+                    : <><Wand2 size={11}/> Generate Story</>}
                 </button>
               </div>
             </div>
 
-            <div style={{ flex:1, overflowY:'auto', padding:'18px 24px', display:'flex', flexDirection:'column', gap:18 }}>
+            <div style={{ flex:1, overflowY:'auto', padding:'20px 24px', display:'flex', flexDirection:'column', gap:20 }}>
 
-              {/* GPU warning */}
-              <div style={{ background:'oklch(50% .18 55 / .12)', border:'1px solid oklch(50% .18 55 / .4)', borderRadius:7, padding:'8px 14px', fontSize:12, color:'oklch(70% .18 55)', display:'flex', gap:8, alignItems:'flex-start' }}>
-                <span style={{ flexShrink:0, fontWeight:700 }}>⚠ GPU required</span>
-                <span>Flux 2 [klein] needs CUDA (4–6 GB VRAM) with INT4 quantization. Running on CPU will OOM or take hours. The pipeline will auto-detect and warn if CUDA is unavailable.</span>
-              </div>
+              {/* ── Setup section (always visible) ── */}
+              <div style={{ display:'grid', gridTemplateColumns:'auto 1fr', gap:20, alignItems:'start' }}>
 
-              {/* Config row */}
-              <div style={{ display:'flex', gap:14, flexWrap:'wrap', alignItems:'flex-start' }}>
-
-                {/* Anchor selector */}
-                <div style={{ flex:'0 0 auto', minWidth:200 }}>
-                  <p style={{ fontSize:11, fontWeight:700, letterSpacing:'.08em', textTransform:'uppercase', color:C.text3, marginBottom:8 }}>
-                    Anchor Image <span style={{ color:C.accent }}>*</span>
-                    <span style={{ fontWeight:400, textTransform:'none', marginLeft:6 }}>— sets the visual style</span>
-                  </p>
+                {/* Step 1 — Anchor */}
+                <div>
+                  <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:10 }}>
+                    <span style={{ width:18, height:18, borderRadius:'50%', background: creativeAnchor ? C.accent : C.surf3, color: creativeAnchor ? '#fff' : C.text3, fontSize:10, fontWeight:800, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>1</span>
+                    <span style={{ fontSize:11, fontWeight:700, letterSpacing:'.07em', textTransform:'uppercase', color: creativeAnchor ? C.text2 : C.text3 }}>Style Anchor</span>
+                    {!creativeAnchor && <span style={{ fontSize:11, color:C.text3 }}>— pick your reference image</span>}
+                  </div>
                   {creativeAnchor ? (
-                    <div style={{ position:'relative', width:180, borderRadius:8, overflow:'hidden', border:`2px solid ${C.accent}`, cursor:'pointer' }}
-                      onClick={() => setCreativeAnchor(null)}>
+                    <div style={{ position:'relative', width:150, borderRadius:8, overflow:'hidden', border:`2px solid ${C.accent}`, cursor:'pointer', boxShadow:`0 0 0 3px ${C.accent}22` }}
+                      onClick={() => setCreativeAnchor(null)}
+                      title="Click to change anchor">
                       <img src={thumbUrl(creativeAnchor)} alt=""
                         style={{ width:'100%', aspectRatio:'3/2', objectFit:'cover', display:'block' }}/>
-                      <div style={{ position:'absolute', inset:0, background:'rgba(0,0,0,.55)', display:'flex', alignItems:'center', justifyContent:'center', opacity:0, transition:'opacity .15s' }}
+                      <div style={{ position:'absolute', inset:0, background:'rgba(0,0,0,.6)', display:'flex', alignItems:'center', justifyContent:'center', opacity:0, transition:'opacity .15s' }}
                         onMouseEnter={e=>(e.currentTarget.style.opacity='1')}
                         onMouseLeave={e=>(e.currentTarget.style.opacity='0')}>
-                        <span style={{ color:'#fff', fontSize:12, fontWeight:600 }}>Change anchor</span>
+                        <span style={{ color:'#fff', fontSize:11, fontWeight:600 }}>Change</span>
                       </div>
-                      <div style={{ position:'absolute', top:5, left:5, background:C.accent, borderRadius:4, padding:'2px 7px', fontSize:10, fontWeight:700, color:'#fff' }}>ANCHOR</div>
+                      <div style={{ position:'absolute', top:5, left:5, background:C.accent, borderRadius:4, padding:'2px 6px', fontSize:9, fontWeight:800, color:'#fff', letterSpacing:'.06em' }}>ANCHOR</div>
                     </div>
                   ) : (
-                    <div style={{ width:180, aspectRatio:'3/2', border:`2px dashed ${C.bdr2}`, borderRadius:8, display:'flex', alignItems:'center', justifyContent:'center', flexDirection:'column', gap:6 }}>
-                      <Wand2 size={20} style={{ color:C.text3 }}/>
-                      <span style={{ fontSize:11, color:C.text3, textAlign:'center', padding:'0 10px' }}>
-                        Click any image below to set as anchor
-                      </span>
+                    <div style={{ width:150, aspectRatio:'3/2', border:`2px dashed ${C.bdr2}`, borderRadius:8, display:'flex', alignItems:'center', justifyContent:'center', flexDirection:'column', gap:5, color:C.text3 }}>
+                      <Wand2 size={18} strokeWidth={1.5}/>
+                      <span style={{ fontSize:10, textAlign:'center', lineHeight:1.4, padding:'0 8px' }}>Click a photo below</span>
                     </div>
                   )}
                 </div>
 
-                {/* Options */}
-                <div style={{ flex:1, display:'flex', flexDirection:'column', gap:12, minWidth:280 }}>
+                {/* Step 2 — Settings */}
+                <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
+
+                  {/* Sequence length */}
                   <div>
-                    <p style={{ fontSize:11, fontWeight:700, letterSpacing:'.08em', textTransform:'uppercase', color:C.text3, marginBottom:8 }}>
-                      Style Brief <span style={{ color:C.text3, fontWeight:400 }}>(optional)</span>
-                    </p>
+                    <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:10 }}>
+                      <span style={{ width:18, height:18, borderRadius:'50%', background:C.surf3, color:C.text3, fontSize:10, fontWeight:800, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>2</span>
+                      <span style={{ fontSize:11, fontWeight:700, letterSpacing:'.07em', textTransform:'uppercase', color:C.text2 }}>Sequence Length</span>
+                      <span style={{ fontSize:11, color:C.text3 }}>— how many images in the story</span>
+                    </div>
+                    <div style={{ display:'flex', gap:4 }}>
+                      {[5,6,7,8,9,10].map(n => (
+                        <button key={n} onClick={() => setCreativeCount(n)}
+                          style={{
+                            width:34, height:34, borderRadius:7, fontSize:13, fontWeight:700,
+                            cursor:'pointer', transition:'all .15s',
+                            background: creativeCount === n ? C.accent : C.surf2,
+                            border: `1px solid ${creativeCount === n ? C.accent : C.bdr2}`,
+                            color: creativeCount === n ? '#fff' : C.text2,
+                          }}>
+                          {n}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Style brief */}
+                  <div>
+                    <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:8 }}>
+                      <span style={{ width:18, height:18, borderRadius:'50%', background:C.surf3, color:C.text3, fontSize:10, fontWeight:800, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>3</span>
+                      <span style={{ fontSize:11, fontWeight:700, letterSpacing:'.07em', textTransform:'uppercase', color:C.text2 }}>Style Brief</span>
+                      <span style={{ fontSize:11, color:C.text3 }}>— optional</span>
+                    </div>
                     <textarea
                       value={creativePrompt}
                       onChange={e => setCreativePrompt(e.target.value)}
-                      placeholder={"Describe the visual look to apply…\n\nExamples:\n• \"cinematic grain, deep shadows, film noir\"\n• \"golden hour warmth, soft bokeh, editorial\"\n• Leave blank to use the anchor image as the sole style reference"}
+                      placeholder={'Describe the mood or look…  e.g. "cinematic grain, deep shadows" or leave blank to use the anchor image only'}
+                      rows={2}
                       style={{
-                        width:'100%', boxSizing:'border-box', minHeight:90, resize:'vertical',
-                        background:C.surf, border:`1px solid ${C.bdr2}`, borderRadius:8,
-                        padding:'10px 14px', fontSize:13, color:C.text, lineHeight:1.6,
+                        width:'100%', boxSizing:'border-box', resize:'vertical',
+                        background:C.surf, border:`1px solid ${C.bdr2}`, borderRadius:7,
+                        padding:'8px 12px', fontSize:12, color:C.text, lineHeight:1.6,
                         outline:'none', fontFamily:'inherit',
                       }}
                       onFocus={e => { e.currentTarget.style.borderColor=C.aBdr; }}
                       onBlur={e =>  { e.currentTarget.style.borderColor=C.bdr2; }}
                     />
                   </div>
-                  <div style={{ display:'flex', alignItems:'center', gap:16 }}>
-                    <p style={{ fontSize:11, fontWeight:700, letterSpacing:'.08em', textTransform:'uppercase', color:C.text3, flexShrink:0 }}>Structure</p>
-                    {(['canny','depth'] as const).map(m => (
-                      <button key={m} onClick={() => setCreativeMode(m)}
-                        style={{
-                          display:'flex', alignItems:'center', gap:5, padding:'4px 12px', borderRadius:6, fontSize:12, fontWeight:600, cursor:'pointer', transition:'all .12s',
-                          background: creativeMode===m ? C.aLow : 'transparent',
-                          border:`1px solid ${creativeMode===m ? C.aBdr : C.bdr2}`,
-                          color: creativeMode===m ? C.accent : C.text3,
-                        }}>
-                        {m === 'canny' ? 'Canny Edges' : 'Depth Map'}
-                      </button>
-                    ))}
-                    <span style={{ fontSize:11, color:C.text3, marginLeft:4 }}>
-                      {creativeMode==='canny' ? 'Fast · no extra model' : 'MiDaS small · ~80 MB'}
-                    </span>
-                  </div>
+
                 </div>
               </div>
 
-              {/* Anchor picker — all photos, Strong first */}
+              {/* Anchor picker grid */}
               {anchorCandidates.length > 0 && (
                 <div>
-                  <p style={{ fontSize:11, fontWeight:700, letterSpacing:'.08em', textTransform:'uppercase', color:C.text3, marginBottom:8 }}>
-                    All Photos · click to set anchor <span style={{ fontWeight:400, textTransform:'none' }}>(Strong first)</span>
+                  <p style={{ fontSize:11, color:C.text3, marginBottom:8 }}>
+                    <span style={{ fontWeight:700, textTransform:'uppercase', letterSpacing:'.07em' }}>Photos</span>
+                    <span style={{ marginLeft:6 }}>· click any to set as anchor · sorted by grade</span>
                   </p>
-                  <div style={{ display:'flex', flexWrap:'wrap', gap:8 }}>
+                  <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
                     {anchorCandidates.map(p => {
                       const isAnchor = p.path === creativeAnchor;
                       const gradeColor = gc(p.grade);
@@ -2017,22 +2105,21 @@ export default function App() {
                         <button key={p.id}
                           onClick={() => setCreativeAnchor(isAnchor ? null : p.path)}
                           style={{
-                            position:'relative', width:110, height:74, padding:0, border:'none',
+                            position:'relative', width:88, height:60, padding:0, border:'none',
                             borderRadius:6, overflow:'hidden', cursor:'pointer',
-                            outline: isAnchor ? `2px solid ${C.accent}` : `2px solid ${gradeColor}44`,
-                            outlineOffset:1, transition:'outline .12s',
+                            outline: isAnchor ? `2px solid ${C.accent}` : `1px solid ${gradeColor}33`,
+                            outlineOffset:1, transition:'all .12s',
+                            transform: isAnchor ? 'scale(1.06)' : 'scale(1)',
                           }}>
                           <img src={thumbUrl(p.path)} alt=""
                             style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
-                          <div style={{ position:'absolute', bottom:0, left:0, right:0, height:18, background:'rgba(0,0,0,.65)', display:'flex', alignItems:'center', justifyContent:'space-between', padding:'0 5px' }}>
-                            <span style={{ fontSize:8, fontWeight:700, color:gradeColor, letterSpacing:'.05em' }}>{gl(p.grade)}</span>
-                            <span style={{ fontSize:8, color:'#aaa' }}>{(p.score*100).toFixed(0)}</span>
+                          <div style={{ position:'absolute', bottom:0, left:0, right:0, height:16, background:'rgba(0,0,0,.7)', display:'flex', alignItems:'center', justifyContent:'space-between', padding:'0 4px' }}>
+                            <span style={{ fontSize:7, fontWeight:700, color:gradeColor, letterSpacing:'.04em' }}>{gl(p.grade)}</span>
+                            <span style={{ fontSize:7, color:'#aaa' }}>{(p.score*100).toFixed(0)}</span>
                           </div>
                           {isAnchor && (
-                            <div style={{ position:'absolute', inset:0, background:`${C.accent}44`, display:'flex', alignItems:'center', justifyContent:'center' }}>
-                              <div style={{ width:22, height:22, borderRadius:'50%', background:C.accent, display:'flex', alignItems:'center', justifyContent:'center' }}>
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20,6 9,17 4,12"/></svg>
-                              </div>
+                            <div style={{ position:'absolute', inset:0, background:`${C.accent}55`, display:'flex', alignItems:'center', justifyContent:'center' }}>
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20,6 9,17 4,12"/></svg>
                             </div>
                           )}
                         </button>
@@ -2042,104 +2129,108 @@ export default function App() {
                 </div>
               )}
 
+              {/* No photos empty state */}
+              {photos.length === 0 && (
+                <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:10, color:C.text3, paddingTop:20 }}>
+                  <Wand2 size={28} strokeWidth={1}/>
+                  <p style={{ fontSize:13, margin:0 }}>Grade a folder first to load photos.</p>
+                </div>
+              )}
+
               {/* Progress */}
               {creativeLoading && (
-                <div style={{ background:C.surf, border:`1px solid ${C.bdr2}`, borderRadius:8, padding:'12px 16px' }}>
-                  <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:8 }}>
+                <div style={{ background:C.surf, border:`1px solid ${C.bdr2}`, borderRadius:8, padding:'14px 18px' }}>
+                  <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10 }}>
                     <div style={{ width:12,height:12,border:`2px solid ${C.accent}`,borderTopColor:'transparent',borderRadius:'50%',animation:'spin .8s linear infinite',flexShrink:0 }}/>
                     <span style={{ fontSize:13, color:C.text2, fontWeight:500 }}>{creativeStage || 'Processing…'}</span>
                     <span style={{ marginLeft:'auto', fontSize:12, color:C.text3, fontVariantNumeric:'tabular-nums' }}>{Math.round(creativeProgress*100)}%</span>
                   </div>
                   <div style={{ height:3, background:C.bdr2, borderRadius:2, overflow:'hidden' }}>
-                    <div style={{ height:'100%', width:`${Math.round(creativeProgress*100)}%`, background:`linear-gradient(90deg,${C.accent},oklch(70% .19 205))`, borderRadius:2, transition:'width .3s ease' }}/>
+                    <div style={{ height:'100%', width:`${Math.round(creativeProgress*100)}%`, background:`linear-gradient(90deg,${C.accent},oklch(70% .19 205))`, borderRadius:2, transition:'width .4s cubic-bezier(.2,0,0,1)' }}/>
                   </div>
                 </div>
               )}
 
-              {/* MOGCO-II parameter cards */}
-              {creativeResults.length > 0 && (
-                <div>
-                  <p style={{ fontSize:11, fontWeight:700, letterSpacing:'.08em', textTransform:'uppercase', color:C.text3, marginBottom:10 }}>
-                    MOGCO-II Parameters
-                  </p>
-                  <div style={{ display:'flex', flexWrap:'wrap', gap:6, marginBottom:16 }}>
-                    {creativeResults.filter((r:any)=>r.success).map((r:any, i:number) => {
-                      const obj  = r.params?.mogco_objectives;
-                      const role = r.params?.role ?? '';
-                      const rc   = roleColor(role);
-                      return (
-                        <div key={i} style={{ background:C.surf, border:`1px solid ${C.bdr2}`, borderRadius:6, padding:'6px 10px', fontSize:11, display:'flex', flexDirection:'column', gap:2, minWidth:130 }}>
-                          <span style={{ color:C.text2, fontWeight:600, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:120 }}>
-                            {r.source_path?.split(/[\\/]/).pop()}
-                          </span>
-                          <span style={{ color:C.text3 }}>str {r.params?.strength?.toFixed(2)} · gd {r.params?.guidance?.toFixed(1)} · ctrl {r.params?.ctrl_weight?.toFixed(2)}</span>
-                          <span style={{ fontWeight:700, color:rc, fontSize:10, textTransform:'uppercase', letterSpacing:'.06em' }}>{role}</span>
-                          {obj && (
-                            <div style={{ display:'flex', gap:4, marginTop:2 }}>
-                              {(['style_fidelity','struct_integrity','set_cohesion'] as const).map(k => (
-                                <span key={k} style={{ fontSize:9, background:C.surf2, borderRadius:3, padding:'1px 4px', color:C.text3 }}>
-                                  {k.replace(/_/g,' ').slice(0,6)} {((obj[k]??0)*100).toFixed(0)}
-                                </span>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              {/* Final Portfolio grid */}
+              {/* Story Sequence */}
               {creativeResults.filter((r:any)=>r.success).length > 0 ? (
                 <div>
-                  <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10 }}>
+                  <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:12 }}>
                     <p style={{ fontSize:11, fontWeight:700, letterSpacing:'.08em', textTransform:'uppercase', color:C.text3, margin:0 }}>
-                      Final Portfolio — {creativeResults.filter((r:any)=>r.success).length} images
+                      Story Sequence — {creativeResults.filter((r:any)=>r.success).length} images
                     </p>
                     {creativeResults.some((r:any)=>!r.success) && (
-                      <span style={{ fontSize:11, color:C.weak }}>{creativeResults.filter((r:any)=>!r.success).length} failed</span>
+                      <span style={{ fontSize:11, color:C.weak, cursor:'pointer' }}
+                        title={creativeResults.filter((r:any)=>!r.success).map((r:any)=>
+                          `${(r.source_path??'').split(/[\\/]/).pop()}: ${r.error??'unknown error'}`
+                        ).join('\n')}>
+                        {creativeResults.filter((r:any)=>!r.success).length} failed ⓘ
+                      </span>
                     )}
                     <button onClick={() => setCreativeShowOriginal(o => !o)}
-                      style={{ marginLeft:'auto', fontSize:11, fontWeight:600, padding:'3px 10px', borderRadius:5, cursor:'pointer', transition:'all .12s',
+                      style={{ marginLeft:'auto', fontSize:11, fontWeight:600, padding:'3px 10px', borderRadius:5, cursor:'pointer', transition:'all .22s cubic-bezier(.2,0,0,1)',
                         background: creativeShowOriginal ? C.surf3 : 'transparent',
                         border:`1px solid ${C.bdr2}`,
                         color: creativeShowOriginal ? C.text : C.text3 }}>
                       {creativeShowOriginal ? 'Showing originals' : 'Show originals'}
                     </button>
                   </div>
-                  <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(200px, 1fr))', gap:12 }}>
-                    {creativeResults.filter((r:any)=>r.success).map((r:any, i:number) => {
+                  {/* Horizontal scrollable sequence strip */}
+                  <div style={{ display:'flex', gap:10, overflowX:'auto', paddingBottom:8,
+                    scrollbarWidth:'thin', scrollbarColor:`${C.bdr2} transparent` }}>
+                    {((() => {
+                      // Sort by seq_pos (cinematic order set by backend), fallback to role order
+                      const ROLE_ORDER = ['opener','subject','detail','contrast','closer'];
+                      const roleRank = (r: string) => { const i = ROLE_ORDER.indexOf(r); return i === -1 ? 99 : i; };
+                      return [...creativeResults.filter((r:any)=>r.success)]
+                        .sort((a:any,b:any) => {
+                          const ap = a.params?.seq_pos; const bp = b.params?.seq_pos;
+                          if (ap != null && bp != null) return ap - bp;
+                          return roleRank(a.params?.role??'') - roleRank(b.params?.role??'');
+                        });
+                    })()).map((r:any, i:number) => {
                       const role = r.params?.role ?? '';
                       const rc   = roleColor(role);
                       const displayPath = creativeShowOriginal ? r.source_path : r.output_path;
                       return (
-                        <div key={i} style={{ borderRadius:8, overflow:'hidden', border:`1px solid ${C.border}`, background:C.surf }}>
-                          <div style={{ position:'relative', aspectRatio:'3/2', overflow:'hidden', background:C.bg }}>
+                        <div key={i} style={{ flexShrink:0, width:220, borderRadius:8, overflow:'hidden',
+                          border:`1px solid ${C.border}`, background:C.surf,
+                          boxShadow:'0 2px 8px rgba(0,0,0,.25)' }}>
+                          {/* Sequence number + role label */}
+                          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
+                            padding:'5px 8px', borderBottom:`1px solid ${C.border}`, background:C.surf2 }}>
+                            <span style={{ fontSize:11, fontWeight:800, color:C.text2 }}>
+                              {String(i + 1).padStart(2, '0')}
+                            </span>
+                            <span style={{ fontSize:9, fontWeight:800, letterSpacing:'.09em',
+                              color:rc, textTransform:'uppercase' }}>
+                              {role}
+                            </span>
+                          </div>
+                          <div style={{ position:'relative', aspectRatio:'2/3', overflow:'hidden', background:C.bg }}>
                             <img src={photoUrl(displayPath)} alt="" loading="lazy" decoding="async"
-                              style={{ width:'100%', height:'100%', objectFit:'cover', display:'block', transition:'opacity .2s' }}/>
-                            {/* Role badge */}
-                            <div style={{ position:'absolute', top:6, left:6, background:`${rc}dd`, borderRadius:4, padding:'2px 7px', fontSize:9, fontWeight:800, color:'#fff', letterSpacing:'.07em' }}>
-                              {role.toUpperCase()}
-                            </div>
-                            {/* Before/after label */}
+                              style={{ width:'100%', height:'100%', objectFit:'cover', display:'block',
+                                transition:'opacity .28s ease' }}/>
                             {creativeShowOriginal && (
-                              <div style={{ position:'absolute', bottom:6, left:6, background:'rgba(0,0,0,.7)', borderRadius:3, padding:'2px 6px', fontSize:9, color:'#fff', fontWeight:600 }}>
+                              <div style={{ position:'absolute', bottom:6, left:6, background:'rgba(0,0,0,.7)',
+                                borderRadius:3, padding:'2px 6px', fontSize:9, color:'#fff', fontWeight:600 }}>
                                 ORIGINAL
                               </div>
                             )}
                             <a href={photoUrl(r.output_path)} download={r.filename}
                               onClick={e => e.stopPropagation()}
-                              style={{ position:'absolute', top:6, right:6, background:'rgba(0,0,0,.7)', borderRadius:4, padding:'3px 6px', fontSize:10, color:'#fff', textDecoration:'none', display:'flex', alignItems:'center', gap:3 }}>
+                              style={{ position:'absolute', top:6, right:6, background:'rgba(0,0,0,.7)',
+                                borderRadius:4, padding:'3px 6px', fontSize:10, color:'#fff',
+                                textDecoration:'none', display:'flex', alignItems:'center', gap:3 }}>
                               <Download size={9}/> Save
                             </a>
                           </div>
                           <div style={{ padding:'6px 9px' }}>
-                            <p style={{ fontSize:10.5, color:C.text3, margin:0, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                            <p style={{ fontSize:10.5, color:C.text3, margin:0, overflow:'hidden',
+                              textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
                               {(r.source_path ?? '').split(/[\\/]/).pop()}
                             </p>
                             <p style={{ fontSize:10, color:C.text3, margin:'2px 0 0', opacity:.7 }}>
-                              str {r.params?.strength?.toFixed(2)} · gd {r.params?.guidance?.toFixed(1)} · ctrl {r.params?.ctrl_weight?.toFixed(2)}
+                              str {r.params?.strength?.toFixed(2)} · gd {r.params?.guidance?.toFixed(1)}
                             </p>
                           </div>
                         </div>
@@ -2170,441 +2261,7 @@ export default function App() {
           </div>
           );
         })()
-
-      ) : (
-        /* ── Sequence view ─────────────────────────────────────── */
-        <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden', background:C.bg }}>
-          {/* Toolbar */}
-          <div style={{ flexShrink:0, display:'flex', alignItems:'center', justifyContent:'space-between', padding:'10px 18px', borderBottom:`1px solid ${C.border}`, background:C.surf }}>
-            <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-              <span style={{ fontSize:15, fontWeight:700 }}>Sequence</span>
-              {/* Auto / Directed mode toggle */}
-              <div style={{ display:'flex', background:C.bg, borderRadius:6, border:`1px solid ${C.bdr2}`, overflow:'hidden' }}>
-                {(['auto','director'] as const).map(m => (
-                  <button key={m} onClick={() => setSeqMode(m)}
-                    style={{ display:'flex', alignItems:'center', gap:4, padding:'3px 10px', fontSize:12, fontWeight:600, cursor:'pointer', border:'none', outline:'none', transition:'all .12s',
-                      background: seqMode===m ? C.surf3 : 'transparent',
-                      color: seqMode===m ? C.text : C.text3,
-                      borderRight: m==='auto' ? `1px solid ${C.bdr2}` : 'none',
-                    }}>
-                    {m==='auto' ? <Layers size={10}/> : <Sparkles size={10}/>}
-                    {m==='auto' ? 'Auto' : 'Directed'}
-                  </button>
-                ))}
-              </div>
-              {seqMode==='auto' && subjType && <span style={{ fontSize:12, color:C.text3 }}>{subjType}</span>}
-              {seqMode==='auto' && carousel.length > 0 && <span style={{ fontSize:13, color:C.text3 }}>{carousel.length} frames</span>}
-              {seqMode==='director' && directorPool.length > 0 && <span style={{ fontSize:12, color:C.text3 }}>{directorPool.length} uploaded</span>}
-              {seqMode==='director' && <span style={{ fontSize:12, color:C.text3 }}>mogco-beam</span>}
-              {seqMode==='director' && directorResult?.sequence?.length > 0 && <span style={{ fontSize:12, color:C.accent }}>{directorResult.sequence.length} frames</span>}
-              {seqMode==='director' && directorResult?.global_score != null && <span style={{ fontSize:12, color:C.text3 }}>score {(directorResult.global_score*100).toFixed(1)}</span>}
-            </div>
-            <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-              {seqMode==='director' && (
-                <button
-                  disabled={directorLoading || (directorPool.length === 0 && photos.length === 0)}
-                  onClick={async () => {
-                    setDirectorLoading(true);
-                    setDirectorResult(null);
-                    try {
-                      const source = directorPool.length > 0 ? directorPool : photos;
-
-                      if (directorPrompt.trim()) {
-                        // Brief provided: director visually selects candidates → MOGCO sequences them
-                        const dirRes = await axios.post(`${API}/api/director`, {
-                          prompt: directorPrompt, photos: source, target: mogcoTarget,
-                        });
-                        if (dirRes.data.error) throw new Error(dirRes.data.error);
-                        const pool = dirRes.data.sequence?.length >= mogcoTarget
-                          ? dirRes.data.sequence : source;
-                        // MOGCO pareto mode orders the director's picks by flow + role fit
-                        const mogcoRes = await axios.post(`${API}/api/sequence/mogco`, {
-                          photos: pool, target: mogcoTarget, min_score: mogcoMinScore, mode: 'pareto',
-                        });
-                        setDirectorResult({
-                          ...mogcoRes.data,
-                          director_note: dirRes.data.director_note ?? null,
-                          style_tags:    dirRes.data.style_tags ?? [],
-                        });
-                      } else {
-                        // No brief: pure MOGCO beam search from DuckDB
-                        const mogcoRes = await axios.post(`${API}/api/sequence/mogco`, {
-                          photos: source, target: mogcoTarget, min_score: mogcoMinScore, mode: 'beam',
-                        });
-                        setDirectorResult(mogcoRes.data);
-                      }
-                    } catch(err: any) {
-                      notify(`Generation error: ${err?.response?.data?.detail ?? err.message}`, 'error');
-                    } finally { setDirectorLoading(false); }
-                  }}
-                  style={{ display:'flex', alignItems:'center', gap:6, padding:'5px 12px',
-                    background: directorLoading ? C.surf2 : C.aLow,
-                    border:`1px solid ${C.aBdr}`, borderRadius:7, color:C.accent,
-                    fontSize:13, fontWeight:700, cursor: directorLoading ? 'not-allowed' : 'pointer',
-                    opacity: (directorPool.length===0 && photos.length===0) ? 0.4 : 1,
-                  }}>
-                  {directorLoading
-                    ? <><div style={{ width:11,height:11,border:`2px solid ${C.accent}`,borderTopColor:'transparent',borderRadius:'50%',animation:'spin .8s linear infinite' }}/> Generating…</>
-                    : <><Sparkles size={11}/> Generate</>}
-                </button>
-              )}
-              {seqMode==='director' && directorResult?.sequence?.length > 0 && (
-                <button
-                  onClick={async () => {
-                    const name = `Story ${saved.length + 1}`;
-                    try {
-                      await axios.post(`${API}/api/save-sequence`, { name, sequence: directorResult.sequence });
-                      setSaved(prev => [...prev, { name, sequence: directorResult.sequence }]);
-                      notify(`✅ Saved as "${name}"`, 'success');
-                    } catch (err: any) { notify(`❌ ${err?.response?.data?.detail || "Failed"}`, 'error'); }
-                  }}
-                  style={{ display:'flex', alignItems:'center', gap:6, padding:'5px 14px',
-                    background:C.aLow, border:`1px solid ${C.aBdr}`, borderRadius:7,
-                    color:C.accent, fontSize:13, fontWeight:700, cursor:'pointer' }}>
-                  <Flag size={12}/> Save Story
-                </button>
-              )}
-              {seqMode==='auto' && carousel.some(c => c.stars > 0) && (
-                <div style={{ position:'relative', flexShrink:0 }}>
-                  <button onClick={() => setShowStarSort(v => !v)}
-                    style={{ display:'flex', alignItems:'center', gap:5, padding:'5px 11px', background:showStarSort ? C.surf3 : C.surf2, border:`1px solid ${showStarSort ? C.aBdr : C.bdr2}`, borderRadius:7, color:showStarSort ? C.accent : C.text2, fontSize:13, fontWeight:600, cursor:'pointer' }}>
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="oklch(70% .18 72)" strokeWidth="0"><polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26"/></svg>
-                    Sort by Stars ▾
-                  </button>
-                  {showStarSort && (
-                    <>
-                      {/* backdrop */}
-                      <div style={{ position:'fixed', inset:0, zIndex:49 }} onClick={() => setShowStarSort(false)}/>
-                      <div style={{ position:'absolute', top:'calc(100% + 6px)', left:0, zIndex:50, background:C.surf, border:`1px solid ${C.bdr2}`, borderRadius:8, overflow:'hidden', boxShadow:'0 8px 32px rgba(0,0,0,.6)', minWidth:130 }}>
-                        {[5,4,3,2,1].map(n => (
-                          <button key={n} onClick={() => { handleSortByStars(n); setShowStarSort(false); }}
-                            style={{ width:'100%', display:'flex', alignItems:'center', gap:8, padding:'8px 12px', background:'transparent', border:'none', cursor:'pointer', transition:'background .1s' }}
-                            onMouseEnter={e => (e.currentTarget.style.background = C.surf2)}
-                            onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
-                            <div style={{ display:'flex', gap:2 }}>
-                              {[1,2,3,4,5].map(s => (
-                                <svg key={s} width="12" height="12" viewBox="0 0 24 24"
-                                  fill={s <= n ? 'oklch(70% .18 72)' : 'oklch(30% .04 72)'} stroke="none">
-                                  <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26"/>
-                                </svg>
-                              ))}
-                            </div>
-                            <span style={{ fontSize:12, color:C.text2, fontWeight:600 }}>{n} star{n !== 1 ? 's' : ''} first</span>
-                          </button>
-                        ))}
-                      </div>
-                    </>
-                  )}
-                </div>
-              )}
-              {seqMode==='auto' && (<>
-              {/* Min-star pool filter */}
-              <div style={{ display:'flex', alignItems:'center', gap:3, background:C.surf2, border:`1px solid ${C.bdr2}`, borderRadius:7, padding:'3px 6px' }}>
-                <span style={{ fontSize:11, color:C.text3, marginRight:2, whiteSpace:'nowrap' }}>Pool:</span>
-                {([0,1,2,3,4,5] as const).map(n => (
-                  <button key={n} onClick={() => setSeqMinStars(n)}
-                    style={{ padding:'2px 6px', borderRadius:5, fontSize:11, fontWeight:seqMinStars===n?700:500, cursor:'pointer',
-                      background: seqMinStars===n ? C.aLow : 'transparent',
-                      border: `1px solid ${seqMinStars===n ? C.aBdr : 'transparent'}`,
-                      color: seqMinStars===n ? C.accent : C.text3, transition:'all .12s' }}>
-                    {n === 0 ? 'Any' : `${n}★+`}
-                  </button>
-                ))}
-              </div>
-              <button onClick={handleGenerate} disabled={loading}
-                style={{ display:'flex', alignItems:'center', gap:6, padding:'5px 12px', background:C.surf2, border:`1px solid ${C.bdr2}`, borderRadius:7, color:C.text2, fontSize:13, fontWeight:600, cursor:'pointer' }}>
-                <RefreshCw size={12}/> Regenerate
-              </button>
-              <button onClick={handleExport} disabled={carousel.length<5}
-                style={{ display:'flex', alignItems:'center', gap:6, padding:'5px 12px', background:'oklch(35% .12 295 / .2)', border:'1px solid oklch(45% .12 295 / .3)', borderRadius:7, color:'oklch(75% .12 295)', fontSize:13, fontWeight:600, cursor:'pointer', opacity:carousel.length<5?0.4:1 }}>
-                <FileDown size={12}/> Export
-              </button>
-              <button onClick={handleSave} disabled={carousel.length===0}
-                style={{ display:'flex', alignItems:'center', gap:6, padding:'5px 14px', background:C.aLow, border:`1px solid ${C.aBdr}`, borderRadius:7, color:C.accent, fontSize:13, fontWeight:700, cursor:'pointer', opacity:!carousel.length?0.4:1 }}>
-                <Flag size={12}/> Save Story
-              </button>
-              </>)}
-            </div>
-          </div>
-
-          {seqMode === 'auto' ? (<>
-          {/* Sequence cards */}
-          {carousel.length === 0 ? (
-            <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center', flexDirection:'column', gap:12, color:C.text3 }}>
-              <Layers size={32} strokeWidth={1}/>
-              <p style={{ fontSize:14 }}>{isDone ? 'No sequence yet — click Regenerate' : 'Grade a folder first to build an auto-sequence'}</p>
-            </div>
-          ) : (
-            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-              <SortableContext items={carousel.map(c => c.path)} strategy={verticalListSortingStrategy}>
-                <div style={{ flex:1, overflowY:'auto', padding:24 }}>
-                  <div style={{ display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:16, maxWidth:1100, margin:'0 auto' }}>
-                    {carousel.map((c, i) => {
-                      const isSel  = sel?.path === c.path;
-                      const isUsed = allUsedPaths.has(c.path);
-                      return (
-                        <SortableItem key={c.path} id={c.path}>
-                          <div onClick={() => jumpToPhoto(c.path)}
-                            style={{ background:C.surf, borderRadius:10, overflow:'hidden', cursor:'pointer', border:`1px solid ${isSel?C.accent:C.border}`, boxShadow:`0 2px 16px rgba(0,0,0,.4)`, display:'flex', flexDirection:'column' }}>
-                            <div style={{ position:'relative', aspectRatio:'2/3' }}>
-                              <img src={thumbUrl(c.path)} alt="" style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
-                              <div style={{ position:'absolute', top:8, left:8, background:'rgba(0,0,0,.72)', backdropFilter:'blur(8px)', borderRadius:5, padding:'3px 8px', fontSize:12, fontWeight:700, color:'#fff' }}>{i+1}</div>
-                              {c.stars > 0 && (
-                                <div style={{ position:'absolute', bottom:8, left:8, display:'flex', gap:2 }}>
-                                  {[1,2,3,4,5].map(s => (
-                                    <svg key={s} width="9" height="9" viewBox="0 0 24 24"
-                                      fill={s <= c.stars ? 'oklch(70% .18 72)' : 'none'}
-                                      stroke={s <= c.stars ? 'oklch(70% .18 72)' : 'rgba(255,255,255,.3)'} strokeWidth="2">
-                                      <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26"/>
-                                    </svg>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                            <div style={{ padding:'9px 11px' }}>
-                              <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between' }}>
-                                <p style={{ fontSize:12, fontWeight:600, color:C.text, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', flex:1 }}>{c.path.split(/[\\/]/).pop()}</p>
-                                {isUsed && (
-                                  <div style={{ flexShrink:0, marginLeft:6, display:'flex', alignItems:'center', gap:3, background:C.aLow, borderRadius:4, padding:'2px 6px' }}>
-                                    <Flag size={8} style={{ color:C.accent, flexShrink:0 }}/>
-                                    <span style={{ fontSize:10, fontWeight:700, color:C.accent }}>USED</span>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                        </SortableItem>
-                      );
-                    })}
-                  </div>
-                  <p style={{ textAlign:'center', fontSize:12, color:C.text3, marginTop:16 }}>Drag cards to reorder · Click to view in Gallery</p>
-                </div>
-              </SortableContext>
-            </DndContext>
-          )}
-
-          {/* ── Saved stories panel ──────────────────────────────── */}
-          {saved.length > 0 && (
-            <div style={{ flexShrink:0, borderTop:`1px solid ${C.border}`, background:C.surf }}>
-              <div style={{ display:'flex', alignItems:'center', padding:'6px 18px', borderBottom:`1px solid ${C.border}` }}>
-                <span style={{ fontSize:11, fontWeight:700, letterSpacing:'.08em', textTransform:'uppercase', color:C.text3 }}>Saved Stories</span>
-                <span style={{ fontSize:11, color:C.text3, marginLeft:8 }}>{saved.length}</span>
-              </div>
-              <div style={{ display:'flex', gap:10, padding:'10px 18px', overflowX:'auto', overflowY:'hidden' }}>
-                {saved.map((s, idx) => (
-                  <div key={idx}
-                    style={{ flexShrink:0, width:160, background:C.surf2, borderRadius:8, border:`1px solid ${C.bdr2}`, overflow:'hidden', display:'flex', flexDirection:'column', cursor:'pointer', transition:'border .15s' }}
-                    onClick={() => { setCarousel(s.sequence); notify(`Loaded "${s.name}"`, 'info'); }}
-                    onMouseEnter={e => (e.currentTarget.style.border = `1px solid ${C.aBdr}`)}
-                    onMouseLeave={e => (e.currentTarget.style.border = `1px solid ${C.bdr2}`)}>
-                    <div style={{ display:'flex', height:52, overflow:'hidden' }}>
-                      {s.sequence.slice(0, 5).map((c: any, j: number) => (
-                        <div key={j} style={{ flex:1, position:'relative', overflow:'hidden', borderRight: j < 4 ? `1px solid ${C.border}` : 'none' }}>
-                          <img src={thumbUrl(c.path)} alt="" decoding="async"
-                            style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
-                        </div>
-                      ))}
-                    </div>
-                    <div style={{ display:'flex', alignItems:'center', padding:'6px 9px', gap:4 }}>
-                      <div style={{ flex:1 }}>
-                        <p style={{ fontSize:13, fontWeight:700, color:C.text }}>{s.name}</p>
-                        <p style={{ fontSize:11, color:C.text3, marginTop:1 }}>{s.sequence.length} frames</p>
-                      </div>
-                      <button
-                        onClick={e => { e.stopPropagation(); handleDeleteSaved(idx); }}
-                        style={{ display:'flex', alignItems:'center', justifyContent:'center', width:18, height:18, borderRadius:4, border:`1px solid ${C.bdr2}`, background:'transparent', color:C.text3, cursor:'pointer', flexShrink:0 }}>
-                        <X size={10}/>
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-          </>) : (
-          /* ── Directed mode ─────────────────────────────────────── */
-          <div style={{ flex:1, overflowY:'auto', padding:'18px 24px', display:'flex', flexDirection:'column', gap:16 }}>
-
-            {/* MOGCO params + upload row */}
-            <div style={{ display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' }}>
-              <label style={{ display:'flex', alignItems:'center', gap:5, fontSize:12, color:C.text2 }}>
-                Frames
-                <input type="number" min={3} max={12} value={mogcoTarget}
-                  onChange={e => setMogcoTarget(Math.max(3, Math.min(12, parseInt(e.target.value)||5)))}
-                  style={{ width:46, padding:'3px 6px', background:C.surf, border:`1px solid ${C.bdr2}`, borderRadius:5, color:C.text, fontSize:12, textAlign:'center', outline:'none' }}/>
-              </label>
-              <label style={{ display:'flex', alignItems:'center', gap:5, fontSize:12, color:C.text2 }}>
-                Min score
-                <input type="number" min={0} max={1} step={0.05} value={mogcoMinScore}
-                  onChange={e => setMogcoMinScore(Math.max(0, Math.min(1, parseFloat(e.target.value)||0.45)))}
-                  style={{ width:52, padding:'3px 6px', background:C.surf, border:`1px solid ${C.bdr2}`, borderRadius:5, color:C.text, fontSize:12, textAlign:'center', outline:'none' }}/>
-              </label>
-              {!isDone && <span style={{ fontSize:12, color:'#f5c842', marginLeft:4 }}>Grade a folder first to populate the cache.</span>}
-            </div>
-
-            {/* Upload zone — compact row */}
-            <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
-              <div
-                onDragOver={e => { e.preventDefault(); setUploadDragOver(true); }}
-                onDragLeave={() => setUploadDragOver(false)}
-                onDrop={async e => {
-                  e.preventDefault(); setUploadDragOver(false);
-                  const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
-                  if (!files.length) return;
-                  setUploadLoading(true);
-                  try {
-                    const fd = new FormData();
-                    files.forEach(f => fd.append('files', f));
-                    const res = await axios.post(`${API}/api/director/upload-grade`, fd, { headers:{ 'Content-Type':'multipart/form-data' } });
-                    setDirectorPool(res.data.photos ?? []);
-                  } catch(err: any) { notify(`Upload failed: ${err?.response?.data?.detail ?? err.message}`, 'error'); }
-                  finally { setUploadLoading(false); }
-                }}
-                onClick={() => {
-                  const inp = document.createElement('input');
-                  inp.type='file'; inp.multiple=true; inp.accept='image/*';
-                  inp.onchange = async () => {
-                    const files = Array.from(inp.files ?? []);
-                    if (!files.length) return;
-                    setUploadLoading(true);
-                    try {
-                      const fd = new FormData();
-                      files.forEach(f => fd.append('files', f));
-                      const res = await axios.post(`${API}/api/director/upload-grade`, fd, { headers:{ 'Content-Type':'multipart/form-data' } });
-                      setDirectorPool(res.data.photos ?? []);
-                    } catch(err: any) { notify(`Upload failed: ${err?.response?.data?.detail ?? err.message}`, 'error'); }
-                    finally { setUploadLoading(false); }
-                  };
-                  inp.click();
-                }}
-                style={{
-                  display:'flex', alignItems:'center', gap:8, padding:'8px 14px',
-                  border:`1.5px dashed ${uploadDragOver ? C.accent : C.bdr2}`,
-                  borderRadius:8, background: uploadDragOver ? C.aLow : C.surf,
-                  cursor:'pointer', transition:'all .15s', flexShrink:0,
-                }}>
-                {uploadLoading
-                  ? <><div style={{ width:12,height:12,border:`2px solid ${C.accent}`,borderTopColor:'transparent',borderRadius:'50%',animation:'spin .8s linear infinite' }}/><span style={{ fontSize:12,color:C.text3 }}>Grading…</span></>
-                  : directorPool.length > 0
-                    ? <>{directorPool.slice(0,4).map((p:any) => <img key={p.path} src={`${API}/api/thumb?path=${encodeURIComponent(p.path)}`} style={{ width:28,height:20,objectFit:'cover',borderRadius:2,border:`1px solid ${C.border}` }}/>)}
-                       <span style={{ fontSize:12,color:C.text2,fontWeight:600 }}>{directorPool.length} uploaded</span></>
-                    : <><Download size={12} style={{ color:C.text3 }}/><span style={{ fontSize:12,color:C.text3 }}>Upload competition photos <span style={{ color:C.accent }}>optional</span></span></>
-                }
-              </div>
-              {directorPool.length > 0 && (
-                <button onClick={() => { axios.post(`${API}/api/director/clear-pool`).catch(()=>{}); setDirectorPool([]); }}
-                  style={{ fontSize:11,color:C.text3,background:'transparent',border:`1px solid ${C.bdr2}`,borderRadius:5,padding:'4px 10px',cursor:'pointer' }}>
-                  Clear
-                </button>
-              )}
-              <span style={{ fontSize:12,color:C.text3,marginLeft:'auto' }}>
-                {directorPool.length > 0 ? `Using ${directorPool.length} uploaded photos` : isDone ? `Using ${photos.filter((p:any)=>!p.reject).length} graded picks` : 'Grade a folder or upload photos'}
-              </span>
-            </div>
-
-            {/* Brief — optional, AI narrative layer over MOGCO frames */}
-            <textarea
-              value={directorPrompt}
-              onChange={e => setDirectorPrompt(e.target.value)}
-              placeholder={"Optional: describe your vision to layer an AI narrative note over the sequence…\n\nExamples:\n• \"Open wide, build to intimate portraits, close quietly\"\n• \"Street, 7 frames, moody and high-contrast\"\n• \"Lead with technically strong openers, faces first\""}
-              style={{
-                width:'100%', boxSizing:'border-box', minHeight:90, resize:'vertical',
-                background:C.surf, border:`1px solid ${C.bdr2}`, borderRadius:8,
-                padding:'10px 14px', fontSize:13, color:C.text, lineHeight:1.6,
-                outline:'none', fontFamily:'inherit',
-              }}
-              onFocus={e => { e.currentTarget.style.borderColor=C.aBdr; }}
-              onBlur={e => { e.currentTarget.style.borderColor=C.bdr2; }}
-            />
-
-            {/* Director's note */}
-            {directorResult?.director_note && (
-              <div style={{ background:C.aLow, border:`1px solid ${C.aBdr}`, borderRadius:8, padding:'10px 14px', display:'flex', gap:10, alignItems:'flex-start' }}>
-                <Sparkles size={13} style={{ color:C.accent, flexShrink:0, marginTop:2 }}/>
-                <div>
-                  <p style={{ fontSize:13,color:C.text2,margin:0,lineHeight:1.6 }}>{directorResult.director_note}</p>
-                  {directorResult.style_tags?.length > 0 && (
-                    <div style={{ display:'flex',gap:5,flexWrap:'wrap',marginTop:6 }}>
-                      {directorResult.style_tags.map((t:string) => (
-                        <span key={t} style={{ fontSize:11,background:C.surf3,border:`1px solid ${C.bdr2}`,borderRadius:12,padding:'2px 8px',color:C.text2 }}>{t}</span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Generated sequence */}
-            {directorResult?.sequence?.length > 0 && (
-              <div>
-                <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10 }}>
-                  <span style={{ fontSize:11,fontWeight:700,color:C.text3,textTransform:'uppercase',letterSpacing:'.07em' }}>
-                    {directorResult.engine ?? 'Generated'} · {directorResult.sequence.length} frames
-                  </span>
-                  {directorResult.global_score != null && (
-                    <span style={{ fontSize:11, color:C.accent, fontWeight:600 }}>
-                      global {(directorResult.global_score*100).toFixed(1)}
-                    </span>
-                  )}
-                </div>
-                <div style={{ display:'grid', gridTemplateColumns:'repeat(5,1fr)', gap:14, maxWidth:1100 }}>
-                  {directorResult.sequence.map((frame:any, i:number) => {
-                    const score = typeof frame.score==='number' ? frame.score : (frame.composite ?? 0);
-                    const gc = score>=0.72?'#5acd7a':score>=0.5?'#f5c842':'#e05b5b';
-                    const canJump = photos.some((p:any)=>p.path===frame.path);
-                    return (
-                      <div key={frame.path??i}
-                        onClick={() => { if(canJump){ setMainTab('gallery'); setSelId(frame.id??frame.path); setLoupeMode('loupe'); } }}
-                        style={{ borderRadius:8, overflow:'hidden', border:`1px solid ${C.border}`, background:C.surf, cursor:canJump?'pointer':'default', transition:'transform .1s,box-shadow .1s' }}
-                        onMouseEnter={e=>{e.currentTarget.style.transform='translateY(-2px)';e.currentTarget.style.boxShadow='0 6px 20px rgba(0,0,0,.4)';}}
-                        onMouseLeave={e=>{e.currentTarget.style.transform='';e.currentTarget.style.boxShadow='';}}>
-                        <div style={{ position:'relative', aspectRatio:'2/3', overflow:'hidden' }}>
-                          <img src={`${API}/api/thumb?path=${encodeURIComponent(frame.path)}`}
-                            alt="" loading="lazy" decoding="async"
-                            style={{ width:'100%',height:'100%',objectFit:'cover',display:'block' }}/>
-                          <div style={{ position:'absolute',top:6,left:6,background:'rgba(0,0,0,.72)',borderRadius:3,padding:'2px 6px',fontSize:9,fontWeight:700,color:'#fff',letterSpacing:'.07em',textTransform:'uppercase' }}>
-                            {i+1}. {frame.slot??frame.role??''}
-                          </div>
-                          <div style={{ position:'absolute',top:6,right:6,background:`${gc}dd`,borderRadius:3,padding:'2px 6px',fontSize:9,fontWeight:700,color:'#fff' }}>
-                            {(score*100).toFixed(0)}
-                          </div>
-                        </div>
-                        <div style={{ padding:'6px 9px 8px' }}>
-                          <p style={{ fontSize:10.5,color:C.text3,margin:0,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis' }}>
-                            {(frame.path??'').split(/[\\/]/).pop()}
-                          </p>
-                          {frame.mogco_objectives && (
-                            <div style={{ display:'flex', gap:5, marginTop:4, flexWrap:'wrap' }}>
-                              {(['quality','role_fit','flow'] as const).map(k => (
-                                <span key={k} style={{ fontSize:9,color:C.text3,background:C.surf2,borderRadius:3,padding:'1px 4px' }}>
-                                  {k.replace('_',' ')} {((frame.mogco_objectives[k]??0)*100).toFixed(0)}
-                                </span>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
-            {/* Empty state */}
-            {!directorResult && !directorLoading && (
-              <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:10, color:C.text3, paddingTop:24 }}>
-                <Layers size={26} strokeWidth={1}/>
-                <p style={{ fontSize:13,textAlign:'center',maxWidth:400,lineHeight:1.7,margin:0 }}>
-                  <strong style={{ color:C.text2 }}>MOGCO</strong> selects frames using quality, role fit, and visual flow.<br/>
-                  Add an optional brief above to layer an AI narrative note.
-                </p>
-              </div>
-            )}
-
-          </div>
-          )}
-        </div>
-      )}
+      ) : null}
 
       {/* ── Status bar ─────────────────────────────────────────── */}
       <div style={{ height:26, display:'flex', alignItems:'center', padding:'0 14px', gap:16, flexShrink:0, background:C.surf, borderTop:`1px solid ${C.border}` }}>
@@ -2632,13 +2289,17 @@ export default function App() {
               <button onClick={goUp} style={{ flexShrink:0, padding:'4px 10px', fontSize:13, color:'#9a9aaa', background:'#161b22', border:'1px solid #252d38', borderRadius:6, cursor:'pointer' }}>↑ Up</button>
               <span style={{ flex:1, fontSize:13, color:'#9a9aaa', fontFamily:'monospace', background:'#161b22', border:'1px solid #252d38', borderRadius:6, padding:'4px 10px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{bPath}</span>
               <button
-                onClick={() => {
-                  if (browserMode === 'add') {
-                    handleAddFolder(bPath);
-                  } else {
-                    setFolder(bPath); setPhotos([]); setSelId(null); setFolders([]);
-                  }
+                onClick={async () => {
+                  try {
+                    if (browserMode === 'add') {
+                      const toAdd = bSelFolders.size ? Array.from(bSelFolders) : [bPath];
+                      for (const nf of toAdd) await handleAddFolder(nf);
+                    } else {
+                      setFolder(bPath); setPhotos([]); setSelId(null); setFolders([]);
+                    }
+                  } catch (err) { /* non-blocking */ }
                   setShowBrowser(false);
+                  setBSelFolders(new Set());
                 }}
                 disabled={bImages.length===0}
                 style={{ flexShrink:0, padding:'4px 12px', fontSize:13, fontWeight:600, background:'#2563eb', color:'#fff', borderRadius:7, border:'none', cursor:bImages.length>0?'pointer':'not-allowed', opacity:bImages.length>0?1:0.4 }}>
@@ -2678,11 +2339,11 @@ export default function App() {
                       <div style={{ marginBottom:20 }}>
                         <p style={{ fontSize:11, color:'#3a3a4a', fontWeight:600, textTransform:'uppercase', letterSpacing:'.08em', marginBottom:8 }}>Folders ({bFolders.length})</p>
                         <div style={{ display:'grid', gap:6, gridTemplateColumns:'repeat(auto-fill, minmax(150px,1fr))' }}>
-                          {bFolders.map(f => (
-                            <button key={f} onClick={() => { setBPath(f); loadBrowser(f); }}
-                              style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 12px', background:'#161b22', border:'1px solid #252d38', borderRadius:8, cursor:'pointer', textAlign:'left' }}>
-                              <FolderOpen size={13} style={{ color:'#60a5fa', flexShrink:0 }}/>
-                              <span style={{ fontSize:13, color:'#c0c0d0', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{f.split(/[\\/]/).pop()}</span>
+                          {bFolders.map((f, idx) => (
+                            <button key={f} onClick={(e) => handleBrowserFolderClick(e as any, f, idx)}
+                              style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 12px', background: bSelFolders.has(f) ? 'rgba(37,99,235,.16)' : '#161b22', border: bSelFolders.has(f) ? '1px solid rgba(37,99,235,.4)' : '1px solid #252d38', borderRadius:8, cursor:'pointer', textAlign:'left' }}>
+                              <FolderOpen size={13} style={{ color: bSelFolders.has(f) ? '#93c5fd' : '#60a5fa', flexShrink:0 }}/>
+                              <span style={{ fontSize:13, color: bSelFolders.has(f) ? '#93c5fd' : '#c0c0d0', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{f.split(/[\\/]/).pop()}</span>
                             </button>
                           ))}
                         </div>

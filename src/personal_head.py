@@ -3,9 +3,9 @@ Step 3 — Personal Head: a 2-layer MLP that learns user aesthetic taste.
 
 Architecture
 ────────────
-    SigLIP embedding (1152-d)
+    SigLIP-2 embedding (1536-d)  [or 1152-d for legacy SigLIP So400M]
          │
-    Linear(1152 → 256) + ReLU
+    Linear(embed_dim → 256) + ReLU
          │
     Linear(256 → 64) + ReLU
          │
@@ -13,7 +13,10 @@ Architecture
          │
     Sigmoid          → normalised to [0, 1]
 
-Total parameters: ~311 K  ≈ 1.2 MB in FP32.
+The embed_dim is detected from the saved weights on load, so the same
+checkpoint logic works regardless of which encoder produced the embeddings.
+Saved weights from a 1152-d run are silently discarded when the embedding
+space changes to 1536-d — the head retrains from scratch.
 
 Learning
 ────────
@@ -21,11 +24,6 @@ Whenever the user moves a photo between grade buckets the model receives a
 Margin Ranking Loss update:
 
     L = max(0, -y · (s₁ - s₂) + margin)
-
-where
-    y  = +1  if photo 1 should rank higher than photo 2
-    s₁ = personal_head(emb₁),  s₂ = personal_head(emb₂)
-    margin = 0.1   (guards against ties)
 
 Weights are persisted to cache/personal_head.pt after every update.
 """
@@ -39,12 +37,13 @@ from pathlib import Path
 from typing import Optional
 
 _WEIGHTS_PATH = Path("cache/personal_head.pt")
-_EMBED_DIM    = 1152
+_DEFAULT_EMBED_DIM = 1536   # SigLIP-2; 1152 for legacy SigLIP So400M
 
 
 class PersonalHead(nn.Module):
-    def __init__(self, embed_dim: int = _EMBED_DIM) -> None:
+    def __init__(self, embed_dim: int = _DEFAULT_EMBED_DIM) -> None:
         super().__init__()
+        self.embed_dim = embed_dim
         self.net = nn.Sequential(
             nn.Linear(embed_dim, 256), nn.ReLU(),
             nn.Linear(256, 64),        nn.ReLU(),
@@ -66,13 +65,22 @@ _LR         = 3e-4
 _STEPS      = 5        # gradient steps per update call
 
 
-def _get_head() -> tuple[PersonalHead, torch.optim.Adam]:
+def _get_head(embed_dim: int = _DEFAULT_EMBED_DIM) -> tuple[PersonalHead, torch.optim.Adam]:
     global _head, _opt
     if _head is None:
-        _head = PersonalHead()
+        _head = PersonalHead(embed_dim=embed_dim)
         if _WEIGHTS_PATH.exists():
             try:
-                _head.load_state_dict(torch.load(_WEIGHTS_PATH, map_location="cpu"))
+                saved = torch.load(_WEIGHTS_PATH, map_location="cpu")
+                # Infer saved embed_dim from first Linear weight shape
+                saved_dim = saved.get("net.0.weight", torch.zeros(1, embed_dim)).shape[1]
+                if saved_dim == embed_dim:
+                    _head.load_state_dict(saved)
+                else:
+                    print(
+                        f"[PersonalHead] Saved weights dim={saved_dim} ≠ current dim={embed_dim}. "
+                        "Discarding old weights — head will retrain from scratch."
+                    )
             except Exception:
                 pass
         _opt = torch.optim.Adam(_head.parameters(), lr=_LR)
@@ -83,10 +91,11 @@ def _get_head() -> tuple[PersonalHead, torch.optim.Adam]:
 
 def score(embeddings: np.ndarray) -> np.ndarray:
     """
-    Return personal preference scores in [0, 1] for an (N, 1152) embedding array.
-    Higher = more aligned with the user's historical taste.
+    Return personal preference scores in [0, 1] for an (N, D) embedding array.
+    D is inferred from the input shape — head is (re-)initialised on first call.
     """
-    head, _ = _get_head()
+    embed_dim = embeddings.shape[1] if embeddings.ndim == 2 else _DEFAULT_EMBED_DIM
+    head, _ = _get_head(embed_dim=embed_dim)
     head.eval()
     with torch.no_grad():
         t    = torch.tensor(embeddings, dtype=torch.float32)
@@ -101,12 +110,11 @@ def update(
     grade2: str,
 ) -> float:
     """
-    Run `_STEPS` Margin Ranking Loss gradient steps given two (1152,) embeddings
+    Run `_STEPS` Margin Ranking Loss gradient steps given two embeddings
     and their human-assigned grades.  Returns the final loss value.
-
-    Call this whenever a user moves a photo from one bucket to another.
     """
-    head, opt = _get_head()
+    embed_dim = int(np.asarray(emb1).flatten().shape[0])
+    head, opt = _get_head(embed_dim=embed_dim)
     head.train()
 
     r1  = _GRADE_RANK.get(grade1, 1)

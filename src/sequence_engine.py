@@ -4,8 +4,24 @@ Shared constants and utilities for sequence_story in lightweight_analyzer.py.
 
 import json
 import os
+from collections import OrderedDict
+import numpy as np
 
 _WEIGHT_KEYS = ("visual_flow", "visual_diversity", "time_coherence")
+
+# ── Role-based pacing weights ─────────────────────────────────────────────────
+# Ordered so iteration yields slots in narrative order: opener→subject→detail→contrast→closer.
+# comp_weight  = Composition dimension  (framing, geometry, negative space)
+# human_weight = Human/Cultural dimension (presence, emotion, culture)
+# mood_weight  = Light/Mood dimension   (atmosphere, tone, chiaroscuro)
+# diversity_penalty = how strongly this slot pushes away from the previous frame
+SHOT_ROLES: OrderedDict = OrderedDict([
+    ("opener",   {"comp_weight": 0.4, "human_weight": 0.1, "mood_weight": 0.3, "diversity_penalty": 0.2}),
+    ("subject",  {"comp_weight": 0.2, "human_weight": 0.5, "mood_weight": 0.1, "diversity_penalty": 0.2}),
+    ("detail",   {"comp_weight": 0.5, "human_weight": 0.1, "mood_weight": 0.2, "diversity_penalty": 0.2}),
+    ("contrast", {"comp_weight": 0.2, "human_weight": 0.2, "mood_weight": 0.4, "diversity_penalty": 0.2}),
+    ("closer",   {"comp_weight": 0.3, "human_weight": 0.1, "mood_weight": 0.5, "diversity_penalty": 0.2}),
+])
 
 
 class PacingManager:
@@ -294,3 +310,152 @@ def _mdp_sequence(
             deduped.append(sub)
 
     return deduped[:target]
+
+
+# ── Role-based assignment ─────────────────────────────────────────────────────
+
+def assign_roles(heroes, target=5):
+    """
+    Assign narrative roles to hero photos using SHOT_ROLES pacing weights.
+
+    heroes : list of dicts with 'path', 'embedding' (list/array), 'breakdown'
+             (dict of dimension scores), and 'score' (float).
+    Returns: ordered list of up to `target` dicts — one per narrative role.
+    """
+    if not heroes:
+        return []
+    if len(heroes) <= target:
+        return list(heroes[:target])
+
+    def _dv(b, keys):
+        return next((v for k, v in b.items() if k in keys), 0.5)
+
+    ranked = sorted(heroes, key=lambda x: float(x.get("score", 0)), reverse=True)
+    sequence: list = []
+    used: set = set()
+
+    for role_name, weights in SHOT_ROLES.items():
+        if len(sequence) >= target:
+            break
+        candidates = [h for h in ranked if h["path"] not in used]
+        if not candidates:
+            break
+
+        if not sequence:
+            pick = candidates[0]
+        else:
+            prev_emb = np.array(sequence[-1]["embedding"], dtype=np.float32)
+            prev_norm = prev_emb / (np.linalg.norm(prev_emb) + 1e-9)
+            role_scores: list = []
+            for h in candidates:
+                base  = float(h.get("score", 0))
+                b     = h.get("breakdown", {})
+                comp  = _dv(b, _COMP_KEYS)
+                human = _dv(b, _HUMAN_KEYS)
+                mood  = _dv(b, _LIGHT_KEYS)
+                role_score = (comp  * weights["comp_weight"] +
+                              human * weights["human_weight"] +
+                              mood  * weights["mood_weight"])
+                emb   = np.array(h["embedding"], dtype=np.float32)
+                emb   = emb / (np.linalg.norm(emb) + 1e-9)
+                sim   = float(np.dot(prev_norm, emb))
+                final = role_score * 0.6 + (1.0 - sim) * weights["diversity_penalty"] + base * 0.2
+                role_scores.append(final)
+            pick = candidates[int(np.argmax(role_scores))]
+
+        sequence.append(pick)
+        used.add(pick["path"])
+
+    return sequence[:target]
+
+
+# ── Event segmentation ────────────────────────────────────────────────────────
+
+def segment_events(photo_records, gap_threshold=900):
+    """
+    Group photos into temporal events using EXIF timestamp gaps.
+
+    photo_records : list of dicts, each with 'exif_ts' (Unix seconds, 0 if absent)
+                    and '_vi' (valid-array index back-reference).
+    gap_threshold : seconds between events (default 900 = 15 min).
+    Returns       : list of event groups, each a list of photo_record dicts.
+                    Falls back to a single group when timestamps are all zero.
+    """
+    if not photo_records:
+        return []
+
+    sorted_recs = sorted(photo_records, key=lambda r: r.get("exif_ts") or 0.0)
+
+    if all((r.get("exif_ts") or 0.0) == 0.0 for r in sorted_recs):
+        return [sorted_recs]
+
+    events: list = []
+    current: list = []
+    last_ts = sorted_recs[0].get("exif_ts") or 0.0
+
+    for rec in sorted_recs:
+        ts = rec.get("exif_ts") or 0.0
+        if ts - last_ts > gap_threshold and current:
+            events.append(current)
+            current = []
+        current.append(rec)
+        last_ts = ts
+
+    if current:
+        events.append(current)
+    return events
+
+
+# ── Burst consolidation ───────────────────────────────────────────────────────
+
+def consolidate_bursts(event_imgs, sim_threshold=0.88, time_window_s=30.0):
+    """
+    Within one temporal event, remove near-duplicate burst frames and keep
+    the best representative from each cluster.
+
+    event_imgs   : list of dicts with 'embedding' (array), 'exif_ts' (float),
+                   'score' (float), '_vi' (int), 'path' (str).
+    time_window_s: seconds over which temporal proximity is normalized (~burst window).
+    Returns      : list of hero dicts (one per cluster), each with 'burst_size' added.
+    """
+    if len(event_imgs) < 2:
+        result = [dict(img) for img in event_imgs]
+        for r in result:
+            r.setdefault("burst_size", 1)
+        return result
+
+    embs = np.array([img["embedding"] for img in event_imgs], dtype=np.float32)
+    norms = np.linalg.norm(embs, axis=1, keepdims=True)
+    embs_n = embs / (norms + 1e-9)
+    sim_matrix = (embs_n @ embs_n.T).astype(np.float32)
+
+    ts = np.array([img.get("exif_ts") or 0.0 for img in event_imgs], dtype=np.float64)
+    if time_window_s > 0 and ts.max() > 0:
+        time_diff = np.abs(ts[:, None] - ts[None, :]) / float(time_window_s)
+    else:
+        time_diff = np.zeros((len(event_imgs), len(event_imgs)), dtype=np.float64)
+
+    dist_matrix = (1.0 - sim_matrix) + time_diff.astype(np.float32)
+
+    visited = [False] * len(event_imgs)
+    groups = []
+    for i in range(len(event_imgs)):
+        if visited[i]:
+            continue
+        cluster = [i]
+        visited[i] = True
+        for j in range(i + 1, len(event_imgs)):
+            if not visited[j] and dist_matrix[i, j] < 0.6:
+                cluster.append(j)
+                visited[j] = True
+        groups.append(cluster)
+
+    heroes = []
+    for group in groups:
+        pool_g = [event_imgs[idx] for idx in group]
+        hero = max(pool_g, key=lambda x: float(x.get("score", 0)))
+        hero = dict(hero)
+        hero["burst_size"] = len(pool_g)
+        heroes.append(hero)
+
+    return heroes

@@ -154,6 +154,22 @@ fn wait_for_server(url: &str, retries: u32) -> bool {
     false
 }
 
+// ─── Tauri commands ──────────────────────────────────────────────────────────
+
+/// Call the Python MOGCO sequencer and return its JSON response as a string.
+/// The frontend can JSON.parse() the result to read `paths`, `slots`, etc.
+#[tauri::command]
+async fn generate_sequence(prompt: Option<String>) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    let res = client
+        .post("http://127.0.0.1:8000/api/sequence")
+        .json(&serde_json::json!({ "vibe_prompt": prompt }))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    res.text().await.map_err(|e| e.to_string())
+}
+
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -165,6 +181,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .invoke_handler(tauri::generate_handler![generate_sequence])
         .setup(move |app| {
             // Show a static loading page immediately while Python starts up.
             // Once the server is ready the background thread navigates to the real app.

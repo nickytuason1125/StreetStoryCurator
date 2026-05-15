@@ -73,7 +73,7 @@
         },
 
         // ────────────────────────────────────────────────────────────────────
-        // 4.  Build React frontend
+        // 4.  Build React frontend (one-shot)
         // ────────────────────────────────────────────────────────────────────
         {
             "label": "Build Frontend",
@@ -84,6 +84,27 @@
                 "cwd": "${workspaceFolder}/frontend"
             },
             "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            },
+            "problemMatcher": []
+        },
+
+        // ────────────────────────────────────────────────────────────────────
+        // 4b. Watch frontend — rebuilds dist/ on every file save automatically
+        // ────────────────────────────────────────────────────────────────────
+        {
+            "label": "Watch Frontend",
+            "type": "shell",
+            "command": "npm",
+            "args": ["run", "watch"],
+            "options": {
+                "cwd": "${workspaceFolder}/frontend"
+            },
+            "group": "build",
+            "isBackground": true,
             "presentation": {
                 "reveal": "always",
                 "panel": "dedicated",

@@ -23,6 +23,13 @@ frontend/src-tauri/target/
 models/*.pt
 models/*.bin
 models/*.onnx
+models/*.gguf
+
+# Legacy backup files
+*.legacy_backup
+
+# Claude Code session memory (local only)
+.claude/
 
 # OS
 .DS_Store

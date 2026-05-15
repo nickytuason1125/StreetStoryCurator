@@ -164,6 +164,26 @@ def _build_frontend_if_needed():
     _log("Frontend build succeeded")
 
 
+def _start_frontend_watch():
+    """
+    Start 'npm run watch' (vite build --watch) as a background process.
+    Vite watches frontend/src and rebuilds dist/ on every file save,
+    so the backend always serves the latest bundle without a manual build step.
+    """
+    import subprocess as sp
+    try:
+        proc = sp.Popen(
+            ["npm", "run", "watch"],
+            cwd=str(_ROOT / "frontend"),
+            stdout=_log_fh,
+            stderr=_log_fh,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        _log(f"Frontend watch started (PID {proc.pid})")
+    except Exception as exc:
+        _log(f"Frontend watch failed to start: {exc}")
+
+
 def _wait_for_server(url, retries=120, interval=0.25):
     for i in range(retries):
         try:
@@ -247,6 +267,7 @@ def main():
     try:
         _clear_webview2_cache()
         _build_frontend_if_needed()
+        _start_frontend_watch()
 
         port = _find_free_port()
         url = f"http://127.0.0.1:{port}"

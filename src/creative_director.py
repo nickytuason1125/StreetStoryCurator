@@ -1,108 +1,294 @@
 """
-Creative Director — MOGCO-II parameter optimizer for Flux 2 [klein] stylization.
+Creative Director — Purist Curation Pipeline
 
-For each Strong image MOGCO-II finds the Pareto-optimal
-(img2img strength, CFG guidance, ControlNet weight) triple across 3 objectives:
+Governs the 5-image "Story Sequence" using only Original Pixel Metadata.
+No pixel modification is performed. The output is always the original file.
 
-  1. style_fidelity    — how strongly the anchor aesthetic is applied
-                         Proxy: (guidance - min_g) / (max_g - min_g)  → [0, 1]
-  2. struct_integrity  — how faithfully the original geometry is preserved
-                         Proxy: 1 − strength          (lower noise → more structure)
-  3. set_cohesion      — how naturally this image fits the Strong portfolio set
-                         Signal: mean SigLIP cosine sim to the bucket centroid
+Pipeline
+────────
+1. DeepSeek-R1-1.5B Agent (CPU GGUF) → Rule Set JSON
+   Reads the Style Brief and emits HARD_FILTER_PEOPLE, GEOMETRIC_PRIORITY, etc.
 
-All three objectives are in [0, 1] and higher is better.
-The Pareto front over the 48-point parameter grid is identical in logic to
-mogco2.py but operates in parameter space rather than image space.
+2. Binary Kill-Switch — YOLOv11-nano (CPU)
+   If HARD_FILTER_PEOPLE is True and class:person is detected (conf > 0.40),
+   the image is hard-blocked from the Story Sequence. No clean-up. Disqualified.
 
-Per-image narrative roles are assigned by image content (not list position):
+3. SigLIP-2 Penalty — Subject Intrusion (CPU)
+   people_sim > 0.40 OR Human/Culture aspect > 0.55 → score × 0.10.
+
+4. Story Sequence Selection — select_story_sequence()
+   Greedy max-dissimilarity + role guarantee over top-40 by score.
+
+5. Cinematic Reorder
+   Opener → slot 0, Contrast → slot n//2, Closer → slot n-1.
+   Luminance smoothing (adjacent Δ < 25%).
+
+6. Copy Originals → output_dir/Final_Portfolio/
+   Output is 100% the original capture. No stylization.
+
+Per-image narrative roles (assigned by content, not list position):
   subject  → highest aesthetic score (hero shot)
-  opener   → most representative of the set (closest to centroid)
-  closer   → second-highest score
-  contrast → most visually distinct from the centroid (counterpoint)
+  opener   → negative-space image with highest score
+  closer   → negative-space image with 2nd-highest score
+  contrast → most visually distinct (furthest from centroid)
   detail   → third-highest score (texture / decisive gesture)
+
+Cinematic pacing constraints:
+  • Opener + Closer negative space ≥ 30% (sim_to_centroid ≤ 0.70)
+  • Contrast placed at exactly slot n//2 in narrative order
+  • Luminance smoothing: adjacent images must not differ > 25% mean brightness
+  • Diversity guard: any pair with cosine sim > 0.88 is penalised / swapped
 """
 from __future__ import annotations
 
+import shutil
 import numpy as np
 from pathlib import Path
 from typing import Callable, Optional
 
-# ── Parameter search space (4 × 4 × 3 = 48 combinations) ────────────────────
-
-_STRENGTHS    = [0.25, 0.40, 0.55, 0.70]   # img2img denoising strength
-_GUIDANCES    = [2.0,  3.5,  5.0,  7.5]    # CFG guidance scale
-_CTRL_WEIGHTS = [0.40, 0.60, 0.80]          # ControlNet conditioning scale
-
-_G_MIN = _GUIDANCES[0]   # 2.0
-_G_MAX = _GUIDANCES[-1]  # 7.5
-
-_PARAM_GRID: list[dict] = [
-    {"strength": s, "guidance": g, "ctrl_weight": cw}
-    for s  in _STRENGTHS
-    for g  in _GUIDANCES
-    for cw in _CTRL_WEIGHTS
-]
-
-# ── Shot role weights for creative direction ──────────────────────────────────
-
-_CD_ROLES: dict[str, dict[str, float]] = {
-    "opener":   {"style": 0.20, "structure": 0.30, "cohesion": 0.50},
-    "subject":  {"style": 0.55, "structure": 0.15, "cohesion": 0.30},
-    "detail":   {"style": 0.15, "structure": 0.60, "cohesion": 0.25},
-    "contrast": {"style": 0.25, "structure": 0.25, "cohesion": 0.50},
-    "closer":   {"style": 0.35, "structure": 0.30, "cohesion": 0.35},
-}
+# ── Shot roles ────────────────────────────────────────────────────────────────
 
 _ROLE_ORDER = ["subject", "opener", "closer", "contrast", "detail"]
 
+# ── Cinematic pacing thresholds ───────────────────────────────────────────────
+_NEG_SPACE_THRESH  = 0.70   # sim_to_centroid ≤ this → qualifies as negative space
+_DUP_SIM_THRESH    = 0.88   # cosine sim > this → near-duplicate; penalise / swap
+_LUM_SMOOTH_THRESH = 0.25   # max allowed mean-brightness diff between adjacent images
 
-# ── Pareto front ──────────────────────────────────────────────────────────────
+# ── Empty-brief filtering ─────────────────────────────────────────────────────
+_EMPTY_BRIEF_KEYWORDS = {"empty", "liminal", "desert", "void", "abandoned", "desolate"}
+_PEOPLE_SIM_THRESHOLD = 0.40   # SigLIP-2 cosine sim to "people" concept → hard penalty
+_PEOPLE_PENALTY       = 0.10   # score multiplier when triggered
+_HUMAN_CULTURE_THRESH = 0.55   # Human/Culture aspect fallback threshold
+_YOLO_PERSON_CONF     = 0.40   # YOLOv11-nano confidence threshold (binary kill-switch)
 
-def _pareto_front(obj: np.ndarray) -> np.ndarray:
-    """Return boolean mask of non-dominated rows (higher-is-better on all axes)."""
-    n = len(obj)
+
+def _empty_brief_detected(style_prompt: str) -> bool:
+    text = style_prompt.lower()
+    return any(kw in text for kw in _EMPTY_BRIEF_KEYWORDS)
+
+
+def _load_people_emb() -> "Optional[np.ndarray]":
+    try:
+        p = Path("cache/people_emb.npy")
+        if p.exists():
+            emb  = np.load(str(p)).astype(np.float32)
+            norm = np.linalg.norm(emb)
+            return emb / (norm + 1e-9)
+    except Exception as e:
+        print(f"[cd] people_emb load failed: {e}")
+    return None
+
+
+def _apply_brief_constraints(
+    paths: list[str],
+    embeddings: list[np.ndarray],
+    scores: list[float],
+    aspect_scores_list: "Optional[list[dict]]",
+    style_prompt: str,
+) -> tuple[list[float], list[str]]:
+    """
+    Subject Intrusion penalty for empty-brief sessions.
+
+    SigLIP-2 people_sim > 0.40  OR  Human/Culture aspect > 0.55 → score × 0.10.
+    Returns (adjusted_scores, disqualification_notes).
+    """
+    if not _empty_brief_detected(style_prompt):
+        return list(scores), [""] * len(scores)
+
+    people_emb = _load_people_emb()
+    adjusted   = list(scores)
+    notes: list[str] = [""] * len(scores)
+
+    for i, (path, emb, sc) in enumerate(zip(paths, embeddings, scores)):
+        people_sim   = 0.0
+        if people_emb is not None:
+            emb_n       = np.asarray(emb, dtype=np.float32)
+            emb_n      /= (np.linalg.norm(emb_n) + 1e-9)
+            people_sim  = float(emb_n @ people_emb)
+
+        human_culture = 0.0
+        if aspect_scores_list and i < len(aspect_scores_list):
+            human_culture = float(aspect_scores_list[i].get("Human/Culture", 0.0))
+
+        if people_sim > _PEOPLE_SIM_THRESHOLD or human_culture > _HUMAN_CULTURE_THRESH:
+            adjusted[i] = sc * _PEOPLE_PENALTY
+            notes[i] = (
+                f"disqualification: Subject Intrusion — person presence detected. "
+                f"people_sim={people_sim:.3f} (threshold {_PEOPLE_SIM_THRESHOLD}), "
+                f"human_culture={human_culture:.2f} (threshold {_HUMAN_CULTURE_THRESH}). "
+                f"Score {sc:.3f}→{adjusted[i]:.4f} (×{_PEOPLE_PENALTY}). "
+                f"Brief implies empty scene: '{style_prompt[:60]}'."
+            )
+            print(f"[cd] Subject Intrusion: {Path(path).name}  {notes[i]}")
+
+    n_pen = sum(1 for n in notes if n)
+    if n_pen:
+        print(f"[cd] empty-brief filter: {n_pen}/{len(paths)} images penalised")
+    return adjusted, notes
+
+
+def _yolo_person_gate(paths: list[str], style_prompt: str) -> set[str]:
+    """
+    Binary kill-switch — YOLOv11-nano CPU gate.
+
+    If the brief implies an empty scene and YOLO detects class:person
+    with confidence > 0.40, the image is hard-blocked from the Story
+    Sequence. No clean-up is permitted — it is a disqualification.
+    """
+    if not _empty_brief_detected(style_prompt):
+        return set()
+
+    blocked: set[str] = set()
+    try:
+        import logging
+        logging.getLogger("ultralytics").setLevel(logging.WARNING)
+        from ultralytics import YOLO as _YOLO
+
+        yolo = _YOLO("yolo11n.pt")
+
+        for path in paths:
+            try:
+                results = yolo(path, device="cpu", verbose=False,
+                               classes=[0], conf=_YOLO_PERSON_CONF)
+                for r in results:
+                    if len(r.boxes) > 0:
+                        blocked.add(path)
+                        print(
+                            f"[cd] YOLO kill-switch: BLOCKED {Path(path).name} "
+                            f"— person conf>{_YOLO_PERSON_CONF}"
+                        )
+                        break
+            except Exception as e_img:
+                print(f"[cd] YOLO inference error {Path(path).name}: {e_img}")
+
+    except ImportError:
+        print("[cd] ultralytics not installed — YOLO gate skipped")
+    except Exception as e:
+        print(f"[cd] YOLO gate error: {e}")
+
+    if blocked:
+        print(f"[cd] YOLO kill-switch: {len(blocked)}/{len(paths)} images disqualified")
+    return blocked
+
+
+def _mean_luminance(path: str) -> float:
+    """Mean luminance in [0, 1] via 64×64 PIL grayscale thumbnail."""
+    try:
+        from PIL import Image
+        img = Image.open(path).convert("L")
+        img.thumbnail((64, 64), Image.LANCZOS)
+        return float(np.asarray(img, dtype=np.float32).mean() / 255.0)
+    except Exception:
+        return 0.5
+
+
+def _cinematic_reorder(
+    paths:  list[str],
+    embs_n: np.ndarray,
+    roles:  list[str],
+    scores: list[float],
+) -> list[int]:
+    """
+    Place the sequence in cinematic order:
+      slot 0     — opener
+      slot n//2  — contrast
+      slot n-1   — closer
+      remaining  — subject, detail (sorted by score desc)
+
+    One greedy luminance-smoothing pass swaps adjacent non-anchor slots
+    whose brightness delta exceeds _LUM_SMOOTH_THRESH.
+    """
+    n = len(paths)
     if n == 0:
-        return np.zeros(0, dtype=bool)
-    dominated = np.zeros(n, dtype=bool)
+        return []
+    if n == 1:
+        return [0]
+
+    by_role: dict[str, list[int]] = {}
+    for i, r in enumerate(roles):
+        by_role.setdefault(r, []).append(i)
+
+    sc = np.array(scores, dtype=np.float32)
+    for r in by_role:
+        by_role[r].sort(key=lambda i: -sc[i])
+
+    def _take(role: str) -> int:
+        bucket = by_role.get(role, [])
+        return bucket.pop(0) if bucket else -1
+
+    mid = n // 2
+    opener_idx   = _take("opener")
+    contrast_idx = _take("contrast")
+    closer_idx   = _take("closer")
+
+    remaining: list[int] = []
+    for role in ("subject", "detail", "opener", "contrast", "closer", *_ROLE_ORDER):
+        for idx in by_role.get(role, []):
+            if idx not in remaining:
+                remaining.append(idx)
+    all_used = {opener_idx, contrast_idx, closer_idx, *remaining} - {-1}
     for i in range(n):
-        if dominated[i]:
-            continue
-        diff          = obj - obj[i]
-        at_least_good = np.all(diff >= -1e-9, axis=1)
-        strictly_good = np.any(diff >   1e-9, axis=1)
-        mask = at_least_good & strictly_good
-        mask[i] = False
-        if mask.any():
-            dominated[i] = True
-    return ~dominated
+        if i not in all_used:
+            remaining.append(i)
+    remaining.sort(key=lambda i: -sc[i])
 
+    slots: list[int | None] = [None] * n
+    if opener_idx >= 0:
+        slots[0] = opener_idx
+    if closer_idx >= 0:
+        slots[n - 1] = closer_idx
+    if contrast_idx >= 0:
+        slots[mid] = contrast_idx
 
-# ── Objective proxy functions ─────────────────────────────────────────────────
+    rem_iter = iter(remaining)
+    for i in range(n):
+        if slots[i] is None:
+            try:
+                slots[i] = next(rem_iter)
+            except StopIteration:
+                pass
 
-def _style_fidelity_proxy(guidance: float) -> float:
-    """Map actual guidance range [2.0, 7.5] → [0.0, 1.0]."""
-    return float(np.clip((guidance - _G_MIN) / (_G_MAX - _G_MIN), 0.0, 1.0))
+    final: list[int] = [(s if s is not None else i) for i, s in enumerate(slots)]
 
+    fixed   = {0, mid, n - 1}
+    lum     = [_mean_luminance(paths[i]) for i in final]
+    changed = True
+    passes  = 0
+    while changed and passes < 3:
+        changed = False
+        passes += 1
+        for j in range(n - 1):
+            if j in fixed or (j + 1) in fixed:
+                continue
+            if abs(lum[j] - lum[j + 1]) > _LUM_SMOOTH_THRESH:
+                if j + 2 < n and (j + 2) not in fixed:
+                    cand = lum[j + 2]
+                    before = abs(lum[j] - lum[j + 1]) + abs(lum[j + 1] - lum[min(j + 2, n - 1)])
+                    after  = abs(lum[j] - cand) + abs(cand - lum[j + 1])
+                    if after < before - 0.01:
+                        final[j + 1], final[j + 2] = final[j + 2], final[j + 1]
+                        lum[j + 1],   lum[j + 2]   = lum[j + 2],   lum[j + 1]
+                        changed = True
 
-def _struct_integrity_proxy(strength: float) -> float:
-    return float(np.clip(1.0 - strength, 0.0, 1.0))
+    for j in range(n - 1):
+        diff = abs(lum[j] - lum[j + 1])
+        if diff > _LUM_SMOOTH_THRESH:
+            print(
+                f"[cd] luminance penalty: slots {j}→{j+1}  Δ={diff:.2f}  "
+                f"({Path(paths[final[j]]).name} → {Path(paths[final[j+1]]).name})"
+            )
 
+    for a in range(n):
+        for b in range(a + 1, n):
+            sim = float(embs_n[final[a]] @ embs_n[final[b]])
+            if sim > _DUP_SIM_THRESH:
+                print(
+                    f"[cd] diversity penalty: slots {a},{b}  sim={sim:.3f}  "
+                    f"({Path(paths[final[a]]).name}, {Path(paths[final[b]]).name})"
+                )
+    return final
 
-def _set_cohesion_signal(
-    image_emb: np.ndarray,
-    bucket_embs: np.ndarray,
-) -> float:
-    """Mean cosine similarity of this image to every other Strong image."""
-    if len(bucket_embs) == 0:
-        return 0.0   # no peers → no cohesion signal
-    img_n    = image_emb  / (np.linalg.norm(image_emb)  + 1e-9)
-    bucket_n = bucket_embs / (np.linalg.norm(bucket_embs, axis=1, keepdims=True) + 1e-9)
-    sims     = bucket_n @ img_n
-    return float(np.clip(np.mean(sims), 0.0, 1.0))
-
-
-# ── Content-aware role assignment ─────────────────────────────────────────────
 
 def _assign_roles_by_content(
     embeddings: list[np.ndarray],
@@ -110,15 +296,13 @@ def _assign_roles_by_content(
     paths: Optional[list[str]] = None,
 ) -> list[str]:
     """
-    Assign narrative roles based on image content, not list order.
+    Assign narrative roles based on image content.
 
-    subject  → highest aesthetic score (hero shot)
-    opener   → most representative of the set (closest to centroid)
-    closer   → second-highest score
+    subject  → highest aesthetic score
+    opener   → negative-space + highest score (sim_to_centroid ≤ 0.70)
+    closer   → negative-space + 2nd-highest score
     contrast → most visually distinct (furthest from centroid)
-    detail   → third-highest score (texture / gesture)
-
-    Remaining images beyond 5 cycle through _ROLE_ORDER.
+    detail   → third-highest score
     """
     n = len(embeddings)
     if n == 0:
@@ -132,12 +316,11 @@ def _assign_roles_by_content(
 
     centroid = embs_n.mean(axis=0)
     centroid /= np.linalg.norm(centroid) + 1e-9
-    sim_to_centroid = embs_n @ centroid   # (N,)
+    sim_to_centroid = embs_n @ centroid
 
-    sc = np.array(scores if scores and len(scores) == n else [0.5] * n,
-                  dtype=np.float32)
+    sc = np.array(scores if scores and len(scores) == n else [0.5] * n, dtype=np.float32)
 
-    used        = set()
+    used: set[int] = set()
     assignments: dict[int, str] = {}
 
     def _pick(rank_arr: np.ndarray) -> int:
@@ -147,24 +330,39 @@ def _assign_roles_by_content(
                 return int(idx)
         return -1
 
-    score_desc    = np.argsort(-sc)
-    centroid_desc = np.argsort(-sim_to_centroid)
-    centroid_asc  = np.argsort(sim_to_centroid)
+    def _pick_neg_space(rank_arr: np.ndarray) -> int:
+        for idx in rank_arr:
+            if int(idx) not in used and sim_to_centroid[int(idx)] <= _NEG_SPACE_THRESH:
+                used.add(int(idx))
+                return int(idx)
+        return _pick(rank_arr)
 
-    for role, rank in [
-        ("subject",  score_desc),
-        ("opener",   centroid_desc),
-        ("closer",   score_desc),
-        ("contrast", centroid_asc),
-        ("detail",   score_desc),
-    ]:
-        if len(used) >= n:
-            break
-        idx = _pick(rank)
-        if idx >= 0:
-            assignments[idx] = role
+    def _pick_diverse(rank_arr: np.ndarray) -> int:
+        assigned_embs = np.stack([embs_n[i] for i in used]) if used else None
+        for idx in rank_arr:
+            i = int(idx)
+            if i in used:
+                continue
+            if assigned_embs is not None:
+                if float(np.max(assigned_embs @ embs_n[i])) > _DUP_SIM_THRESH:
+                    lbl = Path(paths[i]).name if paths else str(i)
+                    print(f"[cd] diversity skip: {lbl}")
+                    continue
+            used.add(i)
+            return i
+        return _pick(rank_arr)
 
-    # Remaining images cycle through roles
+    score_desc   = np.argsort(-sc)
+    centroid_asc = np.argsort(sim_to_centroid)
+
+    idx = _pick(score_desc);         assignments[idx] = "subject"  if idx >= 0 else None
+    idx = _pick_neg_space(score_desc); assignments[idx] = "opener"  if idx >= 0 else None
+    idx = _pick_neg_space(score_desc); assignments[idx] = "closer"  if idx >= 0 else None
+    idx = _pick(centroid_asc);       assignments[idx] = "contrast" if idx >= 0 else None
+    idx = _pick_diverse(score_desc); assignments[idx] = "detail"   if idx >= 0 else None
+
+    assignments = {k: v for k, v in assignments.items() if v is not None and k >= 0}
+
     ri = 0
     for i in range(n):
         if i not in assignments:
@@ -181,115 +379,98 @@ def _assign_roles_by_content(
     return result_roles
 
 
-# ── Per-image parameter selection via MOGCO-II ───────────────────────────────
-
-def pick_params_for_image(
-    image_emb:   np.ndarray,
-    bucket_embs: np.ndarray,
-    role:        str  = "subject",
-    jitter_scale: float = 0.01,
-    rng_seed:    int  = 42,
-) -> dict:
+def select_story_sequence(
+    paths:       list[str],
+    embeddings:  list[np.ndarray],
+    scores:      Optional[list[float]] = None,
+    n_min:       int = 5,
+    n_max:       int = 10,
+    avoid_paths: Optional[list[str]] = None,
+) -> tuple[list[str], list[np.ndarray], list[float]]:
     """
-    Run MOGCO-II over the 48-point parameter grid for a single image.
-    Returns the winning param dict: {strength, guidance, ctrl_weight}.
-    """
-    rng      = np.random.default_rng(rng_seed)
-    rw       = _CD_ROLES.get(role, _CD_ROLES["subject"])
-    cohesion = _set_cohesion_signal(image_emb, bucket_embs)
+    Pick n_min–n_max visually diverse images covering all 5 narrative roles.
 
-    # Build (N_params, 3) objective matrix
-    obj = np.array(
-        [
-            [
-                _style_fidelity_proxy(p["guidance"]),
-                _struct_integrity_proxy(p["strength"]),
-                cohesion,   # same for all params — image-level fit to set
-            ]
-            for p in _PARAM_GRID
-        ],
+    1. Filter avoided paths.
+    2. Pre-filter to top-40 by aesthetic score.
+    3. Guarantee one image per core role using content signals.
+    4. Fill remaining slots with greedy max-dissimilarity (60% diversity / 40% score).
+    """
+    avoid  = set(avoid_paths or [])
+    n_raw  = len(paths)
+    sc_raw = np.array(
+        scores if scores and len(scores) == n_raw else [0.5] * n_raw,
         dtype=np.float32,
     )
 
-    front_mask  = _pareto_front(obj)
-    front_local = np.where(front_mask)[0]
+    keep = [i for i, p in enumerate(paths) if p not in avoid]
+    if not keep:
+        return [], [], []
 
-    W = np.array([rw["style"], rw["structure"], rw["cohesion"]], dtype=np.float64)
-    W /= W.sum()
-    front_scores = obj[front_local] @ W
-    jitter       = rng.uniform(0.0, jitter_scale, size=len(front_local))
-    best_local   = int(np.argmax(front_scores + jitter))
-    best_idx     = front_local[best_local]
+    paths      = [paths[i]      for i in keep]
+    embeddings = [embeddings[i] for i in keep]
+    sc         = sc_raw[keep]
+    n          = len(paths)
 
-    result = dict(_PARAM_GRID[best_idx])
-    result["mogco_objectives"] = {
-        "style_fidelity":   round(float(obj[best_idx, 0]), 3),
-        "struct_integrity": round(float(obj[best_idx, 1]), 3),
-        "set_cohesion":     round(float(cohesion),         3),
-    }
-    print(
-        f"[cd]   params({role}): "
-        f"strength={result['strength']:.2f}  guidance={result['guidance']:.1f}  "
-        f"ctrl={result['ctrl_weight']:.2f}  pareto_front={len(front_local)}/{len(obj)}  "
-        f"style={result['mogco_objectives']['style_fidelity']:.3f}  "
-        f"struct={result['mogco_objectives']['struct_integrity']:.3f}  "
-        f"cohesion={cohesion:.3f}  weights=({W[0]:.2f},{W[1]:.2f},{W[2]:.2f})"
+    if n <= n_max:
+        return paths, embeddings, list(sc)
+
+    pre_n   = min(40, n)
+    pre_idx = np.argsort(-sc)[:pre_n].tolist()
+    p_paths = [paths[i]      for i in pre_idx]
+    p_embs  = [embeddings[i] for i in pre_idx]
+    p_sc    = sc[pre_idx]
+
+    embs   = np.stack([np.asarray(e, dtype=np.float32) for e in p_embs])
+    norms  = np.linalg.norm(embs, axis=1, keepdims=True)
+    embs_n = embs / (norms + 1e-9)
+
+    centroid = embs_n.mean(axis=0)
+    centroid /= np.linalg.norm(centroid) + 1e-9
+    sim      = embs_n @ centroid
+
+    score_desc   = np.argsort(-p_sc).tolist()
+    centroid_desc = np.argsort(-sim).tolist()
+    centroid_asc  = np.argsort(sim).tolist()
+
+    selected: list[int] = []
+
+    def _pick(order: list[int]) -> None:
+        for i in order:
+            if i not in selected:
+                selected.append(i)
+                return
+
+    _pick(score_desc)     # subject
+    _pick(centroid_desc)  # opener
+    _pick(score_desc)     # closer
+    _pick(centroid_asc)   # contrast
+    _pick(score_desc)     # detail
+
+    while len(selected) < n_max:
+        sel_embs   = embs_n[selected]
+        best_idx   = -1
+        best_blend = -np.inf
+        for i in range(pre_n):
+            if i in selected:
+                continue
+            max_sim   = float(np.max(sel_embs @ embs_n[i]))
+            diversity = 1.0 - max_sim
+            blend     = 0.60 * diversity + 0.40 * float(p_sc[i])
+            if blend > best_blend:
+                best_blend = blend
+                best_idx   = i
+        if best_idx < 0:
+            break
+        selected.append(best_idx)
+
+    return (
+        [p_paths[i] for i in selected],
+        [p_embs[i]  for i in selected],
+        [float(p_sc[i]) for i in selected],
     )
-    return result
 
 
-# ── Batch parameter planning ──────────────────────────────────────────────────
-
-def plan_batch(
-    strong_paths: list[str],
-    embeddings:   list[np.ndarray],
-    scores:       Optional[list[float]] = None,
-    style_prompt: str = "",
-    num_steps:    int = 4,
-) -> list[dict]:
-    """
-    For each Strong image run MOGCO-II to select the optimal stylization
-    parameters and assign a narrative role.  Returns one param dict per image.
-
-    Roles are assigned by image content (score + embedding), not list position.
-    """
-    if not embeddings:
-        return [{"strength": 0.50, "guidance": 3.5, "ctrl_weight": 0.60,
-                 "prompt": style_prompt, "num_steps": num_steps, "role": "subject"}
-                for _ in strong_paths]
-
-    bucket_embs = np.stack(embeddings).astype(np.float32)
-
-    print(f"[cd] plan_batch: {len(strong_paths)} images, scores={[round(s,3) for s in (scores or [])]}")
-    # Content-aware role assignment
-    roles = _assign_roles_by_content(embeddings, scores=scores, paths=strong_paths)
-
-    params_list = []
-    for i, (path, emb) in enumerate(zip(strong_paths, embeddings)):
-        role  = roles[i]
-        param = pick_params_for_image(
-            image_emb   = np.asarray(emb, dtype=np.float32),
-            bucket_embs = bucket_embs,
-            role        = role,
-            rng_seed    = i * 31 + 7,
-        )
-        param["prompt"]    = style_prompt
-        param["num_steps"] = num_steps
-        param["role"]      = role
-
-        print(
-            f"[cd] {Path(path).name} ({role}): "
-            f"strength={param['strength']:.2f}  "
-            f"guidance={param['guidance']:.1f}  "
-            f"ctrl={param['ctrl_weight']:.2f}  "
-            f"cohesion={param['mogco_objectives']['set_cohesion']:.3f}"
-        )
-        params_list.append(param)
-
-    return params_list
-
-
-# ── Top-level orchestrator ────────────────────────────────────────────────────
+# ── Top-level Purist Orchestrator ─────────────────────────────────────────────
 
 def run_creative_direction(
     strong_paths:   list[str],
@@ -298,57 +479,146 @@ def run_creative_direction(
     output_dir:     str,
     scores:         Optional[list[float]] = None,
     style_prompt:   str = "",
-    structure_mode: str = "canny",
+    n_target:       int = 7,
+    avoid_paths:    Optional[list[str]] = None,
     progress: Optional[Callable[[float, str], None]] = None,
 ) -> dict:
     """
-    Full Creative Direction pipeline:
+    Purist Creative Direction pipeline.
 
-    1. MOGCO-II plans optimal (strength, guidance, ctrl_weight) per image,
-       assigning roles by content (score + embedding similarity).
-    2. Flux 2 [klein] stylizes each image sequentially with VRAM flushing.
-    3. Saves stylized images to output_dir/Final_Portfolio/.
-    4. Returns a results dict compatible with the SSE stream handler.
+    Selects the best original captures according to the Style Brief.
+    No pixel modification is performed — output files are copies of originals.
+
+    Steps:
+      1. Agent generates Rule Set JSON from Style Brief (CPU GGUF).
+      2. YOLO kill-switch hard-blocks people when HARD_FILTER_PEOPLE is True.
+      3. SigLIP-2 Subject Intrusion penalty applied to remaining scores.
+      4. Story Sequence selected via greedy max-dissimilarity + role guarantee.
+      5. Cinematic reorder: opener→0, contrast→n//2, closer→n-1.
+      6. Originals copied to output_dir/Final_Portfolio/.
     """
-    from flux_stylizer import FluxStylizer
+    from creative_director_agent import generate_rule_set
 
     _p = progress or (lambda f, d: None)
 
-    n = len(strong_paths)
-    if n == 0:
-        return {"error": "No Strong images to stylize.", "outputs": [], "total": 0}
+    if not strong_paths:
+        return {"error": "No images to curate.", "outputs": [], "total": 0}
 
+    # ── Step 1: Rule Set from Brief ───────────────────────────────────────────
+    _p(0.02, "Agent: generating Rule Set from Style Brief…")
+    rule_set = generate_rule_set(style_prompt)
+    _p(0.06, f"Rule Set: HARD_FILTER_PEOPLE={rule_set['HARD_FILTER_PEOPLE']}  "
+             f"GEOMETRIC={rule_set['GEOMETRIC_PRIORITY']}  "
+             f"MOOD={rule_set['LIGHTING_MOOD']}")
+
+    # ── Step 2: YOLO Binary Kill-Switch ───────────────────────────────────────
+    yolo_blocked: set[str] = set()
+    if rule_set["HARD_FILTER_PEOPLE"]:
+        _p(0.08, f"YOLO kill-switch: scanning {len(strong_paths)} images (CPU)…")
+        yolo_blocked = _yolo_person_gate(strong_paths, style_prompt)
+        if yolo_blocked:
+            _p(0.14, f"YOLO: {len(yolo_blocked)} images disqualified (person detected)")
+
+    # Remove YOLO-blocked from candidate pool
+    filtered_paths = [p for p in strong_paths if p not in yolo_blocked]
+    filtered_embs  = [e for p, e in zip(strong_paths, embeddings) if p not in yolo_blocked]
+    filtered_scores = [s for p, s in zip(strong_paths, (scores or [0.5] * len(strong_paths)))
+                       if p not in yolo_blocked]
+
+    if not filtered_paths:
+        return {
+            "error": "All images were disqualified by the YOLO kill-switch.",
+            "outputs": [], "total": 0,
+            "rule_set": rule_set,
+        }
+
+    # ── Step 3: SigLIP-2 Subject Intrusion penalty ────────────────────────────
+    _p(0.16, "Applying Subject Intrusion constraints…")
+    adjusted_scores, disq_notes = _apply_brief_constraints(
+        filtered_paths, filtered_embs, filtered_scores,
+        aspect_scores_list=None,
+        style_prompt=style_prompt,
+    )
+
+    # ── Step 4: Story Sequence Selection ──────────────────────────────────────
+    _p(0.22, f"Selecting {n_target}-image Story Sequence…")
+    seq_paths, seq_embs, seq_scores = select_story_sequence(
+        filtered_paths, filtered_embs, adjusted_scores,
+        n_min=min(5, n_target), n_max=n_target,
+        avoid_paths=avoid_paths,
+    )
+    n = len(seq_paths)
+    _p(0.30, f"Selected {n} images for Story Sequence")
+
+    if n == 0:
+        return {
+            "error": "No images survived sequence selection.",
+            "outputs": [], "total": 0,
+            "rule_set": rule_set,
+        }
+
+    # ── Step 5: Cinematic Reorder ─────────────────────────────────────────────
+    _p(0.32, "Applying cinematic reorder…")
+    bucket_embs = np.stack([np.asarray(e, dtype=np.float32) for e in seq_embs])
+    embs_n      = bucket_embs / (np.linalg.norm(bucket_embs, axis=1, keepdims=True) + 1e-9)
+
+    roles     = _assign_roles_by_content(seq_embs, scores=seq_scores, paths=seq_paths)
+    cin_order = _cinematic_reorder(seq_paths, embs_n, roles, seq_scores)
+
+    seq_paths  = [seq_paths[i]  for i in cin_order]
+    seq_scores = [seq_scores[i] for i in cin_order]
+    roles      = [roles[i]      for i in cin_order]
+
+    # ── Step 6: Copy Originals to Final_Portfolio/ ────────────────────────────
     out_dir = Path(output_dir) / "Final_Portfolio"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── Step 1: MOGCO-II parameter planning ──────────────────────────────────
-    _p(0.02, f"MOGCO-II planning parameters for {n} images…")
-    params_per_image = plan_batch(
-        strong_paths = strong_paths,
-        embeddings   = embeddings,
-        scores       = scores,
-        style_prompt = style_prompt,
-    )
-    _p(0.08, "Parameters planned")
+    outputs: list[dict] = []
+    n_ok = 0
 
-    # ── Steps 2–4: Flux batch stylization ────────────────────────────────────
-    stylizer = FluxStylizer()
-    outputs  = stylizer.process_batch(
-        strong_paths     = strong_paths,
-        anchor_path      = anchor_path,
-        output_dir       = out_dir,
-        params_per_image = params_per_image,
-        structure_mode   = structure_mode,
-        style_prompt     = style_prompt,
-        progress         = lambda f, d: _p(0.10 + f * 0.90, d),
-    )
+    for seq_pos, (path, score, role) in enumerate(zip(seq_paths, seq_scores, roles)):
+        fname    = Path(path).stem + "_purist.jpg"
+        out_path = out_dir / fname
+        _p(
+            0.40 + (seq_pos / n) * 0.55,
+            f"[{seq_pos+1}/{n}] {role.upper()} — {Path(path).name}",
+        )
+        try:
+            shutil.copy2(path, str(out_path))
+            rlog = (
+                f"Role: {role.upper()} — Purist original capture.\n"
+                f"Score: {score:.3f}  |  Brief: '{style_prompt[:60]}'\n"
+                f"Rule Set: HARD_FILTER_PEOPLE={rule_set['HARD_FILTER_PEOPLE']}  "
+                f"GEOMETRIC={rule_set['GEOMETRIC_PRIORITY']}  "
+                f"MOOD={rule_set['LIGHTING_MOOD']}\n"
+                f"Engine: purist_original — no pixel modification."
+            )
+            outputs.append({
+                "source_path":   path,
+                "output_path":   str(out_path),
+                "filename":      fname,
+                "params":        {"role": role, "seq_pos": seq_pos, "rule_set": rule_set},
+                "success":       True,
+                "engine":        "purist_original",
+                "reasoning_log": rlog,
+            })
+            n_ok += 1
+            print(f"[cd] copied {Path(path).name} → {out_path.name}")
+        except Exception as e:
+            print(f"[cd] copy failed {Path(path).name}: {e}")
+            outputs.append({
+                "source_path": path, "output_path": None,
+                "error": str(e), "success": False,
+            })
 
-    success = [r for r in outputs if r["success"]]
+    _p(1.0, f"Purist selection complete — {n_ok}/{n} images in Final_Portfolio")
+
     return {
         "outputs":     outputs,
         "output_dir":  str(out_dir),
         "total":       n,
-        "success":     len(success),
-        "failed":      n - len(success),
+        "success":     n_ok,
+        "failed":      n - n_ok,
         "anchor_path": anchor_path,
+        "rule_set":    rule_set,
     }

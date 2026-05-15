@@ -8,6 +8,13 @@ except Exception:
     pass
 
 import uvicorn, signal, sys, time, threading
+# Force UTF-8 output so emoji in print() don't crash on cp1252 terminals/threads.
+for _s in (sys.stdout, sys.stderr):
+    try:
+        if hasattr(_s, "reconfigure"):
+            _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
@@ -38,7 +45,8 @@ else:
 
 _IMAGE_EXTS = frozenset({
     ".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff",
-    ".bmp", ".gif", ".heic", ".arw", ".cr2", ".nef", ".orf", ".rw2",
+    ".bmp", ".gif", ".heic", ".heif",
+    ".arw", ".cr2", ".cr3", ".nef", ".orf", ".rw2", ".raf", ".dng", ".pef", ".srw",
 })
 
 def _safe_image_path(raw: str) -> Path:
@@ -74,6 +82,24 @@ RECENTLY_GENERATED: set = set()
 MAX_HISTORY = 25
 LAST_SEQUENCE: list = []   # paths from the most recent generation — used as avoid_paths
 
+# ── Creative Direction — used-path persistence ────────────────────────────────
+_USED_CD_PATHS_FILE = Path("cache/used_cd_paths.json")
+
+def _load_used_cd_paths() -> set:
+    """Return the set of source-image paths already used in a saved CD sequence."""
+    try:
+        if _USED_CD_PATHS_FILE.exists():
+            import json as _j
+            return set(_j.loads(_USED_CD_PATHS_FILE.read_text(encoding="utf-8")))
+    except Exception:
+        pass
+    return set()
+
+def _save_used_cd_paths(used: set) -> None:
+    import json as _j
+    _USED_CD_PATHS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _USED_CD_PATHS_FILE.write_text(_j.dumps(sorted(used), indent=2), encoding="utf-8")
+
 # Background pre-computation
 # Keyed by folder path so stale clusters from a previous grade never bleed through.
 GLOBAL_CLUSTER_CACHE: dict = {}          # {"folder": str, "labels": ndarray, "paths": list}
@@ -83,28 +109,63 @@ _BG_EXECUTOR    = ThreadPoolExecutor(max_workers=1)
 _THUMB_ONDEMAND = ThreadPoolExecutor(max_workers=8)   # high-priority, browser-facing
 _THUMB_PREWARM  = ThreadPoolExecutor(max_workers=2)   # low-priority background warm-up
 
-# Defer heavy cv2/numpy/onnx imports so uvicorn can start accepting connections
-# immediately — prevents the Tauri window from timing out on cold launch.
-_analyzer_instance = None
+# ── Frontier 2026: legacy V1 analyzer replaced by _FrontierStub ───────────────
+# lightweight_analyzer.py was renamed to *.legacy_backup — it cannot be imported.
+# All V1 API endpoints that called get_analyzer() will raise RuntimeError, which
+# is intentional.  V2 pipeline routes are unaffected.
+
+class _FrontierStub:
+    """Null-object stub replacing the removed legacy V1 LightweightStreetScorer."""
+    cache: dict = {}          # safe empty cache — callers use .get(k, default)
+    _ort_sessions = None      # guarded by 'if analyzer._ort_sessions is None:' checks
+    _niche_clf    = None      # guarded by 'if clf else {}' checks
+
+    class _MethodStub:
+        """Callable that raises on call; sub-attrs return count=0 stubs."""
+        count = 0
+        def __call__(self, *a, **kw):
+            raise RuntimeError(
+                "Legacy V1 analyzer permanently removed in Frontier 2026. "
+                "Use the SpecVLM pipeline: POST /api/grade/v2/stream"
+            )
+        def __getattr__(self, name: str):
+            return _FrontierStub._MethodStub()
+
+    def __getattr__(self, name: str):
+        return self._MethodStub()
+
+
+_analyzer_instance: _FrontierStub | None = None
 _analyzer_lock = threading.Lock()
 
-def get_analyzer():
+
+def get_analyzer() -> _FrontierStub:
     global _analyzer_instance
     if _analyzer_instance is None:
         with _analyzer_lock:
             if _analyzer_instance is None:
-                from lightweight_analyzer import LightweightStreetScorer
-                _analyzer_instance = LightweightStreetScorer()
+                _analyzer_instance = _FrontierStub()
     return _analyzer_instance
+
 
 def _get_editorial_fns():
     from editorial_renderer import generate_magazine_carousel, render_editorial_carousel
     return generate_magazine_carousel, render_editorial_carousel
 
+def _bg_model_prefetch():
+    """Run model auto-download in a daemon thread so server stays responsive."""
+    try:
+        from model_loader import ensure_all_models_downloaded
+        ensure_all_models_downloaded()
+    except Exception as exc:
+        print(f"⚠️  Background model prefetch error: {exc}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # No eager warmup — _LazyAnalyzer handles init on first use.
-    # Eager cv2/numpy import in a background thread was the startup bottleneck.
+    # Kick off model auto-download without blocking server startup.
+    _t = threading.Thread(target=_bg_model_prefetch, daemon=True, name="model-prefetch")
+    _t.start()
     yield
 
 app = FastAPI(lifespan=lifespan)
@@ -150,38 +211,104 @@ if _threading.current_thread() is _threading.main_thread():
 _PREVIEW_DIR = _DATA_DIR / "cache" / "previews"
 _PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
 
+_HEIC_EXTS = frozenset({".heic", ".heif"})
+
 def _gen_preview(path: str) -> Path | None:
-    """Return a JPEG preview for RAW files; return None for browser-renderable formats."""
+    """Return a JPEG preview for RAW/HEIC files; None for browser-renderable formats."""
     import hashlib
     src = Path(path).resolve()
-    if src.suffix.lower() not in _RAW_EXTS:
+    ext = src.suffix.lower()
+    if ext not in _RAW_EXTS and ext not in _HEIC_EXTS:
         return None  # browser can render JPEG/PNG/WebP directly
+
     safe = hashlib.md5(str(src).encode()).hexdigest()[:10] + ".jpg"
     dest = _PREVIEW_DIR / safe
     if dest.exists():
         return dest
+
     try:
         from PIL import Image as _PILImg
-        import rawpy, io
-        with rawpy.imread(str(src)) as raw:
+        if ext in _HEIC_EXTS:
+            # pillow-heif registers itself as a PIL plugin when imported
             try:
-                thumb = raw.extract_thumb()
-                if thumb.format == rawpy.ThumbFormat.JPEG:
-                    img = _PILImg.open(io.BytesIO(thumb.data))
-                else:
-                    img = _PILImg.fromarray(thumb.data)
-            except rawpy.LibRawNoThumbnailError:
-                rgb = raw.postprocess(use_camera_wb=True, half_size=True, no_auto_bright=False)
-                img = _PILImg.fromarray(rgb)
-        img.convert("RGB").save(str(dest), "JPEG", quality=90)
+                import pillow_heif
+                pillow_heif.register_heif_opener()
+            except ImportError:
+                pass
+            img = _PILImg.open(str(src)).convert("RGB")
+        else:
+            import rawpy, io
+            with rawpy.imread(str(src)) as raw:
+                try:
+                    thumb = raw.extract_thumb()
+                    if thumb.format == rawpy.ThumbFormat.JPEG:
+                        img = _PILImg.open(io.BytesIO(thumb.data))
+                    else:
+                        img = _PILImg.fromarray(thumb.data)
+                except rawpy.LibRawNoThumbnailError:
+                    rgb = raw.postprocess(use_camera_wb=True, half_size=True, no_auto_bright=False)
+                    img = _PILImg.fromarray(rgb)
+            img = img.convert("RGB")
+        img.save(str(dest), "JPEG", quality=90)
         return dest
     except Exception:
         return None
 
+
+@app.get("/api/config")
+async def get_config():
+    """Return runtime configuration flags consumed by the frontend."""
+    try:
+        from frontier_config import is_force_frontier
+        ff = is_force_frontier()
+    except ImportError:
+        ff = False
+    return JSONResponse({"force_frontier": ff})
+
+
+@app.get("/api/models/download-status")
+async def model_download_status():
+    """Return the current auto-download status for all SpecVLM model weights."""
+    from model_loader import get_download_status
+    return JSONResponse(get_download_status())
+
+
+@app.get("/api/thumb")
+async def serve_thumb(path: str = Query(...)):
+    """Create or return a thumbnail (WEBP) for grid display. Fast path optimized."""
+    import hashlib
+    try:
+        p = _safe_image_path(path)
+    except HTTPException as e:
+        raise
+    src = Path(p).resolve()
+    path_hash = hashlib.md5(str(src).encode()).hexdigest()[:10]
+    safe_name = f"{src.stem.replace(' ', '_')}_{path_hash}.webp"
+    thumb_path = THUMB_DIR / safe_name
+    if not thumb_path.exists():
+        try:
+            from PIL import Image as _PILImg
+            THUMB_SIZE = (200, 200)
+            with _PILImg.open(str(src)) as img:
+                img = img.convert("RGB")
+                img.thumbnail(THUMB_SIZE, _PILImg.Resampling.BILINEAR)  # faster
+                img.save(str(thumb_path), "WEBP", quality=60, method=3)  # skip optimize
+        except Exception:
+            # fallback to preview for RAW/HEIC
+            if src.suffix.lower() in (_RAW_EXTS | _HEIC_EXTS):
+                import asyncio
+                preview = await asyncio.get_event_loop().run_in_executor(None, _gen_preview, str(src))
+                if preview:
+                    return FileResponse(str(preview), media_type="image/jpeg")
+            # otherwise return 404
+            raise HTTPException(404, "Thumbnail could not be created")
+    return FileResponse(str(thumb_path))
+
+
 @app.get("/api/photo")
 async def serve_photo(path: str = Query(...)):
     p = _safe_image_path(path)
-    if p.suffix.lower() in _RAW_EXTS:
+    if p.suffix.lower() in (_RAW_EXTS | _HEIC_EXTS):
         import asyncio
         preview = await asyncio.get_event_loop().run_in_executor(None, _gen_preview, str(p))
         if preview:
@@ -191,26 +318,44 @@ async def serve_photo(path: str = Query(...)):
 
 @app.post("/api/browse-folder")
 async def browse_folder(body: dict):
-    """Browse a folder — immediate, non-recursive scan of the current directory only."""
-    folder = _safe_dir_path(body.get("folder_path", ""))
+    """Browse one or more folders — immediate, non-recursive scan of each directory.
 
-    image_exts = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp", ".gif",
-                  ".heic", ".arw", ".cr2", ".nef", ".orf", ".rw2"}
-    folders, images = [], []
-    try:
-        for p in folder.iterdir():
-            try:
-                if p.is_dir():
-                    folders.append(str(p))
-                elif p.is_file() and p.suffix.lower() in image_exts:
-                    images.append(str(p))
-            except PermissionError:
-                pass
-    except PermissionError:
-        pass
+    Accepts either:
+      { "folder_path": "C:/…" }
+    or
+      { "folder_paths": ["C:/…", "D:/…"] }
 
-    folders.sort()
-    images.sort()
+    Returns combined unique folders and images.
+    """
+    raw_paths = body.get("folder_paths") or body.get("folder_path")
+    if isinstance(raw_paths, str):
+        raw_paths = [raw_paths]
+    if not raw_paths:
+        return {"folders": [], "images": [], "files": []}
+
+    folders_set = set()
+    images_set = set()
+
+    for raw in raw_paths:
+        try:
+            dirpath = _safe_dir_path(raw)
+        except HTTPException:
+            # skip invalid entries but continue
+            continue
+        try:
+            for p in dirpath.iterdir():
+                try:
+                    if p.is_dir():
+                        folders_set.add(str(p))
+                    elif p.is_file() and p.suffix.lower() in _IMAGE_EXTS:
+                        images_set.add(str(p))
+                except PermissionError:
+                    pass
+        except PermissionError:
+            pass
+
+    folders = sorted(folders_set)
+    images = sorted(images_set)
     return {"folders": folders, "images": images, "files": []}
 
 
@@ -352,36 +497,74 @@ def _read_exif(path: str) -> dict:
 _RAW_EXTS = {".arw", ".cr2", ".cr3", ".nef", ".orf", ".rw2", ".raf", ".dng", ".pef", ".srw"}
 
 def _gen_one_thumb(path: str) -> None:
-    """Generate a single thumbnail into the cache directory (thread-safe)."""
+    """Generate a single thumbnail into the cache directory (thread-safe). Optimized for speed."""
     try:
         from PIL import Image as _PILImg
         import hashlib as _hl
-        src = Path(path).resolve()                        # always work with real path
+        src = Path(path).resolve()
         if not src.exists() or src.suffix.lower() not in _IMAGE_EXTS:
             return
         safe = _hl.md5(str(src).encode()).hexdigest()[:10] + ".webp"
         dest = THUMB_DIR / safe
         if dest.exists():
             return
+        
+        # Smaller target size for faster processing (grid display only)
+        THUMB_SIZE = (200, 200)
+        
         if src.suffix.lower() in _RAW_EXTS:
-            import rawpy, numpy as np
-            with rawpy.imread(str(src)) as raw:
-                try:
-                    thumb = raw.extract_thumb()
-                    if thumb.format == rawpy.ThumbFormat.JPEG:
-                        import io
-                        img = _PILImg.open(io.BytesIO(thumb.data))
-                    else:
-                        img = _PILImg.fromarray(thumb.data)
-                except rawpy.LibRawNoThumbnailError:
-                    rgb = raw.postprocess(use_camera_wb=True, half_size=True, no_auto_bright=False)
-                    img = _PILImg.fromarray(rgb)
-            img.thumbnail((600, 600), _PILImg.Resampling.LANCZOS)
-            img.convert("RGB").save(str(dest), "WEBP", quality=75, optimize=True)
-        else:
+            try:
+                import rawpy, io, numpy as np
+                with rawpy.imread(str(src)) as raw:
+                    try:
+                        # Fast path: embedded thumbnail is instant
+                        thumb = raw.extract_thumb()
+                        if thumb.format == rawpy.ThumbFormat.JPEG:
+                            img = _PILImg.open(io.BytesIO(thumb.data))
+                        else:
+                            img = _PILImg.fromarray(thumb.data)
+                    except rawpy.LibRawNoThumbnailError:
+                        # Fallback: half-size postprocess is faster than full
+                        rgb = raw.postprocess(use_camera_wb=True, half_size=True, no_auto_bright=False)
+                        img = _PILImg.fromarray(rgb)
+                img = img.convert("RGB")
+                img.thumbnail(THUMB_SIZE, _PILImg.Resampling.BILINEAR)  # faster than LANCZOS
+                img.save(str(dest), "WEBP", quality=60, method=3)  # skip optimize for speed
+            except Exception:
+                # Couldn't load RAW—skip it
+                return
+        elif src.suffix.lower() in _HEIC_EXTS:
+            try:
+                import pillow_heif
+                pillow_heif.register_heif_opener()
+            except ImportError:
+                pass
             with _PILImg.open(src) as img:
-                img.thumbnail((600, 600), _PILImg.Resampling.LANCZOS)
-                img.convert("RGB").save(str(dest), "WEBP", quality=75, optimize=True)
+                img = img.convert("RGB")
+                img.thumbnail(THUMB_SIZE, _PILImg.Resampling.BILINEAR)
+                img.save(str(dest), "WEBP", quality=60, method=3)
+        else:
+            # JPEG fast path: try embedded EXIF thumbnail first (<1 ms vs ~100 ms)
+            if src.suffix.lower() in {".jpg", ".jpeg"}:
+                try:
+                    import piexif, io as _io
+                    _exif = piexif.load(str(src))
+                    _tb   = _exif.get("thumbnail")
+                    if _tb and len(_tb) > 512:
+                        with _PILImg.open(_io.BytesIO(_tb)) as img:
+                            img = img.convert("RGB")
+                            img.thumbnail(THUMB_SIZE, _PILImg.Resampling.BILINEAR)
+                            img.save(str(dest), "WEBP", quality=60, method=3)
+                        return
+                except Exception:
+                    pass
+            # Draft-mode decode: PIL tells libjpeg to decode at 1/2, 1/4 or 1/8 scale
+            # (4–8× faster for large JPEGs; no-op for PNG/WebP).
+            with _PILImg.open(src) as img:
+                img.draft("RGB", THUMB_SIZE)
+                img = img.convert("RGB")
+                img.thumbnail(THUMB_SIZE, _PILImg.Resampling.BILINEAR)
+                img.save(str(dest), "WEBP", quality=60, method=3)
     except Exception:
         pass
 
@@ -392,8 +575,7 @@ async def list_folder(body: dict):
     import asyncio
     folder = _safe_dir_path(body.get("folder_path", ""))
 
-    exts = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp", ".gif",
-            ".heic", ".arw", ".cr2", ".nef", ".orf", ".rw2"}
+    exts = _IMAGE_EXTS
 
     def _scan():
         return sorted(
@@ -404,9 +586,10 @@ async def list_folder(body: dict):
     loop = asyncio.get_event_loop()
     paths = await loop.run_in_executor(None, _scan)
 
-    # Pre-warm thumbnails in the background using the low-priority executor so
-    # on-demand requests via /api/thumb are never blocked by this batch.
-    for p in paths[:300]:
+    # Pre-warm ALL thumbnails in the background — no cap.
+    # The low-priority executor (2 workers) processes them without blocking
+    # on-demand requests from the browser.
+    for p in paths:
         _THUMB_PREWARM.submit(_gen_one_thumb, p)
 
     # Return empty EXIF — frontend loads it lazily via /api/exif when needed.
@@ -437,7 +620,10 @@ async def serve_thumb(path: str = Query(...)):
     # Symlink-escape guard: ensure the cached thumb hasn't been tampered with
     if not str(dest.resolve()).startswith(str(THUMB_DIR.resolve())):
         raise HTTPException(403, "Forbidden")
-    return FileResponse(str(dest))
+    return FileResponse(
+        str(dest),
+        headers={"Cache-Control": "public, max-age=604800, immutable"},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -449,7 +635,8 @@ class GradeRequest(BaseModel):
     folder_paths: list[str] = []   # multi-folder support; takes priority when non-empty
     preset: str = "Classic Street"
     deep_review: bool = False
-    force_rescan: bool = True
+    force_rescan: bool = False
+    scan_mode: bool = False        # Low-Latency Scan: top 20% only get 7B verification
 
     @field_validator("folder_path")
     @classmethod
@@ -586,15 +773,21 @@ async def grade_photos_v2_stream(req: GradeRequest):
     """
     V2 pipeline: SigLIP → Q-Align → PersonalHead → MOGCO-II.
     Same SSE format as /api/grade/stream for drop-in frontend compatibility.
+    Supports multi-folder: grades each folder, then runs MOGCO-II once across all.
     """
     import asyncio as _aio, json as _json
     from fastapi.responses import StreamingResponse
 
-    if not os.path.isdir(req.folder_path):
-        raise HTTPException(400, "Invalid folder path")
+    # Resolve all valid folders — folder_paths (multi) takes priority over folder_path
+    all_folders = [str(Path(fp).resolve()) for fp in req.folder_paths if os.path.isdir(fp)]
+    if not all_folders:
+        if req.folder_path and os.path.isdir(req.folder_path):
+            all_folders = [str(Path(req.folder_path).resolve())]
+        else:
+            raise HTTPException(400, "No valid folder path provided")
 
     aqueue: _aio.Queue = _aio.Queue()
-    loop   = _aio.get_event_loop()
+    loop   = _aio.get_running_loop()
 
     def _progress(frac: float, desc: str = "") -> None:
         loop.call_soon_threadsafe(
@@ -604,28 +797,82 @@ async def grade_photos_v2_stream(req: GradeRequest):
     def _run() -> None:
         try:
             from grade_pipeline_v2 import run_v2
-            result = run_v2(
-                req.folder_path,
-                preset=req.preset,
-                force_rescan=req.force_rescan,
-                progress=_progress,
-            )
-            # Strip per-photo embeddings before sending over SSE — they are
-            # already persisted to LanceDB.  Sending 1152 floats × N photos
-            # inflates the JSON to several MB and stalls the browser stream.
+            n = len(all_folders)
+            combined_gallery: list = []
+
+            for i, fp in enumerate(all_folders):
+                # Slice the 0→1 progress bar across folders
+                p_start = i / n
+                p_end   = (i + 1) / n
+
+                def _fp(frac: float, desc: str = "", _s=p_start, _e=p_end) -> None:
+                    _progress(_s + frac * (_e - _s), desc)
+
+                if n > 1:
+                    _fp(0.0, f"Grading folder {i+1}/{n}: {Path(fp).name}")
+
+                result = run_v2(
+                    fp,
+                    preset       = req.preset,
+                    force_rescan = req.force_rescan,
+                    progress     = _fp,
+                    mogco_target = 0,   # skip per-folder MOGCO; run once at end
+                    scan_mode    = req.scan_mode,
+                )
+                combined_gallery.extend(result.get("gallery", []))
+
+            # Strip embeddings before sending over SSE
             gallery_slim = [
                 {k: v for k, v in photo.items() if k != "embedding"}
-                for photo in result.get("gallery", [])
+                for photo in combined_gallery
             ]
+
+            # NSGA-III across all photos
+            _progress(0.97, "Running NSGA-III across all folders…")
+            mogco_sequence: list = []
+            try:
+                import numpy as _np
+                from nsga3_sequencer import run_nsga3_sequence_with_vlm
+                _SLOTS = ["Opening", "Act 1", "Act 2", "Climax", "Resolution", "Coda", "Epilogue"]
+                seq_candidates = [
+                    {
+                        "path":          g["path"],
+                        "score":         g.get("score", 0.5),
+                        "embedding":     _np.array(
+                            combined_gallery[idx].get("embedding", []),
+                            dtype=_np.float32,
+                        ),
+                        "reasoning_log": g.get("reasoning_log", ""),
+                    }
+                    for idx, g in enumerate(gallery_slim)
+                    if "Strong" in g.get("grade", "") or "Mid" in g.get("grade", "")
+                ]
+                selected = run_nsga3_sequence_with_vlm(seq_candidates, target=5)
+                info_by_path = {g["path"]: g for g in gallery_slim}
+                for rank, frame in enumerate(selected):
+                    base = dict(info_by_path.get(frame["path"], {"path": frame["path"]}))
+                    base.update({
+                        "slot":             _SLOTS[rank % len(_SLOTS)],
+                        "mogco_objectives": frame.get("nsga3_objectives", {}),
+                        "engine":           "nsga3",
+                    })
+                    mogco_sequence.append(base)
+            except Exception as e:
+                print(f"[v2] NSGA-III multi-folder failed: {e}")
+
+            strong = sum(1 for g in combined_gallery if "Strong" in g.get("grade", ""))
+            mid    = sum(1 for g in combined_gallery if "Mid"    in g.get("grade", ""))
+            weak   = sum(1 for g in combined_gallery if "Weak"   in g.get("grade", ""))
+
             loop.call_soon_threadsafe(aqueue.put_nowait, {
-                "done":          True,
-                "total":         result.get("total", 0),
-                "strong":        result.get("strong", 0),
-                "mid":           result.get("mid",    0),
-                "weak":          result.get("weak",   0),
-                "data":          gallery_slim,
-                "mogco_sequence":result.get("mogco_sequence", []),
-                "pipeline":      "v2",
+                "done":           True,
+                "total":          len(combined_gallery),
+                "strong":         strong,
+                "mid":            mid,
+                "weak":           weak,
+                "data":           gallery_slim,
+                "mogco_sequence": mogco_sequence,
+                "pipeline":       "v2",
             })
         except Exception as exc:
             loop.call_soon_threadsafe(aqueue.put_nowait, {"error": str(exc)})
@@ -669,7 +916,52 @@ async def personal_update(payload: dict):
         loss = ph.update(emb1, grade1, emb2, grade2)
 
         # Refresh personal scores for all stored photos
-        from grade_pipeline_v2 import _EMBED_DIM
+        all_rows = ls.query_all()
+        if all_rows:
+            all_embs = np.stack([r["embedding"] for r in all_rows])
+            new_pers = ph.score(all_embs)
+            ls.update_personal_scores({r["path"]: float(s) for r, s in zip(all_rows, new_pers)})
+
+        # Queue DPO preference events for background soul-alignment training
+        try:
+            import background_dpo_trainer as _dpo
+            # path1 moved from grade2 → grade1 means path1 now has grade1
+            # Queue: what changed grade, old → new
+            _dpo.get_trainer().queue_event(path1, grade2, grade1)
+        except Exception:
+            pass  # DPO is best-effort; never block the main update
+
+        return JSONResponse({"ok": True, "loss": round(loss, 5)})
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/update_preference")
+async def update_preference(payload: dict):
+    """
+    Update preference by providing a winner and a loser image path.
+    Body: { "winner_path": str, "loser_path": str }
+    Runs a MarginRankingLoss update on the PersonalHead and refreshes stored scores.
+    """
+    try:
+        import personal_head as ph
+        import lance_store as ls
+        winner = payload.get("winner_path")
+        loser = payload.get("loser_path")
+        if not winner or not loser:
+            return JSONResponse({"ok": False, "error": "winner_path and loser_path required"})
+
+        rows = ls.query_by_paths([winner, loser])
+        by_path = {r["path"]: r for r in rows}
+        if winner not in by_path or loser not in by_path:
+            return JSONResponse({"ok": False, "error": "paths not found in LanceDB"})
+
+        emb_w = by_path[winner]["embedding"]
+        emb_l = by_path[loser]["embedding"]
+
+        loss = ph.update(emb_w, 1, emb_l, 0)
+
+        # Refresh personal scores for all stored photos (LanceDB)
         all_rows = ls.query_all()
         if all_rows:
             all_embs = np.stack([r["embedding"] for r in all_rows])
@@ -702,27 +994,31 @@ async def sort_files(payload: dict):
 @app.post("/api/creative-direction/stream")
 async def creative_direction_stream(payload: dict):
     """
-    SSE stream — runs the full Creative Direction pipeline.
+    SSE stream — Purist Creative Direction pipeline.
+
+    Selects the best original captures for a 5-image Story Sequence.
+    No pixel modification is performed. Output files are copies of originals.
 
     Payload:
-        anchor_path    str   – path to the anchor / reference image (must exist)
-        folder_path    str   – base folder (used to locate Final_Portfolio output)
-        style_prompt   str   – optional text brief for the Flux style prompt
-        structure_mode str   – "canny" | "depth"   (default: "canny")
+        anchor_path  str  – reference image path (used for metadata only)
+        folder_path  str  – base folder (locates Final_Portfolio output)
+        style_prompt str  – style brief for the DeepSeek-R1 Agent Rule Set
+        n_target     int  – target sequence length (5–10, default 7)
     """
     import asyncio, json, numpy as _np
     from fastapi.responses import StreamingResponse
 
-    anchor_path    = (payload.get("anchor_path") or "").strip()
-    folder_path    = (payload.get("folder_path") or "").strip()
-    style_prompt   = (payload.get("style_prompt") or "").strip()
-    structure_mode = payload.get("structure_mode", "canny")
+    anchor_path  = (payload.get("anchor_path") or "").strip()
+    folder_path  = (payload.get("folder_path") or "").strip()
+    style_prompt = (payload.get("style_prompt") or "").strip()
+    n_target     = int(payload.get("n_target", 7))
+    n_target     = max(5, min(10, n_target))
 
     if not anchor_path:
         return JSONResponse({"error": "anchor_path is required"}, status_code=400)
 
     queue = asyncio.Queue()
-    loop  = asyncio.get_event_loop()
+    loop  = asyncio.get_running_loop()
 
     def _push(msg: dict):
         loop.call_soon_threadsafe(queue.put_nowait, msg)
@@ -734,29 +1030,32 @@ async def creative_direction_stream(payload: dict):
         try:
             import numpy as np
 
-            # ── Fetch Strong images (four-tier fallback) ──────────────────────
-            _progress(0.01, "Loading Strong images…")
+            # ── Fetch all graded images (Strong + Mid + Weak) ─────────────────
+            _progress(0.01, "Loading graded images…")
             strong_paths: list[str] = []
             embeddings:   list      = []
             scores:       list      = []
             IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".tiff", ".tif", ".bmp"}
 
-            # Tier 1: LanceDB — rows graded Strong (score ≥ 0.70)
+            # Tier 1: LanceDB — all graded images for this folder, sorted by score desc
             try:
                 import lance_store as ls
-                candidates = ls.query_all(min_score=0.70)
+                candidates = ls.query_all(min_score=0.0)
                 if folder_path:
                     from pathlib import Path as _Path
                     fp = str(_Path(folder_path).resolve())
                     candidates = [c for c in candidates if c["path"].startswith(fp)]
+                candidates = [c for c in candidates if float(c.get("score", 0)) > 0]
                 if candidates:
+                    candidates.sort(key=lambda c: float(c.get("score", 0)), reverse=True)
                     strong_paths = [c["path"]                                    for c in candidates]
                     embeddings   = [np.array(c["embedding"], dtype=np.float32)   for c in candidates]
-                    scores       = [float(c.get("score", 0.75))                  for c in candidates]
+                    scores       = [float(c.get("score", 0.5))                   for c in candidates]
+                    _progress(0.02, f"Found {len(strong_paths)} graded images")
             except Exception as e:
-                print(f"[cd] LanceDB strong query failed: {e}")
+                print(f"[cd] LanceDB query failed: {e}")
 
-            # Tier 2: Strong/ subfolder on disk
+            # Tier 2: Strong/ subfolder on disk (fallback when LanceDB is empty)
             if not strong_paths and folder_path:
                 from pathlib import Path as _Path
                 strong_dir = _Path(folder_path) / "Strong"
@@ -765,28 +1064,10 @@ async def creative_direction_stream(payload: dict):
                         str(f) for f in sorted(strong_dir.iterdir())
                         if f.is_file() and f.suffix.lower() in IMAGE_EXTS
                     ]
-                    embeddings = [np.zeros(1152, dtype=np.float32) for _ in strong_paths]
+                    embeddings = [np.zeros(1536, dtype=np.float32) for _ in strong_paths]
                     scores     = [0.75] * len(strong_paths)
 
-            # Tier 3: Top-scoring photos from LanceDB for this folder (any grade)
-            if not strong_paths and folder_path:
-                try:
-                    all_rows = ls.query_all(min_score=0.0)
-                    from pathlib import Path as _Path
-                    fp = str(_Path(folder_path).resolve())
-                    all_rows = [r for r in all_rows if r["path"].startswith(fp)]
-                    if all_rows:
-                        all_rows.sort(key=lambda r: r.get("score", 0), reverse=True)
-                        top_n = max(3, len(all_rows) // 3)
-                        all_rows = all_rows[:top_n]
-                        strong_paths = [r["path"]                                    for r in all_rows]
-                        embeddings   = [np.array(r["embedding"], dtype=np.float32)   for r in all_rows]
-                        scores       = [float(r.get("score", 0.5))                   for r in all_rows]
-                        _progress(0.02, f"Using top {len(strong_paths)} scored photos")
-                except Exception as e:
-                    print(f"[cd] LanceDB fallback query failed: {e}")
-
-            # Tier 4: Scan folder directly for any images
+            # Tier 3: Scan folder directly for any images (cap at 50)
             if not strong_paths and folder_path:
                 from pathlib import Path as _Path
                 fp = _Path(folder_path)
@@ -794,12 +1075,12 @@ async def creative_direction_stream(payload: dict):
                     all_imgs = sorted(
                         str(f) for f in fp.iterdir()
                         if f.is_file() and f.suffix.lower() in IMAGE_EXTS
-                    )
+                    )[:50]
                     if all_imgs:
                         strong_paths = all_imgs
-                        embeddings   = [np.zeros(1152, dtype=np.float32) for _ in strong_paths]
+                        embeddings   = [np.zeros(1536, dtype=np.float32) for _ in strong_paths]
                         scores       = [0.5] * len(strong_paths)
-                        _progress(0.02, f"Using all {len(strong_paths)} images in folder")
+                        _progress(0.02, f"Using {len(strong_paths)} folder images (grade folder for better selection)")
 
             if not strong_paths:
                 _push({"error": "No images found. Grade your folder first."})
@@ -810,17 +1091,20 @@ async def creative_direction_stream(payload: dict):
             # ── Run pipeline ──────────────────────────────────────────────────
             from creative_director import run_creative_direction
 
+            avoid_paths = sorted(_load_used_cd_paths())
+
             result = run_creative_direction(
-                strong_paths   = strong_paths,
-                embeddings     = embeddings,
-                scores         = scores or None,
-                anchor_path    = anchor_path,
-                output_dir     = folder_path or str(
+                strong_paths = strong_paths,
+                embeddings   = embeddings,
+                scores       = scores or None,
+                anchor_path  = anchor_path,
+                output_dir   = folder_path or str(
                     Path(anchor_path).parent
                 ),
-                style_prompt   = style_prompt,
-                structure_mode = structure_mode,
-                progress       = _progress,
+                style_prompt = style_prompt,
+                n_target     = n_target,
+                avoid_paths  = avoid_paths,
+                progress     = _progress,
             )
             _push({"done": True, "data": result})
 
@@ -864,6 +1148,84 @@ async def list_portfolio(payload: dict):
         return JSONResponse({"images": images, "dir": str(port_dir)})
     except Exception as e:
         raise HTTPException(500, str(e))
+
+
+@app.post("/api/creative-direction/save-sequence")
+async def save_cd_sequence(payload: dict):
+    """
+    Copy stylized outputs to a timestamped Story folder and write a manifest.
+    Marks the source images as used so they are excluded from future sequences.
+
+    Body: { outputs: [{source_path, output_path, params, success}], base_dir: str }
+    """
+    import shutil
+    from datetime import datetime
+
+    outputs  = payload.get("outputs", [])
+    base_dir = (payload.get("base_dir") or "").strip()
+
+    successes = [o for o in outputs if o.get("success") and o.get("output_path")]
+    if not successes:
+        return JSONResponse({"ok": False, "error": "No successful outputs to save"})
+
+    # Resolve base dir
+    if not base_dir:
+        base_dir = str(Path(successes[0]["output_path"]).parent.parent)
+    base_dir_p = Path(base_dir)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    story_dir = base_dir_p / f"Story_{timestamp}"
+    story_dir.mkdir(parents=True, exist_ok=True)
+
+    manifest = []
+    ROLE_ORDER = ["opener", "subject", "detail", "contrast", "closer"]
+    sorted_out = sorted(
+        successes,
+        key=lambda o: ROLE_ORDER.index(o.get("params", {}).get("role", "")) if o.get("params", {}).get("role", "") in ROLE_ORDER else 99
+    )
+
+    for i, item in enumerate(sorted_out):
+        src = Path(item["output_path"])
+        if not src.exists():
+            continue
+        role = item.get("params", {}).get("role", "unknown")
+        dest = story_dir / f"{i+1:02d}_{role}_{src.name}"
+        shutil.copy2(str(src), str(dest))
+        manifest.append({
+            "seq": i + 1,
+            "role":        role,
+            "source_path": item.get("source_path", ""),
+            "output_path": str(dest),
+            "score":       item.get("params", {}).get("mogco_objectives", {}).get("set_cohesion", 0),
+        })
+
+    import json as _j
+    (story_dir / "manifest.json").write_text(_j.dumps(manifest, indent=2))
+
+    # Mark source paths as used
+    source_paths = {o["source_path"] for o in successes if o.get("source_path")}
+    used = _load_used_cd_paths() | source_paths
+    _save_used_cd_paths(used)
+
+    return JSONResponse({
+        "ok":        True,
+        "story_dir": str(story_dir),
+        "count":     len(manifest),
+        "used_total": len(used),
+    })
+
+
+@app.post("/api/creative-direction/clear-used")
+async def clear_used_cd_paths():
+    """Reset the used-image history so all photos are eligible again."""
+    _save_used_cd_paths(set())
+    return JSONResponse({"ok": True, "used_total": 0})
+
+
+@app.get("/api/creative-direction/used-count")
+async def get_used_cd_count():
+    """Return how many source images are currently excluded from future sequences."""
+    return JSONResponse({"count": len(_load_used_cd_paths())})
 
 
 @app.post("/api/grade/stream")

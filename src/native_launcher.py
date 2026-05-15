@@ -1,3 +1,8 @@
+
+
+
+
+
 """
 Street Story Curator — native desktop launcher.
 Starts FastAPI, then opens Microsoft Edge in --app mode (no address bar, no tabs).
