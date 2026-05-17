@@ -634,9 +634,10 @@ def run_v2(
     # Full grading runs:
     #   1. run_composition_analysis (Depth → Seg → Chiaroscuro) — within run_vision_heads
     #   2. UniQAHead with YOLO11s-seg routing (empty-scene / layered-frame / standard)
-    composition_overrides: dict[str, float] = {}
-    chiaroscuro_flags:     dict[str, bool]  = {}
-    person_detected_dict:  dict[str, bool]  = {}
+    composition_overrides:    dict[str, float] = {}
+    chiaroscuro_flags:        dict[str, bool]  = {}
+    person_detected_dict:     dict[str, bool]  = {}
+    framing_obstruction_dict: dict[str, bool]  = {}
 
     if scan_mode:
         _p(0.84, "Scan mode — IQA heads skipped, using SpecVLM scores…")
@@ -663,12 +664,13 @@ def run_v2(
                 vlm_breakdowns      = _vlm_bds,
             )
 
-            tech_scores_rated      = iqa_out["quality"]                    # (M,) UniQA
-            aesthetic_scores_rated = iqa_out["quality"]                    # (M,) UniQA
-            iqa_breakdowns         = iqa_out["breakdowns"]                 # list[dict]
-            composition_overrides  = iqa_out.get("composition_overrides", {})
-            chiaroscuro_flags      = iqa_out.get("chiaroscuro_flags",     {})
-            person_detected_dict   = iqa_out.get("person_detected",       {})
+            tech_scores_rated        = iqa_out["quality"]                      # (M,) UniQA
+            aesthetic_scores_rated   = iqa_out["quality"]                      # (M,) UniQA
+            iqa_breakdowns           = iqa_out["breakdowns"]                   # list[dict]
+            composition_overrides    = iqa_out.get("composition_overrides",  {})
+            chiaroscuro_flags        = iqa_out.get("chiaroscuro_flags",      {})
+            person_detected_dict     = iqa_out.get("person_detected",        {})
+            framing_obstruction_dict = iqa_out.get("framing_obstruction",    {})
 
             for local_i, idx in enumerate(to_rate_indices):
                 per_photo_breakdowns[idx].update(iqa_breakdowns[local_i])
@@ -761,6 +763,7 @@ def run_v2(
     _penalty_count   = 0
     _route1_count    = 0
     _route2_count    = 0
+    _fo_count        = 0   # Framing Obstruction sub-count
 
     for local_i, idx in enumerate(to_rate_indices):
         t  = float(tech_scores_rated[local_i])
@@ -773,12 +776,37 @@ def run_v2(
         _light_score = float(per_photo_breakdowns[idx].get("Lighting",      0.5))
         _hc_score    = float(per_photo_breakdowns[idx].get("Human/Culture", 0.5))
         _raw_comp    = _raw_comp_by_path.get(_path, _comp_score)
-        _has_person  = person_detected_dict.get(_path, True)   # default True = safe
+        _has_person  = person_detected_dict.get(_path, True)
         _is_ots      = _path in composition_overrides
+        _is_fo       = bool(framing_obstruction_dict.get(_path, False))
 
         _is_chiaroscuro = bool(chiaroscuro_flags.get(_path, False))
 
-        # ── Route 2: Intentional Layered Frame Portrait ───────────────────────
+        # ── Route 2A: Framing Obstruction ─────────────────────────────────────
+        # Fires when a large off-centre person (>30% frame area, center_x <0.35
+        # or >0.65) was identified as intentional framing.  UniQA already ran on
+        # the isolated subject crop.  Override breakdowns with protected values:
+        #   Composition = 0.85  (intentional compositional choice)
+        #   Lighting    = 0.78  (protects low-key chiaroscuro atmosphere)
+        #   Technical   = max(uniqa_crop, 0.75)  (subject-crop sharpness floor)
+        # Formula: fused = (tech * 0.30) + (comp * 0.40) + (lighting * 0.30)
+        if _is_fo:
+            _tech_fo  = max(t, 0.75)
+            _comp_fo  = 0.85
+            _light_fo = 0.78
+            per_photo_breakdowns[idx]["Composition"] = _comp_fo
+            per_photo_breakdowns[idx]["Lighting"]    = _light_fo
+            fused = _tech_fo * 0.30 + _comp_fo * 0.40 + _light_fo * 0.30
+            scores[idx] = float(np.clip(fused, 0.0, 1.0))
+            _route2_count += 1
+            _fo_count     += 1
+            print(
+                f"[v2] Route 2A Framing Obstruction: {Path(_path).name}  "
+                f"tech={_tech_fo:.2f} comp={_comp_fo} light={_light_fo} → fused={fused:.3f}"
+            )
+            continue
+
+        # ── Route 2B: Intentional Layered Frame Portrait (OTS) ────────────────
         # Fires when: strong human presence (HC ≥ 0.65) + SpecVLM raw composition
         # was penalized below 0.35 by a foreground obstruction + OTS portrait
         # detected (foreground OOF person + sharp midground subject).
@@ -789,22 +817,25 @@ def run_v2(
             scores[idx] = float(np.clip(fused, 0.0, 1.0))
             _route2_count += 1
             print(
-                f"[v2] Route 2 Layered Frame: {Path(_path).name}  "
+                f"[v2] Route 2B Layered Frame: {Path(_path).name}  "
                 f"HC={_hc_score:.2f} rawComp={_raw_comp:.2f} → Comp=0.82 fused={fused:.3f}"
             )
             continue
 
         # ── Route 1: Empty Scene ──────────────────────────────────────────────
-        # Fires when YOLO detects zero human presence AND both geometric metrics
-        # are strong (Composition > 0.55 AND Lighting > 0.55).
-        # Action: use geometric-only formula — removes Human/Culture drag.
-        if not _has_person and _comp_score > 0.55 and _light_score > 0.55:
-            fused = _comp_score * 0.40 + _light_score * 0.30 + a * 0.30
+        # Fires when YOLO detects zero human presence.
+        # Formula: fused = (geometric_base * 0.70) + (uniqa * 0.30)
+        # geometric_base = sqrt(comp × light) — rewards both axes equally.
+        # UniQA component (`a`) for Route 1 images is the same geometric mean
+        # computed in UniQAHead.score_all() Route 1 path.
+        if not _has_person:
+            _geo_base = float(np.sqrt(max(_comp_score, 0.01) * max(_light_score, 0.01)))
+            fused = _geo_base * 0.70 + a * 0.30
             scores[idx] = float(np.clip(fused, 0.0, 1.0))
             _route1_count += 1
             print(
                 f"[v2] Route 1 Empty Scene: {Path(_path).name}  "
-                f"Comp={_comp_score:.2f} Light={_light_score:.2f} Aes={a:.2f} → fused={fused:.3f}"
+                f"Comp={_comp_score:.2f} Light={_light_score:.2f} geo={_geo_base:.2f} UniQA={a:.2f} → fused={fused:.3f}"
             )
             continue
 

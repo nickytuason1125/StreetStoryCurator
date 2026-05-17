@@ -193,6 +193,46 @@ def _is_layered_frame(
 _OTS_PORTRAIT_COMP = 0.85   # over-the-shoulder composition score override
 
 
+def _detect_framing_obstruction(bboxes_norm: list) -> tuple:
+    """
+    Identify a Framing Obstruction: a large, off-centre person dominating the frame
+    edge while a smaller, more central subject person is visible behind them.
+
+    Obstruction criteria (must satisfy BOTH):
+      1. Largest detected person occupies > 30% of total frame area.
+      2. Their horizontal centre is off-centre (center_x < 0.35 OR > 0.65).
+
+    When an obstruction is found the remaining (smaller, central) persons are
+    returned as the true subject bounding boxes.  UniQA will crop to these for
+    sharpness evaluation — isolating the subject from the occluding body.
+
+    Returns:
+        (True,  subject_bboxes)   obstruction found; subject_bboxes to crop to
+        (False, bboxes_norm)      no obstruction; caller should use original bboxes
+    """
+    if len(bboxes_norm) < 2:
+        return False, bboxes_norm
+
+    areas     = [(b[2] - b[0]) * (b[3] - b[1]) for b in bboxes_norm]
+    centers_x = [(b[0] + b[2]) / 2              for b in bboxes_norm]
+
+    # Find the most dominant off-centre person
+    obstruction_idx = None
+    for i, (area, cx) in enumerate(zip(areas, centers_x)):
+        if area > 0.30 and (cx < 0.35 or cx > 0.65):
+            if obstruction_idx is None or area > areas[obstruction_idx]:
+                obstruction_idx = i
+
+    if obstruction_idx is None:
+        return False, bboxes_norm
+
+    subject_bbs = [b for i, b in enumerate(bboxes_norm) if i != obstruction_idx]
+    if not subject_bbs:
+        return False, bboxes_norm   # obstruction was the only person
+
+    return True, subject_bbs
+
+
 def _derive_ots_from_bboxes(
     image_paths: List[str],
     subject_bboxes: dict,
@@ -289,14 +329,15 @@ class UniQAHead:
 
     def score_all(
         self,
-        tensors:             List[Optional[torch.Tensor]],
-        image_paths:         List[str],
-        vlm_breakdowns:      Optional[List[dict]] = None,
+        tensors:                 List[Optional[torch.Tensor]],
+        image_paths:             List[str],
+        vlm_breakdowns:          Optional[List[dict]] = None,
         progress=None,
-        progress_start:      float = 0.60,
-        progress_end:        float = 0.83,
-        person_detected_in:  Optional[dict] = None,
-        subject_bboxes_in:   Optional[dict] = None,
+        progress_start:          float = 0.60,
+        progress_end:            float = 0.83,
+        person_detected_in:      Optional[dict] = None,
+        subject_bboxes_in:       Optional[dict] = None,
+        framing_obstruction_in:  Optional[dict] = None,
     ) -> tuple:
         """
         Score images via YOLO routing + UniQA.
@@ -333,13 +374,15 @@ class UniQAHead:
             _p(progress_start, f"YOLO routing — {n} images…")
             person_detected, subject_bboxes = _run_yolo_seg(image_paths, tensors)
 
-        routes: List[int] = []   # 0=standard, 1=empty-scene, 2=layered-frame
+        _fo_map = framing_obstruction_in or {}
+        routes: List[int] = []   # 0=standard, 1=empty-scene, 2=layered-frame/FO
         for path, t in zip(image_paths, tensors):
             has_person = person_detected.get(path, True)
             bboxes     = subject_bboxes.get(path, [])
+            is_fo      = bool(_fo_map.get(path, False))
             if not has_person:
                 routes.append(1)
-            elif bboxes and t is not None and _is_layered_frame(t, bboxes):
+            elif is_fo or (bboxes and t is not None and _is_layered_frame(t, bboxes)):
                 routes.append(2)
             else:
                 routes.append(0)
@@ -475,13 +518,14 @@ def run_vision_heads(
     if n == 0:
         empty = np.array([], dtype=np.float32)
         return {
-            "quality":               empty,
-            "tech":                  empty,
-            "aesthetic":             empty,
-            "breakdowns":            [],
-            "composition_overrides": {},
-            "chiaroscuro_flags":     {},
-            "person_detected":       {},
+            "quality":                empty,
+            "tech":                   empty,
+            "aesthetic":              empty,
+            "breakdowns":             [],
+            "composition_overrides":  {},
+            "chiaroscuro_flags":      {},
+            "person_detected":        {},
+            "framing_obstruction":    {},
         }
 
     composition_overrides: dict = {}
@@ -505,9 +549,26 @@ def run_vision_heads(
     _p(0.57, f"YOLO person detection — {n} images…")
     person_detected_dict, subject_bboxes_dict = _run_yolo_seg(image_paths, tensors)
 
-    # ── OTS composition overrides (bbox-based, no DepthHead) ─────────────────
     _comp_eligible = comp_eligible_paths or set(image_paths)
     _ots_paths     = [p for p in image_paths if p in _comp_eligible]
+
+    # ── Framing Obstruction detection (before OTS, higher priority) ───────────
+    # Large off-centre person (>30% area, center_x <0.35 or >0.65) = obstruction.
+    # subject_bboxes_dict is updated in-place to point to the secondary subject,
+    # so UniQA Route 2 crops to the real subject, not the occluding body.
+    framing_obstruction_dict: dict = {}
+    for _fo_path in _ots_paths:
+        _fo_bbs = subject_bboxes_dict.get(_fo_path, [])
+        if len(_fo_bbs) >= 2:
+            _is_fo, _subj_bbs = _detect_framing_obstruction(_fo_bbs)
+            if _is_fo:
+                framing_obstruction_dict[_fo_path] = True
+                subject_bboxes_dict[_fo_path]      = _subj_bbs   # crop to subject
+    if framing_obstruction_dict:
+        print(f"[vision_heads] Framing Obstruction: {len(framing_obstruction_dict)} images detected "
+              f"(large off-centre occluder → cropping to subject for UniQA)")
+
+    # ── OTS composition overrides (bbox-based, no DepthHead) ─────────────────
     composition_overrides = _derive_ots_from_bboxes(_ots_paths, subject_bboxes_dict)
     if composition_overrides:
         print(f"[vision_heads] OTS portraits: {len(composition_overrides)} overrides (bbox-derived)")
@@ -551,14 +612,15 @@ def run_vision_heads(
 
     try:
         quality_scores, _, _ = _uniqa_singleton.score_all(
-            tensors            = tensors,
-            image_paths        = image_paths,
-            vlm_breakdowns     = vlm_breakdowns,
-            progress           = _p,
-            progress_start     = 0.60,
-            progress_end       = 0.83,
-            person_detected_in = person_detected_dict,
-            subject_bboxes_in  = subject_bboxes_dict,
+            tensors                 = tensors,
+            image_paths             = image_paths,
+            vlm_breakdowns          = vlm_breakdowns,
+            progress                = _p,
+            progress_start          = 0.60,
+            progress_end            = 0.83,
+            person_detected_in      = person_detected_dict,
+            subject_bboxes_in       = subject_bboxes_dict,
+            framing_obstruction_in  = framing_obstruction_dict,
         )
         print(
             f"[vision_heads] UniQA: min={quality_scores.min():.3f}  "
@@ -579,11 +641,12 @@ def run_vision_heads(
     ]
 
     return {
-        "quality":               quality_scores,
-        "tech":                  quality_scores,    # pipeline compat
-        "aesthetic":             quality_scores,    # pipeline compat
-        "breakdowns":            breakdowns,
-        "composition_overrides": composition_overrides,
-        "chiaroscuro_flags":     chiaroscuro_flags,
-        "person_detected":       person_detected_dict,
+        "quality":                quality_scores,
+        "tech":                   quality_scores,    # pipeline compat
+        "aesthetic":              quality_scores,    # pipeline compat
+        "breakdowns":             breakdowns,
+        "composition_overrides":  composition_overrides,
+        "chiaroscuro_flags":      chiaroscuro_flags,
+        "person_detected":        person_detected_dict,
+        "framing_obstruction":    framing_obstruction_dict,
     }

@@ -980,6 +980,26 @@ async def grade_photos_v2_stream(req: GradeRequest):
     return StreamingResponse(_stream(), media_type="text/event-stream")
 
 
+@app.post("/api/regrade")
+async def regrade_photos(req: GradeRequest):
+    """
+    Force a full re-grade: clears catalog.json, runs the full IQA pipeline
+    (force_rescan=True), and rebuilds the catalog. SSE streaming, same format
+    as /api/grade/v2/stream.
+    """
+    return await grade_photos_v2_stream(req.model_copy(update={"force_rescan": True, "scan_mode": False}))
+
+
+@app.post("/api/scan")
+async def scan_photos(req: GradeRequest):
+    """
+    Low-latency scan: clears catalog.json, runs embedding + IQA without full
+    SpecVLM verification (scan_mode=True), and rebuilds the catalog. SSE streaming,
+    same format as /api/grade/v2/stream.
+    """
+    return await grade_photos_v2_stream(req.model_copy(update={"force_rescan": True, "scan_mode": True}))
+
+
 @app.post("/api/personal/update")
 async def personal_update(payload: dict):
     """
