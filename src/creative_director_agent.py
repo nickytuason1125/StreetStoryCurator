@@ -147,6 +147,14 @@ _VERDICT_PROMPT = (
     "Selected Sequence (5 positions):\n{sequence}\n\nVerdict:"
 )
 
+_RATIONALE_PROMPT = (
+    "You are the head photo editor. Review this finalized {n}-image sequence.\n"
+    "Based on the scoring metrics and slot roles below, generate exactly one concise sentence\n"
+    "explaining why each image was chosen for its specific slot.\n"
+    "Return ONLY a JSON object mapping each image token to its rationale string. No prose outside the JSON.\n\n"
+    "Sequence:\n{sequence}\n\nJSON:"
+)
+
 _llama: Optional[object] = None
 
 
@@ -173,6 +181,17 @@ class DirectorBrief:
                 f"DirectorBrief: spatial_progression_sequence must have 5 elements, "
                 f"got {len(self.spatial_progression_sequence)}"
             )
+
+
+# ── Rationale schema builder ─────────────────────────────────────────────────
+
+def _build_rationale_schema(tokens: list[str]) -> dict:
+    return {
+        "type": "object",
+        "properties": {t: {"type": "string"} for t in tokens},
+        "required": tokens,
+        "additionalProperties": False,
+    }
 
 
 # ── GGUF loader ───────────────────────────────────────────────────────────────
@@ -605,3 +624,116 @@ def generate_judges_verdict_8b(
     except Exception as e:
         print(f"[agent] 8B Judge unavailable ({e})")
         return ""
+
+
+# ── DeepSeek-R1 per-slot curation rationales ─────────────────────────────────
+
+def generate_curation_rationales(
+    sequence: list[dict],
+    style_prompt: str = "",
+) -> dict[str, str]:
+    """
+    Use DeepSeek-R1-Distill-8B to generate one-sentence per-slot rationales
+    for the finalized NSGA-III sequence.
+
+    Paths are tokenized (IMG_01…) before the LLM call — the model never sees
+    filenames. Returns dict[path → rationale]. Falls back to {} on any error
+    or if the GGUF is absent.
+    """
+    if not sequence or not _JUDGE_GGUF_PATH.exists():
+        return {}
+
+    token_map: dict[str, str] = {}   # IMG_0N → path
+    tokens:    list[str]      = []
+    seq_lines: list[str]      = []
+
+    for i, item in enumerate(sequence):
+        token = f"IMG_{i+1:02d}"
+        path  = item.get("path", "")
+        token_map[token] = path
+        tokens.append(token)
+
+        # Parse breakdown — may arrive as dict or JSON string
+        bd_raw = item.get("breakdown", {}) or {}
+        if isinstance(bd_raw, str):
+            try:
+                bd_raw = json.loads(bd_raw)
+            except Exception:
+                bd_raw = {}
+
+        score  = int(float(item.get("score", item.get("slot_score", 0.5))) * 100)
+        comp   = int(float(bd_raw.get("Composition",  0.5)) * 100)
+        tech   = int(float(bd_raw.get("Technical",    0.5)) * 100)
+        slot   = item.get("slot",    f"Slot {i+1}")
+        route  = item.get("route_triggered", "")
+        # First 60 chars of SpecVLM tags — no full path leakage
+        tags   = (item.get("reasoning_log", "") or "")[:60].strip()
+
+        line = f"{token} [{slot}] Score:{score}% Tech:{tech}% Comp:{comp}%"
+        if route:
+            line += f" Route:{route}"
+        if tags:
+            line += f" Tags:{tags!r}"
+        seq_lines.append(line)
+
+    schema = _build_rationale_schema(tokens)
+    prompt = _RATIONALE_PROMPT.format(
+        n        = len(sequence),
+        sequence = "\n".join(seq_lines),
+    )
+
+    try:
+        from llama_cpp import Llama
+
+        grammar = None
+        try:
+            from llama_cpp import LlamaGrammar
+            grammar = LlamaGrammar.from_json_schema(json.dumps(schema))
+        except Exception:
+            pass
+
+        judge_llm = Llama(
+            model_path   = str(_JUDGE_GGUF_PATH),
+            n_ctx        = 2048,
+            n_gpu_layers = -1,
+            n_threads    = 2,
+            verbose      = False,
+        )
+        kwargs: dict = dict(max_tokens=600, temperature=0.3, echo=False)
+        if grammar is not None:
+            kwargs["grammar"] = grammar
+
+        out = judge_llm(prompt, **kwargs)
+        raw = out["choices"][0]["text"].strip()
+
+        del judge_llm
+        gc.collect()
+
+        # Strip DeepSeek think tokens — same pattern as generate_judges_verdict_8b
+        m = re.search(r'</think>\s*(.*)', raw, re.DOTALL)
+        if m:
+            raw = m.group(1).strip()
+        elif "<think>" in raw:
+            print("[agent] rationales: unclosed <think> block — discarded")
+            return {}
+
+        start = raw.find("{")
+        end   = raw.rfind("}") + 1
+        if start < 0 or end <= start:
+            print(f"[agent] rationales: no JSON object in output — raw: {raw[:80]!r}")
+            return {}
+
+        parsed: dict = json.loads(raw[start:end])
+
+        result: dict[str, str] = {}
+        for token, orig_path in token_map.items():
+            rationale = str(parsed.get(token, "")).strip()
+            if orig_path and rationale:
+                result[orig_path] = rationale
+
+        print(f"[agent] curation rationales: {len(result)}/{len(sequence)} generated")
+        return result
+
+    except Exception as e:
+        print(f"[agent] curation rationales failed ({e})")
+        return {}

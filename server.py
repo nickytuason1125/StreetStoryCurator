@@ -917,31 +917,49 @@ async def grade_photos_v2_stream(req: GradeRequest):
             except Exception as e:
                 print(f"[v2] NSGA-III multi-folder failed: {e}")
 
+            # ── DeepSeek-R1 per-slot curation rationales ─────────────────────
+            # Runs after NSGA-III; merges one-sentence rationales into both
+            # mogco_sequence entries and gallery_slim before catalog write.
+            _slim_by_path = {g["path"]: g for g in gallery_slim}
+            if mogco_sequence:
+                try:
+                    from creative_director_agent import generate_curation_rationales as _gen_rat
+                    _rationale_map = _gen_rat(mogco_sequence, _brief)
+                    for _r_path, _rat in _rationale_map.items():
+                        if _r_path in _slim_by_path:
+                            _slim_by_path[_r_path]["curation_rationale"] = _rat
+                    for _entry in mogco_sequence:
+                        _rat = _rationale_map.get(_entry.get("path", ""), "")
+                        if _rat:
+                            _entry["curation_rationale"] = _rat
+                    if _rationale_map:
+                        _progress(0.99, f"Rationales ready for {len(_rationale_map)} images…")
+                except Exception as _e_rat:
+                    print(f"[v2] Curation rationale generation failed: {_e_rat}")
+
             strong = sum(1 for g in combined_gallery if "Strong" in g.get("grade", ""))
             mid    = sum(1 for g in combined_gallery if "Mid"    in g.get("grade", ""))
             weak   = sum(1 for g in combined_gallery if "Weak"   in g.get("grade", ""))
 
-            # Write combined multi-folder catalog (overrides single-folder writes from
-            # Step 8b in grade_pipeline_v2, which only cover one folder at a time).
-            if len(all_folders) > 1:
-                try:
-                    import time as _cat_time
-                    _cat_photos  = [{k: v for k, v in g.items() if k != "embedding"} for g in combined_gallery]
-                    _cat_folders = list(dict.fromkeys(str(Path(g["path"]).parent) for g in combined_gallery))
-                    _CATALOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-                    _cat_tmp = _CATALOG_PATH.with_suffix(".json.tmp")
-                    _cat_tmp.write_text(
-                        json.dumps({
-                            "photos":   _cat_photos,
-                            "folders":  _cat_folders,
-                            "saved_at": _cat_time.strftime("%Y-%m-%dT%H:%M:%S"),
-                        }, ensure_ascii=False, indent=2),
-                        encoding="utf-8",
-                    )
-                    _cat_tmp.replace(_CATALOG_PATH)
-                    print(f"[grade_v2] catalog.json → {len(_cat_photos)} photos ({len(all_folders)} folders, atomic write)")
-                except Exception as _e_cat_sv:
-                    print(f"[grade_v2] catalog.json combined write failed: {_e_cat_sv}")
+            # Always write final catalog after rationales are merged — overwrites
+            # per-folder Step 8b writes so the React frontend gets rationale strings.
+            try:
+                import time as _cat_time
+                _cat_folders = list(dict.fromkeys(str(Path(g["path"]).parent) for g in gallery_slim))
+                _CATALOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+                _cat_tmp = _CATALOG_PATH.with_suffix(".json.tmp")
+                _cat_tmp.write_text(
+                    json.dumps({
+                        "photos":   gallery_slim,
+                        "folders":  _cat_folders,
+                        "saved_at": _cat_time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    }, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                _cat_tmp.replace(_CATALOG_PATH)
+                print(f"[grade_v2] catalog.json → {len(gallery_slim)} photos ({len(all_folders)} folders, w/ rationales)")
+            except Exception as _e_cat_sv:
+                print(f"[grade_v2] catalog.json final write failed: {_e_cat_sv}")
 
             loop.call_soon_threadsafe(aqueue.put_nowait, {
                 "done":           True,
