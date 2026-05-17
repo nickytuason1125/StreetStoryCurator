@@ -775,6 +775,7 @@ def run_v2(
         _comp_score  = float(per_photo_breakdowns[idx].get("Composition",   0.5))
         _light_score = float(per_photo_breakdowns[idx].get("Lighting",      0.5))
         _hc_score    = float(per_photo_breakdowns[idx].get("Human/Culture", 0.5))
+        _narr_score  = float(per_photo_breakdowns[idx].get("Narrative",     0.5))
         _raw_comp    = _raw_comp_by_path.get(_path, _comp_score)
         _has_person  = person_detected_dict.get(_path, True)
         _is_ots      = _path in composition_overrides
@@ -810,32 +811,37 @@ def run_v2(
         # Fires when: strong human presence (HC ≥ 0.65) + SpecVLM raw composition
         # was penalized below 0.35 by a foreground obstruction + OTS portrait
         # detected (foreground OOF person + sharp midground subject).
-        # Action: protect Composition at 0.82, apply standard fusion.
+        # Formula: subject-crop quality (40%) + Human/Culture (30%) + Narrative (30%)
+        # so that high-context documentary work (shopkeeper, vendor, elder) is not
+        # buried by a flat technical crop score.
+        # Internal floor: max(fused, 0.65) when storytelling is strong.
         if _hc_score >= 0.65 and _raw_comp < 0.35 and _is_ots:
             per_photo_breakdowns[idx]["Composition"] = 0.82
-            fused = t * 0.35 + a * 0.65
+            fused = a * 0.40 + _hc_score * 0.30 + _narr_score * 0.30
+            if _hc_score >= 0.70 and _narr_score >= 0.60:
+                if fused < _ANCHOR_FLOOR:
+                    fused = _ANCHOR_FLOOR
+                    _anchor_count += 1
             scores[idx] = float(np.clip(fused, 0.0, 1.0))
             _route2_count += 1
             print(
                 f"[v2] Route 2B Layered Frame: {Path(_path).name}  "
-                f"HC={_hc_score:.2f} rawComp={_raw_comp:.2f} → Comp=0.82 fused={fused:.3f}"
+                f"HC={_hc_score:.2f} Narr={_narr_score:.2f} UniQA={a:.2f} → fused={fused:.3f}"
             )
             continue
 
         # ── Route 1: Empty Scene ──────────────────────────────────────────────
-        # Fires when YOLO detects zero human presence.
-        # Formula: fused = (geometric_base * 0.70) + (uniqa * 0.30)
-        # geometric_base = sqrt(comp × light) — rewards both axes equally.
-        # UniQA component (`a`) for Route 1 images is the same geometric mean
-        # computed in UniQAHead.score_all() Route 1 path.
+        # Fires when YOLO finds zero human instances (class 0, area ≥ 0.5%).
+        # Formula: comp * 0.40 + light * 0.30 + uniqa * 0.30
+        # Linear split so a strong geometric composition (high comp, moderate light)
+        # is not penalised by the geometric mean's multiplicative collapse.
         if not _has_person:
-            _geo_base = float(np.sqrt(max(_comp_score, 0.01) * max(_light_score, 0.01)))
-            fused = _geo_base * 0.70 + a * 0.30
+            fused = _comp_score * 0.40 + _light_score * 0.30 + a * 0.30
             scores[idx] = float(np.clip(fused, 0.0, 1.0))
             _route1_count += 1
             print(
                 f"[v2] Route 1 Empty Scene: {Path(_path).name}  "
-                f"Comp={_comp_score:.2f} Light={_light_score:.2f} geo={_geo_base:.2f} UniQA={a:.2f} → fused={fused:.3f}"
+                f"Comp={_comp_score:.2f} Light={_light_score:.2f} UniQA={a:.2f} → fused={fused:.3f}"
             )
             continue
 
@@ -858,7 +864,10 @@ def run_v2(
             _penalty_count += 1
 
         # Anchor Floor — fired AFTER soft penalty so elite photos can override it.
-        if a >= _AES_ANCHOR_THRESHOLD or fa >= _FA_ANCHOR_THRESHOLD:
+        # Triggers on: strong UniQA quality OR fine-art alignment OR documentary
+        # street work with exceptional Human/Culture (≥ 0.70) + Narrative (≥ 0.60).
+        _doc_strong = _hc_score >= 0.70 and _narr_score >= 0.60
+        if a >= _AES_ANCHOR_THRESHOLD or fa >= _FA_ANCHOR_THRESHOLD or _doc_strong:
             if fused < _ANCHOR_FLOOR:
                 fused = _ANCHOR_FLOOR
                 _anchor_count += 1

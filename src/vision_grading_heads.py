@@ -144,17 +144,24 @@ def _run_yolo_seg(
             if boxes is None or len(boxes) == 0:
                 person_detected[path] = False
             else:
-                person_detected[path] = True
                 _, H, W = t.shape
                 bboxes_norm: list = []
                 for box in boxes.xyxy.cpu().numpy():
-                    bboxes_norm.append([
-                        float(box[0]) / W,
-                        float(box[1]) / H,
-                        float(box[2]) / W,
-                        float(box[3]) / H,
-                    ])
-                subject_bboxes[path] = bboxes_norm
+                    x1n = float(box[0]) / W
+                    y1n = float(box[1]) / H
+                    x2n = float(box[2]) / W
+                    y2n = float(box[3]) / H
+                    # Skip sub-0.5% area detections — filters noise artefacts,
+                    # handrail shadows, and distant background pixels that YOLO
+                    # occasionally classifies as class 0.
+                    if (x2n - x1n) * (y2n - y1n) < 0.005:
+                        continue
+                    bboxes_norm.append([x1n, y1n, x2n, y2n])
+                if bboxes_norm:
+                    person_detected[path] = True
+                    subject_bboxes[path]  = bboxes_norm
+                else:
+                    person_detected[path] = False
         except Exception as e:
             print(f"[uniqa_head] YOLO failed for {Path(path).name}: {e}")
             person_detected[path] = True   # safe default
