@@ -108,8 +108,9 @@ def _run_yolo_seg(
         person_detected_dict  path → bool
         subject_bboxes_dict   path → list[[x1n, y1n, x2n, y2n]] (normalised [0,1])
     """
-    person_detected: dict = {}
-    subject_bboxes:  dict = {}
+    person_detected:    dict = {}
+    subject_bboxes:     dict = {}
+    subject_bbox_lum:   dict = {}   # path → max mean bbox luminance (0-255)
 
     candidates = [
         Path("models") / "yolo11s-seg.engine",
@@ -130,19 +131,22 @@ def _run_yolo_seg(
     if yolo is None:
         print("[uniqa_head] YOLO unavailable — all images route to standard UniQA")
         for p in image_paths:
-            person_detected[p] = True   # safe default: treat as person present
-        return person_detected, subject_bboxes
+            person_detected[p]  = True   # safe default: treat as person present
+            subject_bbox_lum[p] = 0.0
+        return person_detected, subject_bboxes, subject_bbox_lum
 
     for path, t in zip(image_paths, tensors):
         if t is None:
-            person_detected[path] = False
+            person_detected[path]  = False
+            subject_bbox_lum[path] = 0.0
             continue
         try:
             img_np = (t.permute(1, 2, 0).cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
             results = yolo(img_np, verbose=False, classes=[0])   # 0 = person
             boxes   = results[0].boxes if results else None
             if boxes is None or len(boxes) == 0:
-                person_detected[path] = False
+                person_detected[path]  = False
+                subject_bbox_lum[path] = 0.0
             else:
                 _, H, W = t.shape
                 bboxes_norm: list = []
@@ -160,15 +164,34 @@ def _run_yolo_seg(
                 if bboxes_norm:
                     person_detected[path] = True
                     subject_bboxes[path]  = bboxes_norm
+                    # Max mean luminance (0-255) across all valid person bboxes.
+                    # Reuses img_np already decoded for YOLO — no extra disk read.
+                    H_np, W_np = img_np.shape[:2]
+                    gray = (
+                        0.299 * img_np[:, :, 0].astype(np.float32) +
+                        0.587 * img_np[:, :, 1].astype(np.float32) +
+                        0.114 * img_np[:, :, 2].astype(np.float32)
+                    )
+                    max_lum = 0.0
+                    for bb in bboxes_norm:
+                        bx1 = max(0,    int(bb[0] * W_np))
+                        by1 = max(0,    int(bb[1] * H_np))
+                        bx2 = min(W_np, int(bb[2] * W_np))
+                        by2 = min(H_np, int(bb[3] * H_np))
+                        if bx2 > bx1 and by2 > by1:
+                            max_lum = max(max_lum, float(gray[by1:by2, bx1:bx2].mean()))
+                    subject_bbox_lum[path] = max_lum
                 else:
-                    person_detected[path] = False
+                    person_detected[path]  = False
+                    subject_bbox_lum[path] = 0.0
         except Exception as e:
             print(f"[uniqa_head] YOLO failed for {Path(path).name}: {e}")
-            person_detected[path] = True   # safe default
+            person_detected[path]  = True   # safe default
+            subject_bbox_lum[path] = 0.0    # unknown — no luminance data
 
     n_person = sum(1 for v in person_detected.values() if v)
     print(f"[uniqa_head] YOLO: {n_person}/{len(image_paths)} images with person detected")
-    return person_detected, subject_bboxes
+    return person_detected, subject_bboxes, subject_bbox_lum
 
 
 def _is_layered_frame(
@@ -533,6 +556,7 @@ def run_vision_heads(
             "chiaroscuro_flags":      {},
             "person_detected":        {},
             "framing_obstruction":    {},
+            "subject_bbox_lum":       {},
         }
 
     composition_overrides: dict = {}
@@ -554,7 +578,7 @@ def run_vision_heads(
     # Eliminates the duplicate YOLO call that used to happen inside
     # SegCompositionAnalyzer.analyze_batch() AND inside UniQAHead.score_all().
     _p(0.57, f"YOLO person detection — {n} images…")
-    person_detected_dict, subject_bboxes_dict = _run_yolo_seg(image_paths, tensors)
+    person_detected_dict, subject_bboxes_dict, subject_bbox_lum_dict = _run_yolo_seg(image_paths, tensors)
 
     _comp_eligible = comp_eligible_paths or set(image_paths)
     _ots_paths     = [p for p in image_paths if p in _comp_eligible]
@@ -656,4 +680,5 @@ def run_vision_heads(
         "chiaroscuro_flags":      chiaroscuro_flags,
         "person_detected":        person_detected_dict,
         "framing_obstruction":    framing_obstruction_dict,
+        "subject_bbox_lum":       subject_bbox_lum_dict,
     }

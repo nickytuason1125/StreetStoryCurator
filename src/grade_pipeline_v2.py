@@ -638,6 +638,7 @@ def run_v2(
     chiaroscuro_flags:        dict[str, bool]  = {}
     person_detected_dict:     dict[str, bool]  = {}
     framing_obstruction_dict: dict[str, bool]  = {}
+    subject_bbox_lum_dict:    dict[str, float] = {}
 
     if scan_mode:
         _p(0.84, "Scan mode — IQA heads skipped, using SpecVLM scores…")
@@ -671,6 +672,7 @@ def run_v2(
             chiaroscuro_flags        = iqa_out.get("chiaroscuro_flags",      {})
             person_detected_dict     = iqa_out.get("person_detected",        {})
             framing_obstruction_dict = iqa_out.get("framing_obstruction",    {})
+            subject_bbox_lum_dict    = iqa_out.get("subject_bbox_lum",       {})
 
             for local_i, idx in enumerate(to_rate_indices):
                 per_photo_breakdowns[idx].update(iqa_breakdowns[local_i])
@@ -764,6 +766,13 @@ def run_v2(
     _route1_count    = 0
     _route2_count    = 0
     _fo_count        = 0   # Framing Obstruction sub-count
+    _route3_count    = 0   # Cinematic Night Scene
+
+    _ROUTE3_FLOOR       = 0.62   # just above Strong threshold (0.60)
+    _ROUTE3_LIGHT_BASE  = 0.75   # protected Lighting baseline
+    _ROUTE3_COMP_FLOOR  = 0.70   # minimum Composition for intentional dark frame
+    _ROUTE3_LUM_THRESH  = 45.0   # global mean luminance (0-255) — dark overall
+    _ROUTE3_BBOX_THRESH = 60.0   # subject bbox mean luminance (0-255) — lit subject
 
     for local_i, idx in enumerate(to_rate_indices):
         t  = float(tech_scores_rated[local_i])
@@ -830,6 +839,39 @@ def run_v2(
             )
             continue
 
+        # ── Route 3: Cinematic Night Scene ───────────────────────────────────
+        # Fires when the global frame is dark (mean_lum < 45) AND the detected
+        # subject is visibly illuminated (bbox mean lum > 60) — intentional
+        # chiaroscuro street portrait.  Bypasses VLP and YOLO soft-penalty blocks.
+        # Protected values: Lighting = 0.75, Composition = max(comp, 0.70).
+        # Formula: HC*0.35 + Comp*0.35 + Tech*0.20 + Light*0.10
+        # Floor: max(fused, 0.62) — keeps elite night work out of Weak bucket.
+        _subj_lum = float(subject_bbox_lum_dict.get(_path, 0.0))
+        if (
+            _has_person
+            and mean_lum < _ROUTE3_LUM_THRESH
+            and _subj_lum > _ROUTE3_BBOX_THRESH
+        ):
+            _light_r3 = _ROUTE3_LIGHT_BASE
+            _comp_r3  = max(_comp_score, _ROUTE3_COMP_FLOOR)
+            per_photo_breakdowns[idx]["Lighting"]     = _light_r3
+            per_photo_breakdowns[idx]["Composition"]  = _comp_r3
+            fused = (
+                _hc_score  * 0.35 +
+                _comp_r3   * 0.35 +
+                t          * 0.20 +
+                _light_r3  * 0.10
+            )
+            fused = max(fused, _ROUTE3_FLOOR)
+            scores[idx] = float(np.clip(fused, 0.0, 1.0))
+            _route3_count += 1
+            print(
+                f"[v2] Route 3 Cinematic Night: {Path(_path).name}  "
+                f"global_lum={mean_lum:.1f} bbox_lum={_subj_lum:.1f}  "
+                f"HC={_hc_score:.2f} comp={_comp_r3:.2f} tech={t:.2f} → fused={fused:.3f}"
+            )
+            continue
+
         # ── Route 1: Empty Scene ──────────────────────────────────────────────
         # Fires when YOLO finds zero human instances (class 0, area ≥ 0.5%).
         # Formula: comp * 0.40 + light * 0.30 + uniqa * 0.30
@@ -875,9 +917,11 @@ def run_v2(
         scores[idx] = float(np.clip(fused, 0.0, 1.0))
 
     if _route1_count:
-        print(f"[v2] Route 1 (Empty Scene): {_route1_count} images — geometric formula (no HC drag)")
+        print(f"[v2] Route 1 (Empty Scene): {_route1_count} images — linear comp/light/uniqa formula")
     if _route2_count:
-        print(f"[v2] Route 2 (Layered Frame): {_route2_count} images — Composition protected @ 0.82")
+        print(f"[v2] Route 2 (Layered Frame): {_route2_count} images — semantic formula (HC+Narr weighted)")
+    if _route3_count:
+        print(f"[v2] Route 3 (Cinematic Night): {_route3_count} images — dark frame + lit subject, floor=0.62")
     if _vlp_count:
         print(
             f"[v2] Vintage Lens Protocol: {_vlp_count}/{len(to_rate_indices)} triggered "
