@@ -1,6 +1,9 @@
 import os
 # Prevent any joblib/loky worker process from spawning (flashes a cmd window on Windows).
 os.environ.setdefault("LOKY_MAX_CPU_COUNT", "1")
+# Suppress the "unauthenticated requests" noise from HuggingFace hub without going full offline
+# (HF_HUB_OFFLINE=1 breaks timm/open_clip local cache resolution).
+os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
 try:
     import joblib.parallel as _jp
     _jp.DEFAULT_BACKEND = "threading"
@@ -264,6 +267,39 @@ async def get_config():
     except ImportError:
         ff = False
     return JSONResponse({"force_frontier": ff})
+
+
+@app.get("/api/models/status")
+async def model_status():
+    """Return current grader mode and model availability for the frontend indicator."""
+    from pathlib import Path as _P
+
+    draft_ok  = (_P("models/deepseek/deepseek-ai_DeepSeek-R1-Distill-Qwen-1.5B") / "model.safetensors").exists()
+    # 7B is available only when shard files are present, not just the index
+    verify_dir = _P("models/deepseek/deepseek-ai_DeepSeek-R1-Distill-Qwen-7B")
+    verify_ok  = any(verify_dir.glob("model-*-of-*.safetensors")) if verify_dir.exists() else False
+    judge_ok   = _P("models/deepseek-r1-8b-q5.gguf").exists()
+    phi4_ok    = _P("models/phi4-mini-reasoning-q4.gguf").exists()
+
+    try:
+        import sys, os
+        src_dir = os.path.join(os.path.dirname(__file__), "src")
+        if src_dir not in sys.path:
+            sys.path.insert(0, src_dir)
+        from grade_pipeline_v2 import _grader_status
+        last = dict(_grader_status)
+    except Exception:
+        last = {"mode": "idle", "verify_used": False, "photos_last": 0, "error": None}
+
+    return JSONResponse({
+        "draft_available":  draft_ok,
+        "verify_available": verify_ok,
+        "judge_available":  judge_ok,
+        "phi4_available":   phi4_ok,
+        "last_mode":        last["mode"],
+        "last_verify_used": last["verify_used"],
+        "last_error":       last["error"],
+    })
 
 
 @app.get("/api/models/download-status")
@@ -800,6 +836,15 @@ async def grade_photos_v2_stream(req: GradeRequest):
             n = len(all_folders)
             combined_gallery: list = []
 
+            # Clear stale catalog before grading — Step 8b in grade_pipeline_v2
+            # will rebuild it after LanceDB upsert.
+            try:
+                if _CATALOG_PATH.exists():
+                    _CATALOG_PATH.unlink()
+                    print("[grade_v2] Cleared stale catalog.json — will be rebuilt after grading")
+            except Exception:
+                pass
+
             for i, fp in enumerate(all_folders):
                 # Slice the 0→1 progress bar across folders
                 p_start = i / n
@@ -827,13 +872,17 @@ async def grade_photos_v2_stream(req: GradeRequest):
                 for photo in combined_gallery
             ]
 
-            # NSGA-III across all photos
-            _progress(0.97, "Running NSGA-III across all folders…")
+            # NSGA-III across all photos (strict literal constraints)
+            _progress(0.97, "Running NSGA-III (strict literal constraints)…")
             mogco_sequence: list = []
+            mogco_error_msg: str = ""
             try:
                 import numpy as _np
-                from nsga3_sequencer import run_nsga3_sequence_with_vlm
-                _SLOTS = ["Opening", "Act 1", "Act 2", "Climax", "Resolution", "Coda", "Epilogue"]
+                from nsga3_sequencer import run_nsga3_sequence_with_vlm, SequencerConstraintError
+                try:
+                    from specvlm_pipeline import _CD_BRIEF as _brief
+                except Exception:
+                    _brief = ""
                 seq_candidates = [
                     {
                         "path":          g["path"],
@@ -843,26 +892,56 @@ async def grade_photos_v2_stream(req: GradeRequest):
                             dtype=_np.float32,
                         ),
                         "reasoning_log": g.get("reasoning_log", ""),
+                        "breakdown":     g.get("breakdown", {}),
                     }
                     for idx, g in enumerate(gallery_slim)
                     if "Strong" in g.get("grade", "") or "Mid" in g.get("grade", "")
                 ]
-                selected = run_nsga3_sequence_with_vlm(seq_candidates, target=5)
+                selected = run_nsga3_sequence_with_vlm(
+                    seq_candidates, target=5, brief=_brief
+                )
                 info_by_path = {g["path"]: g for g in gallery_slim}
                 for rank, frame in enumerate(selected):
                     base = dict(info_by_path.get(frame["path"], {"path": frame["path"]}))
                     base.update({
-                        "slot":             _SLOTS[rank % len(_SLOTS)],
+                        "slot":             frame.get("slot", f"Slot {rank+1}"),
+                        "slot_role":        frame.get("slot_role", ""),
+                        "slot_score":       frame.get("slot_score", 0.0),
                         "mogco_objectives": frame.get("nsga3_objectives", {}),
                         "engine":           "nsga3",
                     })
                     mogco_sequence.append(base)
+            except SequencerConstraintError as e:
+                mogco_error_msg = str(e)
+                print(f"[v2] NSGA-III constraint error: {e}")
             except Exception as e:
                 print(f"[v2] NSGA-III multi-folder failed: {e}")
 
             strong = sum(1 for g in combined_gallery if "Strong" in g.get("grade", ""))
             mid    = sum(1 for g in combined_gallery if "Mid"    in g.get("grade", ""))
             weak   = sum(1 for g in combined_gallery if "Weak"   in g.get("grade", ""))
+
+            # Write combined multi-folder catalog (overrides single-folder writes from
+            # Step 8b in grade_pipeline_v2, which only cover one folder at a time).
+            if len(all_folders) > 1:
+                try:
+                    import time as _cat_time
+                    _cat_photos  = [{k: v for k, v in g.items() if k != "embedding"} for g in combined_gallery]
+                    _cat_folders = list(dict.fromkeys(str(Path(g["path"]).parent) for g in combined_gallery))
+                    _CATALOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+                    _cat_tmp = _CATALOG_PATH.with_suffix(".json.tmp")
+                    _cat_tmp.write_text(
+                        json.dumps({
+                            "photos":   _cat_photos,
+                            "folders":  _cat_folders,
+                            "saved_at": _cat_time.strftime("%Y-%m-%dT%H:%M:%S"),
+                        }, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                    _cat_tmp.replace(_CATALOG_PATH)
+                    print(f"[grade_v2] catalog.json → {len(_cat_photos)} photos ({len(all_folders)} folders, atomic write)")
+                except Exception as _e_cat_sv:
+                    print(f"[grade_v2] catalog.json combined write failed: {_e_cat_sv}")
 
             loop.call_soon_threadsafe(aqueue.put_nowait, {
                 "done":           True,
@@ -872,10 +951,21 @@ async def grade_photos_v2_stream(req: GradeRequest):
                 "weak":           weak,
                 "data":           gallery_slim,
                 "mogco_sequence": mogco_sequence,
+                "mogco_error":    mogco_error_msg,
                 "pipeline":       "v2",
             })
         except Exception as exc:
-            loop.call_soon_threadsafe(aqueue.put_nowait, {"error": str(exc)})
+            import traceback as _tb
+            _full_tb = _tb.format_exc()
+            print(f"[grade_v2_stream] CRASH:\n{_full_tb}", file=sys.stderr, flush=True)
+            try:
+                _crash_path = _DATA_DIR / "crash.log"
+                with open(_crash_path, "a", encoding="utf-8") as _cf:
+                    import datetime as _dt
+                    _cf.write(f"\n{'='*60}\n{_dt.datetime.now().isoformat()} grade_v2_stream crash:\n{_full_tb}\n")
+            except Exception:
+                pass
+            loop.call_soon_threadsafe(aqueue.put_nowait, {"error": str(exc), "traceback": _full_tb})
 
     import threading as _th
     _th.Thread(target=_run, daemon=True).start()
@@ -1029,29 +1119,73 @@ async def creative_direction_stream(payload: dict):
     def _run():
         try:
             import numpy as np
+            import json
 
             # ── Fetch all graded images (Strong + Mid + Weak) ─────────────────
             _progress(0.01, "Loading graded images…")
-            strong_paths: list[str] = []
-            embeddings:   list      = []
-            scores:       list      = []
+            strong_paths:  list[str] = []
+            embeddings:    list      = []
+            scores:        list      = []
+            aspect_scores: list      = []
             IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".tiff", ".tif", ".bmp"}
 
-            # Tier 1: LanceDB — all graded images for this folder, sorted by score desc
+            # Tier 0: catalog.json — always-available grade cache written by frontend
+            try:
+                if _CATALOG_PATH.exists():
+                    _cat = json.loads(_CATALOG_PATH.read_text(encoding="utf-8"))
+                    _photos = _cat.get("photos", [])
+                    if folder_path:
+                        from pathlib import Path as _Path
+                        _fp = str(_Path(folder_path).resolve())
+                        _photos = [p for p in _photos if p.get("path", "").startswith(_fp)]
+                    _photos = [p for p in _photos if float(p.get("score", 0)) > 0]
+                    if _photos:
+                        _photos.sort(key=lambda p: float(p.get("score", 0)), reverse=True)
+                        strong_paths  = [p["path"]                          for p in _photos]
+                        embeddings    = [np.zeros(1536, dtype=np.float32)   for _ in _photos]
+                        scores        = [float(p.get("score", 0.5))         for p in _photos]
+                        aspect_scores = [
+                            p["breakdown"] if isinstance(p.get("breakdown"), dict)
+                            else (json.loads(p["breakdown"]) if isinstance(p.get("breakdown"), str) else {})
+                            for p in _photos
+                        ]
+                        _progress(0.02, f"Found {len(strong_paths)} graded images (catalog)")
+            except Exception as _e:
+                print(f"[cd] catalog.json read failed: {_e}")
+
+            # Tier 1: LanceDB — primary source for embeddings; also fallback when catalog empty.
+            # Always run to enrich embeddings even when catalog.json already provided paths —
+            # catalog.json has no embeddings, so creative mode needs LanceDB for visual diversity.
             try:
                 import lance_store as ls
-                candidates = ls.query_all(min_score=0.0)
-                if folder_path:
-                    from pathlib import Path as _Path
-                    fp = str(_Path(folder_path).resolve())
-                    candidates = [c for c in candidates if c["path"].startswith(fp)]
-                candidates = [c for c in candidates if float(c.get("score", 0)) > 0]
-                if candidates:
-                    candidates.sort(key=lambda c: float(c.get("score", 0)), reverse=True)
-                    strong_paths = [c["path"]                                    for c in candidates]
-                    embeddings   = [np.array(c["embedding"], dtype=np.float32)   for c in candidates]
-                    scores       = [float(c.get("score", 0.5))                   for c in candidates]
-                    _progress(0.02, f"Found {len(strong_paths)} graded images")
+                if strong_paths:
+                    _lance_rows = ls.query_by_paths(strong_paths)
+                else:
+                    _lance_rows = ls.query_all(min_score=0.0)
+                    if folder_path:
+                        from pathlib import Path as _Path
+                        fp = str(_Path(folder_path).resolve())
+                        _lance_rows = [c for c in _lance_rows if c["path"].startswith(fp)]
+                    _lance_rows = [c for c in _lance_rows if float(c.get("score", 0)) > 0]
+                if _lance_rows:
+                    if not strong_paths:
+                        # Catalog was empty — use LanceDB as primary source
+                        _lance_rows.sort(key=lambda c: float(c.get("score", 0)), reverse=True)
+                        strong_paths  = [c["path"]                                  for c in _lance_rows]
+                        scores        = [float(c.get("score", 0.5))                 for c in _lance_rows]
+                        aspect_scores = [
+                            c["breakdown"] if isinstance(c.get("breakdown"), dict)
+                            else (json.loads(c["breakdown"]) if isinstance(c.get("breakdown"), str) else {})
+                            for c in _lance_rows
+                        ]
+                        embeddings = [np.array(c["embedding"], dtype=np.float32) for c in _lance_rows]
+                        _progress(0.02, f"Found {len(strong_paths)} graded images (LanceDB)")
+                    else:
+                        # Catalog provided paths — enrich embeddings from LanceDB
+                        _emb_map = {c["path"]: np.array(c["embedding"], dtype=np.float32) for c in _lance_rows}
+                        embeddings = [_emb_map.get(p, np.zeros(1536, dtype=np.float32)) for p in strong_paths]
+                        n_real = sum(1 for e in embeddings if np.any(e != 0))
+                        print(f"[cd] Embeddings enriched from LanceDB: {n_real}/{len(embeddings)} real")
             except Exception as e:
                 print(f"[cd] LanceDB query failed: {e}")
 
@@ -1088,28 +1222,54 @@ async def creative_direction_stream(payload: dict):
 
             _progress(0.03, f"Found {len(strong_paths)} images for creative direction")
 
+            # ── Release SigLIP-2 singleton before Creative Mode LLMs load ─────
+            try:
+                from grade_pipeline_v2 import release_grading_models
+                release_grading_models()
+            except Exception as _e_rel:
+                print(f"[server] release_grading_models skipped: {_e_rel}")
+
             # ── Run pipeline ──────────────────────────────────────────────────
             from creative_director import run_creative_direction
 
             avoid_paths = sorted(_load_used_cd_paths())
 
             result = run_creative_direction(
-                strong_paths = strong_paths,
-                embeddings   = embeddings,
-                scores       = scores or None,
-                anchor_path  = anchor_path,
-                output_dir   = folder_path or str(
+                strong_paths      = strong_paths,
+                embeddings        = embeddings,
+                scores            = scores or None,
+                aspect_scores_list= aspect_scores or None,
+                anchor_path       = anchor_path,
+                output_dir        = folder_path or str(
                     Path(anchor_path).parent
                 ),
-                style_prompt = style_prompt,
-                n_target     = n_target,
-                avoid_paths  = avoid_paths,
-                progress     = _progress,
+                style_prompt      = style_prompt,
+                n_target          = n_target,
+                avoid_paths       = avoid_paths,
+                progress          = _progress,
             )
+
+            # Auto-mark generated images as used so next generation picks different ones.
+            # Explicit save (save-sequence) persists to Story_<ts>/; this just rotates the pool.
+            if result.get("outputs"):
+                new_used = {
+                    o["source_path"] for o in result["outputs"]
+                    if o.get("success") and o.get("source_path")
+                }
+                if new_used:
+                    updated = _load_used_cd_paths() | new_used
+                    # Reset when the whole pool has cycled through
+                    if len(updated) >= len(strong_paths):
+                        updated = new_used
+                    _save_used_cd_paths(updated)
+
             _push({"done": True, "data": result})
 
         except Exception as exc:
             _push({"error": str(exc)})
+        finally:
+            import gc as _gc
+            _gc.collect()
 
     _BG_EXECUTOR.submit(_run)
 

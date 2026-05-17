@@ -1,21 +1,43 @@
-# --- Core Backend ---
+# ── NOTE: torch + torchvision are installed by Start.bat / Setup.ps1 ─────────
+# They use --index-url to select the right CUDA or CPU build.
+# Do NOT add torch here — pip would override the GPU build with a CPU wheel.
+
+# ── Core backend ──────────────────────────────────────────────────────────────
 fastapi==0.110.0
 uvicorn[standard]
-lancedb                 # High-performance Vector Storage
-pymoo                   # NSGA-III Multi-Objective Engine (3-objective Purist sequencer)
-ultralytics             # YOLOv11-nano CPU binary kill-switch for empty-brief
+pywebview               # Desktop window (pywebview 5.x)
 
-# --- 2026 Precision Models ---
-open_clip_torch         # SigLIP-2 ViT-g/14 NaFlex FP8 embeddings
-onnxruntime-gpu         # For OneAlign-Lite inference
-bitsandbytes            # 4-bit/8-bit for DeepSeek graders
-transformers            # SigLIP-2 tokenizer + DeepSeek model loading
-torch                   # DPO Preference Adapters
-peft                    # QLoRA Rank-4 adapter for online DPO soul-alignment
-llama-cpp-python        # CPU GGUF inference for DeepSeek-R1-1.5B Middleman Agent
+# ── Vector store + sequencer ──────────────────────────────────────────────────
+lancedb
+pymoo                   # NSGA-III multi-objective sequencer
+scipy                   # pymoo dependency
 
-# --- Data & Image Handling ---
-pillow-heif
-pyvips-binary
-rawpy
+# ── Vision backbone (HuggingFace) ─────────────────────────────────────────────
+open_clip_torch         # SigLIP-2 ViT-g/14 NaFlex 1536-d embeddings
+transformers            # SigLIP-2 tokeniser, DINOv2, Depth-Anything-V2
+accelerate              # device_map + mixed-precision loading
+bitsandbytes            # INT4/INT8 quantisation for grading models
+peft                    # QLoRA rank-4 adapters (online DPO soul-alignment)
+
+# ── Object detection ──────────────────────────────────────────────────────────
+ultralytics             # YOLO11s-seg — person detection + routing
+
+# ── Image Quality Assessment ──────────────────────────────────────────────────
+pyiqa                   # UniQA unified quality backbone
+
+# ── Inference engine (local LLM) ──────────────────────────────────────────────
+llama-cpp-python        # GGUF inference — Phi-4-mini-reasoning Purist Judge
+
+# ── Image I/O ─────────────────────────────────────────────────────────────────
+Pillow
+pillow-heif             # HEIC/HEIF support
+rawpy                   # RAW files: ARW, CR2, NEF, DNG, ORF, RAF
+PyTurboJPEG             # Fast JPEG decode via libjpeg-turbo
+
+# ── Metadata ──────────────────────────────────────────────────────────────────
+piexif                  # EXIF timestamp reading
 duckdb                  # Metadata analytics
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+numpy
+requests

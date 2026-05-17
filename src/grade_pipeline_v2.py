@@ -1,26 +1,27 @@
 """
-V2 grading pipeline — Frontier Edition.
+V2 grading pipeline — Frontier 2026 (Pure Vision Regression Stack).
 
 Step 1  Discover images in the folder.
-Step 2  SigLIP-2 ViT-g/14 NaFlex → 1536-d embeddings.
-Step 3  Detect duplicates via cosine similarity (0.92 threshold).
-Step 4  CLIP scoring + SpecVLM Draft-and-Verify reasoning.
-            4a  SpecVLMPipeline: calibrated CLIP scores + per-aspect breakdown.
-            4b  SpecVLM (DeepSeek-R1): structured metadata → chain-of-thought
-                reasoning_log + refined score (±0.12 from CLIP base).
-                Draft: 1.5B INT4. Verify: 7B INT4 (uncertain images only).
-                Fallback: Qwen2.5-VL-3B critique if DeepSeek unavailable.
+Step 2  SigLIP-2 ViT-g/14 NaFlex → 1536-d embeddings + brief prompt embedding.
+Step 3  Detect duplicates via cosine similarity (0.88 threshold).
+Step 4  Vision Regression Stack.
+            4a  SpecVLMPipeline: per-aspect breakdown (Composition, Lighting, Narrative…).
+            4b  UniQAHead: pyiqa 'uniqa' unified backbone with YOLO11s-seg routing.
+                           Route 1 (empty scene): sqrt(comp × light) from SpecVLM.
+                           Route 2 (layered frame): UniQA on subject crop.
+            4c  Semantic anchor: SigLIP-2 dot-product vs. user-brief embedding.
+            4d  Score fusion: q * 0.75 + fa * 0.25 (VLP) or q (standard).
 Step 5  PersonalHead adjusts scores by learned user preference (if weights present).
-Step 6  Grade buckets: ≥0.60 Strong ✅ / 0.41-0.59 Mid ⚠️ / ≤0.40 Weak ❌
+Step 6  Relative quantile buckets: top 25% → Strong / bottom 20% → Weak / rest → Mid.
 Step 7  Write to LanceDB (1536-d IVF-PQ schema).
-Step 8  Build gallery response (V1-compatible keys + reasoning_log).
-Step 9  NSGA-III multi-objective sequence: Reasoning_Accuracy × Semantic_Vibe
+Step 8  Build gallery response (V1-compatible keys).
+Step 9  NSGA-III multi-objective sequence: Score × Semantic_Vibe
             × Portfolio_Diversity × Aspect_Ratio_Balance.
 
 VRAM Protocol (4-6 GB cards):
-    SigLIP-2 (~1.8 GB) → purge_vram() → DeepSeek 1.5B (~1.0 GB) → purge_vram()
-    → DeepSeek 7B (~3.5 GB, uncertain only) → purge_vram()
-    Models never overlap.  Peak ≤ 5.5 GB on RTX 3060.
+    SigLIP-2 FP16 (~4.5 GB singleton) + IQA heads (~2 GB peak during scoring)
+    → release_iqa_models() after Step 4b → ~4.5 GB for LanceDB + NSGA-III.
+    IQA singletons released after each run; SigLIP-2 persists for fast repeat runs.
 """
 from __future__ import annotations
 
@@ -41,7 +42,84 @@ GRADE_STRONG = "Strong ✅"
 GRADE_MID    = "Mid ⚠️"
 GRADE_WEAK   = "Weak ❌"
 
+
+def _generate_brief_variants(brief: str) -> list[str]:
+    """
+    Generate 3–5 semantically equivalent phrasings of the CD brief.
+
+    Encoding all variants and averaging their embeddings produces a more robust
+    semantic anchor than a single-text encoding — reduces sensitivity to exact
+    wording and covers both noun-phrase and descriptive-sentence formulations.
+    """
+    t = brief.strip()
+    candidates = [
+        t,
+        f"street photography: {t}",
+        f"photographic mood and visual atmosphere: {t}",
+        f"a photograph that captures {t}",
+        f"visual style and aesthetic: {t}",
+    ]
+    seen: set[str] = set()
+    out:  list[str] = []
+    for v in candidates:
+        if v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out[:5]
+
+
+# ── Low-contrast genre reference prompts for TOPIQ bias correction ────────────
+# SigLIP-2 cosine similarity to these is computed per-photo; if max > 0.70,
+# TOPIQ NR's flat-texture penalty is partially reversed (up to ×1.20 correction).
+_GENRE_REF_PROMPTS: list[str] = [
+    "minimalist photography with clean empty surfaces and geometric simplicity",
+    "fine art architectural photography with stark geometric structure and symmetry",
+    "liminal space photograph — empty corridor, atmospheric, quietly unsettling",
+]
+
+# Fine-art pictorialism anchor — 3-prompt ensemble averaged and L2-normalised.
+# Used for Vintage Lens Protocol weight adjustment and Soft-Focus Protection Gate.
+_FINE_ART_PROMPTS: list[str] = [
+    "A fine-art street photograph with cinematic low-light chiaroscuro.",
+    "Intentional vintage lens softness, pictorialism aesthetic.",
+    "Atmospheric moody street scene, artistic analog film texture, deep shadows.",
+]
+
 _EXIF_LOCK = threading.Lock()
+
+# Module-level grader status — updated each run, read by /api/models/status.
+_grader_status: dict = {
+    "mode":        "idle",   # "idle" | "iqa_heads" | "clip_only"
+    "verify_used": False,
+    "photos_last": 0,
+    "error":       None,
+}
+
+# ── SigLIP-2 singleton ────────────────────────────────────────────────────────
+# Persists between grading runs — avoids 15-30 s weight-load overhead every run.
+# VRAM budget: SigLIP-2 INT8 (~1.8 GB) + TOPIQ (~0.5 GB) = ~2.3 GB peak (safe).
+# Released by release_grading_models() before Creative Mode loads LLMs.
+_enc_singleton = None       # SigLIP2Encoder instance, or None
+_text_emb_cache: dict = {}  # POS / NEG / ASPECT embeddings — static across runs
+
+
+def release_grading_models() -> None:
+    """Evict all grading singletons (SigLIP-2 + IQA heads) before Creative Mode loads LLMs."""
+    global _enc_singleton, _text_emb_cache
+    if _enc_singleton is not None:
+        try:
+            _enc_singleton.unload()
+        except Exception:
+            pass
+        _enc_singleton = None
+    _text_emb_cache.clear()
+    try:
+        from vision_grading_heads import release_iqa_models
+        release_iqa_models()
+    except Exception as _e_iqa:
+        print(f"[v2] IQA singleton release skipped: {_e_iqa}")
+    _vram_clear()
+    print("[v2] All grading singletons released — VRAM freed for Creative Mode")
 
 
 # ── EXIF timestamp ─────────────────────────────────────────────────────────────
@@ -94,7 +172,7 @@ def run_v2(
     scan_mode: bool = False,
 ) -> dict:
     """
-    Run the full V2 SpecVLM pipeline on `folder_path`.
+    Run the full V2 Vision Regression pipeline on `folder_path`.
 
     Returns:
         gallery         list[dict]   per-photo result (V1-compatible keys + reasoning_log)
@@ -116,6 +194,10 @@ def run_v2(
         return {"error": "No images found in folder.", "gallery": [], "total": 0}
 
     # ── Incremental: skip already-graded images when force_rescan=False ───────
+    import lance_store as _ls_diag
+    print(f"[v2] RUN START  folder={folder_path}  force_rescan={force_rescan}")
+    print(f"[v2] LanceDB    path={_ls_diag._DB_DIR}  table={_ls_diag._TBL_NAME}")
+
     cached_rows: dict[str, dict] = {}
     if not force_rescan:
         try:
@@ -126,13 +208,14 @@ def run_v2(
                 # Normalise separators so Windows backslash paths and frontend
                 # forward-slash paths both map to the same key.
                 rp_norm = str(Path(rp)) if rp else ""
-                if rp_norm.startswith(fp_str) and float(row.get("score", 0)) > 0:
+                if rp_norm.startswith(fp_str) and float(row.get("score", 0)) >= 0.10:
                     cached_rows[rp_norm] = row
         except Exception as _ce:
             print(f"[v2] LanceDB cache check failed: {_ce}")
 
     paths = [p for p in all_paths if p not in cached_rows]
     n     = len(paths)
+    print(f"[v2] Images     total={len(all_paths)}  cached(skipped)={len(cached_rows)}  to_grade={n}")
 
     def _cached_to_gallery(row: dict) -> dict:
         bd = row.get("breakdown", {})
@@ -148,8 +231,8 @@ def run_v2(
             "personal_score":   round(float(row.get("personal_score", 0.5)), 3),
             "embedding": row.get("embedding", []),
             "breakdown": bd,
-            "critique": row.get("reasoning_log", "")[:120],
-            "reasoning_log": row.get("reasoning_log", ""),
+            "critique": "",
+            "reasoning_log": "",
             "is_verified": False,
             "exif_ts": float(row.get("exif_ts", 0.0)),
             "stars": 0, "reject": False, "sim_flag": "", "cluster_id": -1,
@@ -175,8 +258,67 @@ def run_v2(
     else:
         _p(0.02, f"Found {n} images")
 
+    # ── Step 1b: Cascaded Early-Exit Gate ────────────────────────────────────
+    # Fastest checks first — CPU Laplacian blur, then brief-conditional YOLO gate.
+    # Disqualified images get score 0.00 written to LanceDB; all downstream GPU
+    # models see only the survivors, eliminating wasted compute.
+    _blur_disqualified:   set[str] = set()
+    _yolo_disqualified:   set[str] = set()
+    _yolo_soft_penalized: set[str] = set()
+    try:
+        from early_exit_gate import run_early_exit_gate
+        try:
+            from specvlm_pipeline import _cd_brief_implies_empty as _implies_empty
+            _run_yolo = _implies_empty()
+        except Exception:
+            _run_yolo = False
+
+        _p(0.015, "Early-exit gate: Laplacian blur check…")
+        _survivors, _blur_disqualified, _yolo_disqualified, _yolo_soft_penalized = (
+            run_early_exit_gate(paths, run_yolo=_run_yolo)
+        )
+
+        _n_early_fail = len(_blur_disqualified) + len(_yolo_disqualified)
+        if _n_early_fail:
+            _p(0.025, f"Early-exit: {_n_early_fail} images disqualified → score 0.00")
+            print(
+                f"[v2] Early-exit gate: {len(_blur_disqualified)} blur-failed, "
+                f"{len(_yolo_disqualified)} YOLO-failed → score 0.00, IQA skipped"
+            )
+    except Exception as _ee_err:
+        print(f"[v2] Early-exit gate skipped ({_ee_err})")
+
+    # ── Pre-flush: commit fail records before GPU stages begin ────────────────
+    # Persists disqualified images to LanceDB immediately so that if the GPU
+    # pipeline aborts mid-run, score=0.00 records are already in the store and
+    # won't re-enter the processing queue on the next run.
+    _prefail_paths = list(_blur_disqualified | _yolo_disqualified)
+    if _prefail_paths:
+        _p(0.027, f"Pre-flushing {len(_prefail_paths)} fail records to LanceDB…")
+        try:
+            import lance_store as _ls_pf
+            _ls_pf.upsert_batch([{
+                "path":           p,
+                "embedding":      [0.0] * 1536,
+                "score":          0.00,
+                "personal_score": 0.5,
+                "grade":          GRADE_WEAK,
+                "reasoning_log":  "",
+                "breakdown":      {
+                    "disqualified": True,
+                    "reason": "blur" if p in _blur_disqualified else "yolo",
+                },
+                "exif_ts":        0.0,
+            } for p in _prefail_paths])
+            print(f"[v2] Pre-flushed {len(_prefail_paths)} fail records to LanceDB")
+        except Exception as _e_pf:
+            print(f"[v2] Fail record pre-flush skipped: {_e_pf}")
+
     # ── Step 2: Bulk encoding ─────────────────────────────────────────────────
-    # Try SigLIP-2 ViT-g/14 NaFlex (FP8, 1536-d).  Falls back to So400M (1152-d).
+    # Singleton path (repeat runs): reuse encoder already in VRAM — no reload.
+    # Cold path (first run): load, encode, cache static text embeddings, keep
+    # encoder in VRAM as _enc_singleton for subsequent runs.
+    global _enc_singleton, _text_emb_cache
     embs            = None
     embed_dim       = 1152
     siglip_ok       = False
@@ -185,70 +327,156 @@ def run_v2(
     _aspect_pos     = None
     _aspect_neg     = None
     _aspect_names   = None
+    _prompt_emb      = None   # (1536,) L2-normalised brief ensemble embedding for SemanticHead
+    _genre_ref_embs  = None   # (3, 1536) low-contrast genre refs for TOPIQ bias correction
+    _fine_art_anchor = None   # (1536,) averaged fine-art pictorialism anchor
+    _enc_reused      = False
 
-    import traceback as _tb
-    for _attempt, _kwargs in enumerate([
-        {"device": "auto", "quantize": True},   # 1st: GPU INT8/FP16
-        {"device": "cpu",  "quantize": False},  # 2nd: CPU FP16 (slow but correct)
-    ]):
+    if _enc_singleton is not None:
+        _p(0.03, "SigLIP-2 cached — encoding images directly…")
         try:
-            from siglip2_encoder import SigLIP2Encoder
-            from specvlm_pipeline import _POS_PROMPTS, _NEG_PROMPTS, _ASPECT_PROMPTS
-            enc  = SigLIP2Encoder(**_kwargs, progress=_p)
-            embs = enc.encode_images(paths, progress=_p)   # (N, 1536)
-
-            # Encode aesthetic text references before unloading the encoder
-            _p(0.48, "Encoding aesthetic reference prompts…")
-            _pos_text_embs = enc.encode_text(_POS_PROMPTS)              # (P, 1536)
-            _neg_text_embs = enc.encode_text(_NEG_PROMPTS)              # (Q, 1536)
-            _aspect_names  = list(_ASPECT_PROMPTS.keys())
-            _aspect_pos    = enc.encode_text(
-                [v[0] for v in _ASPECT_PROMPTS.values()]                # (A, 1536)
-            )
-            _aspect_neg    = enc.encode_text(
-                [v[1] for v in _ASPECT_PROMPTS.values()]                # (A, 1536)
-            )
-
-            # Cache "people" concept embedding for empty-brief creative direction (Task 1)
-            _PEOPLE_PROMPTS = [
-                "people", "crowds", "pedestrians", "human figure", "faces",
-            ]
-            _ppl_raw = enc.encode_text(_PEOPLE_PROMPTS)   # (5, 1536)
-            _ppl_mean = _ppl_raw.mean(axis=0)
-            _ppl_mean /= (np.linalg.norm(_ppl_mean) + 1e-9)
+            embs = _enc_singleton.encode_images(paths, progress=_p)
+            if _text_emb_cache:
+                _pos_text_embs  = _text_emb_cache["pos"]
+                _neg_text_embs  = _text_emb_cache["neg"]
+                _aspect_names   = _text_emb_cache["aspect_names"]
+                _aspect_pos     = _text_emb_cache["aspect_pos"]
+                _aspect_neg     = _text_emb_cache["aspect_neg"]
+                _genre_ref_embs  = _text_emb_cache.get("genre_ref_embs")
+                _fine_art_anchor = _text_emb_cache.get("fine_art_anchor")
             try:
-                _cache_dir = Path("cache")
-                _cache_dir.mkdir(parents=True, exist_ok=True)
-                np.save(str(_cache_dir / "people_emb.npy"), _ppl_mean.astype(np.float32))
-                print("[v2] people_emb.npy saved for empty-brief CD gate")
-            except Exception as _e_ppl:
-                print(f"[v2] people_emb save skipped: {_e_ppl}")
+                from specvlm_pipeline import _CD_BRIEF as _brief_text
+                if _brief_text and _brief_text.strip():
+                    _p(0.49, "Encoding brief ensemble for semantic alignment…")
+                    _brief_variants = _generate_brief_variants(_brief_text)
+                    _brief_raw  = _enc_singleton.encode_text(_brief_variants)  # (V, 1536)
+                    _prompt_emb = _brief_raw.mean(axis=0).astype(np.float64)
+                    _prompt_emb /= (np.linalg.norm(_prompt_emb) + 1e-9)
+                    _prompt_emb  = _prompt_emb.astype(np.float32)
+                    print(f"[v2] Brief ensemble ({len(_brief_variants)} variants): '{_brief_text[:60]}'")
+            except Exception as _e_brief:
+                print(f"[v2] Brief embedding skipped: {_e_brief}")
+            embed_dim   = 1536
+            siglip_ok   = True
+            _enc_reused = True
+            print("[v2] Encoder: SigLIP-2 singleton reused — no VRAM reload")
+        except Exception as _e_reuse:
+            print(f"[v2] Singleton reuse failed ({_e_reuse}) — reloading encoder")
+            try:
+                _enc_singleton.unload()
+            except Exception:
+                pass
+            _enc_singleton = None
+            _text_emb_cache.clear()
 
-            enc.unload()
-            del enc
-            embed_dim = 1536
-            siglip_ok = True
-            _tag = "GPU" if _kwargs["device"] == "auto" else "CPU fallback"
-            _p(0.50, "SigLIP-2 done — clearing VRAM…")
-            print(f"[v2] Encoder: SigLIP-2 NaFlex ({_tag})  dim={embed_dim}")
-            break
-        except Exception as e_siglip2:
-            print(f"[v2] SigLIP-2 attempt {_attempt+1} failed: {e_siglip2}")
-            if _attempt == 0:
-                print("[v2] Retrying SigLIP-2 on CPU…")
-            else:
-                print("[v2] SigLIP-2 unavailable after all attempts.")
-                print(_tb.format_exc())
+    if not _enc_reused:
+        import traceback as _tb
+        _siglip_last_err: str = ""
+        for _attempt, _kwargs in enumerate([
+            {"device": "auto", "quantize": True},   # 1st: GPU INT8/FP16
+            {"device": "cpu",  "quantize": False},  # 2nd: CPU FP16 (slow but correct)
+        ]):
+            try:
+                from siglip2_encoder import SigLIP2Encoder
+                from specvlm_pipeline import _POS_PROMPTS, _NEG_PROMPTS, _ASPECT_PROMPTS
+                enc  = SigLIP2Encoder(**_kwargs, progress=_p)
+                embs = enc.encode_images(paths, progress=_p)   # (N, 1536)
 
-    # SigLIP-2 (1536-d) is required — all legacy encoders removed in Frontier 2026.
-    if embed_dim != 1536:
-        raise RuntimeError(
-            f"Frontier 2026 requires SigLIP-2 NaFlex (1536-d). "
-            f"Got {embed_dim}-d — SigLIP-2 failed to load on both GPU and CPU.\n"
-            "Check backend.log for the full error traceback."
-        )
+                # Encode aesthetic text references and cache for subsequent runs
+                _p(0.48, "Encoding aesthetic reference prompts…")
+                _pos_text_embs = enc.encode_text(_POS_PROMPTS)              # (P, 1536)
+                _neg_text_embs = enc.encode_text(_NEG_PROMPTS)              # (Q, 1536)
+                _aspect_names  = list(_ASPECT_PROMPTS.keys())
+                _aspect_pos    = enc.encode_text(
+                    [v[0] for v in _ASPECT_PROMPTS.values()]                # (A, 1536)
+                )
+                _aspect_neg    = enc.encode_text(
+                    [v[1] for v in _ASPECT_PROMPTS.values()]                # (A, 1536)
+                )
 
-    # VRAM guard — free encoder memory before loading reasoning models
+                _text_emb_cache.update({
+                    "pos":          _pos_text_embs,
+                    "neg":          _neg_text_embs,
+                    "aspect_names": _aspect_names,
+                    "aspect_pos":   _aspect_pos,
+                    "aspect_neg":   _aspect_neg,
+                })
+
+                # Cache "people" concept embedding for empty-brief creative direction
+                _PEOPLE_PROMPTS = [
+                    "people", "crowds", "pedestrians", "human figure", "faces",
+                ]
+                _ppl_raw  = enc.encode_text(_PEOPLE_PROMPTS)   # (5, 1536)
+                _ppl_mean = _ppl_raw.mean(axis=0)
+                _ppl_mean /= (np.linalg.norm(_ppl_mean) + 1e-9)
+                try:
+                    _cache_dir = Path("cache")
+                    _cache_dir.mkdir(parents=True, exist_ok=True)
+                    np.save(str(_cache_dir / "people_emb.npy"), _ppl_mean.astype(np.float32))
+                    print("[v2] people_emb.npy saved for empty-brief CD gate")
+                except Exception as _e_ppl:
+                    print(f"[v2] people_emb save skipped: {_e_ppl}")
+
+                # Encode low-contrast genre references for TOPIQ bias correction
+                try:
+                    _genre_raw   = enc.encode_text(_GENRE_REF_PROMPTS)          # (3, 1536)
+                    _gnorms      = np.linalg.norm(_genre_raw, axis=1, keepdims=True)
+                    _genre_ref_embs = (_genre_raw / (_gnorms + 1e-9)).astype(np.float32)
+                    _text_emb_cache["genre_ref_embs"] = _genre_ref_embs
+                    print("[v2] Genre reference embeddings cached for TOPIQ bias correction")
+                except Exception as _e_genre_enc:
+                    print(f"[v2] Genre ref encoding skipped: {_e_genre_enc}")
+
+                # Encode fine-art pictorialism anchor (3-prompt ensemble, averaged + L2-norm)
+                # Used for Vintage Lens Protocol and Soft-Focus Protection Gate.
+                try:
+                    _fa_raw   = enc.encode_text(_FINE_ART_PROMPTS)              # (3, 1536)
+                    _fa_mean  = _fa_raw.mean(axis=0).astype(np.float64)
+                    _fa_mean /= (np.linalg.norm(_fa_mean) + 1e-9)
+                    _fine_art_anchor = _fa_mean.astype(np.float32)              # (1536,)
+                    _text_emb_cache["fine_art_anchor"] = _fine_art_anchor
+                    print("[v2] Fine-art anchor encoded and cached (3-prompt pictorialism ensemble)")
+                except Exception as _e_fa:
+                    print(f"[v2] Fine-art anchor encoding skipped: {_e_fa}")
+
+                # Encode CD brief with prompt ensembling
+                try:
+                    from specvlm_pipeline import _CD_BRIEF as _brief_text
+                    if _brief_text and _brief_text.strip():
+                        _p(0.49, "Encoding brief ensemble for semantic alignment…")
+                        _brief_variants = _generate_brief_variants(_brief_text)
+                        _brief_raw  = enc.encode_text(_brief_variants)           # (V, 1536)
+                        _prompt_emb = _brief_raw.mean(axis=0).astype(np.float64)
+                        _prompt_emb /= (np.linalg.norm(_prompt_emb) + 1e-9)
+                        _prompt_emb  = _prompt_emb.astype(np.float32)
+                        print(f"[v2] Brief ensemble ({len(_brief_variants)} variants): '{_brief_text[:60]}'")
+                except Exception as _e_brief:
+                    print(f"[v2] Brief embedding skipped: {_e_brief}")
+
+                _enc_singleton = enc   # keep in VRAM — evicted by release_grading_models()
+                embed_dim = 1536
+                siglip_ok = True
+                _tag = "GPU" if _kwargs["device"] == "auto" else "CPU fallback"
+                _p(0.50, "SigLIP-2 done — cached as singleton…")
+                print(f"[v2] Encoder: SigLIP-2 NaFlex ({_tag})  dim={embed_dim}")
+                break
+            except Exception as e_siglip2:
+                _siglip_last_err = str(e_siglip2)
+                print(f"[v2] SigLIP-2 attempt {_attempt+1} failed: {e_siglip2}")
+                if _attempt == 0:
+                    print("[v2] Retrying SigLIP-2 on CPU…")
+                else:
+                    print("[v2] SigLIP-2 unavailable after all attempts.")
+                    print(_tb.format_exc())
+
+        # SigLIP-2 (1536-d) is required — all legacy encoders removed in Frontier 2026.
+        if embed_dim != 1536:
+            raise RuntimeError(
+                f"SigLIP-2 failed to load on both GPU and CPU.\n"
+                f"Reason: {_siglip_last_err}"
+            )
+
+    # Flush caching allocator — singleton weights remain resident in VRAM
     _vram_clear()
 
     # ── Step 3: Duplicate detection ───────────────────────────────────────────
@@ -256,6 +484,7 @@ def run_v2(
     cluster_ids:     list[int] = [-1] * n
     sim_flags:       list[str] = [""] * n
     to_rate_indices: list[int] = list(range(n))
+    _comp_eligible:  set[str]  = set(paths)   # default: all paths eligible for composition
 
     if siglip_ok and n >= 2:
         try:
@@ -264,8 +493,7 @@ def run_v2(
             normed = embs / (norms + 1e-9)
             sims   = normed @ normed.T
 
-            # SigLIP-2 spaces are tighter — 0.92 still works for both dims
-            SIM_THRESH = 0.92
+            SIM_THRESH = 0.96   # true burst duplicates only (same frame ±ms)
 
             parent = list(range(n))
             def _find(x):
@@ -274,40 +502,53 @@ def run_v2(
                     x = parent[x]
                 return x
 
-            for i in range(n):
-                for j in range(i + 1, n):
-                    if sims[i, j] > SIM_THRESH:
-                        ri, rj = _find(i), _find(j)
-                        if ri != rj:
-                            parent[ri] = rj
+            # Vectorized: find all above-threshold pairs in one numpy call
+            dup_i, dup_j = np.where(np.triu(sims > SIM_THRESH, k=1))
+            for i, j in zip(dup_i.tolist(), dup_j.tolist()):
+                ri, rj = _find(i), _find(j)
+                if ri != rj:
+                    parent[ri] = rj
 
             groups_d: dict = _dd(list)
             for i in range(n):
                 groups_d[_find(i)].append(i)
 
             # Populate cluster_ids for all photos in duplicate groups (size >= 2)
+            _comp_eligible: set[str] = set()
             for root, members in groups_d.items():
                 if len(members) >= 2:
                     for i in members:
                         cluster_ids[i] = root
+                    _comp_eligible.add(paths[root])   # only representative gets composition
+                else:
+                    _comp_eligible.add(paths[members[0]])   # singleton: always eligible
 
-            to_rate_indices = []
-            for members in groups_d.values():
-                to_rate_indices.extend(members)
+            n_clustered = sum(1 for c in cluster_ids if c >= 0)
+            n_reps      = sum(1 for root, members in groups_d.items() if len(members) >= 2)
+            if n_clustered:
+                print(f"[v2] Duplicate detection: {n_clustered} images in clusters"
+                      f" ({n_reps} representatives) — burst dedup saves depth/seg/chiaroscuro"
+                      f" for {n_clustered - n_reps} cluster members")
 
         except Exception as e:
             print(f"[v2] Duplicate detection failed: {e}")
             to_rate_indices = list(range(n))
 
-    # ── Step 4: Qwen2.5-VL-3B-Instruct per-photo grading ─────────────────────
-    _p(0.51, "Loading Qwen2.5-VL-3B-Instruct…")
-    scores                = np.full(n, 0.5, dtype=np.float32)
-    draft_scores:         list[float] = [0.5] * n
-    reasoning_logs:       list[str]  = [""] * n
-    is_verified:          list[bool] = [False] * n
-    per_photo_breakdowns: list[dict] = [{}] * n
-    per_photo_critiques:  list[str]  = [""] * n
+    # Step 3b: YOLO gate handled by early-exit gate (Step 1b) before SigLIP-2.
+    # _yolo_disqualified and _yolo_soft_penalized are already populated above.
 
+    # ── Step 4: Vision Regression Stack ──────────────────────────────────────
+    scores                = np.full(n, 0.5, dtype=np.float32)
+    per_photo_breakdowns: list[dict] = [{} for _ in range(n)]
+
+    # Stamp all early-exit disqualified photos (score 0.00, skip IQA)
+    _all_disqualified = _blur_disqualified | _yolo_disqualified
+    for i, p in enumerate(paths):
+        if p in _all_disqualified:
+            scores[i] = 0.00
+
+    # Exclude disqualified images from IQA scoring
+    to_rate_indices = [i for i in to_rate_indices if paths[i] not in _all_disqualified]
     paths_to_rate = [paths[i] for i in to_rate_indices]
 
     try:
@@ -315,16 +556,19 @@ def run_v2(
         if _torch.cuda.is_available():
             _props = _torch.cuda.get_device_properties(0)
             _free  = (_props.total_memory - _torch.cuda.memory_reserved(0)) / 1e9
-            print(f"[v2] VRAM before VLM load: {_free:.2f} GB free / {_props.total_memory/1e9:.2f} GB total")
+            print(f"[v2] VRAM before IQA heads: {_free:.2f} GB free / {_props.total_memory/1e9:.2f} GB total")
         del _torch
     except Exception:
         pass
 
-    # ── Step 4a: CLIP scoring (instant — reuses SigLIP-2 embeddings) ─────────
-    # Always runs.  Gives calibrated 0-1 scores + per-aspect breakdown.
-    _p(0.51, "CLIP scoring…")
-    clip_scores_rated  = np.full(len(paths_to_rate), 0.5, dtype=np.float32)
-    clip_aspects_rated: list[dict] = [{}] * len(paths_to_rate)
+    # ── Step 4a: SpecVLM scoring (instant — reuses SigLIP-2 embeddings) ─────────
+    # r.score = weighted CLIP score across ALL aspects (Composition, Lighting,
+    # Narrative, Human/Culture).  This is the primary semantic signal.
+    # comp_scores_rated keeps the Composition sub-dimension for Step 4d formula display.
+    _p(0.51, "SpecVLM scoring…")
+    vlm_scores_rated  = np.full(len(paths_to_rate), 0.5, dtype=np.float32)
+    comp_scores_rated = np.full(len(paths_to_rate), 0.5, dtype=np.float32)
+    _raw_comp_by_path: dict[str, float] = {}  # SpecVLM Composition before any override
 
     try:
         from specvlm_pipeline import SpecVLMPipeline
@@ -347,107 +591,267 @@ def run_v2(
         for local_i, idx in enumerate(to_rate_indices):
             r = clip_map.get(paths[idx])
             if r:
-                clip_scores_rated[local_i]  = float(r.score)
-                clip_aspects_rated[local_i] = r.breakdown or {}
-                # Populate arrays now so CLIP results survive if VLM fails
-                scores[idx]               = float(r.score)
-                draft_scores[idx]         = float(r.draft_score or r.score)
-                reasoning_logs[idx]       = r.reasoning_log or ""
-                is_verified[idx]          = bool(r.is_verified)
-                per_photo_breakdowns[idx] = r.breakdown or {}
+                _raw_comp = float(r.breakdown.get("Composition", r.score))
+                vlm_scores_rated[local_i]    = float(r.score)
+                comp_scores_rated[local_i]   = _raw_comp
+                _raw_comp_by_path[paths[idx]] = _raw_comp   # track before any override
+                per_photo_breakdowns[idx]     = r.breakdown or {}
+                scores[idx]                   = float(r.score)   # survive IQA failure
 
-        _p(0.55, "CLIP scoring done — loading VLM for reasoning…")
-        print(f"[v2] CLIP scores: min={clip_scores_rated.min():.3f}  max={clip_scores_rated.max():.3f}")
+        _p(0.55, "SpecVLM done — running IQA heads…")
+        print(
+            f"[v2] SpecVLM scores: min={vlm_scores_rated.min():.3f}  "
+            f"max={vlm_scores_rated.max():.3f}  mean={vlm_scores_rated.mean():.3f}"
+        )
 
     except Exception as e_clip:
-        print(f"[v2] CLIP scoring failed: {e_clip}")
+        print(f"[v2] Composition scoring failed: {e_clip}")
 
-    # ── Step 4b: SpecVLM Draft+Verify reasoning ──────────────────────────────
-    # DeepSeek-R1 1.5B draft → 7B verify for uncertain images.
-    # Scores come from CLIP (Step 4a); DeepSeek refines ±0.12 and writes
-    # the full chain-of-thought reasoning_log.
-    # Qwen2.5-VL-3B is used as a fallback if DeepSeek fails to load.
-    _p(0.56, "Building visual metadata…")
-    try:
-        from specvlm_pipeline import SpecVLM, build_visual_metadata
+    _vram_clear()  # Free SpecVLM VRAM before IQA heads load
 
-        # Build VisualMetadata for every photo being rated
-        metadatas = []
-        for local_i, idx in enumerate(to_rate_indices):
-            metadatas.append(build_visual_metadata(
-                path         = paths[idx],
-                clip_score   = float(clip_scores_rated[local_i]),
-                aspect_scores= clip_aspects_rated[local_i],
-            ))
+    # Pre-compute luminance stats — shared by composition analysis, ChiaroscuroHead,
+    # and Vintage Lens Protocol in Step 4d.
+    _p(0.555, "Computing luminance stats…")
 
-        specvlm = SpecVLM()
-        specvlm_results = specvlm.process_metadata_batch(metadatas, progress=_p)
-        specvlm.unload()
-        del specvlm
-
-        result_map = {r.path: r for r in specvlm_results}
-        for local_i, idx in enumerate(to_rate_indices):
-            r = result_map.get(paths[idx])
-            if r:
-                # Refined score replaces CLIP score
-                scores[idx]             = float(r.score)
-                draft_scores[idx]       = float(r.draft_score or r.score)
-                reasoning_logs[idx]     = r.reasoning_log or reasoning_logs[idx]
-                is_verified[idx]        = bool(r.is_verified)
-                per_photo_critiques[idx]= r.reasoning_log or ""
-
-        _p(0.86, "SpecVLM reasoning done — clearing VRAM…")
-        _vram_clear()
-        print(f"[v2] SpecVLM Draft+Verify: {len(metadatas)} photos  "
-              f"verified={sum(1 for r in specvlm_results if r.is_verified)}")
-
-    except Exception as e_specvlm:
-        _p(0.72, f"SpecVLM unavailable ({type(e_specvlm).__name__}) — falling back to Qwen…")
-        print(f"[v2] SpecVLM failed ({e_specvlm}) — trying Qwen2.5-VL-3B fallback")
+    def _lum_stats(path: str):
         try:
-            from qwen_vlm_grader import QwenVLMGrader
-            grader      = QwenVLMGrader(progress=_p)
-            vlm_results = grader.grade_images(
-                paths_to_rate,
-                clip_scores  = clip_scores_rated,
-                clip_aspects = clip_aspects_rated,
-                progress     = _p,
-            )
-            grader.unload()
-            del grader
-            result_map = {r.path: r for r in vlm_results}
-            for idx in to_rate_indices:
-                r = result_map.get(paths[idx])
-                if r:
-                    reasoning_logs[idx]      = r.reasoning or reasoning_logs[idx]
-                    is_verified[idx]         = True
-                    per_photo_critiques[idx] = r.critique or ""
-            _p(0.86, "Qwen fallback done — clearing VRAM…")
-        except Exception as e_qwen:
-            _p(0.86, "VLM unavailable — using CLIP reasoning…")
-            print(f"[v2] Qwen fallback also failed ({e_qwen}) — CLIP-only mode")
-        _vram_clear()
+            from PIL import Image as _PILI
+            with _PILI.open(path) as _raw:
+                img = _raw.convert("RGB")
+            img.thumbnail((128, 128), _PILI.LANCZOS)   # 10-100× faster; lum stats are invariant to scale
+            _arr = np.array(img, dtype=np.float32)
+            _Y   = 0.299 * _arr[:, :, 0] + 0.587 * _arr[:, :, 1] + 0.114 * _arr[:, :, 2]
+            return float(_Y.mean()), float(_Y.std())
+        except Exception:
+            return 128.0, 60.0   # neutral defaults — no VLP trigger
 
-    # ── Step 4c: Weighted aspect blend ───────────────────────────────────────
-    # Regardless of which path (CLIP-only, DeepSeek draft, DeepSeek+verify) set
-    # scores[idx], fold in the 5 CLIP aspect dimensions here so the final score
-    # is always: 0.60 × current_score + 0.40 × weighted_aspect_avg.
-    # This is the single authoritative blend point — grade_images() also does
-    # this blend but Step 4b overwrites it; we redo it here so no path can skip it.
-    _W_DEFAULT  = {"Technical":1.0, "Composition":1.2, "Lighting":1.0, "Narrative":1.0, "Human/Culture":1.0}
-    _W_ARCH     = {"Technical":1.0, "Composition":1.2, "Lighting":1.0, "Narrative":0.6, "Human/Culture":0.15}
-    for idx in range(n):
-        aspects = per_photo_breakdowns[idx]
-        if not aspects:
+    from concurrent.futures import ThreadPoolExecutor as _TPELUM
+    with _TPELUM(max_workers=min(8, len(paths_to_rate) or 1)) as _lpool:
+        lum_stats_rated = list(_lpool.map(_lum_stats, paths_to_rate))
+
+    # ── Step 4b: Vision IQA Head (UniQA unified backbone) ───────────────────────
+    # scan_mode bypasses IQA — Scan uses composition scores (already set in Step 4a).
+    # Full grading runs:
+    #   1. run_composition_analysis (Depth → Seg → Chiaroscuro) — within run_vision_heads
+    #   2. UniQAHead with YOLO11s-seg routing (empty-scene / layered-frame / standard)
+    composition_overrides: dict[str, float] = {}
+    chiaroscuro_flags:     dict[str, bool]  = {}
+    person_detected_dict:  dict[str, bool]  = {}
+
+    if scan_mode:
+        _p(0.84, "Scan mode — IQA heads skipped, using SpecVLM scores…")
+        print(f"[v2] Scan mode: IQA skipped, {len(paths_to_rate)} photos at CLIP speed")
+        tech_scores_rated      = vlm_scores_rated.copy()
+        aesthetic_scores_rated = vlm_scores_rated.copy()
+    else:
+        _p(0.56, f"IQA heads — scoring {len(paths_to_rate)} images…")
+        try:
+            from vision_grading_heads import run_vision_heads
+
+            iqa_embs  = embs[np.array(to_rate_indices)]   # (M, 1536)
+            _vlm_bds  = [per_photo_breakdowns[idx] for idx in to_rate_indices]
+
+            iqa_out = run_vision_heads(
+                image_paths         = paths_to_rate,
+                image_embeddings    = iqa_embs,
+                prompt_embedding    = _prompt_emb,
+                clip_scores         = vlm_scores_rated,
+                genre_ref_embs      = _genre_ref_embs,
+                lum_stats           = lum_stats_rated,
+                progress            = _p,
+                comp_eligible_paths = _comp_eligible,
+                vlm_breakdowns      = _vlm_bds,
+            )
+
+            tech_scores_rated      = iqa_out["quality"]                    # (M,) UniQA
+            aesthetic_scores_rated = iqa_out["quality"]                    # (M,) UniQA
+            iqa_breakdowns         = iqa_out["breakdowns"]                 # list[dict]
+            composition_overrides  = iqa_out.get("composition_overrides", {})
+            chiaroscuro_flags      = iqa_out.get("chiaroscuro_flags",     {})
+            person_detected_dict   = iqa_out.get("person_detected",       {})
+
+            for local_i, idx in enumerate(to_rate_indices):
+                per_photo_breakdowns[idx].update(iqa_breakdowns[local_i])
+                # Apply over-the-shoulder portrait composition override
+                _opath = paths[idx]
+                if _opath in composition_overrides:
+                    per_photo_breakdowns[idx]["Composition"] = composition_overrides[_opath]
+
+            _p(0.84, "IQA heads done — releasing singletons…")
+            try:
+                from vision_grading_heads import release_iqa_models as _rel_iqa
+                _rel_iqa()
+            except Exception as _e_rel:
+                print(f"[v2] IQA singleton release skipped: {_e_rel}")
+            _vram_clear()
+            print(f"[v2] IQA heads: {len(paths_to_rate)} photos scored")
+            if composition_overrides:
+                print(f"[v2] Composition overrides: {len(composition_overrides)} images "
+                      f"(over-the-shoulder portrait → 0.85)")
+            _n_ch = sum(1 for v in chiaroscuro_flags.values() if v)
+            if _n_ch:
+                print(f"[v2] Chiaroscuro: {_n_ch}/{len(chiaroscuro_flags)} images flagged "
+                      f"(VLP forced, YOLO soft penalty waived)")
+
+        except Exception as e_iqa:
+            _p(0.84, f"IQA heads failed ({type(e_iqa).__name__}) — using SpecVLM scores…")
+            print(f"[v2] IQA heads failed ({e_iqa}) — SpecVLM-only mode")
+            tech_scores_rated      = vlm_scores_rated.copy()
+            aesthetic_scores_rated = vlm_scores_rated.copy()
+            _vram_clear()
+
+    _grader_status.update({"mode": "iqa_heads" if not scan_mode else "clip_only",
+                           "verify_used": False, "photos_last": len(paths_to_rate), "error": None})
+
+    # ── Step 4c: Fine-art anchor similarity + Min-Max stretch ────────────────
+    # Raw cosine sims cluster in a narrow band (e.g., 0.28–0.42) because all street
+    # photos share some similarity to the anchor. A naive (sim+1)/2 map compresses
+    # everything into 0.64–0.71 — useless for differentiation.
+    # Min-Max normalization stretches the batch distribution to full [0,1] range,
+    # giving fine-art semantic alignment equal mathematical weight to technical metrics.
+    _fine_art_sims_all = np.zeros(n, dtype=np.float32)
+    if _fine_art_anchor is not None:
+        _fine_art_sims_all = (embs @ _fine_art_anchor).astype(np.float32)  # (n,) raw cosine
+
+    fine_art_scores_rated = np.full(len(paths_to_rate), 0.5, dtype=np.float32)
+    if _fine_art_anchor is not None and len(to_rate_indices) > 0:
+        _fa_sims_rated = _fine_art_sims_all[np.array(to_rate_indices)]
+        _fa_lo   = float(_fa_sims_rated.min())
+        _fa_hi   = float(_fa_sims_rated.max())
+        _fa_span = max(_fa_hi - _fa_lo, 1e-4)
+        # Stretch rated-batch sims to [0,1]
+        fine_art_scores_rated = np.clip(
+            (_fa_sims_rated - _fa_lo) / _fa_span, 0.0, 1.0
+        ).astype(np.float32)
+        # Normalise all-image sims using same batch statistics so the Soft-Focus Gate
+        # threshold is consistent with the per-image fine-art scores used in Step 4d.
+        _fine_art_sims_all = np.clip(
+            (_fine_art_sims_all - _fa_lo) / _fa_span, 0.0, 1.0
+        ).astype(np.float32)
+        print(
+            f"[v2] Fine-art sims (raw): min={_fa_lo:.3f}  max={_fa_hi:.3f}  "
+            f"→ stretched to [0,1]  rated mean={fine_art_scores_rated.mean():.3f}"
+        )
+
+    # ── Step 4d: Score fusion with Vintage Lens Protocol + Anchor Floor ────────
+    # Base formula: q * 0.35 + q * 0.65 = q  (t == a == UniQA quality score)
+    #
+    # Vintage Lens Protocol fires when BOTH conditions hold:
+    #   (a) Image is low-light or low-contrast: mean_lum < 40 (0-255) OR std < 30
+    #   (b) UniQA quality ≥ 0.556 — confirms intentional quality above neutral.
+    # On trigger: quality weight drops to 0.75; freed 0.25 reallocates to fine-art sem.
+    #   Triggered formula: q * 0.10 + q * 0.65 + fine_art_sem * 0.25 = q * 0.75 + fa * 0.25
+    #
+    # YOLO Soft Penalty: silhouette-in-dark-scene photos stay in IQA but receive
+    # -0.15 to their fused score before Anchor Floor evaluation.
+    #
+    # Creative Director Anchor Floor: if UniQA quality ≥ 0.611 OR fine-art normalised
+    # similarity ≥ 0.75 → enforce overall_score = max(score, 0.65).
+    # This guarantees compositionally elite or fine-art-aligned photos can never drop
+    # below the Strong bucket threshold due to IQA penalties.
+    _AES_VLP_THRESHOLD    = 0.556   # UniQA quality threshold for VLP trigger
+    _AES_ANCHOR_THRESHOLD = 0.611   # UniQA quality threshold for Anchor Floor
+    _ANCHOR_FLOOR         = 0.65
+    _FA_ANCHOR_THRESHOLD  = 0.75                 # normalised fine-art sim threshold
+
+    _p(0.86, "Fusing scores (Dynamic Routing + VLP + Anchor Floor)…")
+    _vlp_count       = 0
+    _chiaroscuro_vlp = 0
+    _anchor_count    = 0
+    _penalty_count   = 0
+    _route1_count    = 0
+    _route2_count    = 0
+
+    for local_i, idx in enumerate(to_rate_indices):
+        t  = float(tech_scores_rated[local_i])
+        a  = float(aesthetic_scores_rated[local_i])
+        fa = float(fine_art_scores_rated[local_i])
+        mean_lum, std_lum = lum_stats_rated[local_i]
+        _path = paths[idx]
+
+        _comp_score  = float(per_photo_breakdowns[idx].get("Composition",   0.5))
+        _light_score = float(per_photo_breakdowns[idx].get("Lighting",      0.5))
+        _hc_score    = float(per_photo_breakdowns[idx].get("Human/Culture", 0.5))
+        _raw_comp    = _raw_comp_by_path.get(_path, _comp_score)
+        _has_person  = person_detected_dict.get(_path, True)   # default True = safe
+        _is_ots      = _path in composition_overrides
+
+        _is_chiaroscuro = bool(chiaroscuro_flags.get(_path, False))
+
+        # ── Route 2: Intentional Layered Frame Portrait ───────────────────────
+        # Fires when: strong human presence (HC ≥ 0.65) + SpecVLM raw composition
+        # was penalized below 0.35 by a foreground obstruction + OTS portrait
+        # detected (foreground OOF person + sharp midground subject).
+        # Action: protect Composition at 0.82, apply standard fusion.
+        if _hc_score >= 0.65 and _raw_comp < 0.35 and _is_ots:
+            per_photo_breakdowns[idx]["Composition"] = 0.82
+            fused = t * 0.35 + a * 0.65
+            scores[idx] = float(np.clip(fused, 0.0, 1.0))
+            _route2_count += 1
+            print(
+                f"[v2] Route 2 Layered Frame: {Path(_path).name}  "
+                f"HC={_hc_score:.2f} rawComp={_raw_comp:.2f} → Comp=0.82 fused={fused:.3f}"
+            )
             continue
-        is_arch = (aspects.get("Human/Culture", 0.5) < 0.38
-                   and aspects.get("Composition", 0.5) > 0.52)
-        _W = _W_ARCH if is_arch else _W_DEFAULT
-        total_w = sum(_W.get(k, 1.0) for k in aspects)
-        if total_w <= 0:
+
+        # ── Route 1: Empty Scene ──────────────────────────────────────────────
+        # Fires when YOLO detects zero human presence AND both geometric metrics
+        # are strong (Composition > 0.55 AND Lighting > 0.55).
+        # Action: use geometric-only formula — removes Human/Culture drag.
+        if not _has_person and _comp_score > 0.55 and _light_score > 0.55:
+            fused = _comp_score * 0.40 + _light_score * 0.30 + a * 0.30
+            scores[idx] = float(np.clip(fused, 0.0, 1.0))
+            _route1_count += 1
+            print(
+                f"[v2] Route 1 Empty Scene: {Path(_path).name}  "
+                f"Comp={_comp_score:.2f} Light={_light_score:.2f} Aes={a:.2f} → fused={fused:.3f}"
+            )
             continue
-        aspect_avg   = sum(v * _W.get(k, 1.0) for k, v in aspects.items()) / total_w
-        scores[idx]  = float(np.clip(0.60 * scores[idx] + 0.40 * aspect_avg, 0.0, 1.0))
+
+        # ── Standard routing: VLP + Anchor Floor ─────────────────────────────
+        # Chiaroscuro flag forces VLP — intentional dramatic contrast is fine art.
+        _vlp = _is_chiaroscuro or (
+            (mean_lum < 40.0 or std_lum < 30.0) and (a >= _AES_VLP_THRESHOLD)
+        )
+        if _vlp:
+            fused = t * 0.10 + a * 0.65 + fa * 0.25
+            _vlp_count += 1
+            if _is_chiaroscuro:
+                _chiaroscuro_vlp += 1
+        else:
+            fused = t * 0.35 + a * 0.65
+
+        # YOLO soft penalty for dark-scene silhouettes (waived for chiaroscuro).
+        if _path in _yolo_soft_penalized and not _is_chiaroscuro:
+            fused = max(0.0, fused - 0.15)
+            _penalty_count += 1
+
+        # Anchor Floor — fired AFTER soft penalty so elite photos can override it.
+        if a >= _AES_ANCHOR_THRESHOLD or fa >= _FA_ANCHOR_THRESHOLD:
+            if fused < _ANCHOR_FLOOR:
+                fused = _ANCHOR_FLOOR
+                _anchor_count += 1
+
+        scores[idx] = float(np.clip(fused, 0.0, 1.0))
+
+    if _route1_count:
+        print(f"[v2] Route 1 (Empty Scene): {_route1_count} images — geometric formula (no HC drag)")
+    if _route2_count:
+        print(f"[v2] Route 2 (Layered Frame): {_route2_count} images — Composition protected @ 0.82")
+    if _vlp_count:
+        print(
+            f"[v2] Vintage Lens Protocol: {_vlp_count}/{len(to_rate_indices)} triggered "
+            f"(low-light/low-contrast + UniQA ≥ {_AES_VLP_THRESHOLD:.3f}"
+            + (f"; {_chiaroscuro_vlp} via chiaroscuro flag" if _chiaroscuro_vlp else "")
+            + ")"
+        )
+    if _penalty_count:
+        print(f"[v2] YOLO soft penalty: {_penalty_count} images penalised -0.15 (dark silhouette)")
+    if _anchor_count:
+        print(
+            f"[v2] Anchor Floor: {_anchor_count} images floored to {_ANCHOR_FLOOR} "
+            f"(UniQA ≥ {_AES_ANCHOR_THRESHOLD:.3f} OR fine-art sim ≥ 0.75)"
+        )
 
     scores_arr = np.array(scores, dtype=np.float32)
     print(
@@ -471,6 +875,25 @@ def run_v2(
             print(f"[v2] PersonalHead blend failed: {_e}")
     else:
         print("[v2] PersonalHead weights absent — using raw grader scores")
+
+    # ── Step 5c: Soft-Focus Protection Gate ──────────────────────────────────
+    # Images with high cosine similarity to the fine-art anchor (> 0.68) receive
+    # a flat +0.15 score boost applied before quantile bucketing. This prevents
+    # atmospheric, low-contrast, or soft-focus fine-art frames from being dropped
+    # to Weak purely because pixel-sharpness metrics ranked them lower.
+    # The gate is additive, not multiplicative — it shifts the score up the
+    # distribution without changing relative ordering within the fine-art cohort.
+    _sfpg_count = 0
+    if _fine_art_anchor is not None:
+        for i in range(n):
+            if float(_fine_art_sims_all[i]) > 0.68:
+                final_scores[i] = float(np.clip(float(final_scores[i]) + 0.15, 0.0, 1.0))
+                _sfpg_count += 1
+        if _sfpg_count:
+            print(
+                f"[v2] Soft-Focus Gate: {_sfpg_count} images boosted +0.15 "
+                f"(fine_art_sim > 0.68)"
+            )
 
     # ── Step 5b: Duplicate sim-flag assignment based on final_scores ──────────
     _p(0.88, "Flagging duplicates…")
@@ -497,135 +920,69 @@ def run_v2(
     except Exception as e:
         print(f"[v2] Sim-flag assignment failed: {e}")
 
-    # ── Step 5c: Genre-aware score recalibration ──────────────────────────────
-    # Architectural and Liminal photos score on different raw-discriminant ranges
-    # than street photos.  The batch IQR in _calibrate() anchors to the street
-    # majority, systematically under-scoring non-street genres.  Recalibrate
-    # each non-street genre within its own peer group and blend 55 / 45 with the
-    # already-calibrated batch score so they compete fairly without losing
-    # cross-genre comparability.
-    try:
-        from specvlm_pipeline import _detect_genre
-        genres = [_detect_genre(per_photo_breakdowns[i]) for i in range(n)]
-        for target_genre in ("Architectural", "Liminal"):
-            members = [i for i, g in enumerate(genres) if g == target_genre]
-            if len(members) < 2:
-                if members:
-                    print(f"[v2] {target_genre}: only 1 photo — skipping genre recal")
-                continue
-            genre_raw = np.array([float(final_scores[i]) for i in members])
-            lo = float(np.percentile(genre_raw, 25))
-            hi = float(np.percentile(genre_raw, 75))
-            span = max(hi - lo, 1e-4)
-            genre_cal = np.clip((genre_raw - lo) / span * 0.19 + 0.41, 0.0, 1.0)
-            for j, i in enumerate(members):
-                blended = 0.75 * float(final_scores[i]) + 0.25 * float(genre_cal[j])
-                final_scores[i] = float(np.clip(blended, 0.0, 1.0))
-            print(
-                f"[v2] {target_genre} genre recal: {len(members)} photos  "
-                f"raw=[{genre_raw.min():.3f}–{genre_raw.max():.3f}]  "
-                f"cal=[{genre_cal.min():.3f}–{genre_cal.max():.3f}]"
-            )
-    except Exception as e:
-        print(f"[v2] Genre recalibration failed: {e}")
-
-    # ── Step 5d: Draft-model hard cap (unverified photos only) ───────────────
-    # The 1.5B draft model can't move scores much (±0.07 max drift, 80/20 blend)
-    # but it CAN detect confidently-bad photos.  When draft score ≤ 0.33, the
-    # model is strongly signalling "weak" — prevent calibration from pushing
-    # that photo into Strong regardless of batch ranking.
-    # Symmetric floor: draft ≥ 0.67 protects genuinely-strong photos from
-    # being buried in Weak by a weak-majority batch.
-    # Verified photos (7B) are trusted fully — no cap applied.
-    capped = 0
-    for i in range(n):
-        if is_verified[i]:
-            continue
-        ds = draft_scores[i]
-        if ds <= 0.33 and final_scores[i] >= STRONG_THRESH:
-            final_scores[i] = STRONG_THRESH - 0.01   # push just below Strong
-            capped += 1
-        elif ds >= 0.67 and final_scores[i] <= MID_THRESH:
-            final_scores[i] = MID_THRESH + 0.01      # lift just above Weak
-            capped += 1
-    if capped:
-        print(f"[v2] Draft cap applied to {capped} photos")
-
-    # ── Step 6: Grade buckets ─────────────────────────────────────────────────
-    # Snap to 2 decimal places BEFORE bucketing so that the comparison and the
-    # badge displayed in the frontend (Math.round(score*100)) always agree.
-    # e.g. raw 0.5996 → snapped 0.60 → Strong AND badge shows 60. No mismatch.
+    # ── Step 6: Absolute grade thresholds ────────────────────────────────────
+    # Strong ≥ 0.60  |  Mid 0.41–0.59  |  Weak ≤ 0.40
+    final_scores = np.clip(np.nan_to_num(final_scores, nan=0.15), 0.10, 1.0)
     final_scores = np.round(final_scores, 2)
 
-    _p(0.89, "Bucketing Strong / Mid / Weak…")
+    _p(0.89, "Applying grade thresholds…")
     print(
         f"[v2] final scores — min={final_scores.min():.2f}  "
         f"max={final_scores.max():.2f}  mean={final_scores.mean():.2f}  "
         f"median={float(np.median(final_scores)):.2f}"
     )
+    print(f"[v2] Thresholds — Weak < 0.41  |  Mid 0.41–0.59  |  Strong ≥ 0.60")
+
     grades = []
     for i, s in enumerate(final_scores):
-        if s >= STRONG_THRESH:
+        if s >= 0.60:
             g = GRADE_STRONG
-        elif s >= MID_THRESH:
+        elif s >= 0.41:
             g = GRADE_MID
         else:
             g = GRADE_WEAK
         grades.append(g)
         print(f"[v2]   {Path(paths[i]).name}: {s:.2f} → {g}")
 
-    # ── Step 6b: Patch reasoning_log headers to match final grades ────────────
-    # reasoning_logs were written from intermediate CLIP draft scores (before
-    # Steps 4c/5c/5d/PersonalHead).  Replace the structured header so the
-    # Reasoning tab never shows "Mid  47%" for a photo graded Strong.
-    # Format matched: "Strong  63%\n<tier description>\n..." → replaced with
-    # the correct tier/score while leaving the aspect bars unchanged.
-    _TIER_DESCS_V2 = {
-        GRADE_STRONG: "Strong visual intent — decisive moment, bold geometry, or atmospheric power.",
-        GRADE_MID:    "Some strong elements but inconsistent execution or missing visual tension.",
-        GRADE_WEAK:   "Blurry, poorly framed, flat light, or no clear visual subject or intent.",
-    }
-    import re as _re_hdr
-    _HDR_LINE = _re_hdr.compile(
-        r'^(Strong|Mid|Weak)\s+\d+%[^\n]*\n?(?:[^\n]+\n?)?',
-        _re_hdr.IGNORECASE,
-    )
-    for i in range(n):
-        log = reasoning_logs[i]
-        if not log:
-            continue
-        tier_str = ('Strong' if grades[i] == GRADE_STRONG
-                    else 'Mid' if grades[i] == GRADE_MID
-                    else 'Weak')
-        pct      = int(round(float(final_scores[i]) * 100))
-        new_hdr  = f"{tier_str}  {pct}%\n{_TIER_DESCS_V2[grades[i]]}\n"
-        reasoning_logs[i] = _HDR_LINE.sub(new_hdr, log, count=1)
-
     # ── Step 7: EXIF + LanceDB ────────────────────────────────────────────────
     _p(0.90, "Reading EXIF…")
-    timestamps = [_exif_ts(p) for p in paths]
+    from concurrent.futures import ThreadPoolExecutor as _TPE
+    with _TPE(max_workers=min(16, len(paths) or 1)) as _pool:
+        timestamps = list(_pool.map(_exif_ts, paths))
 
-    _p(0.92, "Writing to LanceDB (1536-d IVF-PQ)…")
+    _p(0.92, "Writing to LanceDB (bulk upsert)…")
+    lance_ok = False
     try:
         import lance_store as ls
-        records = [
-            {
+        import traceback as _tb_lance
+        print(f"[v2] LanceDB WRITE START — {n} records → {ls._DB_DIR}")
+        # Build all records in memory first, then a single vectorised upsert.
+        # Per-photo breakdown includes all CLIP aspect dimensions, not just
+        # the high-level aesthetic/personal summary.
+        lance_records: list[dict] = []
+        for i in range(n):
+            bd = {"aesthetic": round(float(scores_arr[i]), 3),
+                  "personal":  round(float(pers[i]),       3)}
+            if per_photo_breakdowns[i]:
+                bd.update(per_photo_breakdowns[i])
+            lance_records.append({
                 "path":           paths[i],
                 "embedding":      embs[i].tolist(),
                 "score":          float(final_scores[i]),
                 "personal_score": float(pers[i]),
                 "grade":          grades[i],
-                "reasoning_log":  reasoning_logs[i],
-                "breakdown":      {"aesthetic": round(float(scores_arr[i]), 3),
-                                   "personal":  round(float(pers[i]),       3)},
+                "reasoning_log":  "",          # LLM layer removed; field kept for schema compat
+                "breakdown":      bd,
                 "exif_ts":        timestamps[i],
-            }
-            for i in range(n)
-        ]
-        ls.upsert_batch(records)
+            })
+        ls.upsert_batch(lance_records)
+        ls.compact_after_write()
         lance_ok = True
-    except Exception as e:
-        print(f"[v2] LanceDB write failed: {e}")
+        print(f"[v2] LanceDB WRITE OK — {len(lance_records)} records committed")
+    except Exception as _e_lance:
+        import traceback as _tb_lance
+        print(f"[v2] !!! LanceDB WRITE FAILED: {_e_lance}")
+        _tb_lance.print_exc()
         lance_ok = False
 
     # ── Step 8: Gallery response ──────────────────────────────────────────────
@@ -649,9 +1006,9 @@ def run_v2(
             "personal_score":  round(float(pers[i]),         3),
             "embedding":       embs[i].tolist(),
             "breakdown":       breakdown,
-            "critique":        per_photo_critiques[i],
-            "reasoning_log":   reasoning_logs[i],
-            "is_verified":     is_verified[i],
+            "critique":        "",
+            "reasoning_log":   "",
+            "is_verified":     False,
             "exif_ts":         timestamps[i],
             "stars":           0,
             "reject":          cluster_ids[i] >= 0 and not sim_flags[i].startswith("★"),
@@ -668,27 +1025,61 @@ def run_v2(
             if p in gallery_by_path or p in cached_rows
         ]
 
+    # ── Step 8b: Atomic server-side catalog.json write ───────────────────────
+    # Keeps catalog.json in sync immediately after LanceDB upsert, regardless of
+    # whether the frontend later calls POST /api/catalog/save.  Atomic rename
+    # prevents a partially-written file from corrupting the next app load.
+    try:
+        import time as _cat_time
+        _cat_dir  = Path(__file__).resolve().parent.parent / "cache"
+        _cat_dir.mkdir(parents=True, exist_ok=True)
+        _cat_path = _cat_dir / "catalog.json"
+        _cat_photos  = [{k: v for k, v in g.items() if k != "embedding"} for g in gallery]
+        _cat_folders = list(dict.fromkeys(str(Path(g["path"]).parent) for g in gallery))
+        _cat_payload = json.dumps({
+            "photos":   _cat_photos,
+            "folders":  _cat_folders,
+            "saved_at": _cat_time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }, ensure_ascii=False)
+        _cat_tmp = _cat_path.with_suffix(".json.tmp")
+        _cat_tmp.write_text(_cat_payload, encoding="utf-8")
+        _cat_tmp.replace(_cat_path)
+        print(f"[v2] catalog.json → {len(_cat_photos)} photos (atomic write)")
+    except Exception as _e_cat:
+        print(f"[v2] catalog.json write skipped: {_e_cat}")
+
     # ── Step 9: NSGA-III multi-objective sequencing ───────────────────────────
-    _p(0.96, "Running NSGA-III…")
-    mogco_seq: list[dict] = []
+    _p(0.96, "Running NSGA-III (strict literal constraints)…")
+    mogco_seq:   list[dict] = []
+    mogco_error: str        = ""
     if siglip_ok and lance_ok:
         try:
-            from nsga3_sequencer import run_nsga3_sequence_with_vlm
+            from nsga3_sequencer import run_nsga3_sequence_with_vlm, SequencerConstraintError
 
-            # Pass Strong + Mid candidates with embeddings and reasoning logs
+            # Pass brief so the sequencer can apply literal pre-filter
+            try:
+                from specvlm_pipeline import _CD_BRIEF as _seq_brief
+            except Exception:
+                _seq_brief = ""
+
+            # Pass Strong + Mid candidates with embeddings, reasoning logs, and breakdown
             seq_candidates = [
                 {
                     "path":          g["path"],
                     "score":         g["score"],
                     "embedding":     np.array(g["embedding"], dtype=np.float32),
                     "reasoning_log": g["reasoning_log"],
+                    "breakdown":     g.get("breakdown", {}),
                 }
                 for g in gallery
                 if g["grade"] in (GRADE_STRONG, GRADE_MID)
             ]
 
             selected = run_nsga3_sequence_with_vlm(
-                seq_candidates, target=mogco_target, progress=_p
+                seq_candidates,
+                target     = mogco_target,
+                progress   = _p,
+                brief      = _seq_brief,
             )
 
             info_by_path = {g["path"]: g for g in gallery}
@@ -699,12 +1090,17 @@ def run_v2(
                     if k != "embedding"
                 }
                 base.update({
-                    "slot":             _SEQUENCE_SLOTS[rank % len(_SEQUENCE_SLOTS)],
+                    "slot":             frame.get("slot", _SEQUENCE_SLOTS[rank % len(_SEQUENCE_SLOTS)]),
+                    "slot_role":        frame.get("slot_role", ""),
+                    "slot_score":       frame.get("slot_score", 0.0),
                     "mogco_objectives": frame.get("nsga3_objectives", {}),
                     "engine":           "nsga3",
                 })
                 mogco_seq.append(base)
 
+        except SequencerConstraintError as e:
+            mogco_error = str(e)
+            print(f"[v2] NSGA-III constraint error: {e}")
         except Exception as e:
             print(f"[v2] NSGA-III sequencing failed: {e}")
 
@@ -719,6 +1115,7 @@ def run_v2(
     return {
         "gallery":        gallery,
         "mogco_sequence": mogco_seq,
+        "mogco_error":    mogco_error,
         "strong":         strong,
         "mid":            mid,
         "weak":           weak,

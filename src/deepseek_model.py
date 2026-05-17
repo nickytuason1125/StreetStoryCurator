@@ -24,8 +24,9 @@ import numpy as np
 
 
 # Model IDs
-DRAFT_MODEL_ID = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+DRAFT_MODEL_ID  = "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
 VERIFY_MODEL_ID = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
+JUDGE_MODEL_ID  = "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"   # Competition Judge's Verdict
 
 # Model cache directory
 MODEL_CACHE_DIR = Path("models/deepseek")

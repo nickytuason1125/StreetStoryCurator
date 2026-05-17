@@ -355,7 +355,7 @@ function GridView({
                   background:'transparent', borderRadius:4, overflow:'hidden', cursor:'pointer',
                   outline: isChecked ? `2px solid ${C.accent}` : isCurrent ? `2px solid rgba(255,255,255,.5)` : `2px solid transparent`,
                   outlineOffset:1, padding:0, border:'none', transition:'outline .2s ease',
-                  contentVisibility:'auto', containIntrinsicSize:'0 120px',
+                  contentVisibility:'auto', containIntrinsicSize:'180px 120px',
                 }}>
                 <div style={{ position:'relative', width:'100%', aspectRatio:'3/2', background:C.surf2, overflow:'hidden' }}>
                   <img src={thumbUrl(p.path)} alt="" decoding="async" loading="lazy"
@@ -438,7 +438,7 @@ export default function App() {
   const [toast,      setToast]      = useState<{msg: string; type: "success"|"error"|"info"} | null>(null);
   const [selId,      setSelId]      = useState<string | null>(null);
   const [nicheRec,   setNicheRec]   = useState<any>(null);
-  const [infoTab,    setInfoTab]    = useState<"exif"|"analysis"|"reasoning">("analysis");
+  const [infoTab,    setInfoTab]    = useState<"exif"|"analysis">("analysis");
   const [scanMode,   setScanMode]   = useState(false);
   const [mainTab,    setMainTab]    = useState<"gallery"|"duplicates"|"creative">("gallery");
   const [seqMode,    setSeqMode]    = useState<'auto'|'director'>('auto');
@@ -454,7 +454,8 @@ export default function App() {
   const [subjType,   setSubjType]   = useState<string | null>(null);
   const [locked,     setLocked]     = useState<Set<string>>(new Set());
   const [used,       setUsed]       = useState<Set<string>>(new Set());
-  const [redacted,   setRedacted]   = useState<Set<string>>(new Set());
+  const [redacted,      setRedacted]      = useState<Set<string>>(new Set());
+  const [showDuplicates,setShowDuplicates] = useState(false);
   const [folders,      setFolders]      = useState<string[]>([]);
   const [browserMode,  setBrowserMode]  = useState<'open'|'add'>('open');
   const [catalogBanner,setCatalogBanner]= useState(false);
@@ -483,6 +484,7 @@ export default function App() {
   const [dragOver,    setDragOver]      = useState(false);
   const [backendReady,   setBackendReady]   = useState(false);
   const [backendError,   setBackendError]   = useState(false);
+  const [graderStatus,   setGraderStatus]   = useState<{last_mode:string,draft_available:boolean,verify_available:boolean,last_error:string|null}|null>(null);
   // ── Creative Direction state ──────────────────────────────────────────────
   const [creativeAnchor,   setCreativeAnchor]   = useState<string | null>(null);
   const [creativePrompt,   setCreativePrompt]   = useState("");
@@ -535,6 +537,16 @@ export default function App() {
     return () => { cancelled = true; clearTimeout(timerId); };
   }, []);
 
+  /* fetch grader model status on startup and after each grading run */
+  const isDoneForStatus = !loading && photos.length > 0 && photos.some((p:any) => p.grade !== 'Pending');
+  useEffect(() => {
+    if (!backendReady) return;
+    fetch(`${API}/api/models/status`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) setGraderStatus(d); })
+      .catch(() => {});
+  }, [backendReady, isDoneForStatus]);
+
   /* fetch excluded-photo count from the server */
   useEffect(() => {
     fetch(`${API}/api/creative-direction/used-count`)
@@ -573,15 +585,15 @@ export default function App() {
   const filteredPhotos = useMemo(() => {
     const carouselPaths = new Set(carousel.map((c: any) => c.path));
     const base = photos.filter(p => {
-      if (redacted.has(p.path)) return false;                  // non-best duplicates always hidden
+      if (!showDuplicates && redacted.has(p.path)) return false;   // non-best duplicates hidden unless toggled
       const starsOk = filterStars === null || p.stars === filterStars;
       if (filterGrade) return gl(p.grade) === filterGrade && starsOk;
-      if (carouselPaths.has(p.path)) return true;              // sequence photos always visible when no grade filter
+      if (carouselPaths.has(p.path)) return true;                   // sequence photos always visible when no grade filter
       return starsOk;
     });
     if (!sortScore) return base;
     return [...base].sort((a, b) => sortScore === 'desc' ? b.score - a.score : a.score - b.score);
-  }, [photos, filterGrade, filterStars, redacted, sortScore, carousel]);
+  }, [photos, filterGrade, filterStars, redacted, showDuplicates, sortScore, carousel]);
 
   /* keyboard nav */
   useEffect(() => {
@@ -701,11 +713,20 @@ export default function App() {
       if (!r.data.exists || !r.data.photos?.length) return;
       const ps = r.data.photos.map((p: any, i: number) => ({ ...p, id: `p-${i}` }));
       const savedFolders: string[] = r.data.folders || [];
+      // Apply same auto-redact logic as grading so duplicates are hidden in the gallery
+      const autoRedacted = new Set<string>(
+        ps.filter((p: any) => p.cluster_id >= 0 && !(p.sim_flag || '').startsWith('★'))
+          .map((p: any) => p.path)
+      );
+      const firstVisible =
+        ps.find((p: any) => !autoRedacted.has(p.path) && !((p.grade as string)?.includes('Weak'))) ??
+        ps.find((p: any) => !autoRedacted.has(p.path));
       skipFolderLoadRef.current = true;
       setFolder(savedFolders[0] || '');
       setFolders(savedFolders);
       setPhotos(ps);
-      setSelId(ps.find((p: any) => p.grade !== 'Pending')?.id ?? ps[0]?.id ?? null);
+      setRedacted(autoRedacted);
+      setSelId(firstVisible?.id ?? ps[0]?.id ?? null);
       setLoupeMode('grid');
       setCatalogBanner(false);
       notify(`✅ Resumed — ${ps.length} photos from ${savedFolders.length} folder${savedFolders.length !== 1 ? 's' : ''}`, 'success');
@@ -783,16 +804,12 @@ export default function App() {
           if (msg.done) {
             const ps = msg.data.map((p: any, i: number) => ({ ...p, id: `p-${i}` }));
             setPhotos(ps);
-            // Auto-redact only non-best duplicates — weak photos are NOT redacted here;
-            // they are hidden in the default view via filteredPhotos grade logic.
-            const autoRedacted = new Set<string>(
+            setRedacted(new Set<string>(
               ps.filter((p: any) => p.cluster_id >= 0 && !(p.sim_flag || '').startsWith('★'))
                 .map((p: any) => p.path)
-            );
-            setRedacted(autoRedacted);
-            const firstVisible = ps.find((p: any) =>
-              !autoRedacted.has(p.path) && !((p.grade as string)?.includes('Weak'))
-            ) ?? ps.find((p: any) => !autoRedacted.has(p.path));
+            ));
+            const firstVisible = ps.find((p: any) => !((p.grade as string)?.includes('Weak')))
+              ?? ps[0];
             setSelId(firstVisible?.id ?? ps[0]?.id ?? null);
             // Populate carousel from MOGCO result if present, else clear it
             if (msg.mogco_sequence?.length > 0) {
@@ -807,8 +824,14 @@ export default function App() {
             setLoading(false);
             setGradeProgress(0);
             setGradeDesc("");
-            const mogcoNote = msg.mogco_sequence?.length > 0 ? ` · ${msg.mogco_sequence.length}-frame MOGCO sequence ready` : '';
-            notify(`✅ Graded ${msg.total} images${mogcoNote}`, 'success');
+            const mogcoNote = msg.mogco_sequence?.length > 0
+              ? ` · ${msg.mogco_sequence.length}-slot sequence ready`
+              : '';
+            const mogcoErr  = msg.mogco_error
+              ? ` · Sequence: ${msg.mogco_error}`
+              : '';
+            if (msg.mogco_error) notify(`⚠️ ${msg.mogco_error}`, 'error');
+            notify(`✅ Graded ${msg.total} images${mogcoNote}${mogcoErr}`, 'success');
             axios.post(`${API}/api/recommend`, { photos: msg.data })
               .then(rec => setNicheRec(rec.data))
               .catch(() => {});
@@ -1221,6 +1244,31 @@ export default function App() {
 
         {/* Preset — hidden; value retained for grading logic */}
 
+        {/* Grader mode indicator */}
+        {graderStatus && (() => {
+          const m = graderStatus.last_mode;
+          const noModel = !graderStatus.draft_available;
+          const isClip  = m === 'clip_only' || noModel;
+          const isQwen  = m === 'qwen_fallback';
+          const isSpec  = m === 'specvlm';
+          const isIdle  = m === 'idle' || !m;
+          const dot  = isClip ? '#ef4444' : isQwen ? '#f59e0b' : isSpec ? '#22c55e' : C.text3;
+          const label= isClip ? 'CLIP only' : isQwen ? 'Qwen fallback' : isSpec ? (graderStatus.last_verify_used ? 'VLM + 7B' : 'VLM draft') : 'Ready';
+          const tip  = graderStatus.last_error ? `Error: ${graderStatus.last_error}` :
+                       isClip ? 'DeepSeek unavailable — grading with CLIP embeddings only' :
+                       isQwen ? 'DeepSeek failed — using Qwen2.5-VL fallback' :
+                       isSpec && graderStatus.last_verify_used ? 'DeepSeek 1.5B draft + 7B verification active' :
+                       isSpec ? 'DeepSeek 1.5B draft-only (7B not available)' :
+                       !graderStatus.draft_available ? 'DeepSeek weights not found' : 'No grading run yet';
+          if (isIdle && graderStatus.draft_available) return null;
+          return (
+            <div title={tip} style={{ display:'flex', alignItems:'center', gap:5, flexShrink:0, padding:'0 9px', height:26, borderRadius:5, fontSize:12, fontWeight:600, border:`1px solid ${C.bdr2}`, color:C.text3, background:C.surf2 }}>
+              <div style={{ width:6, height:6, borderRadius:'50%', background:dot, flexShrink:0 }}/>
+              {label}
+            </div>
+          );
+        })()}
+
         {/* Detected niche */}
         {nicheRec?.preset && (
           <div style={{ display:'flex', flexDirection:'column', justifyContent:'center', flexShrink:0, padding:'0 10px', height:30, borderRadius:6, background:C.surf2, border:`1px solid ${C.bdr2}`, animation:'fadeIn .32s cubic-bezier(.2,0,0,1)', lineHeight:1 }}>
@@ -1441,6 +1489,20 @@ export default function App() {
               ✕ Clear
             </button>
           )}
+          {redacted.size > 0 && (
+            <>
+              <div style={{ width:1, height:14, background:C.bdr2, flexShrink:0 }}/>
+              <button onClick={() => setShowDuplicates(v => !v)}
+                title={showDuplicates ? 'Hide duplicate shots' : 'Show duplicate shots'}
+                style={{ display:'flex', alignItems:'center', gap:5, padding:'3px 9px', borderRadius:5, cursor:'pointer', transition:'all .25s cubic-bezier(.2,0,0,1)',
+                  background: showDuplicates ? 'oklch(58% .18 18 / .14)' : 'transparent',
+                  border: `1px solid ${showDuplicates ? 'oklch(58% .18 18 / .45)' : C.bdr2}`,
+                  color: showDuplicates ? 'oklch(58% .18 18)' : C.text3, fontSize:11, fontWeight:600 }}>
+                <Copy size={10}/>
+                Dupes <span style={{ marginLeft:2 }}>{redacted.size}</span>
+              </button>
+            </>
+          )}
           <span style={{ marginLeft:'auto', fontSize:11, color:C.text3 }}>{filteredPhotos.length} shown</span>
         </div>
       )}
@@ -1623,7 +1685,7 @@ export default function App() {
               {sel && (
                 <div style={{ flexShrink:0, display:'flex', borderBottom:`1px solid ${C.border}` }}>
                   {(isDone
-                    ? [['analysis','Analysis'],['reasoning','Reasoning'],['exif','EXIF']]
+                    ? [['analysis','Analysis'],['exif','EXIF']]
                     : [['exif','EXIF']]
                   ).map(([id, label]) => (
                     <button key={id} onClick={() => setInfoTab(id as any)}
@@ -1710,25 +1772,6 @@ export default function App() {
                     </div>
                   )
                 )}
-                {infoTab === 'reasoning' && (
-                  isGraded ? (
-                    <div style={{ display:'flex', flexDirection:'column', gap:10, animation:'fadeIn .32s cubic-bezier(.2,0,0,1)' }}>
-                      <p style={{ fontSize:12.5, color:C.text2, lineHeight:1.9, fontFamily:'monospace', whiteSpace:'pre-wrap', wordBreak:'break-word' }}>
-                        {(() => {
-                          const log = sel?.reasoning_log || '';
-                          if (!log) return 'No reasoning log for this image.';
-                          // Strip leading "Strong  87%" / "Mid  52%" / "Weak  38%" grade header
-                          return log.replace(/^(Strong|Mid|Weak)\s+\d+%\s*\n?/i, '').trimStart();
-                        })()}
-                      </p>
-                    </div>
-                  ) : (
-                    <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:8, padding:'20px 0' }}>
-                      <Layers size={24} strokeWidth={1} style={{ color:C.text3 }}/>
-                      <p style={{ fontSize:13, color:C.text3, textAlign:'center', lineHeight:1.6 }}>Grade your folder to see reasoning.</p>
-                    </div>
-                  )
-                )}
               </div>
 
             </div>}
@@ -1784,7 +1827,7 @@ export default function App() {
         </div>
 
       ) : mainTab === 'duplicates' ? (
-        /* ── Duplicates view ───────────────────────────────────── */
+        /* ── Duplicates grid view ──────────────────────────────── */
         (() => {
           const byCluster: Record<number, any[]> = {};
           for (const p of photos) {
@@ -1799,125 +1842,118 @@ export default function App() {
             })
             .sort((a, b) => b.all.length - a.all.length);
           const totalDups = groups.reduce((s, g) => s + g.rest.length, 0);
-          const redactedCount = groups.reduce((s, g) => s + g.rest.filter(p => redacted.has(p.path)).length, 0);
-          const keepAll = () => setRedacted(prev => {
-            const n = new Set(prev); groups.forEach(g => g.rest.forEach(p => n.add(p.path))); return n;
-          });
-          const restoreAll = () => setRedacted(prev => {
-            const n = new Set(prev); groups.forEach(g => g.rest.forEach(p => n.delete(p.path))); return n;
-          });
 
           return (
-            <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden', background:C.bg }}>
+            <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden', background:C.bg, minHeight:0 }}>
               {/* Header */}
-              <div style={{ flexShrink:0, display:'flex', alignItems:'center', gap:10, padding:'10px 18px', borderBottom:`1px solid ${C.border}`, background:C.surf }}>
-                <span style={{ fontSize:15, fontWeight:700 }}>Duplicates</span>
-                <span style={{ fontSize:12, color:C.text3 }}>
-                  {groups.length} group{groups.length!==1?'s':''} · {totalDups} duplicates
-                </span>
-                <div style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:8 }}>
-                  {redactedCount > 0 && (
-                    <button onClick={restoreAll}
-                      style={{ fontSize:12, color:C.text3, padding:'0 10px', height:28, borderRadius:6, border:`1px solid ${C.bdr2}`, background:'transparent', cursor:'pointer' }}>
-                      Restore all
-                    </button>
-                  )}
-                  <button onClick={keepAll} disabled={redactedCount === totalDups && totalDups > 0}
-                    style={{ display:'flex', alignItems:'center', gap:6, fontSize:12, fontWeight:700, color:'#fff', padding:'0 14px', height:28, borderRadius:6, border:'none', background:C.strong, cursor:'pointer', opacity: redactedCount===totalDups&&totalDups>0 ? 0.4 : 1 }}>
-                    <CheckSquare size={11}/> Keep all best
-                  </button>
+              <div style={{ flexShrink:0, display:'flex', alignItems:'center', gap:10, padding:'8px 16px', borderBottom:`1px solid ${C.border}`, background:C.surf }}>
+                <span style={{ fontSize:14, fontWeight:700 }}>Similar Shots</span>
+                <span style={{ fontSize:12, color:C.text3 }}>{groups.length} group{groups.length!==1?'s':''} · {totalDups} alternates</span>
+                <div style={{ marginLeft:'auto' }}>
                   <button onClick={() => setExportModal(true)}
-                    style={{ display:'flex', alignItems:'center', gap:5, padding:'0 10px', height:28, borderRadius:6, fontSize:12, fontWeight:600, cursor:'pointer', background:C.aLow, border:`1px solid ${C.aBdr}`, color:C.accent }}>
+                    style={{ display:'flex', alignItems:'center', gap:5, padding:'0 10px', height:26, borderRadius:6, fontSize:12, fontWeight:600, cursor:'pointer', background:C.aLow, border:`1px solid ${C.aBdr}`, color:C.accent }}>
                     <Download size={11}/> Export
                   </button>
                 </div>
               </div>
 
-              {/* Groups list */}
-              <div style={{ flex:1, overflowY:'auto', padding:'12px 18px', display:'flex', flexDirection:'column', gap:8 }}>
+              {/* Flat grid — each group is a labeled section with auto-fill cells */}
+              <div style={{ flex:1, overflowY:'auto', padding:12, minHeight:0 }}>
                 {groups.map((g, gi) => {
-                  const bestColor = gc(g.best.grade);
-                  const groupKept = g.rest.every(p => redacted.has(p.path));
+                  const bestDc = gc(g.best.grade);
                   return (
-                    <div key={gi} style={{ background:C.surf, border:`1px solid ${C.border}`, borderRadius:10, overflow:'hidden' }}>
-                      {/* Group header */}
-                      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'8px 12px', borderBottom:`1px solid ${C.border}`, background:C.surf2 }}>
+                    <div key={gi} style={{ marginBottom: gi < groups.length - 1 ? 20 : 0 }}>
+
+                      {/* Minimal group label row */}
+                      <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
+                        <div style={{ width:6, height:6, borderRadius:'50%', background:bestDc, flexShrink:0 }}/>
                         <span style={{ fontSize:11, fontWeight:700, color:C.text2 }}>
                           {g.all.length} similar shots
                         </span>
-                        {groupKept ? (
-                          <button onClick={() => setRedacted(prev => { const n=new Set(prev); g.rest.forEach(p=>n.delete(p.path)); return n; })}
-                            style={{ fontSize:10, color:C.text3, padding:'3px 10px', borderRadius:4, border:`1px solid ${C.bdr2}`, background:'transparent', cursor:'pointer' }}>
-                            Show all
-                          </button>
-                        ) : (
-                          <button onClick={() => setRedacted(prev => { const n=new Set(prev); g.rest.forEach(p=>n.add(p.path)); return n; })}
-                            style={{ display:'flex', alignItems:'center', gap:4, fontSize:10, fontWeight:600, color:C.strong, padding:'3px 10px', borderRadius:4, border:`1px solid oklch(65% .17 148/.35)`, background:'oklch(65% .17 148/.08)', cursor:'pointer' }}>
-                            <CheckSquare size={9}/> Keep best
-                          </button>
-                        )}
+                        <span style={{ fontSize:10, color:C.text3 }}>
+                          best <span style={{ color:C.text, fontWeight:600 }}>{Math.round(g.best.score * 100)}</span>
+                        </span>
+                        <div style={{ flex:1, height:1, background:C.border }}/>
+                        <button
+                          onClick={() => { setMainTab('gallery'); setSelId(g.best.id); setLoupeMode('loupe'); }}
+                          style={{ fontSize:10, color:C.accent, padding:'2px 8px', borderRadius:4,
+                            border:`1px solid ${C.aBdr}`, background:C.aLow, cursor:'pointer', fontWeight:600, flexShrink:0 }}>
+                          Open best
+                        </button>
                       </div>
-                      {/* Photo row — uniform 120 px image height across all cards */}
-                      <div style={{ display:'flex', gap:10, overflowX:'auto', padding:'12px 14px', alignItems:'stretch' }}>
-                        {[g.best, ...g.rest].map((p, pi) => {
-                          const isBest   = pi === 0;
-                          const dc       = gc(p.grade);
-                          const isHidden = !isBest && redacted.has(p.path);
+
+                      {/* Auto-fill grid — same style as main gallery */}
+                      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(150px, 1fr))', gap:5 }}>
+                        {g.all.map((p: any, pi: number) => {
+                          const isBest = pi === 0;
+                          const dc     = gc(p.grade);
+                          const delta  = isBest ? null : Math.round((p.score - g.best.score) * 100);
+                          const fname  = (p.path.split(/[\\/]/).pop() ?? '').replace(/\.[^.]+$/, '');
                           return (
-                            <div key={p.id}
+                            <button key={p.id}
                               onClick={() => { setMainTab('gallery'); setSelId(p.id); setLoupeMode('loupe'); }}
-                              style={{ flexShrink:0, cursor:'pointer', display:'flex', flexDirection:'column',
-                                borderRadius:8, overflow:'hidden',
-                                border: isBest ? `2px solid ${dc}` : `1px solid ${C.border}`,
-                                width: isBest ? 160 : 140,
-                                opacity: isHidden ? 0.45 : 1,
-                                transition:'opacity .2s' }}>
-                              {/* Image */}
-                              <div style={{ position:'relative', height:120, flexShrink:0 }}>
+                              style={{ position:'relative', padding:0, border:'none', borderRadius:6,
+                                overflow:'hidden', cursor:'pointer', display:'flex', flexDirection:'column',
+                                background:C.surf,
+                                outline: isBest ? `2px solid ${bestDc}` : `1px solid ${C.border}`,
+                                outlineOffset: isBest ? -2 : -1,
+                                transition:'outline .15s ease' }}>
+
+                              {/* Image — cover fill, consistent 3:2 ratio */}
+                              <div style={{ position:'relative', width:'100%', aspectRatio:'3/2', overflow:'hidden' }}>
                                 <img src={thumbUrl(p.path)} alt="" loading="lazy"
                                   style={{ width:'100%', height:'100%', objectFit:'cover', display:'block',
-                                    filter: isHidden ? 'grayscale(55%)' : 'none' }}/>
-                                {/* BEST badge */}
-                                {isBest && (
-                                  <div style={{ position:'absolute', top:5, left:5, background:dc, borderRadius:3,
-                                    padding:'2px 6px', fontSize:9, fontWeight:800, color:'#000', letterSpacing:'.05em' }}>
-                                    BEST
-                                  </div>
-                                )}
-                                {/* hidden badge */}
-                                {isHidden && (
-                                  <div style={{ position:'absolute', top:5, right:5, background:'rgba(0,0,0,.65)',
-                                    borderRadius:3, padding:'2px 5px', fontSize:8, color:'#aaa', letterSpacing:'.03em' }}>
-                                    hidden
-                                  </div>
-                                )}
-                                {/* Score pill */}
-                                <div style={{ position:'absolute', bottom:5, left:5, background:'rgba(0,0,0,.72)',
-                                  backdropFilter:'blur(6px)', borderRadius:4, padding:'2px 6px',
-                                  display:'flex', alignItems:'center', gap:3 }}>
-                                  <div style={{ width:5, height:5, borderRadius:'50%', background:dc, flexShrink:0 }}/>
-                                  <span style={{ fontSize:isBest ? 12 : 11, fontWeight:800, color:'#fff',
-                                    fontVariantNumeric:'tabular-nums' }}>
+                                    opacity: isBest ? 1 : 0.8 }}/>
+
+                                {/* Gradient scrim */}
+                                <div style={{ position:'absolute', inset:0, pointerEvents:'none',
+                                  background:'linear-gradient(to bottom, rgba(0,0,0,.5) 0%, transparent 35%, transparent 55%, rgba(0,0,0,.55) 100%)' }}/>
+
+                                {/* BEST / ALT badge — top left */}
+                                <div style={{ position:'absolute', top:5, left:5, borderRadius:3,
+                                  padding:'1px 5px', fontSize:8, fontWeight:800, letterSpacing:'.05em',
+                                  background: isBest ? bestDc : 'rgba(0,0,0,.62)',
+                                  color: isBest ? '#000' : 'rgba(255,255,255,.75)' }}>
+                                  {isBest ? 'BEST' : 'ALT'}
+                                </div>
+
+                                {/* Score + delta — top right */}
+                                <div style={{ position:'absolute', top:5, right:5, borderRadius:3,
+                                  padding:'1px 5px', display:'flex', alignItems:'center', gap:3,
+                                  background:'rgba(0,0,0,.62)', backdropFilter:'blur(4px)' }}>
+                                  {delta !== null && (
+                                    <span style={{ fontSize:8, fontWeight:700,
+                                      color: delta < -10 ? '#f87171' : delta < 0 ? '#fbbf24' : '#86efac' }}>
+                                      {delta > 0 ? '+' : ''}{delta}
+                                    </span>
+                                  )}
+                                  <div style={{ width:4, height:4, borderRadius:'50%', background:dc }}/>
+                                  <span style={{ fontSize:9, fontWeight:800, color:'#fff', fontVariantNumeric:'tabular-nums' }}>
                                     {Math.round(p.score * 100)}
                                   </span>
                                 </div>
                               </div>
-                              {/* Caption */}
-                              <div style={{ padding:'5px 8px', background:C.surf2, flex:1, display:'flex', alignItems:'center' }}>
-                                <span style={{ fontSize:9, color:C.text3, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                                  {p.path.split(/[/\\]/).pop()}
+
+                              {/* Filename row — below image like gallery cells */}
+                              <div style={{ padding:'3px 6px', background: isBest ? C.surf3 : C.surf }}>
+                                <span style={{ fontSize:9.5, color: isBest ? C.text2 : C.text3,
+                                  overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap',
+                                  display:'block', fontFamily:"'SF Mono',monospace" }}>
+                                  {fname}
                                 </span>
                               </div>
-                            </div>
+
+                            </button>
                           );
                         })}
                       </div>
+
                     </div>
                   );
                 })}
 
                 {groups.length === 0 && (
-                  <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', flex:1, gap:10, color:C.text3, paddingTop:60 }}>
+                  <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', paddingTop:80, gap:10, color:C.text3 }}>
                     <ImageOff size={32} strokeWidth={1}/>
                     <p style={{ fontSize:14 }}>No duplicates detected.</p>
                   </div>
@@ -1930,330 +1966,260 @@ export default function App() {
       ) : mainTab === 'creative' ? (
         /* ── Creative Direction view ───────────────────────────── */
         (() => {
-          const ROLE_COLORS: Record<string, string> = {
-            subject:  'oklch(65% .17 148)',   // green
-            opener:   'oklch(60% .20 250)',   // blue
-            closer:   'oklch(60% .20 290)',   // purple
-            contrast: 'oklch(65% .20 55)',    // orange
-            detail:   'oklch(68% .16 90)',    // yellow-green
+          const SLOT_COLORS: Record<string,string> = {
+            Opener:   'oklch(60% .20 250)',
+            Subject:  'oklch(65% .17 148)',
+            Contrast: 'oklch(65% .20 55)',
+            Detail:   'oklch(68% .16 90)',
+            Closer:   'oklch(60% .20 290)',
           };
-          const roleColor = (r: string) => ROLE_COLORS[r] ?? C.text3;
-
-          // Sort photos: Strong first, then Mid, then Weak — best anchors on top
-          const anchorCandidates = [...photos].sort((a, b) => {
-            const rank = (p: any) => gl(p.grade) === 'Strong' ? 0 : gl(p.grade) === 'Mid' ? 1 : 2;
-            return rank(a) - rank(b) || b.score - a.score;
+          const slotColor = (s: string) => SLOT_COLORS[s] ?? SLOT_COLORS[(s||'').charAt(0).toUpperCase()+(s||'').slice(1)] ?? C.text3;
+          const ROLE_ORDER = ['Opener','Subject','Contrast','Detail','Closer','opener','subject','contrast','detail','closer'];
+          const sortedPhotos = [...photos].sort((a,b) => {
+            const r = (p:any) => gl(p.grade)==='Strong'?0:gl(p.grade)==='Mid'?1:2;
+            return r(a)-r(b) || b.score-a.score;
           });
+          const successResults = [...creativeResults.filter((r:any)=>r.success)]
+            .sort((a:any,b:any) => {
+              const ap = a.params?.seq_pos; const bp = b.params?.seq_pos;
+              if (ap!=null && bp!=null) return ap-bp;
+              const ai = ROLE_ORDER.indexOf(a.slot??a.params?.role??'');
+              const bi = ROLE_ORDER.indexOf(b.slot??b.params?.role??'');
+              return (ai<0?99:ai)-(bi<0?99:bi);
+            });
+          const hasResults = successResults.length > 0;
+          const canGenerate = !creativeLoading && photos.length > 0;
 
           return (
-          <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden', background:C.bg }}>
+          <div style={{ flex:1, display:'flex', overflow:'hidden', background:C.bg }}>
 
-            {/* Toolbar */}
-            <div style={{ flexShrink:0, display:'flex', alignItems:'center', justifyContent:'space-between', padding:'10px 18px', borderBottom:`1px solid ${C.border}`, background:C.surf }}>
-              <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                <Wand2 size={15} style={{ color:C.accent }}/>
-                <span style={{ fontSize:15, fontWeight:700 }}>Creative Direction</span>
-                {creativeResults.filter((r:any)=>r.success).length > 0 && (
-                  <span style={{ fontSize:11, color:C.text3, background:C.surf2, borderRadius:4, padding:'2px 8px' }}>
-                    {creativeResults.filter((r:any)=>r.success).length} styled
-                  </span>
-                )}
+            {/* ── Left config panel ───────────────────────────────── */}
+            <div style={{ width:288, flexShrink:0, display:'flex', flexDirection:'column', borderRight:`1px solid ${C.border}`, background:C.surf, overflow:'hidden' }}>
+
+              {/* Panel header */}
+              <div style={{ padding:'14px 18px 12px', borderBottom:`1px solid ${C.border}`, flexShrink:0 }}>
+                <div style={{ display:'flex', alignItems:'center', gap:7, marginBottom:4 }}>
+                  <Wand2 size={14} style={{ color:C.accent }}/>
+                  <span style={{ fontSize:14, fontWeight:700 }}>Creative Director</span>
+                </div>
+                <p style={{ fontSize:11, color:C.text3, lineHeight:1.5, margin:0 }}>
+                  Curate 5 visually diverse shots into a cinematic story arc.
+                </p>
               </div>
-              <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                {/* Excluded photos indicator */}
-                {usedCount > 0 && (
-                  <div style={{ display:'flex', alignItems:'center', gap:5, background:C.surf2, border:`1px solid ${C.bdr2}`, borderRadius:6, padding:'3px 8px' }}>
-                    <span style={{ fontSize:11, color:C.text3 }}>{usedCount} excluded</span>
-                    <button onClick={handleClearUsed}
-                      style={{ fontSize:10, color:C.accent, background:'none', border:'none', cursor:'pointer', padding:0, fontWeight:600 }}>
-                      Reset
-                    </button>
+
+              {/* Scrollable config body */}
+              <div style={{ flex:1, overflowY:'auto', padding:'18px 18px 8px', display:'flex', flexDirection:'column', gap:22 }}>
+
+                {/* Brief */}
+                <div>
+                  <label style={{ display:'block', fontSize:11, fontWeight:700, letterSpacing:'.07em', textTransform:'uppercase', color:C.text2, marginBottom:8 }}>
+                    Mood / Story Brief
+                  </label>
+                  <textarea
+                    value={creativePrompt}
+                    onChange={e=>setCreativePrompt(e.target.value)}
+                    placeholder={`Describe the mood…\ne.g. "rainy evening, neon reflections"\nor "empty streets at dawn"`}
+                    rows={4}
+                    style={{ width:'100%', boxSizing:'border-box', resize:'none', background:C.bg, border:`1px solid ${C.bdr2}`, borderRadius:8, padding:'10px 12px', fontSize:12, color:C.text, lineHeight:1.6, outline:'none', fontFamily:'inherit' }}
+                    onFocus={e=>{e.currentTarget.style.borderColor=C.aBdr}}
+                    onBlur={e=>{e.currentTarget.style.borderColor=C.bdr2}}
+                  />
+                </div>
+
+                {/* Sequence length */}
+                <div>
+                  <label style={{ display:'block', fontSize:11, fontWeight:700, letterSpacing:'.07em', textTransform:'uppercase', color:C.text2, marginBottom:8 }}>
+                    Sequence Length
+                  </label>
+                  <div style={{ display:'flex', gap:5 }}>
+                    {[5,6,7,8].map(n => (
+                      <button key={n} onClick={()=>setCreativeCount(n)}
+                        style={{ flex:1, height:34, borderRadius:7, fontSize:13, fontWeight:700, cursor:'pointer', transition:'all .15s',
+                          background:creativeCount===n?C.accent:C.surf2, border:`1px solid ${creativeCount===n?C.accent:C.bdr2}`,
+                          color:creativeCount===n?'#fff':C.text2 }}>
+                        {n}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Reference photo */}
+                <div>
+                  <label style={{ display:'block', fontSize:11, fontWeight:700, letterSpacing:'.07em', textTransform:'uppercase', color:C.text2, marginBottom:4 }}>
+                    Reference Photo <span style={{ fontWeight:400, textTransform:'none', letterSpacing:0, fontSize:10, color:C.text3 }}>optional</span>
+                  </label>
+                  <p style={{ fontSize:11, color:C.text3, lineHeight:1.4, marginBottom:10 }}>Sets the visual style anchor for the sequence.</p>
+                  {creativeAnchor ? (
+                    <div style={{ position:'relative', borderRadius:9, overflow:'hidden', border:`2px solid ${C.accent}`, cursor:'pointer', boxShadow:`0 0 0 3px ${C.accent}18` }}
+                      onClick={()=>setCreativeAnchor(null)} title="Click to remove">
+                      <img src={thumbUrl(creativeAnchor)} alt="" style={{ width:'100%', aspectRatio:'3/2', objectFit:'cover', display:'block' }}/>
+                      <div style={{ position:'absolute', top:6, left:6, background:C.accent, borderRadius:4, padding:'2px 7px', fontSize:9, fontWeight:800, color:'#fff', letterSpacing:'.06em' }}>ANCHOR</div>
+                      <div style={{ position:'absolute', top:6, right:6, background:'rgba(0,0,0,.65)', backdropFilter:'blur(4px)', borderRadius:5, padding:'3px 8px', fontSize:10, color:'rgba(255,255,255,.85)', fontWeight:600 }}>✕ remove</div>
+                    </div>
+                  ) : (
+                    <div style={{ height:72, border:`2px dashed ${C.bdr2}`, borderRadius:9, display:'flex', alignItems:'center', justifyContent:'center', gap:7, color:C.text3, fontSize:12 }}>
+                      <Wand2 size={14} strokeWidth={1.5}/>
+                      <span>Click a photo below to set anchor</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Photo picker grid */}
+                {sortedPhotos.length > 0 && (
+                  <div>
+                    <p style={{ fontSize:11, color:C.text3, marginBottom:8 }}>{sortedPhotos.length} photos · sorted by grade · click to anchor</p>
+                    <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:4 }}>
+                      {sortedPhotos.map(p => {
+                        const isAnchor = p.path===creativeAnchor;
+                        const dc = gc(p.grade);
+                        return (
+                          <button key={p.id} onClick={()=>setCreativeAnchor(isAnchor?null:p.path)}
+                            style={{ position:'relative', aspectRatio:'3/2', padding:0, border:'none', borderRadius:5, overflow:'hidden', cursor:'pointer',
+                              outline: isAnchor?`2px solid ${C.accent}`:`1px solid ${dc}28`, outlineOffset:isAnchor?2:0,
+                              transform:isAnchor?'scale(1.05)':'scale(1)', transition:'transform .12s, outline .12s' }}>
+                            <img src={thumbUrl(p.path)} alt="" loading="eager" style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
+                            <div style={{ position:'absolute', bottom:0, left:0, right:0, height:14, background:'linear-gradient(transparent, rgba(0,0,0,.75))', display:'flex', alignItems:'center', justifyContent:'flex-end', padding:'0 4px' }}>
+                              <span style={{ fontSize:7, fontWeight:700, color:'#fff', fontVariantNumeric:'tabular-nums' }}>{Math.round(p.score*100)}</span>
+                            </div>
+                            {isAnchor && (
+                              <div style={{ position:'absolute', inset:0, background:`${C.accent}40`, display:'flex', alignItems:'center', justifyContent:'center' }}>
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20,6 9,17 4,12"/></svg>
+                              </div>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
                 )}
-                {/* Save Sequence */}
-                {creativeResults.filter((r:any)=>r.success).length > 0 && !creativeLoading && (
-                  <button
-                    disabled={sequenceSaving}
-                    onClick={handleSaveSequence}
-                    style={{
-                      display:'flex', alignItems:'center', gap:5, padding:'5px 12px',
-                      background: 'transparent', border:`1px solid ${C.bdr2}`, borderRadius:7,
-                      color: C.text2, fontSize:12, fontWeight:600,
-                      cursor: sequenceSaving ? 'wait' : 'pointer', transition:'all .15s',
-                    }}
-                    onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.borderColor = C.accent; (e.currentTarget as HTMLButtonElement).style.color = C.accent; }}
-                    onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.borderColor = C.bdr2; (e.currentTarget as HTMLButtonElement).style.color = C.text2; }}>
-                    <Download size={11}/> {sequenceSaving ? 'Saving…' : 'Save Sequence'}
+
+              </div>
+
+              {/* Generate button — pinned to bottom */}
+              <div style={{ padding:'14px 18px', borderTop:`1px solid ${C.border}`, flexShrink:0 }}>
+                {photos.length===0 && (
+                  <p style={{ fontSize:11, color:C.text3, textAlign:'center', marginBottom:10 }}>Grade a folder first to load photos.</p>
+                )}
+                <button disabled={!canGenerate} onClick={handleRunCreativeDirection}
+                  style={{ width:'100%', display:'flex', alignItems:'center', justifyContent:'center', gap:8, padding:'11px 0',
+                    background: canGenerate ? C.accent : C.surf2, border:'none', borderRadius:8,
+                    color: canGenerate ? '#fff' : C.text3, fontSize:14, fontWeight:700,
+                    cursor: canGenerate ? 'pointer' : 'not-allowed', opacity:photos.length===0?0.45:1, transition:'all .18s' }}>
+                  {creativeLoading
+                    ? <><div style={{width:13,height:13,border:'2px solid #888',borderTopColor:'transparent',borderRadius:'50%',animation:'spin .8s linear infinite'}}/> Building sequence…</>
+                    : <><Wand2 size={13}/> {hasResults ? 'Rebuild Sequence' : 'Build Story Sequence'}</>}
+                </button>
+                {usedCount>0 && (
+                  <button onClick={handleClearUsed}
+                    style={{ width:'100%', marginTop:6, fontSize:11, color:C.text3, background:'none', border:'none', cursor:'pointer', padding:'4px 0', textAlign:'center' }}>
+                    Reset {usedCount} excluded photos
                   </button>
                 )}
-                <button
-                  disabled={creativeLoading || !creativeAnchor}
-                  onClick={handleRunCreativeDirection}
-                  style={{
-                    display:'flex', alignItems:'center', gap:6, padding:'6px 16px',
-                    background: creativeLoading ? C.surf2 : C.accent,
-                    border:'none', borderRadius:7,
-                    color: creativeLoading ? C.text3 : '#fff', fontSize:13, fontWeight:700,
-                    cursor: creativeLoading || !creativeAnchor ? 'not-allowed' : 'pointer',
-                    opacity: !creativeAnchor ? 0.4 : 1,
-                    transition:'all .18s',
-                  }}>
-                  {creativeLoading
-                    ? <><div style={{ width:11,height:11,border:'2px solid #888',borderTopColor:'transparent',borderRadius:'50%',animation:'spin .8s linear infinite' }}/> Stylizing…</>
-                    : <><Wand2 size={11}/> Generate Story</>}
-                </button>
               </div>
             </div>
 
-            <div style={{ flex:1, overflowY:'auto', padding:'20px 24px', display:'flex', flexDirection:'column', gap:20 }}>
+            {/* ── Right results panel ──────────────────────────────── */}
+            <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
 
-              {/* ── Setup section (always visible) ── */}
-              <div style={{ display:'grid', gridTemplateColumns:'auto 1fr', gap:20, alignItems:'start' }}>
-
-                {/* Step 1 — Anchor */}
-                <div>
-                  <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:10 }}>
-                    <span style={{ width:18, height:18, borderRadius:'50%', background: creativeAnchor ? C.accent : C.surf3, color: creativeAnchor ? '#fff' : C.text3, fontSize:10, fontWeight:800, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>1</span>
-                    <span style={{ fontSize:11, fontWeight:700, letterSpacing:'.07em', textTransform:'uppercase', color: creativeAnchor ? C.text2 : C.text3 }}>Style Anchor</span>
-                    {!creativeAnchor && <span style={{ fontSize:11, color:C.text3 }}>— pick your reference image</span>}
-                  </div>
-                  {creativeAnchor ? (
-                    <div style={{ position:'relative', width:150, borderRadius:8, overflow:'hidden', border:`2px solid ${C.accent}`, cursor:'pointer', boxShadow:`0 0 0 3px ${C.accent}22` }}
-                      onClick={() => setCreativeAnchor(null)}
-                      title="Click to change anchor">
-                      <img src={thumbUrl(creativeAnchor)} alt=""
-                        style={{ width:'100%', aspectRatio:'3/2', objectFit:'cover', display:'block' }}/>
-                      <div style={{ position:'absolute', inset:0, background:'rgba(0,0,0,.6)', display:'flex', alignItems:'center', justifyContent:'center', opacity:0, transition:'opacity .15s' }}
-                        onMouseEnter={e=>(e.currentTarget.style.opacity='1')}
-                        onMouseLeave={e=>(e.currentTarget.style.opacity='0')}>
-                        <span style={{ color:'#fff', fontSize:11, fontWeight:600 }}>Change</span>
-                      </div>
-                      <div style={{ position:'absolute', top:5, left:5, background:C.accent, borderRadius:4, padding:'2px 6px', fontSize:9, fontWeight:800, color:'#fff', letterSpacing:'.06em' }}>ANCHOR</div>
-                    </div>
-                  ) : (
-                    <div style={{ width:150, aspectRatio:'3/2', border:`2px dashed ${C.bdr2}`, borderRadius:8, display:'flex', alignItems:'center', justifyContent:'center', flexDirection:'column', gap:5, color:C.text3 }}>
-                      <Wand2 size={18} strokeWidth={1.5}/>
-                      <span style={{ fontSize:10, textAlign:'center', lineHeight:1.4, padding:'0 8px' }}>Click a photo below</span>
-                    </div>
-                  )}
-                </div>
-
-                {/* Step 2 — Settings */}
-                <div style={{ display:'flex', flexDirection:'column', gap:14 }}>
-
-                  {/* Sequence length */}
-                  <div>
-                    <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:10 }}>
-                      <span style={{ width:18, height:18, borderRadius:'50%', background:C.surf3, color:C.text3, fontSize:10, fontWeight:800, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>2</span>
-                      <span style={{ fontSize:11, fontWeight:700, letterSpacing:'.07em', textTransform:'uppercase', color:C.text2 }}>Sequence Length</span>
-                      <span style={{ fontSize:11, color:C.text3 }}>— how many images in the story</span>
-                    </div>
-                    <div style={{ display:'flex', gap:4 }}>
-                      {[5,6,7,8,9,10].map(n => (
-                        <button key={n} onClick={() => setCreativeCount(n)}
-                          style={{
-                            width:34, height:34, borderRadius:7, fontSize:13, fontWeight:700,
-                            cursor:'pointer', transition:'all .15s',
-                            background: creativeCount === n ? C.accent : C.surf2,
-                            border: `1px solid ${creativeCount === n ? C.accent : C.bdr2}`,
-                            color: creativeCount === n ? '#fff' : C.text2,
-                          }}>
-                          {n}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Style brief */}
-                  <div>
-                    <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:8 }}>
-                      <span style={{ width:18, height:18, borderRadius:'50%', background:C.surf3, color:C.text3, fontSize:10, fontWeight:800, display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>3</span>
-                      <span style={{ fontSize:11, fontWeight:700, letterSpacing:'.07em', textTransform:'uppercase', color:C.text2 }}>Style Brief</span>
-                      <span style={{ fontSize:11, color:C.text3 }}>— optional</span>
-                    </div>
-                    <textarea
-                      value={creativePrompt}
-                      onChange={e => setCreativePrompt(e.target.value)}
-                      placeholder={'Describe the mood or look…  e.g. "cinematic grain, deep shadows" or leave blank to use the anchor image only'}
-                      rows={2}
-                      style={{
-                        width:'100%', boxSizing:'border-box', resize:'vertical',
-                        background:C.surf, border:`1px solid ${C.bdr2}`, borderRadius:7,
-                        padding:'8px 12px', fontSize:12, color:C.text, lineHeight:1.6,
-                        outline:'none', fontFamily:'inherit',
-                      }}
-                      onFocus={e => { e.currentTarget.style.borderColor=C.aBdr; }}
-                      onBlur={e =>  { e.currentTarget.style.borderColor=C.bdr2; }}
-                    />
-                  </div>
-
-                </div>
-              </div>
-
-              {/* Anchor picker grid */}
-              {anchorCandidates.length > 0 && (
-                <div>
-                  <p style={{ fontSize:11, color:C.text3, marginBottom:8 }}>
-                    <span style={{ fontWeight:700, textTransform:'uppercase', letterSpacing:'.07em' }}>Photos</span>
-                    <span style={{ marginLeft:6 }}>· click any to set as anchor · sorted by grade</span>
-                  </p>
-                  <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
-                    {anchorCandidates.map(p => {
-                      const isAnchor = p.path === creativeAnchor;
-                      const gradeColor = gc(p.grade);
-                      return (
-                        <button key={p.id}
-                          onClick={() => setCreativeAnchor(isAnchor ? null : p.path)}
-                          style={{
-                            position:'relative', width:88, height:60, padding:0, border:'none',
-                            borderRadius:6, overflow:'hidden', cursor:'pointer',
-                            outline: isAnchor ? `2px solid ${C.accent}` : `1px solid ${gradeColor}33`,
-                            outlineOffset:1, transition:'all .12s',
-                            transform: isAnchor ? 'scale(1.06)' : 'scale(1)',
-                          }}>
-                          <img src={thumbUrl(p.path)} alt=""
-                            style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
-                          <div style={{ position:'absolute', bottom:0, left:0, right:0, height:16, background:'rgba(0,0,0,.7)', display:'flex', alignItems:'center', justifyContent:'space-between', padding:'0 4px' }}>
-                            <span style={{ fontSize:7, fontWeight:700, color:gradeColor, letterSpacing:'.04em' }}>{gl(p.grade)}</span>
-                            <span style={{ fontSize:7, color:'#aaa' }}>{(p.score*100).toFixed(0)}</span>
-                          </div>
-                          {isAnchor && (
-                            <div style={{ position:'absolute', inset:0, background:`${C.accent}55`, display:'flex', alignItems:'center', justifyContent:'center' }}>
-                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20,6 9,17 4,12"/></svg>
-                            </div>
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              {/* No photos empty state */}
-              {photos.length === 0 && (
-                <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:10, color:C.text3, paddingTop:20 }}>
-                  <Wand2 size={28} strokeWidth={1}/>
-                  <p style={{ fontSize:13, margin:0 }}>Grade a folder first to load photos.</p>
-                </div>
-              )}
-
-              {/* Progress */}
+              {/* Progress bar (only while loading) */}
               {creativeLoading && (
-                <div style={{ background:C.surf, border:`1px solid ${C.bdr2}`, borderRadius:8, padding:'14px 18px' }}>
-                  <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10 }}>
-                    <div style={{ width:12,height:12,border:`2px solid ${C.accent}`,borderTopColor:'transparent',borderRadius:'50%',animation:'spin .8s linear infinite',flexShrink:0 }}/>
-                    <span style={{ fontSize:13, color:C.text2, fontWeight:500 }}>{creativeStage || 'Processing…'}</span>
-                    <span style={{ marginLeft:'auto', fontSize:12, color:C.text3, fontVariantNumeric:'tabular-nums' }}>{Math.round(creativeProgress*100)}%</span>
+                <div style={{ flexShrink:0, padding:'12px 20px', borderBottom:`1px solid ${C.border}`, background:C.surf }}>
+                  <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:8 }}>
+                    <div style={{width:11,height:11,border:`2px solid ${C.accent}`,borderTopColor:'transparent',borderRadius:'50%',animation:'spin .8s linear infinite',flexShrink:0}}/>
+                    <span style={{fontSize:13,color:C.text2,fontWeight:500}}>{creativeStage||'Building sequence…'}</span>
+                    <span style={{marginLeft:'auto',fontSize:12,color:C.text3,fontVariantNumeric:'tabular-nums'}}>{Math.round(creativeProgress*100)}%</span>
                   </div>
-                  <div style={{ height:3, background:C.bdr2, borderRadius:2, overflow:'hidden' }}>
-                    <div style={{ height:'100%', width:`${Math.round(creativeProgress*100)}%`, background:`linear-gradient(90deg,${C.accent},oklch(70% .19 205))`, borderRadius:2, transition:'width .4s cubic-bezier(.2,0,0,1)' }}/>
+                  <div style={{height:3,background:C.bdr2,borderRadius:2,overflow:'hidden'}}>
+                    <div style={{height:'100%',width:`${Math.round(creativeProgress*100)}%`,background:`linear-gradient(90deg,${C.accent},oklch(70% .19 205))`,borderRadius:2,transition:'width .4s cubic-bezier(.2,0,0,1)'}}/>
                   </div>
                 </div>
               )}
 
-              {/* Story Sequence */}
-              {creativeResults.filter((r:any)=>r.success).length > 0 ? (
-                <div>
-                  <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:12 }}>
-                    <p style={{ fontSize:11, fontWeight:700, letterSpacing:'.08em', textTransform:'uppercase', color:C.text3, margin:0 }}>
-                      Story Sequence — {creativeResults.filter((r:any)=>r.success).length} images
+              {hasResults ? (
+                <>
+                  {/* Results toolbar */}
+                  <div style={{flexShrink:0, display:'flex', alignItems:'center', justifyContent:'space-between', padding:'10px 20px', borderBottom:`1px solid ${C.border}`, background:C.surf}}>
+                    <div style={{display:'flex', alignItems:'center', gap:10}}>
+                      <span style={{fontSize:13, fontWeight:700}}>Story Sequence</span>
+                      <span style={{fontSize:11, color:C.text3, background:C.surf2, borderRadius:4, padding:'2px 8px'}}>{successResults.length} images</span>
+                      {creativeResults.some((r:any)=>!r.success) && (
+                        <span style={{fontSize:11, color:C.weak, cursor:'default'}}
+                          title={creativeResults.filter((r:any)=>!r.success).map((r:any)=>`${(r.source_path??'').split(/[\\/]/).pop()}: ${r.error??'failed'}`).join('\n')}>
+                          {creativeResults.filter((r:any)=>!r.success).length} failed ⓘ
+                        </span>
+                      )}
+                    </div>
+                    <div style={{display:'flex', alignItems:'center', gap:8}}>
+                      {!creativeLoading && (
+                        <button disabled={sequenceSaving} onClick={handleSaveSequence}
+                          style={{display:'flex', alignItems:'center', gap:5, fontSize:12, fontWeight:600, padding:'4px 12px', borderRadius:6,
+                            cursor:sequenceSaving?'wait':'pointer', background:'transparent', border:`1px solid ${C.bdr2}`, color:C.text2, transition:'all .15s'}}>
+                          <Download size={11}/>{sequenceSaving?'Saving…':'Save Sequence'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Sequence grid — landscape cards, 2–3 per row */}
+                  <div style={{flex:1, overflowY:'auto', padding:'18px 20px'}}>
+                    <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(240px, 1fr))', gap:14}}>
+                      {successResults.map((r:any, i:number) => {
+                        const slot  = r.slot ?? r.params?.role ?? `Frame ${i+1}`;
+                        const sc    = slotColor(slot);
+                        const fname = (r.source_path??'').split(/[\\/]/).pop()??'';
+                        const photoScore = photos.find((p:any)=>p.path===r.source_path)?.score;
+                        return (
+                          <div key={i} style={{borderRadius:10, overflow:'hidden', border:`1px solid ${C.border}`, background:C.surf, display:'flex', flexDirection:'column', boxShadow:'0 2px 12px rgba(0,0,0,.25)'}}>
+                            {/* Slot header */}
+                            <div style={{padding:'8px 12px', background:C.surf2, borderBottom:`2px solid ${sc}`, display:'flex', alignItems:'center', gap:8}}>
+                              <span style={{fontSize:9, fontWeight:800, letterSpacing:'.12em', color:sc, textTransform:'uppercase', flex:1}}>{slot}</span>
+                              <span style={{fontSize:10, color:C.text3, fontWeight:600, background:C.surf3, borderRadius:3, padding:'1px 6px'}}>
+                                {i+1}/{successResults.length}
+                              </span>
+                            </div>
+                            {/* Photo — landscape 4:3 */}
+                            <div style={{position:'relative', aspectRatio:'4/3', overflow:'hidden', background:C.bg}}>
+                              <img src={photoUrl(r.source_path ?? r.output_path)} alt="" loading="eager" decoding="async"
+                                style={{width:'100%', height:'100%', objectFit:'cover', display:'block'}}/>
+                              <div style={{position:'absolute', inset:0, pointerEvents:'none',
+                                background:'linear-gradient(to bottom, transparent 55%, rgba(0,0,0,.65) 100%)'}}/>
+                              <a href={photoUrl(r.output_path ?? r.source_path)} download={fname} onClick={e=>e.stopPropagation()}
+                                style={{position:'absolute', top:8, right:8, background:'rgba(0,0,0,.65)', backdropFilter:'blur(4px)', borderRadius:5, padding:'5px 8px', fontSize:10, color:'#fff', textDecoration:'none', display:'flex', alignItems:'center', gap:3, fontWeight:600, opacity:.85}}>
+                                <Download size={9}/>
+                              </a>
+                              {photoScore!=null && (
+                                <div style={{position:'absolute', bottom:8, right:10, display:'flex', alignItems:'center', gap:3,
+                                  background:'rgba(0,0,0,.7)', backdropFilter:'blur(6px)', borderRadius:4, padding:'2px 8px'}}>
+                                  <div style={{width:5, height:5, borderRadius:'50%', background:sc}}/>
+                                  <span style={{fontSize:12, fontWeight:800, color:'#fff', fontVariantNumeric:'tabular-nums'}}>{Math.round(photoScore*100)}</span>
+                                </div>
+                              )}
+                            </div>
+                            {/* Filename */}
+                            <div style={{padding:'8px 12px'}}>
+                              <span style={{fontSize:10, color:C.text3, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', display:'block'}} title={fname}>{fname}</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </>
+              ) : (
+                /* Empty state */
+                <div style={{flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:18, color:C.text3, padding:40}}>
+                  <Wand2 size={44} strokeWidth={1} style={{opacity:.3}}/>
+                  <div style={{textAlign:'center', maxWidth:360}}>
+                    <p style={{fontSize:16, fontWeight:700, color:C.text2, marginBottom:10}}>No sequence yet</p>
+                    <p style={{fontSize:13, lineHeight:1.75, margin:0, color:C.text3}}>
+                      Write a mood brief on the left,<br/>
+                      optionally pick a reference photo,<br/>
+                      then press <strong style={{color:C.accent, fontWeight:700}}>Build Story Sequence</strong>.
                     </p>
-                    {creativeResults.some((r:any)=>!r.success) && (
-                      <span style={{ fontSize:11, color:C.weak, cursor:'pointer' }}
-                        title={creativeResults.filter((r:any)=>!r.success).map((r:any)=>
-                          `${(r.source_path??'').split(/[\\/]/).pop()}: ${r.error??'unknown error'}`
-                        ).join('\n')}>
-                        {creativeResults.filter((r:any)=>!r.success).length} failed ⓘ
-                      </span>
+                    {photos.length===0 && (
+                      <p style={{fontSize:12, color:C.weak, marginTop:14}}>Grade a folder first to load photos.</p>
                     )}
-                    <button onClick={() => setCreativeShowOriginal(o => !o)}
-                      style={{ marginLeft:'auto', fontSize:11, fontWeight:600, padding:'3px 10px', borderRadius:5, cursor:'pointer', transition:'all .22s cubic-bezier(.2,0,0,1)',
-                        background: creativeShowOriginal ? C.surf3 : 'transparent',
-                        border:`1px solid ${C.bdr2}`,
-                        color: creativeShowOriginal ? C.text : C.text3 }}>
-                      {creativeShowOriginal ? 'Showing originals' : 'Show originals'}
-                    </button>
                   </div>
-                  {/* Horizontal scrollable sequence strip */}
-                  <div style={{ display:'flex', gap:10, overflowX:'auto', paddingBottom:8,
-                    scrollbarWidth:'thin', scrollbarColor:`${C.bdr2} transparent` }}>
-                    {((() => {
-                      // Sort by seq_pos (cinematic order set by backend), fallback to role order
-                      const ROLE_ORDER = ['opener','subject','detail','contrast','closer'];
-                      const roleRank = (r: string) => { const i = ROLE_ORDER.indexOf(r); return i === -1 ? 99 : i; };
-                      return [...creativeResults.filter((r:any)=>r.success)]
-                        .sort((a:any,b:any) => {
-                          const ap = a.params?.seq_pos; const bp = b.params?.seq_pos;
-                          if (ap != null && bp != null) return ap - bp;
-                          return roleRank(a.params?.role??'') - roleRank(b.params?.role??'');
-                        });
-                    })()).map((r:any, i:number) => {
-                      const role = r.params?.role ?? '';
-                      const rc   = roleColor(role);
-                      const displayPath = creativeShowOriginal ? r.source_path : r.output_path;
-                      return (
-                        <div key={i} style={{ flexShrink:0, width:220, borderRadius:8, overflow:'hidden',
-                          border:`1px solid ${C.border}`, background:C.surf,
-                          boxShadow:'0 2px 8px rgba(0,0,0,.25)' }}>
-                          {/* Sequence number + role label */}
-                          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between',
-                            padding:'5px 8px', borderBottom:`1px solid ${C.border}`, background:C.surf2 }}>
-                            <span style={{ fontSize:11, fontWeight:800, color:C.text2 }}>
-                              {String(i + 1).padStart(2, '0')}
-                            </span>
-                            <span style={{ fontSize:9, fontWeight:800, letterSpacing:'.09em',
-                              color:rc, textTransform:'uppercase' }}>
-                              {role}
-                            </span>
-                          </div>
-                          <div style={{ position:'relative', aspectRatio:'2/3', overflow:'hidden', background:C.bg }}>
-                            <img src={photoUrl(displayPath)} alt="" loading="lazy" decoding="async"
-                              style={{ width:'100%', height:'100%', objectFit:'cover', display:'block',
-                                transition:'opacity .28s ease' }}/>
-                            {creativeShowOriginal && (
-                              <div style={{ position:'absolute', bottom:6, left:6, background:'rgba(0,0,0,.7)',
-                                borderRadius:3, padding:'2px 6px', fontSize:9, color:'#fff', fontWeight:600 }}>
-                                ORIGINAL
-                              </div>
-                            )}
-                            <a href={photoUrl(r.output_path)} download={r.filename}
-                              onClick={e => e.stopPropagation()}
-                              style={{ position:'absolute', top:6, right:6, background:'rgba(0,0,0,.7)',
-                                borderRadius:4, padding:'3px 6px', fontSize:10, color:'#fff',
-                                textDecoration:'none', display:'flex', alignItems:'center', gap:3 }}>
-                              <Download size={9}/> Save
-                            </a>
-                          </div>
-                          <div style={{ padding:'6px 9px' }}>
-                            <p style={{ fontSize:10.5, color:C.text3, margin:0, overflow:'hidden',
-                              textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                              {(r.source_path ?? '').split(/[\\/]/).pop()}
-                            </p>
-                            <p style={{ fontSize:10, color:C.text3, margin:'2px 0 0', opacity:.7 }}>
-                              str {r.params?.strength?.toFixed(2)} · gd {r.params?.guidance?.toFixed(1)}
-                            </p>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              ) : !creativeLoading && (
-                <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:12, color:C.text3, paddingTop:32 }}>
-                  <Wand2 size={32} strokeWidth={1}/>
-                  <div style={{ textAlign:'center', maxWidth:440, lineHeight:1.7 }}>
-                    <p style={{ fontSize:14, color:C.text2, fontWeight:600, marginBottom:6 }}>Creative Direction</p>
-                    <p style={{ fontSize:13, margin:0 }}>
-                      Select an <strong style={{ color:C.accent }}>anchor image</strong> from your photos above.<br/>
-                      MOGCO-II assigns each photo a narrative role and tunes Flux 2 [klein]<br/>
-                      parameters to balance <strong>style fidelity</strong> · <strong>structure</strong> · <strong>set cohesion</strong>.
-                    </p>
-                  </div>
-                  {photos.length === 0 && (
-                    <p style={{ fontSize:12, color:C.weak, marginTop:4 }}>
-                      No photos loaded — open and grade a folder first.
-                    </p>
-                  )}
                 </div>
               )}
 

@@ -422,32 +422,48 @@ function Show-Installing {
 
     # Step 2 — pip upgrade
     if ($ok) {
-        Set-Progress 10 "Upgrading pip..."
+        Set-Progress 8 "Upgrading pip..."
         Run-Cmd $pythonV "-m pip install --upgrade pip --quiet" "pip upgrade" | Out-Null
     }
 
-    # Step 3 — PyTorch (largest step)
+    # Step 3 — PyTorch (detect GPU, install matching wheel)
     if ($ok) {
-        Set-Progress 14 "Installing PyTorch (CPU) — this takes a few minutes..."
-        $ok = Run-Cmd $pip "install torch torchvision --index-url https://download.pytorch.org/whl/cpu --quiet" "torch + torchvision"
+        $hasCuda = $false
+        try {
+            $nvOut = & nvidia-smi 2>&1
+            if ($LASTEXITCODE -eq 0) { $hasCuda = $true }
+        } catch {}
+
+        if ($hasCuda) {
+            Set-Progress 12 "GPU detected — installing PyTorch with CUDA 12.1..."
+            Log "  GPU detected — installing torch cu121 wheel"
+            $ok = Run-Cmd $pip `
+                "install `"torch==2.5.1`" `"torchvision==0.20.1`" --index-url https://download.pytorch.org/whl/cu121 --quiet" `
+                "torch + torchvision (CUDA 12.1)"
+        } else {
+            Set-Progress 12 "No GPU — installing PyTorch (CPU)..."
+            Log "  No NVIDIA GPU — installing CPU torch wheel"
+            $ok = Run-Cmd $pip `
+                "install `"torch==2.5.1`" `"torchvision==0.20.1`" --index-url https://download.pytorch.org/whl/cpu --quiet" `
+                "torch + torchvision (CPU)"
+        }
     }
 
-    # Step 4 — CLIP
+    # Step 4 — HuggingFace + quantisation core
     if ($ok) {
-        Set-Progress 60 "Installing CLIP..."
-        $clipOk = Run-Cmd $pip "install `"clip @ git+https://github.com/openai/CLIP.git`" --quiet" "openai/CLIP"
-        if (-not $clipOk) { Log "  ⚠ CLIP install skipped (git may not be in PATH). Some features may be limited." }
+        Set-Progress 48 "Installing AI model libraries..."
+        $ok = Run-Cmd $pip "install transformers accelerate bitsandbytes --quiet" "transformers + accelerate + bitsandbytes"
     }
 
-    # Step 5 — requirements
+    # Step 5 — remaining dependencies (pyiqa, ultralytics, lancedb, etc.)
     if ($ok) {
-        Set-Progress 70 "Installing remaining libraries..."
+        Set-Progress 65 "Installing remaining libraries..."
         $ok = Run-Cmd $pip "install -r `"$(Join-Path $ROOT 'requirements.txt')`" --quiet" "requirements.txt"
     }
 
     # Step 6 — frontend
     if ($ok) {
-        Set-Progress 85 "Building the interface..."
+        Set-Progress 83 "Building the interface..."
         if (-not (Test-Path (Join-Path $ROOT "frontend\dist\index.html"))) {
             $ok = Run-Cmd $npm "--prefix `"$(Join-Path $ROOT 'frontend')`" install --silent" "npm install"
             if ($ok) {
@@ -470,10 +486,17 @@ function Show-Installing {
             $s.Arguments        = "`"$vbsPath`""
             $s.WorkingDirectory = $ROOT
             $s.IconLocation     = "$iconPath,0"
-            $s.Description      = "Street Story Curator"
+            $s.Description      = "Street Story Curator — AI Photo Curator"
             $s.Save()
             Log "  ✓ Shortcut created on Desktop"
         } catch { Log "  ⚠ Could not create shortcut: $_" }
+    }
+
+    # Write stamp — marks setup as complete so future launches skip install
+    if ($ok) {
+        try {
+            Set-Content -Path (Join-Path $ROOT "venv\.setup_ok") -Value "ok"
+        } catch {}
     }
 
     Set-Progress 100 ""

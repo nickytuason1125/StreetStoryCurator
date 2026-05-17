@@ -24,9 +24,12 @@ import numpy as np
 from pathlib import Path
 from typing import Optional
 
-_DB_DIR    = "cache/lance.db"
+# Absolute path anchored to this file — never affected by CWD changes in server threads.
+_DB_DIR    = str(Path(__file__).resolve().parent.parent / "cache" / "lance.db")
 _TBL_NAME  = "photos"
 _EMBED_DIM = 1536   # SigLIP-2 ViT-g/14 NaFlex
+
+print(f"[lance_store] DB path: {_DB_DIR}")
 
 _lock = threading.Lock()
 _tbl  = None   # cached lancedb Table reference
@@ -196,6 +199,23 @@ def update_personal_scores(path_score_map: dict[str, float]) -> None:
     tbl = _open_table()
     with _lock:
         tbl.merge_insert("path").when_matched_update_all().execute(pa.table(rows))
+
+
+def compact_after_write() -> None:
+    """
+    Compact LanceDB fragments after a bulk write.
+
+    LanceDB appends each upsert as a new fragment. Compacting merges them into
+    a single file, eliminating scan overhead on the next query. Safe to skip —
+    performance degrades gracefully without compaction.
+    """
+    try:
+        tbl = _open_table()
+        with _lock:
+            tbl.compact_files()
+        print("[lance] Compaction done")
+    except Exception as e:
+        print(f"[lance] Compaction skipped ({e})")
 
 
 def count() -> int:

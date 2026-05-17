@@ -19,11 +19,15 @@ frontend/node_modules/
 # Rust / Tauri build output
 frontend/src-tauri/target/
 
-# Large ML model files (too big for GitHub — keep locally)
-models/*.pt
-models/*.bin
-models/*.onnx
-models/*.gguf
+# Large ML model files — tracked by path to keep the models/ dir
+*.pt
+*.bin
+*.gguf
+models/**/*.onnx
+# root-level stragglers
+/*.pt
+/*.bin
+/*.gguf
 
 # Legacy backup files
 *.legacy_backup
