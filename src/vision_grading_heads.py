@@ -145,15 +145,18 @@ def _run_yolo_seg(
                 person_detected[path] = False
             else:
                 _, H, W = t.shape
+                xyxy_arr = boxes.xyxy.cpu().numpy()   # (N, 4)
+                conf_arr = boxes.conf.cpu().numpy()   # (N,)
                 bboxes_norm: list = []
-                for box in boxes.xyxy.cpu().numpy():
-                    x1n = float(box[0]) / W
-                    y1n = float(box[1]) / H
-                    x2n = float(box[2]) / W
-                    y2n = float(box[3]) / H
-                    # Skip sub-0.5% area detections — filters noise artefacts,
-                    # handrail shadows, and distant background pixels that YOLO
-                    # occasionally classifies as class 0.
+                for box_coords, conf_val in zip(xyxy_arr, conf_arr):
+                    # Confidence gate: drop faint shadow artefacts below 0.55.
+                    # Area gate: drop sub-0.5% detections (noise / distant pixels).
+                    if float(conf_val) < 0.55:
+                        continue
+                    x1n = float(box_coords[0]) / W
+                    y1n = float(box_coords[1]) / H
+                    x2n = float(box_coords[2]) / W
+                    y2n = float(box_coords[3]) / H
                     if (x2n - x1n) * (y2n - y1n) < 0.005:
                         continue
                     bboxes_norm.append([x1n, y1n, x2n, y2n])
