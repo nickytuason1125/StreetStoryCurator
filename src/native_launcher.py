@@ -28,8 +28,11 @@ sys.stderr = _log_fh
 os.chdir(_ROOT)
 sys.path.insert(0, str(_ROOT))
 sys.path.insert(0, str(_ROOT / "src"))
+_DEV_MODE = "--dev" in sys.argv
+
 _log(f"--- Launch {time.strftime('%Y-%m-%d %H:%M:%S')} ---")
 _log(f"Python: {sys.executable}")
+_log(f"Dev mode: {_DEV_MODE}")
 
 
 def _find_free_port(preferred=8000):
@@ -107,16 +110,23 @@ def _find_browser():
 def main():
     url = ""
     try:
-        # Build frontend if missing
-        _build_frontend_if_needed()
+        if _DEV_MODE:
+            # Dev mode: Vite dev server owns the frontend; skip the dist build.
+            # The launcher still starts FastAPI so /api calls resolve.
+            # Vite's proxy config forwards /api → 127.0.0.1:8000 automatically.
+            _log("Dev mode — skipping frontend dist build")
+        else:
+            _build_frontend_if_needed()
 
-        port = _find_free_port()
-        url  = f"http://127.0.0.1:{port}"
-        _log(f"Port: {port}")
+        # In dev mode pin to 8000 so Vite's hardcoded proxy target always matches.
+        port = 8000 if _DEV_MODE else _find_free_port()
+        api_url     = f"http://127.0.0.1:{port}"
+        url         = "http://localhost:5173" if _DEV_MODE else api_url
+        _log(f"Port: {port}  frontend_url: {url}")
 
-        # Start server
+        # Start FastAPI server (always — even in dev mode the frontend needs the API)
         threading.Thread(target=_run_server, args=(port,), daemon=False).start()
-        if not _wait_for_server(url):
+        if not _wait_for_server(api_url):
             raise RuntimeError("Server did not become available in time.")
 
         # Try pywebview first (no external browser dependency)

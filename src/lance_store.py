@@ -79,7 +79,7 @@ def _open_table():
             else:
                 # Add missing columns (e.g. reasoning_log added later)
                 _tbl = existing
-                _ensure_reasoning_log_column(_tbl)
+                _ensure_columns(_tbl)
         except Exception as _me:
             print(f"[lance] Migration check failed ({_me}), using existing table as-is")
             _tbl = existing
@@ -89,16 +89,32 @@ def _open_table():
     return _tbl
 
 
-def _ensure_reasoning_log_column(tbl) -> None:
-    """Add reasoning_log column to an older table that predates it."""
+def _ensure_columns(tbl) -> None:
+    """Add any schema columns that are missing from an older table.
+
+    Each entry is (column_name, pyarrow_type, default_value).  Safe to call on
+    every open — only issues ALTER TABLE when a column is actually absent.
+    """
+    import pyarrow as pa
+    _REQUIRED = [
+        ("reasoning_log", pa.string(),  ""),
+        ("personal_score", pa.float32(), 0.5),
+    ]
     try:
-        col_names = [f.name for f in tbl.schema]
-        if "reasoning_log" not in col_names:
-            import pyarrow as pa
-            n = tbl.count_rows()
-            tbl.add_columns({"reasoning_log": pa.array([""] * n, type=pa.string())})
-    except Exception:
-        pass   # non-fatal; column will just be missing for old rows
+        col_names = {f.name for f in tbl.schema}
+        n = None
+        for col, dtype, default in _REQUIRED:
+            if col not in col_names:
+                if n is None:
+                    n = tbl.count_rows()
+                if dtype == pa.string():
+                    arr = pa.array([default] * n, type=dtype)
+                else:
+                    arr = pa.array([float(default)] * n, type=dtype)
+                tbl.add_columns({col: arr})
+                print(f"[lance] Added missing column '{col}' (default={default!r})")
+    except Exception as _e:
+        print(f"[lance] Column migration warning: {_e}")
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -147,6 +163,27 @@ def upsert_batch(records: list[dict]) -> None:
         tbl.merge_insert("path").when_matched_update_all().when_not_matched_insert_all().execute(
             pa.table(rows)
         )
+
+    # ── DISK WRITE VERIFICATION ───────────────────────────────────────────────
+    # Reads back the first 3 written rows immediately after commit.
+    # If score here differs from what the UI shows, the bug is in HTTP caching,
+    # not in the write path.
+    try:
+        for _rec in records[:3]:
+            _fp   = _rec["path"]
+            _fn   = Path(_fp).name
+            _safe = _fp.replace("'", "''")
+            _vrows = tbl.search().where(f"path = '{_safe}'", prefilter=True).to_list()
+            if _vrows:
+                print(
+                    f"[lance] VERIFIED DISK VALUE: {_fn}"
+                    f"  score={float(_vrows[0].get('score', 0)):.3f}"
+                    f"  grade={_vrows[0].get('grade', '?')!r}"
+                )
+            else:
+                print(f"[lance] VERIFIED DISK VALUE: {_fn}  *** ROW NOT FOUND — upsert may have failed ***")
+    except Exception as _ve:
+        print(f"[lance] Write verification skipped: {_ve}")
 
 
 def query_by_paths(paths: list[str]) -> list[dict]:
@@ -222,6 +259,17 @@ def count() -> int:
     tbl = _open_table()
     with _lock:
         return tbl.count_rows()
+
+
+def close_table() -> None:
+    """Release the cached table reference so file handles are freed.
+
+    Call this after a bulk write to avoid holding the DB open between pipeline
+    runs. The next read/write will re-open a fresh connection.
+    """
+    global _tbl
+    with _lock:
+        _tbl = None
 
 
 def reset() -> None:

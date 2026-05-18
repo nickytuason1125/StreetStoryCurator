@@ -28,6 +28,7 @@ from __future__ import annotations
 import os
 import gc
 import json
+import hashlib
 import threading
 import numpy as np
 from pathlib import Path
@@ -41,6 +42,16 @@ MID_THRESH    = 0.41
 GRADE_STRONG = "Strong ✅"
 GRADE_MID    = "Mid ⚠️"
 GRADE_WEAK   = "Weak ❌"
+
+
+def _np2py(v):
+    """Convert numpy scalar to Python primitive; pass-through for everything else."""
+    return v.item() if hasattr(v, "item") else v
+
+
+def _sanitize_bd(d: dict) -> dict:
+    """Return a copy of breakdown dict with all values cast to Python primitives."""
+    return {k: _np2py(v) for k, v in d.items()}
 
 
 def _generate_brief_variants(brief: str) -> list[str]:
@@ -222,11 +233,14 @@ def run_v2(
         if isinstance(bd, str):
             try: bd = json.loads(bd)
             except Exception: bd = {}
+        _cs = round(float(row.get("score", 0.5)), 3)
         return {
             "id": row["path"], "path": row["path"],
             "filename": Path(row["path"]).name,
             "grade": row.get("grade", GRADE_MID),
-            "score": round(float(row.get("score", 0.5)), 3),
+            "score":         _cs,
+            "overall_score": _cs,
+            "rating":        _cs,
             "human_perception": round(float(row.get("personal_score", 0.5)), 3),
             "personal_score":   round(float(row.get("personal_score", 0.5)), 3),
             "embedding": row.get("embedding", []),
@@ -477,29 +491,46 @@ def run_v2(
             )
 
     # ── Archetype text projections ────────────────────────────────────────────
-    # Four frozen concept reference vectors for soft routing in Step 4d.
+    # Five frozen concept reference vectors for soft routing in Step 4d.
     # Cached after first run — never requires the encoder to reload for this.
+    # Index map: 0=geo  1=night  2=layered  3=messy  4=maximalist_documentary
     _ARCHETYPE_PROMPTS = [
-        "minimalist architectural geometry with graphic lines and empty space",
-        "cinematic low-key portrait with dark background and single light source",
-        "intentional layered environmental street portrait with foreground framing",
-        "unintentional snapshot with cluttered background and unclear composition",
+        "clean minimalist architectural geometry, graphic lines, vanishing points, completely empty space",
+        "cinematic low-key street photography, dark atmospheric shadows, intense chiaroscuro light pools",
+        "layered environmental street portrait, crisp subject focus framed by intentional out-of-focus foreground elements",
+        "unintentional messy amateur snapshot, accidental random camera angles, domestic clutter, junk, trash, throwaway frame, zero artistic value",
+        "highly detailed maximalist environmental documentary photography, authentic traditional shop interior or street life scene, dense cultural artifacts, rich storytelling composition, intentional maximalism",
     ]
-    _arch_cache_path = Path("cache") / "archetype_embs.npy"
+    _arch_cache_path      = Path("cache") / "archetype_embs.npy"
+    _arch_hash_path       = Path("cache") / "archetype_embs.hash"
+    _arch_prompt_hash     = hashlib.md5(json.dumps(_ARCHETYPE_PROMPTS).encode()).hexdigest()
     archetype_embs: Optional[np.ndarray] = None
-    try:
-        if _arch_cache_path.exists():
-            archetype_embs = np.load(str(_arch_cache_path)).astype(np.float32)
-            print("[v2] Archetype embeddings: loaded from cache (4 × 1536)")
-        elif _enc_singleton is not None:
-            _arch_raw      = _enc_singleton.encode_text(_ARCHETYPE_PROMPTS)
-            _arch_nrm      = np.linalg.norm(_arch_raw, axis=1, keepdims=True)
-            archetype_embs = (_arch_raw / (_arch_nrm + 1e-9)).astype(np.float32)
-            _arch_cache_path.parent.mkdir(parents=True, exist_ok=True)
-            np.save(str(_arch_cache_path), archetype_embs)
-            print("[v2] Archetype embeddings: computed and cached (4 × 1536)")
-    except Exception as _e_arch:
-        print(f"[v2] Archetype embeddings unavailable: {_e_arch}")
+
+    # Hash-based invalidation: delete cached embeddings if prompts changed.
+    if _arch_cache_path.exists():
+        _cached_hash = _arch_hash_path.read_text().strip() if _arch_hash_path.exists() else ""
+        if _cached_hash != _arch_prompt_hash:
+            _arch_cache_path.unlink()
+            print("[v2] Archetype prompts changed — invalidating embedding cache")
+
+    if _arch_cache_path.exists():
+        archetype_embs = np.load(str(_arch_cache_path)).astype(np.float32)
+        print("[v2] Archetype embeddings: loaded from cache (4 × 1536)")
+    elif _enc_singleton is not None:
+        # Cache miss — compute from the live encoder (guaranteed loaded at this stage).
+        _arch_raw      = _enc_singleton.encode_text(_ARCHETYPE_PROMPTS)
+        _arch_nrm      = np.linalg.norm(_arch_raw, axis=1, keepdims=True)
+        archetype_embs = (_arch_raw / (_arch_nrm + 1e-9)).astype(np.float32)
+        _arch_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        np.save(str(_arch_cache_path), archetype_embs)
+        _arch_hash_path.write_text(_arch_prompt_hash)
+        print("[v2] Archetype embeddings: computed and cached (4 × 1536)")
+    else:
+        raise RuntimeError(
+            "[v2] Archetype embeddings cache missing and _enc_singleton is None. "
+            "The encoder must be loaded before this stage. "
+            "Delete cache/archetype_embs.npy and re-grade to regenerate."
+        )
 
     # Flush caching allocator — singleton weights remain resident in VRAM
     _vram_clear()
@@ -556,7 +587,9 @@ def run_v2(
                       f" for {n_clustered - n_reps} cluster members")
 
         except Exception as e:
+            import traceback as _tb_dedup
             print(f"[v2] Duplicate detection failed: {e}")
+            _tb_dedup.print_exc()
             to_rate_indices = list(range(n))
 
     # Step 3b: YOLO gate handled by early-exit gate (Step 1b) before SigLIP-2.
@@ -630,7 +663,10 @@ def run_v2(
         )
 
     except Exception as e_clip:
-        print(f"[v2] Composition scoring failed: {e_clip}")
+        import traceback as _tb_clip
+        print(f"[v2] SpecVLM scoring FATAL — full traceback:")
+        _tb_clip.print_exc()
+        raise
 
     _vram_clear()  # Free SpecVLM VRAM before IQA heads load
 
@@ -720,11 +756,10 @@ def run_v2(
                       f"(VLP forced, YOLO soft penalty waived)")
 
         except Exception as e_iqa:
-            _p(0.84, f"IQA heads failed ({type(e_iqa).__name__}) — using SpecVLM scores…")
-            print(f"[v2] IQA heads failed ({e_iqa}) — SpecVLM-only mode")
-            tech_scores_rated      = vlm_scores_rated.copy()
-            aesthetic_scores_rated = vlm_scores_rated.copy()
-            _vram_clear()
+            import traceback as _tb_iqa
+            print(f"[v2] IQA heads FATAL — full traceback:")
+            _tb_iqa.print_exc()
+            raise
 
     _grader_status.update({"mode": "iqa_heads" if not scan_mode else "clip_only",
                            "verify_used": False, "photos_last": len(paths_to_rate), "error": None})
@@ -775,8 +810,8 @@ def run_v2(
     # similarity ≥ 0.75 → enforce overall_score = max(score, 0.65).
     # This guarantees compositionally elite or fine-art-aligned photos can never drop
     # below the Strong bucket threshold due to IQA penalties.
-    _AES_VLP_THRESHOLD    = 0.556   # UniQA quality threshold for VLP trigger
-    _AES_ANCHOR_THRESHOLD = 0.611   # UniQA quality threshold for Anchor Floor
+    _AES_VLP_THRESHOLD    = 0.556   # TOPIQ NR threshold for VLP trigger
+    _AES_ANCHOR_THRESHOLD = 0.72    # TOPIQ NR threshold for Anchor Floor (raised from 0.611 — old value was calibrated for broken UniQA that always returned 0.5)
     _ANCHOR_FLOOR         = 0.65
     _FA_ANCHOR_THRESHOLD  = 0.75                 # normalised fine-art sim threshold
 
@@ -787,9 +822,14 @@ def run_v2(
     _penalty_count   = 0
     _route1_count    = 0
     _route2_count    = 0
-    _blend_count     = 0   # soft archetype blend path
+    _blend_count          = 0   # soft archetype blend path
+    _messy_ceiling_count  = 0   # images hard-capped at 0.49 by messy ceiling
+    _max_gate_count       = 0   # images floored to 0.64 by maximalist documentary gate
+    _geo_cap_count        = 0   # images hard-capped at 0.52 by geo-flat ceiling
+    _max_reject_count     = 0   # max-doc images rejected to ≤ 0.38 (tech/light failure)
+    _night_reject_count   = 0   # night images rejected to ≤ 0.42 (tech failure)
 
-    _ARCHETYPE_TEMP = 0.5   # softmax temperature — lower = sharper route assignment
+    _ARCHETYPE_TEMP = 0.42  # softmax temperature — relaxed from 0.35 to allow fractional blending for hybrid images
 
     for local_i, idx in enumerate(to_rate_indices):
         t  = float(tech_scores_rated[local_i])
@@ -798,10 +838,12 @@ def run_v2(
         mean_lum, std_lum = lum_stats_rated[local_i]
         _path = paths[idx]
 
-        _comp_score  = float(per_photo_breakdowns[idx].get("Composition",   0.5))
-        _light_score = float(per_photo_breakdowns[idx].get("Lighting",      0.5))
-        _hc_score    = float(per_photo_breakdowns[idx].get("Human/Culture", 0.5))
-        _narr_score  = float(per_photo_breakdowns[idx].get("Narrative",     0.5))
+        _bd          = per_photo_breakdowns[idx]
+        _comp_score  = float(_bd.get("Composition",   0.5))
+        _light_score = float(_bd.get("Lighting",      0.5))
+        _hc_score    = float(_bd.get("Human/Culture", 0.5))
+        _narr_score  = float(_bd.get("Narrative",     0.5))
+        _tech_score  = float(_bd.get("Technical",     t))   # explicit; fallback = IQA t
         _raw_comp    = _raw_comp_by_path.get(_path, _comp_score)
         _has_person  = person_detected_dict.get(_path, True)
         _is_ots      = _path in composition_overrides
@@ -841,40 +883,127 @@ def run_v2(
             )
             continue
 
+        _messy_ceiling_active = False   # reset each iteration; set inside archetype block
+        _tech_fail_cap = float('inf')   # reset each iteration; set inside archetype block
+
         # ── Archetype Projection: Soft Attention Blend ────────────────────────
         # Compute cosine similarities between the image embedding and 4 pre-encoded
         # text concept archetypes (all L2-normalised → dot product = cosine sim).
         # Temperature-sharpened softmax converts similarities to blend weights.
         # If archetypes unavailable, fall back to the standard VLP formula path.
         if archetype_embs is not None:
-            _img_emb = embs[idx].astype(np.float32)                      # (1536,)
-            _sims    = (_img_emb @ archetype_embs.T).clip(-1.0, 1.0)    # (4,)
+            _raw     = embs[idx]
+            _img_emb = (
+                _raw.squeeze().numpy() if hasattr(_raw, 'numpy')
+                else np.asarray(_raw).squeeze()
+            ).astype(np.float32)                                          # (1536,)
+            # Explicit L2 re-normalisation — eliminates magnitude scaling bias so
+            # dot product is a true cosine similarity regardless of encoder output scale.
+            _img_norm = np.linalg.norm(_img_emb)
+            if _img_norm > 1e-9:
+                _img_emb = _img_emb / _img_norm
+            _arch_norms = np.linalg.norm(archetype_embs, axis=1, keepdims=True)
+            _arch_unit  = archetype_embs / np.where(_arch_norms > 1e-9, _arch_norms, 1.0)
+            _sims    = (_img_emb @ _arch_unit.T).clip(-1.0, 1.0)        # (4,)
             _sims_t  = _sims / _ARCHETYPE_TEMP
             _sims_t -= _sims_t.max()                                      # numerical stability
             _exp     = np.exp(_sims_t)
             _wts     = _exp / (_exp.sum() + 1e-9)
-            w_geo, w_night, w_layered, w_messy = (
-                float(_wts[0]), float(_wts[1]), float(_wts[2]), float(_wts[3])
+
+            # Safety override: if maximalist_documentary (index 4) beats messy_snapshot
+            # (index 3) in raw cosine similarity, zero out the messy weight and renormalise.
+            # Prevents dense cultural scenes (medicine shops, markets, workshops) from being
+            # penalised by the amateur-snapshot scoring track.
+            if _sims[4] > _sims[3]:
+                _wts = _wts.copy()
+                _wts[3] = 0.0
+                _wts = _wts / (_wts.sum() + 1e-9)
+
+            w_geo, w_night, w_layered, w_messy, w_max = (
+                float(_wts[0]), float(_wts[1]), float(_wts[2]),
+                float(_wts[3]), float(_wts[4])
             )
+            print(f"[Archetype Weights] Geo: {w_geo:.2f} | Night: {w_night:.2f} | Layer: {w_layered:.2f} | Messy: {w_messy:.2f} | Max: {w_max:.2f} -> {Path(_path).name}")
+
+            # Messy ceiling flag — set here while w_messy is in scope.
+            # Fires when messy outright dominates (w_messy > 0.40), OR when it is the
+            # runner-up archetype (exactly one weight beats it) while SpecVLM Composition
+            # is dragged below 0.35 by dead foreground / blown sky / empty table space.
+            # The ceiling (0.49) is applied as the absolute last step after all floors.
+            _messy_is_runner_up = sum(1 for w in (w_geo, w_night, w_layered, w_max) if w > w_messy) == 1
+            _messy_ceiling_active = (
+                w_messy > 0.40
+                or (_messy_is_runner_up and _comp_score < 0.35)
+            )
+
+            # Cinematic Night Protection Gate: floors cinematic dark frames at 0.62.
+            # Condition A — relative dominance with clear margin (≥ 0.05 over nearest rival).
+            # Condition B — partial signal: night > 0.35 AND very dark (display lum < 30).
+            _dominant_archetype = int(np.argmax(_wts))   # 0=geo 1=night 2=layered 3=messy 4=max
+            _night_gate = (
+                (_dominant_archetype == 1 and w_night > max(w_geo, w_layered, w_messy, w_max) + 0.05)
+                or (w_night > 0.35 and (mean_lum / 2.55) < 30.0)
+            )
+
+            # Maximalist Documentary Gate: floors dense cultural documentary frames at 0.64.
+            # Fires when maximalist is the dominant archetype.
+            _max_gate = (_dominant_archetype == 4)
+
+            # Low-context semantic dampener: if geo is dominant and HC is absent,
+            # Narrative is likely inflated by incidental text (signs, labels, spines).
+            # Halve it so sterile interiors don't ride borrowed semantic weight.
+            _geo_sterile = (_dominant_archetype == 0 or w_geo > 0.45) and _hc_score < 0.30
+            _narr_eff = _narr_score * 0.50 if _geo_sterile else _narr_score
+            if _geo_sterile:
+                print(
+                    f"[v2] Geo-sterile dampener: {Path(_path).name}  "
+                    f"HC={_hc_score:.2f} Narr: {_narr_score:.2f}→{_narr_eff:.2f}"
+                )
 
             # Per-archetype formula scores
             # geo:     geometric lines — rewards Comp and Light, no HC drag
             # night:   cinematic dark portrait — protects Comp floor, boosts HC
             # layered: environmental portrait — semantic blend of crop + story
             # messy:   unfocused snapshot — penalised quality baseline
+            # max:     maximalist documentary — driven by HC, Narrative, Technical
             fused_geo     = _comp_score * 0.40 + _light_score * 0.30 + a * 0.30
             fused_night   = (_hc_score * 0.35 + max(_comp_score, 0.70) * 0.35
                              + t * 0.20 + 0.75 * 0.10)
-            fused_layered = a * 0.40 + _hc_score * 0.30 + _narr_score * 0.30
-            fused_messy   = max(0.0, t * 0.35 + a * 0.65 - 0.15)
+            fused_layered = a * 0.40 + _hc_score * 0.30 + _narr_eff * 0.30
+            fused_messy   = max(0.0, t * 0.35 + a * 0.65 - 0.08)
+            fused_max     = _hc_score * 0.45 + _narr_eff * 0.35 + t * 0.20
 
             fused = (
                 w_geo     * fused_geo     +
                 w_night   * fused_night   +
                 w_layered * fused_layered +
-                w_messy   * fused_messy
+                w_messy   * fused_messy   +
+                w_max     * fused_max
             )
             _blend_count += 1
+
+            if _night_gate:
+                if _tech_score >= 0.52:
+                    fused = max(fused, 0.62)
+                else:
+                    _tech_fail_cap = min(_tech_fail_cap, 0.42)
+                    _night_reject_count += 1
+                    print(
+                        f"[v2] Night-tech reject: {Path(_path).name}  "
+                        f"Tech={_tech_score:.2f} → ceiling 0.42"
+                    )
+
+            if _max_gate:
+                if _tech_score >= 0.55 and _light_score >= 0.35:
+                    fused = max(fused, 0.64)
+                    _max_gate_count += 1
+                elif _tech_score < 0.45 or _light_score < 0.25:
+                    _tech_fail_cap = min(_tech_fail_cap, 0.38)
+                    _max_reject_count += 1
+                    print(
+                        f"[v2] Max-doc tech reject: {Path(_path).name}  "
+                        f"Tech={_tech_score:.2f} Light={_light_score:.2f} → ceiling 0.38"
+                    )
 
             # VLP modifier: add fine-art semantic weight for pictorialist/dark work.
             # Blended additively so the archetype structure is preserved.
@@ -913,6 +1042,31 @@ def run_v2(
                 fused = _ANCHOR_FLOOR
                 _anchor_count += 1
 
+        # Messy ceiling — applied last, overrides all floors including Anchor Floor.
+        # Guarantees no image dominated by the messy archetype (or runner-up messy
+        # with dead composition) can exploit narrative / line bonuses into Strong.
+        if _messy_ceiling_active and fused > 0.49:
+            fused = 0.49
+            _messy_ceiling_count += 1
+            print(f"[v2] Messy ceiling: {Path(_path).name} → capped at 0.49")
+
+        # Geo-flat ceiling: strongly geo-dominant image with no human presence is a
+        # sterile interior / architectural snapshot — belongs in Mid, not Strong.
+        # Overrides anchor floor and gate floors; only fires inside archetype block.
+        if w_geo > 0.50 and _hc_score < 0.25 and fused > 0.52:
+            fused = 0.52
+            _geo_cap_count += 1
+            print(
+                f"[v2] Geo-flat ceiling: {Path(_path).name}  "
+                f"w_geo={w_geo:.2f} HC={_hc_score:.2f} → capped 0.52"
+            )
+
+        # Technical-failure ceiling: absolute last step — overrides all floors and
+        # style bonuses for images that matched an art archetype but failed on
+        # primitive quality (blur, muddy exposure, blown-out / crushed light).
+        if fused > _tech_fail_cap:
+            fused = _tech_fail_cap
+
         scores[idx] = float(np.clip(fused, 0.0, 1.0))
 
     if _route1_count:
@@ -930,6 +1084,16 @@ def run_v2(
         )
     if _penalty_count:
         print(f"[v2] YOLO soft penalty: {_penalty_count} images penalised -0.15 (dark silhouette)")
+    if _messy_ceiling_count:
+        print(f"[v2] Messy ceiling: {_messy_ceiling_count} images hard-capped at 0.49 (messy dominant or runner-up + dead comp)")
+    if _max_gate_count:
+        print(f"[v2] Max-doc gate: {_max_gate_count} images floored to 0.64 (Tech ≥ 0.55 + Light ≥ 0.35)")
+    if _max_reject_count:
+        print(f"[v2] Max-doc tech reject: {_max_reject_count} images hard-capped at 0.38 (Tech < 0.45 or Light < 0.25)")
+    if _night_reject_count:
+        print(f"[v2] Night tech reject: {_night_reject_count} images hard-capped at 0.42 (Tech < 0.52)")
+    if _geo_cap_count:
+        print(f"[v2] Geo-flat ceiling: {_geo_cap_count} images hard-capped at 0.52 (geo dominant, HC < 0.25)")
     if _anchor_count:
         print(
             f"[v2] Anchor Floor: {_anchor_count} images floored to {_ANCHOR_FLOOR} "
@@ -966,16 +1130,22 @@ def run_v2(
     # to Weak purely because pixel-sharpness metrics ranked them lower.
     # The gate is additive, not multiplicative — it shifts the score up the
     # distribution without changing relative ordering within the fine-art cohort.
+    # Soft-Focus Gate now requires a minimum SpecVLM quality score (≥ 0.42) so that
+    # genuinely weak shots with incidental fine-art similarity cannot ride the +0.15
+    # boost into Mid. Only images that already cleared the Weak threshold on their
+    # own merit get the atmospheric/soft-focus lift.
     _sfpg_count = 0
     if _fine_art_anchor is not None:
         for i in range(n):
-            if float(_fine_art_sims_all[i]) > 0.68:
-                final_scores[i] = float(np.clip(float(final_scores[i]) + 0.15, 0.0, 1.0))
+            _base_score = float(final_scores[i])
+            _fa_sim     = float(_fine_art_sims_all[i])
+            if _fa_sim > 0.68 and _base_score >= 0.42:
+                final_scores[i] = float(np.clip(_base_score + 0.15, 0.0, 1.0))
                 _sfpg_count += 1
         if _sfpg_count:
             print(
                 f"[v2] Soft-Focus Gate: {_sfpg_count} images boosted +0.15 "
-                f"(fine_art_sim > 0.68)"
+                f"(fine_art_sim > 0.68, base_score ≥ 0.42)"
             )
 
     # ── Step 5b: Duplicate sim-flag assignment based on final_scores ──────────
@@ -1047,7 +1217,7 @@ def run_v2(
             bd = {"aesthetic": round(float(scores_arr[i]), 3),
                   "personal":  round(float(pers[i]),       3)}
             if per_photo_breakdowns[i]:
-                bd.update(per_photo_breakdowns[i])
+                bd.update(_sanitize_bd(per_photo_breakdowns[i]))
             lance_records.append({
                 "path":           paths[i],
                 "embedding":      embs[i].tolist(),
@@ -1060,6 +1230,7 @@ def run_v2(
             })
         ls.upsert_batch(lance_records)
         ls.compact_after_write()
+        ls.close_table()
         lance_ok = True
         print(f"[v2] LanceDB WRITE OK — {len(lance_records)} records committed")
     except Exception as _e_lance:
@@ -1078,13 +1249,16 @@ def run_v2(
             "Personal":  round(float(pers[i]),       3),
         }
         if per_photo_breakdowns[i]:
-            breakdown.update(per_photo_breakdowns[i])
+            breakdown.update(_sanitize_bd(per_photo_breakdowns[i]))
+        _fscore = round(float(final_scores[i]), 3)
         gallery.append({
             "id":              path,
             "path":            path,
             "filename":        fn,
             "grade":           grades[i],
-            "score":           round(float(final_scores[i]), 3),
+            "score":           _fscore,
+            "overall_score":   _fscore,
+            "rating":          _fscore,
             "human_perception":round(float(pers[i]),         3),
             "personal_score":  round(float(pers[i]),         3),
             "embedding":       embs[i].tolist(),
@@ -1092,11 +1266,11 @@ def run_v2(
             "critique":        "",
             "reasoning_log":   "",
             "is_verified":     False,
-            "exif_ts":         timestamps[i],
+            "exif_ts":         float(timestamps[i]),
             "stars":           0,
             "reject":          cluster_ids[i] >= 0 and not sim_flags[i].startswith("★"),
             "sim_flag":        sim_flags[i],
-            "cluster_id":      cluster_ids[i],
+            "cluster_id":      int(cluster_ids[i]),
         })
 
     # Merge cached images back into the gallery (preserving folder sort order)
@@ -1123,7 +1297,7 @@ def run_v2(
             "photos":   _cat_photos,
             "folders":  _cat_folders,
             "saved_at": _cat_time.strftime("%Y-%m-%dT%H:%M:%S"),
-        }, ensure_ascii=False)
+        }, ensure_ascii=False, default=_np2py)
         _cat_tmp = _cat_path.with_suffix(".json.tmp")
         _cat_tmp.write_text(_cat_payload, encoding="utf-8")
         _cat_tmp.replace(_cat_path)

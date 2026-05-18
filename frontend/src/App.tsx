@@ -654,7 +654,7 @@ export default function App() {
 
   /* check for saved catalog on first load */
   useEffect(() => {
-    axios.get(`${API}/api/catalog`)
+    axios.get(`${API}/api/catalog?t=` + Date.now())
       .then(r => { if (r.data.exists && r.data.photos?.length) setCatalogBanner(true); })
       .catch(() => {});
   }, []);
@@ -709,7 +709,7 @@ export default function App() {
 
   const handleResume = useCallback(async () => {
     try {
-      const r = await axios.get(`${API}/api/catalog`);
+      const r = await axios.get(`${API}/api/catalog?t=` + Date.now());
       if (!r.data.exists || !r.data.photos?.length) return;
       const ps = r.data.photos.map((p: any, i: number) => ({ ...p, id: `p-${i}` }));
       const savedFolders: string[] = r.data.folders || [];

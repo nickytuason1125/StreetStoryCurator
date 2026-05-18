@@ -1,19 +1,20 @@
 """
-Vision IQA Head — UniQA unified quality backbone.
+Vision IQA Head — TOPIQ NR quality backbone.
 
-UniQAHead: pyiqa 'uniqa' metric replacing TOPIQ NR, MUSIQ, and Aesthetic V2.5.
+UniQAHead: pyiqa 'topiq_nr' metric (CLIP-based no-reference IQA).
+'uniqa' does not exist in pyiqa 0.1.x — topiq_nr is the correct replacement.
 
 YOLO11s-seg routing:
   Route 1 (empty scene): 0 humans detected → score = sqrt(composition * lighting)
                           from SpecVLM aspect scores. Decouples Human/Culture penalty.
   Route 2 (layered frame): human in midground (bbox center_y 33–67%) + blurred
                             foreground (low Laplacian variance, bottom third of image)
-                            → UniQA on subject crop only.
-  Standard: UniQA on full resized image.
+                            → TOPIQ NR on subject crop only.
+  Standard: TOPIQ NR on full resized image.
 
 Speed design:
   - Images loaded in parallel (TurboJPEG via fast_ingestion.decode_one).
-  - UniQA: GPU batch inference at 512×512, mini-batches of 8.
+  - TOPIQ NR: GPU batch inference at 512×512, mini-batches of 8.
   - Route 2: per-image crop inference (variable crop size prevents batching).
   - YOLO: .engine → .pt → n-variant fallback; returns per-image route decisions.
   - VRAM: single model — no sequential load/unload needed.
@@ -288,18 +289,18 @@ def _derive_ots_from_bboxes(
 
 class UniQAHead:
     """
-    Unified Image Quality Assessment backbone (pyiqa 'uniqa').
+    TOPIQ NR quality backbone (pyiqa 'topiq_nr').
 
-    Replaces TOPIQ NR + MUSIQ (technical) and Aesthetic Predictor V2.5 (aesthetic)
-    with a single model covering both technical quality and aesthetic appeal.
+    CLIP-based no-reference IQA covering both technical quality and aesthetic appeal.
+    Replaces the invalid 'uniqa' metric name (not present in pyiqa 0.1.x).
 
     YOLO11s-seg routing selects the input region per image:
       Route 1 — empty scene (0 humans detected): geometric blend of SpecVLM aspect scores.
-      Route 2 — layered frame: UniQA on YOLO subject crop.
-      Standard — everything else: UniQA on full resized image (batched).
+      Route 2 — layered frame: TOPIQ NR on YOLO subject crop.
+      Standard — everything else: TOPIQ NR on full resized image (batched).
     """
 
-    _METRIC_NAME = "uniqa"
+    _METRIC_NAME = "topiq_nr"
     _BATCH_SIZE  = 8
     _INPUT_SIZE  = 512
 
@@ -308,14 +309,14 @@ class UniQAHead:
         self._device = "cuda" if torch.cuda.is_available() else "cpu"
 
     @staticmethod
-    def _timed_create(device: str, timeout: int = 120):
+    def _timed_create(metric_name: str, device: str, timeout: int = 120):
         import pyiqa, threading
         _result: list = [None]
         _err:    list = [None]
 
         def _worker():
             try:
-                _result[0] = pyiqa.create_metric("uniqa", device=device)
+                _result[0] = pyiqa.create_metric(metric_name, device=device)
             except Exception as e:
                 _err[0] = e
 
@@ -323,19 +324,19 @@ class UniQAHead:
         t.start()
         t.join(timeout=timeout)
         if t.is_alive():
-            print(f"[uniqa_head] uniqa timed out after {timeout}s — skip")
+            print(f"[uniqa_head] {metric_name} timed out after {timeout}s — skip")
             return None
         if _err[0] is not None:
-            print(f"[uniqa_head] uniqa error: {_err[0]} — skip")
+            print(f"[uniqa_head] {metric_name} error: {_err[0]} — skip")
             return None
         return _result[0]
 
     def load(self) -> None:
-        self._model = self._timed_create(self._device)
+        self._model = self._timed_create(self._METRIC_NAME, self._device)
         if self._model is not None:
-            print(f"[uniqa_head] UniQA loaded on {self._device}")
+            print(f"[uniqa_head] {self._METRIC_NAME} loaded on {self._device}")
         else:
-            print("[uniqa_head] UniQA unavailable")
+            print(f"[uniqa_head] {self._METRIC_NAME} unavailable")
 
     def score_all(
         self,
@@ -373,7 +374,7 @@ class UniQAHead:
         if self._model is None:
             self.load()
         if self._model is None:
-            raise RuntimeError("UniQA unavailable — weights not cached")
+            raise RuntimeError("TOPIQ NR (topiq_nr) unavailable — run model prefetch or check pyiqa install")
 
         # ── YOLO routing ─────────────────────────────────────────────────────
         if person_detected_in is not None and subject_bboxes_in is not None:
@@ -443,6 +444,9 @@ class UniQAHead:
                             s = self._model(inp)
                         quality_raw[gl_i] = float(s.item() if hasattr(s, "item") else float(s))
                     except Exception:
+                        import traceback as _tb_pimg
+                        print(f"[uniqa_head] Per-image fallback FULL TRACEBACK (gl_i={gl_i}):")
+                        _tb_pimg.print_exc()
                         quality_raw[gl_i] = 0.5
 
             done_so_far = min(batch_start + self._BATCH_SIZE, n_std_valid)
@@ -469,7 +473,9 @@ class UniQAHead:
                     s = self._model(inp)
                 quality_raw[i] = float(s.item() if hasattr(s, "item") else float(s))
             except Exception as e:
-                print(f"[uniqa_head] Route2 crop failed for {Path(path).name}: {e}")
+                import traceback as _tb_r2
+                print(f"[uniqa_head] Route2 crop FULL TRACEBACK for {Path(path).name}:")
+                _tb_r2.print_exc()
                 quality_raw[i] = 0.5
             _p(
                 progress_start + (progress_end - progress_start) * (
@@ -637,10 +643,10 @@ def run_vision_heads(
             f"max={quality_scores.max():.3f}  mean={quality_scores.mean():.3f}"
         )
     except Exception as e:
-        print(f"[vision_heads] UniQAHead failed ({e}) — CLIP fallback")
-        quality_scores       = clip_scores.copy()
-        person_detected_dict = {}
-        _uniqa_singleton     = None
+        import traceback as _tb_uniqa
+        print(f"[vision_heads] UniQAHead FATAL — full traceback follows:")
+        _tb_uniqa.print_exc()
+        raise
 
     del tensors
     gc.collect()

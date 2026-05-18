@@ -30,6 +30,18 @@ from typing import List
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
+# ── MODULE PATH DIAGNOSTIC ───────────────────────────────────────────────────
+# Detects whether we are running the local project copy or a global pip-installed clone.
+try:
+    import grade_pipeline_v2 as _path_probe
+    print("=" * 60)
+    print("EXECUTING FROM PHYSICAL PATH:", _path_probe.__file__)
+    print("sys.path[0]:                 ", sys.path[0])
+    print("=" * 60)
+    del _path_probe
+except Exception as _pp_err:
+    print(f"[server] Module path probe failed: {_pp_err}")
+
 # ── Frozen (PyInstaller) path resolution ────────────────────────────────────
 if getattr(sys, 'frozen', False):
     # Running as PyInstaller onedir bundle — exe lives at curator-api/curator-api.exe
@@ -166,6 +178,15 @@ def _bg_model_prefetch():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Delete any stale catalog.json from a prior session so the frontend cannot
+    # serve outdated scores before a new grading run has completed.
+    try:
+        _stale = _DATA_DIR / "cache" / "catalog.json"
+        if _stale.exists():
+            _stale.unlink()
+            print("[server] Startup: cleared stale catalog.json")
+    except OSError as _e_cat_boot:
+        print(f"[server] Startup catalog clear skipped: {_e_cat_boot}")
     # Kick off model auto-download without blocking server startup.
     _t = threading.Thread(target=_bg_model_prefetch, daemon=True, name="model-prefetch")
     _t.start()
@@ -838,12 +859,12 @@ async def grade_photos_v2_stream(req: GradeRequest):
 
             # Clear stale catalog before grading — Step 8b in grade_pipeline_v2
             # will rebuild it after LanceDB upsert.
-            try:
-                if _CATALOG_PATH.exists():
+            if _CATALOG_PATH.exists():
+                try:
                     _CATALOG_PATH.unlink()
                     print("[grade_v2] Cleared stale catalog.json — will be rebuilt after grading")
-            except Exception:
-                pass
+                except OSError as _e_del:
+                    print(f"[grade_v2] WARNING: catalog.json delete failed ({_e_del}) — proceeding")
 
             for i, fp in enumerate(all_folders):
                 # Slice the 0→1 progress bar across folders
@@ -953,7 +974,8 @@ async def grade_photos_v2_stream(req: GradeRequest):
                         "photos":   gallery_slim,
                         "folders":  _cat_folders,
                         "saved_at": _cat_time.strftime("%Y-%m-%dT%H:%M:%S"),
-                    }, ensure_ascii=False, indent=2),
+                    }, ensure_ascii=False, indent=2,
+                    default=lambda o: o.item() if hasattr(o, "item") else str(o)),
                     encoding="utf-8",
                 )
                 _cat_tmp.replace(_CATALOG_PATH)
@@ -991,7 +1013,7 @@ async def grade_photos_v2_stream(req: GradeRequest):
     async def _stream():
         while True:
             msg = await aqueue.get()
-            yield f"data: {_json.dumps(msg)}\n\n"
+            yield f"data: {_json.dumps(msg, default=lambda o: o.item() if hasattr(o, 'item') else str(o))}\n\n"
             if msg.get("done") or msg.get("error"):
                 break
 
@@ -1005,6 +1027,13 @@ async def regrade_photos(req: GradeRequest):
     (force_rescan=True), and rebuilds the catalog. SSE streaming, same format
     as /api/grade/v2/stream.
     """
+    try:
+        os.remove(str(_CATALOG_PATH))
+        print("[regrade] Purged catalog.json before re-grade")
+    except FileNotFoundError:
+        pass
+    except Exception as _e:
+        print(f"[regrade] catalog purge warning: {_e}")
     return await grade_photos_v2_stream(req.model_copy(update={"force_rescan": True, "scan_mode": False}))
 
 
@@ -3108,15 +3137,20 @@ async def save_sequence(payload: dict):
 
 _CATALOG_PATH = _DATA_DIR / "cache" / "catalog.json"
 
+_NO_CACHE_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+}
+
 @app.get("/api/catalog")
 async def get_catalog():
     if not _CATALOG_PATH.exists():
-        return {"exists": False}
+        return JSONResponse({"exists": False}, headers=_NO_CACHE_HEADERS)
     try:
         data = json.loads(_CATALOG_PATH.read_text(encoding="utf-8"))
-        return {"exists": True, **data}
+        return JSONResponse({"exists": True, **data}, headers=_NO_CACHE_HEADERS)
     except Exception:
-        return {"exists": False}
+        return JSONResponse({"exists": False}, headers=_NO_CACHE_HEADERS)
 
 @app.post("/api/catalog/save")
 async def save_catalog(payload: dict):

@@ -4,7 +4,16 @@ import path from 'path'
 
 export default defineConfig({
   plugins: [react()],
-  server: { open: false, port: 5173 },
+  server: {
+    open: false,
+    port: 5173,
+    proxy: {
+      // Forward all API and static-asset requests to the FastAPI backend.
+      // Keeps the Vite dev server in sync without CORS issues.
+      '/api':    { target: 'http://127.0.0.1:8000', changeOrigin: true },
+      '/thumbs': { target: 'http://127.0.0.1:8000', changeOrigin: true },
+    },
+  },
   resolve: {
     // Force CJS builds of @dnd-kit to avoid ESM circular-dependency TDZ errors.
     alias: {

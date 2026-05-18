@@ -29,8 +29,43 @@ _DOWNLOAD_STATUS: dict = {
     "siglip2": "pending",
     "deepseek_draft": "pending",
     "deepseek_verify": "pending",
+    "topiq_nr": "pending",
 }
 _DOWNLOAD_LOCK = threading.Lock()
+
+
+# ── TOPIQ NR weight prefetch ──────────────────────────────────────────────────
+
+def _download_topiq_nr_if_needed() -> bool:
+    """
+    Pre-cache TOPIQ NR weights by instantiating the metric once on CPU.
+    pyiqa downloads weights to its cache dir on first create_metric() call.
+    Returns True if the model loads successfully, False otherwise.
+    """
+    import threading
+    _result: list = [False]
+    _err:    list = [None]
+
+    def _worker():
+        try:
+            import pyiqa
+            m = pyiqa.create_metric("topiq_nr", device="cpu")
+            del m
+            _result[0] = True
+        except Exception as e:
+            _err[0] = e
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout=300)
+    if t.is_alive():
+        print("[model_loader] topiq_nr download timed out after 300s")
+        return False
+    if _err[0]:
+        print(f"[model_loader] topiq_nr download failed: {_err[0]}")
+        return False
+    print("[model_loader] topiq_nr weights cached OK")
+    return True
 
 
 # ── Central download orchestration ────────────────────────────────────────────
@@ -83,6 +118,7 @@ def ensure_all_models_downloaded(progress_cb=None) -> dict:
                 VERIFY_MODEL_ID,
                 _DS_CACHE / "deepseek-ai_DeepSeek-R1-Distill-Qwen-7B",
             )),
+            ("topiq_nr", _download_topiq_nr_if_needed),
         ]
 
         for key, fn in _model_tasks:

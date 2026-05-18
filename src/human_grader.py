@@ -38,7 +38,10 @@ class LAIONAestheticScorer:
             # Normalize 4.0-7.5 range to 0.0-1.0
             return max(0.0, min((raw - 4.0) / 3.5, 1.0))
         except Exception as e:
-            return 0.5
+            import traceback as _tb_hg
+            print(f"[human_grader] FULL TRACEBACK:")
+            _tb_hg.print_exc()
+            raise
 
 # Singleton Pattern: Ensure this runs only once
 human_grader = LAIONAestheticScorer()
