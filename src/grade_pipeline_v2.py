@@ -476,6 +476,31 @@ def run_v2(
                 f"Reason: {_siglip_last_err}"
             )
 
+    # ── Archetype text projections ────────────────────────────────────────────
+    # Four frozen concept reference vectors for soft routing in Step 4d.
+    # Cached after first run — never requires the encoder to reload for this.
+    _ARCHETYPE_PROMPTS = [
+        "minimalist architectural geometry with graphic lines and empty space",
+        "cinematic low-key portrait with dark background and single light source",
+        "intentional layered environmental street portrait with foreground framing",
+        "unintentional snapshot with cluttered background and unclear composition",
+    ]
+    _arch_cache_path = Path("cache") / "archetype_embs.npy"
+    archetype_embs: Optional[np.ndarray] = None
+    try:
+        if _arch_cache_path.exists():
+            archetype_embs = np.load(str(_arch_cache_path)).astype(np.float32)
+            print("[v2] Archetype embeddings: loaded from cache (4 × 1536)")
+        elif _enc_singleton is not None:
+            _arch_raw      = _enc_singleton.encode_text(_ARCHETYPE_PROMPTS)
+            _arch_nrm      = np.linalg.norm(_arch_raw, axis=1, keepdims=True)
+            archetype_embs = (_arch_raw / (_arch_nrm + 1e-9)).astype(np.float32)
+            _arch_cache_path.parent.mkdir(parents=True, exist_ok=True)
+            np.save(str(_arch_cache_path), archetype_embs)
+            print("[v2] Archetype embeddings: computed and cached (4 × 1536)")
+    except Exception as _e_arch:
+        print(f"[v2] Archetype embeddings unavailable: {_e_arch}")
+
     # Flush caching allocator — singleton weights remain resident in VRAM
     _vram_clear()
 
@@ -634,11 +659,9 @@ def run_v2(
     # Full grading runs:
     #   1. run_composition_analysis (Depth → Seg → Chiaroscuro) — within run_vision_heads
     #   2. UniQAHead with YOLO11s-seg routing (empty-scene / layered-frame / standard)
-    composition_overrides:    dict[str, float] = {}
-    chiaroscuro_flags:        dict[str, bool]  = {}
-    person_detected_dict:     dict[str, bool]  = {}
-    framing_obstruction_dict: dict[str, bool]  = {}
-    subject_bbox_lum_dict:    dict[str, float] = {}
+    composition_overrides: dict[str, float] = {}
+    chiaroscuro_flags:     dict[str, bool]  = {}
+    person_detected_dict:  dict[str, bool]  = {}
 
     if scan_mode:
         _p(0.84, "Scan mode — IQA heads skipped, using SpecVLM scores…")
@@ -671,8 +694,7 @@ def run_v2(
             composition_overrides    = iqa_out.get("composition_overrides",  {})
             chiaroscuro_flags        = iqa_out.get("chiaroscuro_flags",      {})
             person_detected_dict     = iqa_out.get("person_detected",        {})
-            framing_obstruction_dict = iqa_out.get("framing_obstruction",    {})
-            subject_bbox_lum_dict    = iqa_out.get("subject_bbox_lum",       {})
+            _framing_obstruction_dict = iqa_out.get("framing_obstruction", {})
 
             for local_i, idx in enumerate(to_rate_indices):
                 per_photo_breakdowns[idx].update(iqa_breakdowns[local_i])
@@ -758,21 +780,16 @@ def run_v2(
     _ANCHOR_FLOOR         = 0.65
     _FA_ANCHOR_THRESHOLD  = 0.75                 # normalised fine-art sim threshold
 
-    _p(0.86, "Fusing scores (Dynamic Routing + VLP + Anchor Floor)…")
+    _p(0.86, "Fusing scores (Archetype Projection + VLP + Anchor Floor)…")
     _vlp_count       = 0
     _chiaroscuro_vlp = 0
     _anchor_count    = 0
     _penalty_count   = 0
     _route1_count    = 0
     _route2_count    = 0
-    _fo_count        = 0   # Framing Obstruction sub-count
-    _route3_count    = 0   # Cinematic Night Scene
+    _blend_count     = 0   # soft archetype blend path
 
-    _ROUTE3_FLOOR       = 0.62   # just above Strong threshold (0.60)
-    _ROUTE3_LIGHT_BASE  = 0.75   # protected Lighting baseline
-    _ROUTE3_COMP_FLOOR  = 0.70   # minimum Composition for intentional dark frame
-    _ROUTE3_LUM_THRESH  = 45.0   # global mean luminance (0-255) — dark overall
-    _ROUTE3_BBOX_THRESH = 60.0   # subject bbox mean luminance (0-255) — lit subject
+    _ARCHETYPE_TEMP = 0.5   # softmax temperature — lower = sharper route assignment
 
     for local_i, idx in enumerate(to_rate_indices):
         t  = float(tech_scores_rated[local_i])
@@ -788,42 +805,14 @@ def run_v2(
         _raw_comp    = _raw_comp_by_path.get(_path, _comp_score)
         _has_person  = person_detected_dict.get(_path, True)
         _is_ots      = _path in composition_overrides
-        _is_fo       = bool(framing_obstruction_dict.get(_path, False))
 
         _is_chiaroscuro = bool(chiaroscuro_flags.get(_path, False))
 
-        # ── Route 2A: Framing Obstruction ─────────────────────────────────────
-        # Fires when a large off-centre person (>30% frame area, center_x <0.35
-        # or >0.65) was identified as intentional framing.  UniQA already ran on
-        # the isolated subject crop.  Override breakdowns with protected values:
-        #   Composition = 0.85  (intentional compositional choice)
-        #   Lighting    = 0.78  (protects low-key chiaroscuro atmosphere)
-        #   Technical   = max(uniqa_crop, 0.75)  (subject-crop sharpness floor)
-        # Formula: fused = (tech * 0.30) + (comp * 0.40) + (lighting * 0.30)
-        if _is_fo:
-            _tech_fo  = max(t, 0.75)
-            _comp_fo  = 0.85
-            _light_fo = 0.78
-            per_photo_breakdowns[idx]["Composition"] = _comp_fo
-            per_photo_breakdowns[idx]["Lighting"]    = _light_fo
-            fused = _tech_fo * 0.30 + _comp_fo * 0.40 + _light_fo * 0.30
-            scores[idx] = float(np.clip(fused, 0.0, 1.0))
-            _route2_count += 1
-            _fo_count     += 1
-            print(
-                f"[v2] Route 2A Framing Obstruction: {Path(_path).name}  "
-                f"tech={_tech_fo:.2f} comp={_comp_fo} light={_light_fo} → fused={fused:.3f}"
-            )
-            continue
-
         # ── Route 2B: Intentional Layered Frame Portrait (OTS) ────────────────
         # Fires when: strong human presence (HC ≥ 0.65) + SpecVLM raw composition
-        # was penalized below 0.35 by a foreground obstruction + OTS portrait
-        # detected (foreground OOF person + sharp midground subject).
-        # Formula: subject-crop quality (40%) + Human/Culture (30%) + Narrative (30%)
-        # so that high-context documentary work (shopkeeper, vendor, elder) is not
-        # buried by a flat technical crop score.
-        # Internal floor: max(fused, 0.65) when storytelling is strong.
+        # penalized below 0.35 + OTS portrait detected.
+        # Formula: UniQA subject-crop (40%) + Human/Culture (30%) + Narrative (30%).
+        # Internal floor when storytelling is exceptional (HC ≥ 0.70, Narr ≥ 0.60).
         if _hc_score >= 0.65 and _raw_comp < 0.35 and _is_ots:
             per_photo_breakdowns[idx]["Composition"] = 0.82
             fused = a * 0.40 + _hc_score * 0.30 + _narr_score * 0.30
@@ -839,44 +828,9 @@ def run_v2(
             )
             continue
 
-        # ── Route 3: Cinematic Night Scene ───────────────────────────────────
-        # Fires when the global frame is dark (mean_lum < 45) AND the detected
-        # subject is visibly illuminated (bbox mean lum > 60) — intentional
-        # chiaroscuro street portrait.  Bypasses VLP and YOLO soft-penalty blocks.
-        # Protected values: Lighting = 0.75, Composition = max(comp, 0.70).
-        # Formula: HC*0.35 + Comp*0.35 + Tech*0.20 + Light*0.10
-        # Floor: max(fused, 0.62) — keeps elite night work out of Weak bucket.
-        _subj_lum = float(subject_bbox_lum_dict.get(_path, 0.0))
-        if (
-            _has_person
-            and mean_lum < _ROUTE3_LUM_THRESH
-            and _subj_lum > _ROUTE3_BBOX_THRESH
-        ):
-            _light_r3 = _ROUTE3_LIGHT_BASE
-            _comp_r3  = max(_comp_score, _ROUTE3_COMP_FLOOR)
-            per_photo_breakdowns[idx]["Lighting"]     = _light_r3
-            per_photo_breakdowns[idx]["Composition"]  = _comp_r3
-            fused = (
-                _hc_score  * 0.35 +
-                _comp_r3   * 0.35 +
-                t          * 0.20 +
-                _light_r3  * 0.10
-            )
-            fused = max(fused, _ROUTE3_FLOOR)
-            scores[idx] = float(np.clip(fused, 0.0, 1.0))
-            _route3_count += 1
-            print(
-                f"[v2] Route 3 Cinematic Night: {Path(_path).name}  "
-                f"global_lum={mean_lum:.1f} bbox_lum={_subj_lum:.1f}  "
-                f"HC={_hc_score:.2f} comp={_comp_r3:.2f} tech={t:.2f} → fused={fused:.3f}"
-            )
-            continue
-
         # ── Route 1: Empty Scene ──────────────────────────────────────────────
         # Fires when YOLO finds zero human instances (class 0, area ≥ 0.5%).
-        # Formula: comp * 0.40 + light * 0.30 + uniqa * 0.30
-        # Linear split so a strong geometric composition (high comp, moderate light)
-        # is not penalised by the geometric mean's multiplicative collapse.
+        # Linear split: comp (40%) + light (30%) + uniqa (30%).
         if not _has_person:
             fused = _comp_score * 0.40 + _light_score * 0.30 + a * 0.30
             scores[idx] = float(np.clip(fused, 0.0, 1.0))
@@ -887,18 +841,63 @@ def run_v2(
             )
             continue
 
-        # ── Standard routing: VLP + Anchor Floor ─────────────────────────────
-        # Chiaroscuro flag forces VLP — intentional dramatic contrast is fine art.
-        _vlp = _is_chiaroscuro or (
-            (mean_lum < 40.0 or std_lum < 30.0) and (a >= _AES_VLP_THRESHOLD)
-        )
-        if _vlp:
-            fused = t * 0.10 + a * 0.65 + fa * 0.25
-            _vlp_count += 1
-            if _is_chiaroscuro:
-                _chiaroscuro_vlp += 1
+        # ── Archetype Projection: Soft Attention Blend ────────────────────────
+        # Compute cosine similarities between the image embedding and 4 pre-encoded
+        # text concept archetypes (all L2-normalised → dot product = cosine sim).
+        # Temperature-sharpened softmax converts similarities to blend weights.
+        # If archetypes unavailable, fall back to the standard VLP formula path.
+        if archetype_embs is not None:
+            _img_emb = embs[idx].astype(np.float32)                      # (1536,)
+            _sims    = (_img_emb @ archetype_embs.T).clip(-1.0, 1.0)    # (4,)
+            _sims_t  = _sims / _ARCHETYPE_TEMP
+            _sims_t -= _sims_t.max()                                      # numerical stability
+            _exp     = np.exp(_sims_t)
+            _wts     = _exp / (_exp.sum() + 1e-9)
+            w_geo, w_night, w_layered, w_messy = (
+                float(_wts[0]), float(_wts[1]), float(_wts[2]), float(_wts[3])
+            )
+
+            # Per-archetype formula scores
+            # geo:     geometric lines — rewards Comp and Light, no HC drag
+            # night:   cinematic dark portrait — protects Comp floor, boosts HC
+            # layered: environmental portrait — semantic blend of crop + story
+            # messy:   unfocused snapshot — penalised quality baseline
+            fused_geo     = _comp_score * 0.40 + _light_score * 0.30 + a * 0.30
+            fused_night   = (_hc_score * 0.35 + max(_comp_score, 0.70) * 0.35
+                             + t * 0.20 + 0.75 * 0.10)
+            fused_layered = a * 0.40 + _hc_score * 0.30 + _narr_score * 0.30
+            fused_messy   = max(0.0, t * 0.35 + a * 0.65 - 0.15)
+
+            fused = (
+                w_geo     * fused_geo     +
+                w_night   * fused_night   +
+                w_layered * fused_layered +
+                w_messy   * fused_messy
+            )
+            _blend_count += 1
+
+            # VLP modifier: add fine-art semantic weight for pictorialist/dark work.
+            # Blended additively so the archetype structure is preserved.
+            _vlp = _is_chiaroscuro or (
+                (mean_lum < 40.0 or std_lum < 30.0) and (a >= _AES_VLP_THRESHOLD)
+            )
+            if _vlp:
+                fused = fused * 0.75 + fa * 0.25
+                _vlp_count += 1
+                if _is_chiaroscuro:
+                    _chiaroscuro_vlp += 1
         else:
-            fused = t * 0.35 + a * 0.65
+            # Fallback: standard formula (archetype cache not yet built)
+            _vlp = _is_chiaroscuro or (
+                (mean_lum < 40.0 or std_lum < 30.0) and (a >= _AES_VLP_THRESHOLD)
+            )
+            if _vlp:
+                fused = t * 0.10 + a * 0.65 + fa * 0.25
+                _vlp_count += 1
+                if _is_chiaroscuro:
+                    _chiaroscuro_vlp += 1
+            else:
+                fused = t * 0.35 + a * 0.65
 
         # YOLO soft penalty for dark-scene silhouettes (waived for chiaroscuro).
         if _path in _yolo_soft_penalized and not _is_chiaroscuro:
@@ -917,11 +916,11 @@ def run_v2(
         scores[idx] = float(np.clip(fused, 0.0, 1.0))
 
     if _route1_count:
-        print(f"[v2] Route 1 (Empty Scene): {_route1_count} images — linear comp/light/uniqa formula")
+        print(f"[v2] Route 1 (Empty Scene): {_route1_count} images — linear comp/light/uniqa")
     if _route2_count:
-        print(f"[v2] Route 2 (Layered Frame): {_route2_count} images — semantic formula (HC+Narr weighted)")
-    if _route3_count:
-        print(f"[v2] Route 3 (Cinematic Night): {_route3_count} images — dark frame + lit subject, floor=0.62")
+        print(f"[v2] Route 2B (Layered Frame): {_route2_count} images — semantic formula (HC+Narr)")
+    if _blend_count:
+        print(f"[v2] Archetype Blend: {_blend_count} images — soft attention over 4 concept vectors")
     if _vlp_count:
         print(
             f"[v2] Vintage Lens Protocol: {_vlp_count}/{len(to_rate_indices)} triggered "
@@ -934,7 +933,7 @@ def run_v2(
     if _anchor_count:
         print(
             f"[v2] Anchor Floor: {_anchor_count} images floored to {_ANCHOR_FLOOR} "
-            f"(UniQA ≥ {_AES_ANCHOR_THRESHOLD:.3f} OR fine-art sim ≥ 0.75)"
+            f"(UniQA ≥ {_AES_ANCHOR_THRESHOLD:.3f} OR fine-art sim ≥ 0.75 OR strong documentary)"
         )
 
     scores_arr = np.array(scores, dtype=np.float32)
