@@ -4,7 +4,7 @@
 
 
 """
-Street Story Curator — native desktop launcher.
+FrameGrade — native desktop launcher.
 Starts FastAPI, then opens Microsoft Edge in --app mode (no address bar, no tabs).
 Errors are written to crash.log in the project root.
 """
@@ -144,7 +144,7 @@ def main():
                     return None
 
             kwargs = dict(
-                title="Street Story Curator",
+                title="FrameGrade",
                 url=url,
                 width=1400, height=900,
                 min_size=(960, 640),
@@ -239,7 +239,7 @@ def main():
                     return None
 
             webview.create_window(
-                title="Street Story Curator",
+                title="FrameGrade",
                 url=url,
                 width=1400, height=900,
                 min_size=(960, 640),

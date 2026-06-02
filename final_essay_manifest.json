@@ -1,0 +1,42 @@
+[
+  {
+    "source_pdf": "mop4_catalogue.pdf",
+    "page": 79,
+    "clip_score": 0.2939,
+    "approved_for_essay": false,
+    "assigned_role": "Rejected",
+    "structural_justification": "Qwen 2.5-VL backend unavailable -- run `ollama pull qwen2.5vl:3b` or place GGUF files in models/."
+  },
+  {
+    "source_pdf": "MagnumPhotos_WearGoodShoes_2ndEdition.pdf",
+    "page": 30,
+    "clip_score": 0.2897,
+    "approved_for_essay": false,
+    "assigned_role": "Rejected",
+    "structural_justification": "The photograph lacks intentional geometry, as it does not follow the rule of thirds or any other clear compositional guide. The subject is not in a decisive moment, as it is static and does not show tension. The humanist dignity is also lacking, as the camera is not at or near eye-level with the subject."
+  },
+  {
+    "source_pdf": "mop4_catalogue.pdf",
+    "page": 72,
+    "clip_score": 0.289,
+    "approved_for_essay": false,
+    "assigned_role": "Closer",
+    "structural_justification": "The photograph is composed with vanishing points and subjects moving away, providing narrative resolution."
+  },
+  {
+    "source_pdf": "Parks_Press_Kit-compressed.pdf",
+    "page": 85,
+    "clip_score": 0.2878,
+    "approved_for_essay": false,
+    "assigned_role": "Closer",
+    "structural_justification": "The photograph is a close-up, vanishing point, providing narrative resolution."
+  },
+  {
+    "source_pdf": "2011-Christiaens.pdf",
+    "page": 7,
+    "clip_score": 0.2858,
+    "approved_for_essay": false,
+    "assigned_role": "Rejected",
+    "structural_justification": "The photograph lacks intentional geometry and the decisive moment, as it is a static shot with no tension."
+  }
+]

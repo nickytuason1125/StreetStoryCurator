@@ -40,14 +40,16 @@ _tbl  = None   # cached lancedb Table reference
 def _make_schema():
     import pyarrow as pa
     return pa.schema([
-        pa.field("path",           pa.string()),
-        pa.field("embedding",      pa.list_(pa.float32(), _EMBED_DIM)),
-        pa.field("score",          pa.float32()),
-        pa.field("personal_score", pa.float32()),
-        pa.field("grade",          pa.string()),
-        pa.field("reasoning_log",  pa.string()),
-        pa.field("breakdown",      pa.string()),
-        pa.field("exif_ts",        pa.float64()),
+        pa.field("path",            pa.string()),
+        pa.field("embedding",       pa.list_(pa.float32(), _EMBED_DIM)),
+        pa.field("score",           pa.float32()),
+        pa.field("personal_score",  pa.float32()),
+        pa.field("grade",           pa.string()),
+        pa.field("reasoning_log",   pa.string()),
+        pa.field("breakdown",       pa.string()),
+        pa.field("exif_ts",         pa.float64()),
+        pa.field("has_annotations", pa.string()),
+        pa.field("score_factors",   pa.string()),
     ])
 
 
@@ -57,7 +59,22 @@ def _open_table():
     global _tbl
     if _tbl is not None:
         return _tbl
+    with _lock:
+        if _tbl is not None:   # re-check inside lock (double-checked locking)
+            return _tbl
+        try:
+            _tbl = _connect_or_create()
+        except Exception as _e_conn:
+            # DB corrupt — delete directory and create fresh.
+            import shutil as _sh
+            print(f"[lance] DB error ({_e_conn}) — deleting and recreating at {_DB_DIR}")
+            _sh.rmtree(_DB_DIR, ignore_errors=True)
+            _tbl = _connect_or_create()
+        return _tbl
 
+
+def _connect_or_create():
+    """Open (or create) the LanceDB table. Called only from _open_table()."""
     import lancedb
     db     = lancedb.connect(_DB_DIR)
     schema = _make_schema()
@@ -97,8 +114,10 @@ def _ensure_columns(tbl) -> None:
     """
     import pyarrow as pa
     _REQUIRED = [
-        ("reasoning_log", pa.string(),  ""),
-        ("personal_score", pa.float32(), 0.5),
+        ("reasoning_log",   pa.string(),  ""),
+        ("personal_score",  pa.float32(), 0.5),
+        ("has_annotations", pa.string(),  ""),
+        ("score_factors",   pa.string(),  ""),
     ]
     try:
         col_names = {f.name for f in tbl.schema}
@@ -149,14 +168,16 @@ def upsert_batch(records: list[dict]) -> None:
         return f[:_EMBED_DIM]
 
     rows = {
-        "path":           [r["path"]                            for r in records],
-        "embedding":      [_pad(r.get("embedding", []))         for r in records],
-        "score":          [float(r.get("score", 0.0))           for r in records],
-        "personal_score": [float(r.get("personal_score", 0.5))  for r in records],
-        "grade":          [r.get("grade", "Mid ⚠️")             for r in records],
-        "reasoning_log":  [r.get("reasoning_log", "")           for r in records],
-        "breakdown":      [json.dumps(r.get("breakdown", {}))   for r in records],
-        "exif_ts":        [float(r.get("exif_ts", 0.0))         for r in records],
+        "path":            [r["path"]                            for r in records],
+        "embedding":       [_pad(r.get("embedding", []))         for r in records],
+        "score":           [float(r.get("score", 0.0))           for r in records],
+        "personal_score":  [float(r.get("personal_score", 0.5))  for r in records],
+        "grade":           [r.get("grade", "Mid ⚠️")             for r in records],
+        "reasoning_log":   [r.get("reasoning_log", "")           for r in records],
+        "breakdown":       [json.dumps(r.get("breakdown", {}))   for r in records],
+        "exif_ts":         [float(r.get("exif_ts", 0.0))         for r in records],
+        "has_annotations": [r.get("has_annotations", "")         for r in records],
+        "score_factors":   [r.get("score_factors", "")           for r in records],
     }
     tbl = _open_table()
     with _lock:
@@ -226,6 +247,25 @@ def vector_search(query_emb: np.ndarray, top_k: int = 20, min_score: float = 0.0
     return [_row_to_dict(r) for r in results]
 
 
+def update_annotations(path: str, score_factors: list) -> None:
+    """Write has_annotations='true' and score_factors JSON for a single row.
+
+    Safe to call from the background queue manager — only touches these two
+    columns; never reads or writes score/grade/embedding.
+    """
+    safe = path.replace("'", "''")
+    tbl  = _open_table()
+    with _lock:
+        tbl.update(
+            where=f"path = '{safe}'",
+            values={
+                "has_annotations": "true",
+                "score_factors":   json.dumps(score_factors),
+            },
+        )
+    print(f"[lance] update_annotations: {Path(path).name}  {len(score_factors)} factors")
+
+
 def update_personal_scores(path_score_map: dict[str, float]) -> None:
     """Bulk-update personal_score for a set of paths."""
     import pyarrow as pa
@@ -285,18 +325,39 @@ def reset() -> None:
 # ── Internal ──────────────────────────────────────────────────────────────────
 
 def _row_to_dict(r: dict) -> dict:
-    emb = r.get("embedding") or []
+    # Use explicit None-check instead of `or` — numpy arrays are falsy-ambiguous
+    # when they contain more than one element, which is always true for embeddings.
+    _emb = r.get("embedding")
+    emb  = _emb if _emb is not None else []
+
+    _bd_raw = r.get("breakdown")
+    _bd_str = "" if _bd_raw is None else str(_bd_raw)
     try:
-        bd = json.loads(r.get("breakdown") or "{}")
+        bd = json.loads(_bd_str) if _bd_str else {}
     except Exception:
         bd = {}
+
+    # String fields: pandas may return None, numpy.nan, or numpy.str_ for nulls
+    def _safe_str(v) -> str:
+        if v is None:
+            return ""
+        try:
+            import math
+            if isinstance(v, float) and math.isnan(v):
+                return ""
+        except Exception:
+            pass
+        return str(v)
+
     return {
-        "path":           r.get("path", ""),
-        "embedding":      np.array(emb, dtype=np.float32),
-        "score":          float(r.get("score", 0.0)),
-        "personal_score": float(r.get("personal_score", 0.5)),
-        "grade":          r.get("grade", "Mid ⚠️"),
-        "reasoning_log":  r.get("reasoning_log", ""),
-        "breakdown":      bd,
-        "exif_ts":        float(r.get("exif_ts", 0.0)),
+        "path":            r.get("path", ""),
+        "embedding":       np.array(emb, dtype=np.float32),
+        "score":           float(r.get("score") or 0.0),
+        "personal_score":  float(r.get("personal_score") or 0.5),
+        "grade":           _safe_str(r.get("grade")) or "Mid ⚠️",
+        "reasoning_log":   _safe_str(r.get("reasoning_log")),
+        "breakdown":       bd,
+        "exif_ts":         float(r.get("exif_ts") or 0.0),
+        "has_annotations": _safe_str(r.get("has_annotations")),
+        "score_factors":   _safe_str(r.get("score_factors")),
     }

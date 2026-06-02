@@ -25,10 +25,11 @@ def get_or_create_thumb(img_path: str) -> str:
     thumb_path = THUMB_DIR / safe_name
     if not thumb_path.exists():
         try:
-            with Image.open(img_path) as img:
-                img = img.convert("RGB")
-                img.thumbnail((MAX_THUMB_SIZE, MAX_THUMB_SIZE), Image.Resampling.LANCZOS)
-                img.save(str(thumb_path), "WEBP", quality=75, optimize=True)
+            from raw_support import open_image as _open_img
+            img = _open_img(img_path, mode="RGB")
+            img.thumbnail((MAX_THUMB_SIZE, MAX_THUMB_SIZE), Image.Resampling.LANCZOS)
+            img.save(str(thumb_path), "WEBP", quality=75, optimize=True)
+            img.close()
         except Exception:
             return None   # caller must handle None — never return an unservable path
     return str(thumb_path)

@@ -28,10 +28,10 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 COMPETITION_PRESETS: Dict[str, Optional[Dict[str, float]]] = {
-    "Magnum Editor":        {"decisive_moment": 0.25, "layering_depth": 0.20, "juxtaposition": 0.15, "light_atmosphere": 0.15, "authenticity": 0.15, "composition_geometry": 0.10},
-    "LSPF (London Street)": {"decisive_moment": 0.30, "layering_depth": 0.15, "juxtaposition": 0.20, "light_atmosphere": 0.15, "authenticity": 0.10, "composition_geometry": 0.10},
-    "SPI (International)":  {"decisive_moment": 0.20, "layering_depth": 0.15, "juxtaposition": 0.30, "light_atmosphere": 0.15, "authenticity": 0.10, "composition_geometry": 0.10},
-    "Custom":               None,
+    "Street Editorial":    {"decisive_moment": 0.25, "layering_depth": 0.20, "juxtaposition": 0.15, "light_atmosphere": 0.15, "authenticity": 0.15, "composition_geometry": 0.10},
+    "London Street":       {"decisive_moment": 0.30, "layering_depth": 0.15, "juxtaposition": 0.20, "light_atmosphere": 0.15, "authenticity": 0.10, "composition_geometry": 0.10},
+    "International Street":{"decisive_moment": 0.20, "layering_depth": 0.15, "juxtaposition": 0.30, "light_atmosphere": 0.15, "authenticity": 0.10, "composition_geometry": 0.10},
+    "Custom":              None,
 }
 
 # Backward-compatible aliases used by the rest of the module
@@ -53,18 +53,18 @@ _CRITERIA_KEYS = [k for k in JUDGING_CRITERIA if k != "human_perception"]
 
 # Maps preset display name → short key used inside _generate_critique
 _PRESET_TO_PROFILE: Dict[str, str] = {
-    "Magnum Editor":        "magnum",
-    "LSPF (London Street)": "lspf",
-    "SPI (International)":  "spi",
-    "Custom":               "custom",
+    "Street Editorial":    "editorial",
+    "London Street":       "lspf",
+    "International Street":"spi",
+    "Custom":              "custom",
 }
 
 def _resolve_weights(preset: str, custom_weights: Optional[Dict] = None) -> Dict[str, float]:
-    """Return the weight dict for a preset, falling back to Magnum Editor."""
+    """Return the weight dict for a preset, falling back to Street Editorial."""
     if custom_weights:
         return custom_weights
     w = COMPETITION_PRESETS.get(preset)
-    return w if w is not None else COMPETITION_PRESETS["Magnum Editor"]  # type: ignore
+    return w if w is not None else COMPETITION_PRESETS["Street Editorial"]  # type: ignore
 
 # First 8 prompt → positive, last 3 → negative / cliché
 COMPETITION_PROMPTS: List[str] = [
@@ -94,12 +94,12 @@ RATIONALE: List[str] = [
 
 
 # ---------------------------------------------------------------------------
-# MagnumStreetAnalyzer
+# StreetPhotoAnalyzer
 # ---------------------------------------------------------------------------
 
-class MagnumStreetAnalyzer:
+class StreetPhotoAnalyzer:
 
-    def __init__(self, model_root="./models", cache_path="cache/magnum_scores.json", preset="Magnum Editor", custom_weights=None):
+    def __init__(self, model_root="./models", cache_path="cache/street_scores.json", preset="Street Editorial", custom_weights=None):
         self.model_root = Path(model_root)
         self.model_root.mkdir(exist_ok=True)
         self.device = torch.device("cpu")
@@ -110,11 +110,11 @@ class MagnumStreetAnalyzer:
         self.cache = self._load_cache()
         self.weights = _resolve_weights(preset, custom_weights)
         # Internal state used by the rest of the class
-        self.profile      = _PRESET_TO_PROFILE.get(preset, "magnum")
+        self.profile      = _PRESET_TO_PROFILE.get(preset, "editorial")
         self._text_embs: Optional[np.ndarray] = None
 
     def apply_preset(self, preset_name, custom_weights=None):
-        """Switch to a named competition preset and clear the score cache."""
+        """Switch to a named editorial preset and clear the score cache."""
         self.weights = _resolve_weights(preset_name, custom_weights)
         self.profile = _PRESET_TO_PROFILE.get(preset_name, self.profile)
         self._clear_cache()  # force re-scoring with new weights
@@ -178,7 +178,7 @@ class MagnumStreetAnalyzer:
         return results
 
     def switch_profile(self, preset: str, custom_weights=None) -> None:
-        """Change the active preset without clearing the cache (use apply_preset to also clear)."""
+        """Change the active editorial preset without clearing the cache (use apply_preset to also clear)."""
         self.weights = _resolve_weights(preset, custom_weights)
         self.profile = _PRESET_TO_PROFILE.get(preset, self.profile)
 
@@ -392,16 +392,16 @@ class MagnumStreetAnalyzer:
         if grade.startswith("Strong"):
             if p == "lspf":
                 if scores["decisive_moment"] > 0.70:
-                    critique = "Unmistakable peak moment — exactly the kind of original, unguarded gesture LSPF rewards."
+                    critique = "Unmistakable peak moment — the kind of original, unguarded gesture that street photo juries reward."
                 elif scores["authenticity"] > 0.65:
                     critique = "Raw street authenticity with strong timing. Hard to fake, harder to plan."
                 else:
                     critique = "Cohesive street image with confident framing and emotional resonance."
             elif p == "spi":
                 if scores["juxtaposition"] > 0.65:
-                    critique = "Conceptual tension is sharp and unforced — the kind of irony SPI juries remember."
+                    critique = "Conceptual tension is sharp and unforced — the kind of irony that international juries remember."
                 elif scores["decisive_moment"] > 0.65:
-                    critique = "Decisive moment reinforces the juxtaposition rather than standing alone. SPI-strong."
+                    critique = "Decisive moment reinforces the juxtaposition rather than standing alone. Competition-strong."
                 else:
                     critique = "Cohesive street image with confident framing and emotional resonance."
             else:
@@ -418,16 +418,16 @@ class MagnumStreetAnalyzer:
         if grade.startswith("Mid"):
             if p == "lspf":
                 if scores["decisive_moment"] < 0.45:
-                    critique = "Moment is present but not peak. LSPF wants the fraction of a second before or after this."
+                    critique = "Moment is present but not peak. Street photo juries want the fraction of a second before or after this."
                 elif scores["authenticity"] < 0.40:
-                    critique = "Feels slightly constructed. LSPF juries are unforgiving of any hint of staging."
+                    critique = "Feels slightly constructed. Street photo juries are unforgiving of any hint of staging."
                 else:
                     critique = "Solid execution, but lacks the decisive moment or layered tension that elevates it."
             elif p == "spi":
                 if scores["juxtaposition"] < 0.45:
-                    critique = "Lacks the conceptual contradiction SPI prizes. Look for visual irony within the same frame."
+                    critique = "Lacks the conceptual contradiction international competitions prize. Look for visual irony within the same frame."
                 elif scores["light_atmosphere"] < 0.40:
-                    critique = "Flat light weakens the narrative tension. SPI rewards images where light amplifies the concept."
+                    critique = "Flat light weakens the narrative tension. International juries reward images where light amplifies the concept."
                 else:
                     critique = "Solid execution, but lacks the decisive moment or layered tension that elevates it."
             else:
@@ -443,7 +443,7 @@ class MagnumStreetAnalyzer:
         if p == "lspf":
             critique = "Neither the moment nor the authenticity cuts through. Street photography lives in the unrepeatable."
         elif p == "spi":
-            critique = "No clear conceptual tension or juxtaposition. SPI wants images that argue with themselves."
+            critique = "No clear conceptual tension or juxtaposition. International competitions want images that argue with themselves."
         else:
             critique = "Competent technically, but leans cliché, flat, or static. Revisit framing, timing, or light."
 
@@ -461,7 +461,7 @@ class MagnumStreetAnalyzer:
         target: int = 5,
     ) -> Tuple[List[str], List[str]]:
         """
-        Select and order `target` images into a Magnum-style contact-sheet sequence.
+        Select and order `target` images into an editorial contact-sheet sequence.
 
         Role slots (pacing order):
           0  Establishing  — wide, layered, landscape-oriented
@@ -583,8 +583,8 @@ def rescore(
 
     Parameters
     ----------
-    results        : output of MagnumStreetAnalyzer.analyze_folder()
-    preset         : target preset name, e.g. "LSPF (London Street)"
+    results        : output of StreetPhotoAnalyzer.analyze_folder()
+    preset         : target preset name, e.g. "London Street"
     custom_weights : optional fully custom weight dict (overrides preset)
 
     Returns
@@ -592,7 +592,7 @@ def rescore(
     New list of (path, result_dict) tuples scored under the target preset.
     """
     weights = _resolve_weights(preset, custom_weights)
-    profile = _PRESET_TO_PROFILE.get(preset, "magnum")
+    profile = _PRESET_TO_PROFILE.get(preset, "editorial")
     rescored: List[Tuple[str, Dict]] = []
 
     for path, r in results:
@@ -619,7 +619,7 @@ def rescore(
         )
 
         # Minimal shell just for _generate_critique — no CLIP load occurs
-        _shell         = object.__new__(MagnumStreetAnalyzer)
+        _shell         = object.__new__(StreetPhotoAnalyzer)
         _shell.profile = profile
         _shell.weights = weights
 
@@ -650,14 +650,14 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="MagnumStreetAnalyzer — competition-grade street photo grader"
+        description="StreetPhotoAnalyzer — competition-grade street photo grader"
     )
     parser.add_argument("folder", nargs="?", default=".",
                         help="Folder of images to analyze (default: .)")
     parser.add_argument(
-        "--preset", "-p", default="Magnum Editor",
+        "--preset", "-p", default="Street Editorial",
         choices=[k for k in COMPETITION_PRESETS if k != "Custom"],
-        help="Competition preset (default: 'Magnum Editor')",
+        help="Editorial preset (default: 'Street Editorial')",
     )
     parser.add_argument(
         "--compare", "-c", action="store_true",
@@ -665,7 +665,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    analyzer = MagnumStreetAnalyzer(preset=args.preset)
+    analyzer = StreetPhotoAnalyzer(preset=args.preset)
     print(f"\nPreset: {args.preset}\n")
 
     results = analyzer.analyze_folder(args.folder)

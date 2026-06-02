@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Street Story Curator",
+  "productName": "FrameGrade",
   "version": "1.0.0",
   "identifier": "com.streetstory.curator",
   "build": {

@@ -1,16 +1,12 @@
 import os
 from datetime import datetime
 from PIL import Image
+from raw_support import get_exif_timestamp as _raw_get_exif_ts
 
 def get_exif_timestamp(img_path):
-    try:
-        with Image.open(img_path) as img:
-            exif_data = img.getexif()
-            dt_str = exif_data.get(36867)  # DateTimeOriginal
-            if dt_str:
-                return datetime.strptime(dt_str, "%Y:%m:%d %H:%M:%S").timestamp()
-    except Exception:
-        pass
+    ts = _raw_get_exif_ts(img_path)
+    if ts is not None:
+        return ts
     return os.path.getmtime(img_path)
 
 def sort_by_timeline(results):

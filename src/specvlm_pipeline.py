@@ -306,7 +306,14 @@ def _calibrate(raw: np.ndarray) -> np.ndarray:
     near 0.10 and the best near 0.95 regardless of how similar the batch is.
     IQR compressed scores into [0.33, 0.67] for homogeneous batches, causing
     every photo to land in Mid and making TOPIQ's contribution irrelevant.
+
+    Single-image fallback: min-max is undefined for n=1 (span=0). Instead,
+    map the raw cosine discriminant through a linear sigmoid centred at 0:
+    raw=0 → 0.52, raw=-0.30 → 0.10, raw=+0.30 → 0.90. This gives real
+    scores rather than the floor value of 0.10 for every single-image run.
     """
+    if len(raw) == 1:
+        return np.clip(0.52 + raw * 1.40, 0.10, 0.95)
     lo   = float(np.min(raw))
     hi   = float(np.max(raw))
     span = max(hi - lo, 1e-4)
@@ -321,12 +328,6 @@ def _raw_aspect_discriminants(
     """Raw per-aspect discriminants (A,) — calibrated per-aspect across the batch."""
     return (img_emb @ aspect_pos.T) - (img_emb @ aspect_neg.T)
 
-
-_TIER_DESC = {
-    "strong": "Strong visual intent — decisive moment, bold geometry, or atmospheric power.",
-    "mid":    "Some strong elements but inconsistent execution or missing visual tension.",
-    "weak":   "Blurry, poorly framed, flat light, or no clear visual subject or intent.",
-}
 
 _ASPECT_LABEL = {
     "Technical":    "Technical",
@@ -345,27 +346,144 @@ def _tier(score: float) -> str:
     return "weak"
 
 
+# Per-aspect photographer observations keyed by score band.
+# Written in the voice of a photo editor marking contact sheets — direct, specific.
+_ASPECT_NOTES: Dict[str, list] = {
+    "Composition": [
+        (0.78, "Frame is airtight — every element earns its place."),
+        (0.62, "Geometry works; the eye moves without fighting the edges."),
+        (0.45, "Framing is serviceable but the edges carry dead weight."),
+        (0.00, "Frame is loose — crop it or reshoot it."),
+    ],
+    "Lighting": [
+        (0.78, "Light has direction and authority — shadow play is doing the work."),
+        (0.62, "Light is readable; contrast holds."),
+        (0.45, "Flat light. No drama, no depth — nothing to push the subject forward."),
+        (0.00, "Light is fighting the image. Blown highlights or dead-flat exposure."),
+    ],
+    # Alternative Lighting notes for intentional low-key / chiaroscuro / available-light work.
+    # Used when genre is FineArt/Liminal or Narrative score suggests deliberate mood.
+    "Lighting_moody": [
+        (0.78, "Light has direction and authority — shadow play is doing the work."),
+        (0.62, "Light is readable; contrast holds."),
+        (0.45, "Low-key rendering — shadow weight reads as intentional mood."),
+        (0.00, "Deep shadow dominance. Chiaroscuro or available-light approach — darkness as intent."),
+    ],
+    "Narrative": [
+        (0.78, "The moment is decisive — gesture or tension frozen at exactly the right frame."),
+        (0.62, "A moment caught, not staged — feels authentic."),
+        (0.45, "Something is happening but nothing is at stake."),
+        (0.00, "No moment. The scene is static and the camera just witnessed it."),
+    ],
+    "Human/Culture": [
+        (0.78, "The human subject commands the frame — presence is undeniable."),
+        (0.62, "Human element adds weight; the figure belongs here."),
+        (0.45, "Figures are present but incidental — they don't anchor anything."),
+        (0.00, "No human element. Architectural or environmental — works only if intentional."),
+    ],
+    "Technical": [
+        (0.78, "Technical execution disappears into the image — as it should."),
+        (0.62, "Technically clean. No distraction."),
+        (0.45, "Some softness or exposure drift. Manageable, not invisible."),
+        (0.00, "Technical failure is visible — motion blur, clipping, or heavy noise."),
+    ],
+    # Alternative Technical notes for FineArt/moody images where soft focus,
+    # grain, and low-light rendering are deliberate aesthetic choices.
+    "Technical_moody": [
+        (0.78, "Technical execution disappears into the image — as it should."),
+        (0.62, "Technically clean. No distraction."),
+        (0.45, "Soft rendering or organic grain — intentional aesthetic signature, not a failure."),
+        (0.00, "Technical compromise is visible — but in fine-art work, intentional grain and glow are valid."),
+    ],
+}
+
+# Overall verdict by dominant aspect + tier
+_VERDICT: Dict[str, Dict[str, str]] = {
+    "strong": {
+        "Narrative":     "Street photographer's instinct — right place, right frame, right moment.",
+        "Composition":   "Geometric authority. The structure carries the image.",
+        "Lighting":      "Light as subject. Everything else serves the atmosphere.",
+        "Human/Culture": "The figure is the photograph. Everything else is context.",
+        "Technical":     "Technically confident — the craft is invisible.",
+    },
+    "mid": {
+        "Narrative":     "The moment is there but the frame doesn't fully commit to it.",
+        "Composition":   "Decent bones. The structure works but doesn't surprise.",
+        "Lighting":      "Light is present but not working hard enough.",
+        "Human/Culture": "The human element is in the frame but not in control of it.",
+        "Technical":     "Technically adequate. Won't lose the shot but won't win it either.",
+    },
+    "weak": {
+        "Narrative":     "No decisive moment — the shutter fired but nothing was caught.",
+        "Composition":   "The frame is not resolved. Too much, too little, or in the wrong place.",
+        "Lighting":      "Light is the problem here, not the solution.",
+        "Human/Culture": "The subject is lost. Distance, angle, or timing killed it.",
+        "Technical":     "Technical compromise dominates. The image can't recover from it.",
+    },
+}
+
+
+def _aspect_note(key: str, value: float, moody: bool = False) -> str:
+    # Use moody-aware notes for Lighting and Technical when the image is
+    # intentionally dark/low-key/soft so CLIP score dips don't read as failures.
+    lookup_key = f"{key}_moody" if moody and key in ("Lighting", "Technical") else key
+    for threshold, note in _ASPECT_NOTES.get(lookup_key, _ASPECT_NOTES.get(key, [])):
+        if value >= threshold:
+            return note
+    return ""
+
+
 def _build_reasoning(
     score: float,
     aspect_scores: Dict[str, float],
     is_verified: bool,
+    grade: str = "",
+    genre: str = "",
 ) -> str:
-    tier     = _tier(score)
-    pct      = int(round(score * 100))
-    lines    = [f"{tier.capitalize()}  {pct}%", _TIER_DESC[tier]]
+    if grade:
+        tier = "strong" if "Strong" in grade else "weak" if "Weak" in grade else "mid"
+    else:
+        tier = _tier(score)
+    pct  = int(round(score * 100))
 
-    if aspect_scores:
-        lines.append("")
-        for k, v in sorted(aspect_scores.items(), key=lambda x: -x[1]):
+    sorted_aspects = sorted(aspect_scores.items(), key=lambda x: -x[1]) if aspect_scores else []
+    top_key    = sorted_aspects[0][0]  if sorted_aspects else "Narrative"
+    bottom_key = sorted_aspects[-1][0] if sorted_aspects else "Technical"
+
+    # Intentional low-light / chiaroscuro / soft-focus detection:
+    # FineArt/Liminal genre implies darkness/mood is deliberate.
+    # For other genres, strong Narrative intent alongside weaker Lighting
+    # also signals a deliberate low-key or available-light choice.
+    narrative_score = aspect_scores.get("Narrative", 0.0)
+    lighting_score  = aspect_scores.get("Lighting",  1.0)
+    is_moody = (
+        genre in ("FineArt", "Liminal")
+        or (narrative_score >= 0.38 and lighting_score < 0.55)
+    )
+
+    verdict = _VERDICT.get(tier, {}).get(top_key, "")
+    # For weak Lighting verdict on moody images, replace the penalizing
+    # "Light is the problem" verdict with atmospheric-intent language.
+    if tier == "weak" and top_key == "Lighting" and is_moody:
+        verdict = "Atmospheric depth through shadow — low-key is the visual language here."
+    elif tier == "mid" and top_key == "Lighting" and is_moody:
+        verdict = "Shadow and atmosphere doing most of the work — mood over exposure."
+
+    top_label    = _ASPECT_LABEL.get(top_key,    top_key)
+    bottom_label = _ASPECT_LABEL.get(bottom_key, bottom_key)
+
+    lines = [f"{tier.capitalize()}  {pct}%"]
+    if verdict:
+        lines.append(verdict)
+    lines.append("")
+
+    for k, v in sorted_aspects:
+        note = _aspect_note(k, v, moody=is_moody)
+        if note:
             label = _ASPECT_LABEL.get(k, k)
-            bar   = "█" * int(v * 10) + "░" * (10 - int(v * 10))
-            lines.append(f"{label:<12} {bar}  {int(v*100)}%")
-        top    = _ASPECT_LABEL.get(max(aspect_scores, key=aspect_scores.get),
-                                   max(aspect_scores, key=aspect_scores.get))
-        bottom = _ASPECT_LABEL.get(min(aspect_scores, key=aspect_scores.get),
-                                   min(aspect_scores, key=aspect_scores.get))
-        lines.append(f"\nBest: {top}   ·   Weakest: {bottom}")
+            lines.append(f"{label}: {note}")
 
+    lines.append(f"\nBest: {top_label}   ·   Weakest: {bottom_label}")
     return "\n".join(lines)
 
 
@@ -491,7 +609,7 @@ class SpecVLMPipeline:
 
             confidence  = min(1.0, abs(draft_score - 0.5) * 2.0)
 
-            reasoning = _build_reasoning(draft_score, aspect_scores, is_verified)
+            reasoning = _build_reasoning(draft_score, aspect_scores, is_verified, genre=genre)
 
             results.append(SpecVLMResult(
                 path          = path,

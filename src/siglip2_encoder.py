@@ -159,11 +159,13 @@ class SigLIP2Encoder:
                 torch.cuda.get_device_properties(0).total_memory
                 - torch.cuda.memory_reserved(0)
             ) / 1e9
-            needed_gb = self._QUANTIZED_VRAM_GB if quantize else self._FP16_VRAM_GB
+            # The model skeleton is allocated as FP16 before quantisation, so
+            # the floor is _FP16_VRAM_GB (3.5 GB) regardless of the quantize flag.
+            needed_gb = self._FP16_VRAM_GB
             if free_gb < needed_gb:
                 print(
                     f"[siglip2] WARNING: only {free_gb:.1f} GB VRAM free, "
-                    f"need ~{needed_gb:.1f} GB — falling back to CPU inference"
+                    f"need ~{needed_gb:.1f} GB for FP16 skeleton — falling back to CPU"
                 )
                 self.device = torch.device("cpu")
 
@@ -197,16 +199,25 @@ class SigLIP2Encoder:
             )
 
             _p(0.04, "Streaming SigLIP-2 weights to GPU (no RAM staging)…")
+            print("[siglip2] step: streaming weights →", safetensors_path.name)
             self._stream_weights_to_device(safetensors_path, self.device)
+            print("[siglip2] step: weights streamed OK")
+            if self.device.type == "cuda":
+                torch.cuda.synchronize()
+                print("[siglip2] step: CUDA sync after streaming OK")
 
             self._tok = open_clip.get_tokenizer(_MODEL_TAG)
+            print("[siglip2] step: tokeniser loaded")
 
             if quantize:
                 _p(0.05, "Quantising SigLIP-2 to INT8…")
+                print("[siglip2] step: starting INT8 quantisation")
                 self._model = self._quantize_model(self._model)
+                print("[siglip2] step: quantisation complete")
 
             self._model.eval()
             gc.collect()
+            print("[siglip2] step: model.eval() done")
 
             # ── TensorRT engine: load if pre-compiled engine exists ───────────
             # Compile once with: python -c "from siglip2_encoder import compile_trt_engine; compile_trt_engine()"
@@ -222,10 +233,12 @@ class SigLIP2Encoder:
                 except Exception as _trt_e:
                     print(f"[siglip2] TensorRT load failed ({_trt_e}) — using standard model")
 
-            # torch.compile fuses 48 ViT-g attention layers into a CUDA graph,
-            # eliminating per-layer Python dispatch overhead (~20-40% faster).
-            # Skipped when TRT engine is active — already AOT-compiled.
-            if not _trt_model_loaded:
+            # torch.compile fuses ViT-g attention layers (~20-40% faster).
+            # Disabled on Windows: torch.compile uses Triton which can segfault
+            # in the Windows CUDA driver, killing the process with no traceback.
+            import platform as _platform
+            _on_windows = _platform.system() == "Windows"
+            if not _trt_model_loaded and not _on_windows:
                 try:
                     self._model = torch.compile(
                         self._model,
@@ -235,6 +248,8 @@ class SigLIP2Encoder:
                     print("[siglip2] torch.compile active — first batch warms up JIT")
                 except Exception as _ce:
                     print(f"[siglip2] torch.compile skipped ({_ce})")
+            elif _on_windows:
+                print("[siglip2] torch.compile disabled on Windows — using standard inference")
 
             _p(0.07, "SigLIP-2 ready — encoding images…")
 
@@ -320,6 +335,27 @@ class SigLIP2Encoder:
             print(f"[siglip2] torchao INT8 unavailable ({e_torchao}) — using FP16 on GPU (~3.5 GB)")
             return model
     
+    def _safe_encode_batch(self, cpu_batch: "torch.Tensor", model_dtype) -> "np.ndarray":
+        """Forward pass with automatic sub-batch halving on CUDA OOM. Returns float32 numpy."""
+        n = cpu_batch.shape[0]
+        sub_size = n
+        while sub_size >= 1:
+            try:
+                parts = []
+                for i in range(0, n, sub_size):
+                    sub = cpu_batch[i:i+sub_size].to(device=self.device, dtype=model_dtype, non_blocking=True)
+                    with torch.inference_mode():
+                        e = self._model.encode_image(sub)
+                        e = e / (e.norm(dim=-1, keepdim=True) + 1e-9)
+                    parts.append(e.cpu().float().numpy())
+                    del sub, e
+                return np.concatenate(parts, axis=0) if len(parts) > 1 else parts[0]
+            except torch.cuda.OutOfMemoryError:
+                torch.cuda.empty_cache()
+                sub_size = max(1, sub_size // 2)
+                print(f"[siglip2] CUDA OOM — sub-batch size halved to {sub_size}")
+        raise RuntimeError("[siglip2] CUDA OOM even at sub_batch_size=1")
+
     def encode_images(
         self,
         paths: List[str],
@@ -406,18 +442,8 @@ class SigLIP2Encoder:
                     torch.stack(tensors, out=cpu_batch)
                 else:
                     cpu_batch = torch.stack(tensors)
-                batch = cpu_batch.to(
-                    device=self.device,
-                    dtype=_model_dtype,
-                    non_blocking=True,
-                )
-
-                with torch.inference_mode():
-                    emb = self._model.encode_image(batch)
-                    emb = emb / (emb.norm(dim=-1, keepdim=True) + 1e-9)
-
-                all_embs.append(emb.cpu().float().numpy())
-                del cpu_batch, batch, emb
+                all_embs.append(self._safe_encode_batch(cpu_batch, _model_dtype))
+                del cpu_batch
 
                 if progress:
                     done = min(start + batch_size, n)

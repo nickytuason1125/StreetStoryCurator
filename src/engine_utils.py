@@ -33,9 +33,9 @@ def get_dedup_score(path1: str, path2: str,
     phash_sim = 0.0
     try:
         import imagehash
-        from PIL import Image
-        h1 = imagehash.phash(Image.open(path1))
-        h2 = imagehash.phash(Image.open(path2))
+        from raw_support import open_image as _open_img
+        h1 = imagehash.phash(_open_img(path1))
+        h2 = imagehash.phash(_open_img(path2))
         phash_sim = 1.0 - (h1 - h2) / 64.0
     except Exception:
         pass
@@ -57,8 +57,8 @@ def phash_of(path: str) -> str | None:
     """Return hex pHash string for a single image, or None on failure."""
     try:
         import imagehash
-        from PIL import Image
-        return str(imagehash.phash(Image.open(path)))
+        from raw_support import open_image as _open_img
+        return str(imagehash.phash(_open_img(path)))
     except Exception:
         return None
 
@@ -226,7 +226,8 @@ class LocalVectorDB:
 # 4. Incremental folder watcher
 # ─────────────────────────────────────────────────────────────────────────────
 
-_IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.tif', '.tiff'}
+from raw_support import RAW_EXTS as _RAW_EXTS_ENGINE
+_IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.tif', '.tiff'} | _RAW_EXTS_ENGINE
 
 from concurrent.futures import ThreadPoolExecutor as _TPE
 

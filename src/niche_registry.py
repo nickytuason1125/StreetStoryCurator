@@ -1,0 +1,933 @@
+"""
+Niche Registry — 20 photography niches with per-niche:
+  - Qwen2.5-VL scoring axes  (5 dimensions + calibration text)
+  - SigLIP-2 CLIP probe sets (positive + negative text probes for pre-filter)
+  - Display metadata         (label, category, icon)
+
+Used by:
+  qwen_vlm_grader.py  → build_niche_prompt() generates the scoring prompt
+  grade_pipeline_v2.py → niche_clip_probes() returns (pos, neg) for pre-filter
+  frontend/src/App.tsx → NICHE_CATEGORIES for the niche picker UI
+"""
+
+from __future__ import annotations
+from typing import NamedTuple
+
+# ── Data types ────────────────────────────────────────────────────────────────
+
+class NicheAxes(NamedTuple):
+    key:  str
+    desc: str
+
+
+REGISTRY: dict[str, dict] = {}
+
+
+def _reg(
+    key:         str,
+    label:       str,
+    category:    str,
+    mode_label:  str,
+    calibration: str,
+    axes:        list[tuple[str, str]],
+    pos_probes:  list[str],
+    neg_probes:  list[str],
+) -> None:
+    REGISTRY[key] = {
+        "label":       label,
+        "category":    category,
+        "mode_label":  mode_label,
+        "calibration": calibration,
+        "axes":        axes,
+        "pos_probes":  pos_probes,
+        "neg_probes":  neg_probes,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STREET & DOCUMENTARY
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_reg(
+    key="classic_street",
+    label="Classic Street",
+    category="Street & Documentary",
+    mode_label="street photography",
+    calibration=(
+        "A competently exposed street shot scores 55-65; "
+        "a decisive-moment image with strong composition scores 70-80; "
+        "exceptional human geometry or peak moment scores 85+. "
+        "Reserve below 40 for genuine technical failures."
+    ),
+    axes=[
+        ("composition",  "framing, geometry, visual hierarchy, decisive use of space"),
+        ("lighting",     "quality, direction, tonal depth, shadow control, mood"),
+        ("moment",       "decisiveness, timing, peak action, human tension or irony"),
+        ("human",        "gesture, expression, relationship, cultural energy (0 if no person)"),
+        ("technical",    "sharpness, exposure accuracy, noise, lens rendering"),
+    ],
+    pos_probes=[
+        "decisive moment candid street photograph Cartier-Bresson",
+        "peak action human gesture urban street photography",
+        "layered street scene foreground background depth",
+        "strong shadow geometry street photography Vivian Maier",
+        "candid human interaction public space documentary",
+        "graphic silhouette backlight street figure urban",
+        "frame within frame doorway arch street scene",
+        "wet street reflection puddle urban atmosphere",
+        "ironic juxtaposition advertisement street photography",
+        "leading lines perspective human subject street",
+    ],
+    neg_probes=[
+        "blurry out of focus accidental camera shake",
+        "poorly exposed snapshot tourist photo random",
+        "empty boring street no interest no subject",
+        "posed fake unnatural street photo",
+        "cluttered messy no composition no intent",
+    ],
+)
+
+_reg(
+    key="documentary",
+    label="Documentary",
+    category="Street & Documentary",
+    mode_label="documentary photography",
+    calibration=(
+        "A contextually clear documentary image scores 55-65; "
+        "one with emotional truth and strong composition scores 70-80; "
+        "exceptional narrative impact with authenticity scores 85+. "
+        "Reserve below 40 for images with no documentary value."
+    ),
+    axes=[
+        ("narrative_impact",  "story clarity, emotional truth, scene significance"),
+        ("composition",       "framing, visual hierarchy, contextual depth"),
+        ("authenticity",      "candid realism, unposed naturalness, truthful moment"),
+        ("context",           "environmental context, social/cultural information"),
+        ("technical",         "sharpness, exposure, grain quality, lens rendering"),
+    ],
+    pos_probes=[
+        "powerful documentary photograph social issue authentic",
+        "photojournalism candid human condition real life",
+        "environmental documentary portrait subject in context",
+        "long-form documentary essay image narrative",
+        "authentic unstaged moment human truth documentary",
+        "social documentary community life cultural record",
+        "intimate access documentary close proximity real",
+        "witness photography human rights documentary impact",
+    ],
+    neg_probes=[
+        "staged artificial set up fake documentary",
+        "tourist snapshot no documentary value",
+        "random snapshot no narrative no meaning",
+        "posed unnatural awkward forced",
+    ],
+)
+
+_reg(
+    key="photojournalism",
+    label="Photojournalism",
+    category="Street & Documentary",
+    mode_label="photojournalism",
+    calibration=(
+        "A news-worthy, contextually clear image scores 55-65; "
+        "one with impact, clarity, and editorial urgency scores 70-80; "
+        "iconic news image with historical weight scores 85+. "
+        "Reserve below 40 for images with no news or documentary value."
+    ),
+    axes=[
+        ("news_impact",        "newsworthiness, visual urgency, historical or social weight"),
+        ("compositional_urgency", "framing under pressure, decisive capture, editorial clarity"),
+        ("context",            "scene information, who/what/where readable from image"),
+        ("authenticity",       "unmanipulated reality, ethical documentation, candid truth"),
+        ("technical",          "sharpness on subject, exposure under difficult conditions"),
+    ],
+    pos_probes=[
+        "breaking news photojournalism press photograph",
+        "editorial news photography wire service AP Reuters",
+        "conflict protest crowd documentary news photography",
+        "political event news photojournalism decisive moment",
+        "disaster rescue human interest news photography",
+        "sports news photojournalism peak action editorial",
+        "portrait news subject environmental context editorial",
+    ],
+    neg_probes=[
+        "staged manipulated fake news photo",
+        "blurry missed focus unusable press photo",
+        "no news value random snapshot",
+        "tourist postcard no editorial context",
+    ],
+)
+
+_reg(
+    key="travel_cultural",
+    label="Travel & Cultural",
+    category="Street & Documentary",
+    mode_label="travel and cultural documentary photography",
+    calibration=(
+        "A competent travel image with sense of place scores 55-65; "
+        "one with cultural authenticity and human connection scores 70-80; "
+        "exceptional immersive cultural documentary scores 85+. "
+        "Reserve below 40 for generic tourist snapshots with no cultural insight."
+    ),
+    axes=[
+        ("sense_of_place",      "geographical specificity, cultural atmosphere, 'you are there'"),
+        ("cultural_authenticity", "genuine local life, unstaged tradition, human geography"),
+        ("composition",         "framing, depth, visual hierarchy, environmental integration"),
+        ("light_atmosphere",    "quality of light, color, time of day, mood"),
+        ("technical",           "sharpness, exposure, color rendering"),
+    ],
+    pos_probes=[
+        "travel photography sense of place cultural authenticity",
+        "local market street life cultural documentary travel",
+        "traditional ceremony ritual cultural heritage photography",
+        "environmental portrait local person in cultural context",
+        "landscape with cultural human element travel documentary",
+        "food market craft shop local life travel photography",
+        "golden hour travel destination authentic atmosphere",
+    ],
+    neg_probes=[
+        "generic tourist postcard no authenticity",
+        "posed unnatural tourist photo at landmark",
+        "empty landmark without human or cultural context",
+        "random snapshot no sense of place",
+    ],
+)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ARCHITECTURE & SPACE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_reg(
+    key="architectural",
+    label="Architectural",
+    category="Architecture & Space",
+    mode_label="architectural photography",
+    calibration=(
+        "A well-composed architectural shot scores 55-65; "
+        "a spatially compelling image with strong geometry scores 70-80; "
+        "exceptional structure, light, and spatial narrative scores 85+. "
+        "Reserve below 40 for technically poor or randomly framed building shots."
+    ),
+    axes=[
+        ("geometry",     "structural lines, symmetry, rhythm, architectural clarity, spatial depth"),
+        ("lighting",     "quality, direction, tonal depth, shadow control, facade modeling"),
+        ("composition",  "framing, perspective, spatial hierarchy, decisive use of space"),
+        ("detail",       "material texture, surface quality, structural detail, craft"),
+        ("technical",    "sharpness, exposure, perspective correction, lens rendering"),
+    ],
+    pos_probes=[
+        "architectural photography building structure geometric composition",
+        "modernist architecture strong lines symmetry photography",
+        "interior architectural photography spatial light quality",
+        "facade detail texture material architecture close-up",
+        "urban architecture perspective converging lines dramatic",
+        "brutalist concrete architecture dramatic shadow light",
+        "glass steel modern architecture reflection abstract",
+        "historical architecture classical column arch detail",
+    ],
+    neg_probes=[
+        "random snapshot of building tourist photo",
+        "distorted perspective accidental tilt poor framing",
+        "blurry building photo no architectural intent",
+        "cluttered obstructed building shot no clarity",
+    ],
+)
+
+_reg(
+    key="liminal",
+    label="Liminal Spaces",
+    category="Architecture & Space",
+    mode_label="liminal space photography",
+    calibration=(
+        "A quiet transitional space scores 55-65; "
+        "one with genuine uncanny atmosphere and spatial tension scores 70-80; "
+        "an exceptional void with psychological resonance scores 85+. "
+        "Reserve below 40 for technically poor or ordinary-looking empty spaces."
+    ),
+    axes=[
+        ("atmosphere",   "sense of void, uncanny stillness, psychological tension, solitude"),
+        ("geometry",     "spatial lines, perspective depth, architectural structure, scale"),
+        ("light_quality","quality, direction, color, emptiness, vacancy feeling"),
+        ("composition",  "framing, leading lines, spatial hierarchy"),
+        ("technical",    "sharpness, exposure, color grading, lens rendering"),
+    ],
+    pos_probes=[
+        "liminal space empty corridor uncanny atmosphere",
+        "empty swimming pool parking garage abandoned mall",
+        "transitional architecture non-place solitude",
+        "empty escalator airport terminal corridor quiet",
+        "brutalist empty concrete space psychological",
+        "empty shopping mall food court solitude eerie",
+        "backrooms aesthetic empty fluorescent light corridor",
+    ],
+    neg_probes=[
+        "crowded busy space with people activity",
+        "random empty room no atmosphere no composition",
+        "cluttered messy disorganized space",
+        "generic interior snapshot no mood",
+    ],
+)
+
+_reg(
+    key="urban_city",
+    label="Urban / City",
+    category="Architecture & Space",
+    mode_label="urban city photography",
+    calibration=(
+        "A competent urban texture image scores 55-65; "
+        "one with strong city energy, composition, and mood scores 70-80; "
+        "exceptional metropolitan atmosphere with visual poetry scores 85+. "
+        "Reserve below 40 for generic city snapshots with no visual interest."
+    ),
+    axes=[
+        ("urban_energy",  "metropolitan atmosphere, city texture, cultural vitality"),
+        ("composition",   "framing, geometric rhythm, visual hierarchy, urban geometry"),
+        ("light_mood",    "time of day, artificial light, atmospheric quality"),
+        ("city_texture",  "signage, materials, density, urban layering, infrastructure"),
+        ("technical",     "sharpness, exposure, color rendering"),
+    ],
+    pos_probes=[
+        "urban cityscape metropolitan photography strong composition",
+        "neon signs city night urban texture photography",
+        "busy intersection pedestrian urban energy photography",
+        "city rooftop skyline dramatic light urban landscape",
+        "underground subway metro urban commuter photography",
+        "chinatown ethnic neighborhood cultural urban texture",
+        "construction infrastructure urban industrial photography",
+    ],
+    neg_probes=[
+        "generic city snapshot tourist postcard no composition",
+        "blurry city photo accidental no intent",
+        "random urban scene no visual interest",
+        "empty featureless urban environment",
+    ],
+)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LIGHT & MOOD
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_reg(
+    key="night",
+    label="Night / Low Light",
+    category="Light & Mood",
+    mode_label="night and low light photography",
+    calibration=(
+        "A competently exposed night scene scores 55-65; "
+        "one with atmospheric mood and strong light design scores 70-80; "
+        "exceptional nocturnal atmosphere with visual poetry scores 85+. "
+        "Reserve below 40 for technically poor night shots without artistic intent."
+    ),
+    axes=[
+        ("light_quality",   "quality of artificial or ambient light, pools, halos, neon glow"),
+        ("nocturnal_mood",  "atmospheric darkness, mystery, urban night energy, isolation"),
+        ("composition",     "framing within light constraints, shadow use, silhouettes"),
+        ("color_palette",   "color temperature balance, neon vs warm, contrast quality"),
+        ("technical",       "noise control, sharpness on subject, exposure balance"),
+    ],
+    pos_probes=[
+        "night photography city lights atmospheric darkness",
+        "neon lights rain street night urban photography",
+        "chiaroscuro dramatic light pool darkness night photography",
+        "long exposure city night light trails atmospheric",
+        "night portrait street available light cinematic",
+        "blue hour dusk urban twilight atmospheric photography",
+        "wet street neon reflection night photography",
+        "film noir inspired night street photography shadow light",
+    ],
+    neg_probes=[
+        "overexposed night photo blown highlights harsh",
+        "pure darkness underexposed nothing visible",
+        "flat boring daytime photo nothing to do with night",
+        "noisy blurry technically failed night shot",
+    ],
+)
+
+_reg(
+    key="long_exposure",
+    label="Long Exposure",
+    category="Light & Mood",
+    mode_label="long exposure photography",
+    calibration=(
+        "A clean long exposure with clear intent scores 55-65; "
+        "one with beautiful light trails and strong composition scores 70-80; "
+        "exceptional time-layered image with visual poetry scores 85+. "
+        "Reserve below 40 for accidental blur or technically failed exposures."
+    ),
+    axes=[
+        ("motion_quality",    "intentional blur quality, smoothness, directional flow"),
+        ("light_painting",    "light trail clarity, color, luminance paths, star trails"),
+        ("composition",       "framing around motion, static vs dynamic elements"),
+        ("temporal_effect",   "sense of time passing, ethereal quality, motion-freeze contrast"),
+        ("technical",         "sharpness on static elements, exposure balance, noise"),
+    ],
+    pos_probes=[
+        "long exposure photography light trails city",
+        "slow shutter waterfall silky smooth water",
+        "long exposure star trails milky way night sky",
+        "steel wool spinning light painting photography",
+        "long exposure traffic light trails urban night",
+        "slow shutter crowd blur ghost motion photography",
+        "seascape long exposure silky water misty atmosphere",
+    ],
+    neg_probes=[
+        "accidental camera shake blur technical failure",
+        "unintentional motion blur missed focus",
+        "static subject no motion effect boring",
+        "overexposed blown out long exposure failure",
+    ],
+)
+
+_reg(
+    key="fine_art",
+    label="Fine Art",
+    category="Light & Mood",
+    mode_label="fine art photography",
+    calibration=(
+        "A visually coherent fine art image scores 55-65; "
+        "one with painterly quality and artistic intent scores 70-80; "
+        "exceptional conceptual and aesthetic execution scores 85+. "
+        "Reserve below 40 for images with no discernible artistic vision."
+    ),
+    axes=[
+        ("artistic_vision",  "conceptual intent, artistic statement, personal vision"),
+        ("mood",             "emotional resonance, tonal atmosphere, psychological feeling"),
+        ("composition",      "painterly framing, visual poetry, deliberate spatial arrangement"),
+        ("visual_poetry",    "metaphorical reading, layers of meaning, aesthetic beauty"),
+        ("technical",        "exposure, tonal range, focus as expressive tool, print quality"),
+    ],
+    pos_probes=[
+        "fine art photography painterly light artistic vision",
+        "pictorialist photography soft focus atmospheric beauty",
+        "conceptual fine art photograph artistic statement",
+        "large format film photography tonal range beauty",
+        "Sally Mann Francesca Woodman fine art photography",
+        "vintage lens bokeh soft focus fine art portrait",
+        "infrared photography artistic dreamlike fine art",
+    ],
+    neg_probes=[
+        "snapshot commercial photograph no artistic intent",
+        "harsh flat documentary no fine art quality",
+        "random snapshot accidental no vision",
+        "technically poor failed exposure no artistic excuse",
+    ],
+)
+
+_reg(
+    key="minimalist",
+    label="Minimalist",
+    category="Light & Mood",
+    mode_label="minimalist photography",
+    calibration=(
+        "A clean minimal composition scores 55-65; "
+        "one with strong negative space and graphic power scores 70-80; "
+        "exceptional reduction with visual tension and precision scores 85+. "
+        "Reserve below 40 for unintentionally sparse or poorly composed images."
+    ),
+    axes=[
+        ("negative_space",    "deliberate emptiness, breathing room, void as subject"),
+        ("graphic_simplicity","reduction to essential elements, clean lines, graphic clarity"),
+        ("tonal_balance",     "high key/low key elegance, contrast without clutter"),
+        ("composition",       "precise placement, ratio, geometric tension"),
+        ("technical",         "sharpness, tonal fidelity, clean exposure, no distractions"),
+    ],
+    pos_probes=[
+        "minimalist photography negative space graphic composition",
+        "clean lines simple subject isolated background minimalism",
+        "fog mist minimalist landscape single element",
+        "white snow ice minimalist landscape photography",
+        "single subject vast negative space stark photography",
+        "Japanese aesthetic wabi-sabi minimalist photography",
+        "graphic design photography minimal geometric clean",
+    ],
+    neg_probes=[
+        "cluttered busy distracting background elements",
+        "overcrowded frame too many subjects no focus",
+        "random sparse image accidental not minimalist",
+        "messy disorganized composition no clarity",
+    ],
+)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SUBJECT-FOCUSED
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_reg(
+    key="portrait",
+    label="Portrait",
+    category="Subject-Focused",
+    mode_label="portrait photography",
+    calibration=(
+        "A technically competent portrait scores 55-65; "
+        "one with genuine expression and environmental relationship scores 70-80; "
+        "exceptional character study with psychological depth scores 85+. "
+        "Reserve below 40 for technically poor or expressionless portraits."
+    ),
+    axes=[
+        ("expression",          "emotional authenticity, character revelation, psychological depth"),
+        ("composition",         "subject placement, environmental relationship, framing, gaze"),
+        ("lighting",            "flattering or characterful light quality, shadow modeling, mood"),
+        ("environmental_context","subject relationship to surroundings, narrative depth, context"),
+        ("technical",           "sharpness on eyes, exposure, depth of field, color rendering"),
+    ],
+    pos_probes=[
+        "environmental portrait subject in context expressive",
+        "character study portrait psychological depth candid",
+        "natural light portrait window light intimate",
+        "street portrait candid authentic character",
+        "dramatic portrait chiaroscuro light shadow character",
+        "editorial portrait expressive mood styled",
+        "intimate portrait connection eye contact authentic",
+    ],
+    neg_probes=[
+        "bad focus eyes not sharp portrait failure",
+        "flat unflattering light passport photo no expression",
+        "forced smile awkward posed unnatural",
+        "random person snapshot no portrait intent",
+    ],
+)
+
+_reg(
+    key="wildlife",
+    label="Wildlife",
+    category="Subject-Focused",
+    mode_label="wildlife photography",
+    calibration=(
+        "A competently captured wildlife image scores 55-65; "
+        "one with peak behavior and strong habitat context scores 70-80; "
+        "exceptional rare behavior with technical mastery scores 85+. "
+        "Reserve below 40 for technically poor or zoo/captive animal images with no behavior."
+    ),
+    axes=[
+        ("subject_behavior",   "peak action, rare behavior, animal interaction, moment quality"),
+        ("habitat_context",    "natural environment integration, ecosystem storytelling"),
+        ("composition",        "subject placement, habitat framing, negative space"),
+        ("light_quality",      "golden hour, catchlight in eye, tonal quality, mood"),
+        ("technical",          "sharpness on subject eye, exposure, background separation"),
+    ],
+    pos_probes=[
+        "wildlife photography animal behavior natural habitat",
+        "bird in flight peak action wildlife photography",
+        "predator prey interaction wildlife decisive moment",
+        "golden hour wildlife portrait natural light catchlight",
+        "underwater marine wildlife photography behavior",
+        "macro wildlife insect spider natural habitat photography",
+        "wildlife landscape environmental portrait habitat context",
+    ],
+    neg_probes=[
+        "zoo animal cage bars captive no behavior",
+        "blurry missed focus wildlife technical failure",
+        "distant unidentifiable animal no behavior no interest",
+        "pet domestic animal snapshot no wildlife context",
+    ],
+)
+
+_reg(
+    key="fashion_editorial",
+    label="Fashion / Editorial",
+    category="Subject-Focused",
+    mode_label="fashion and editorial photography",
+    calibration=(
+        "A competent fashion image scores 55-65; "
+        "one with strong editorial mood and styling scores 70-80; "
+        "exceptional concept, execution, and fashion energy scores 85+. "
+        "Reserve below 40 for technically poor or unstyled fashion attempts."
+    ),
+    axes=[
+        ("styling_aesthetic",  "garment presentation, styling coherence, fashion vision"),
+        ("model_expression",   "pose, attitude, energy, connection with camera, editorial power"),
+        ("editorial_mood",     "concept execution, narrative, mood board alignment"),
+        ("composition",        "framing, model placement, environmental interaction"),
+        ("technical",          "sharpness, exposure, color rendition, lighting quality"),
+    ],
+    pos_probes=[
+        "fashion photography editorial styled model strong concept",
+        "high fashion editorial Vogue Harper's Bazaar photography",
+        "street style fashion photography urban editorial",
+        "beauty editorial close-up makeup fashion photography",
+        "avant-garde fashion concept artistic editorial photography",
+        "commercial fashion catalog clean product photography",
+        "runway fashion show photography editorial backstage",
+    ],
+    neg_probes=[
+        "unstylized casual snapshot no fashion context",
+        "poorly styled unflattering unintentional clothing photo",
+        "random person no editorial intent no fashion",
+        "blurry out of focus fashion photo technical failure",
+    ],
+)
+
+_reg(
+    key="sports_action",
+    label="Sports / Action",
+    category="Subject-Focused",
+    mode_label="sports and action photography",
+    calibration=(
+        "A competent action shot scores 55-65; "
+        "one at peak action with strong composition scores 70-80; "
+        "exceptional peak moment with emotion and technical mastery scores 85+. "
+        "Reserve below 40 for missed action, blur, or passively posed sports images."
+    ),
+    axes=[
+        ("peak_action",     "decisive peak moment, timing precision, athletic climax"),
+        ("motion_quality",  "motion freeze or intentional blur, speed feeling, dynamism"),
+        ("composition",     "sport-specific framing, anticipation, negative space for motion"),
+        ("emotion",         "athlete intensity, crowd energy, competitive spirit"),
+        ("technical",       "sharpness on subject, exposure in fast conditions, background"),
+    ],
+    pos_probes=[
+        "peak action sports photography decisive moment athletic",
+        "basketball football soccer peak action sports photography",
+        "track and field athletics peak action photography",
+        "extreme sports action photography dynamic motion",
+        "victory celebration emotional sports photography",
+        "underwater sports swimming photography peak action",
+        "motorsport speed blur action photography F1 racing",
+    ],
+    neg_probes=[
+        "passive static sport no action standing still",
+        "blurry missed peak action technical failure",
+        "warm-up sideline no game action no tension",
+        "posed team photo no athletic energy",
+    ],
+)
+
+_reg(
+    key="wedding",
+    label="Wedding / Ceremony",
+    category="Subject-Focused",
+    mode_label="wedding and ceremony photography",
+    calibration=(
+        "A competent ceremony image scores 55-65; "
+        "one with genuine emotion and beautiful light scores 70-80; "
+        "exceptional intimate moment with technical excellence scores 85+. "
+        "Reserve below 40 for technically poor or emotionally flat ceremony images."
+    ),
+    axes=[
+        ("emotional_moment",  "genuine emotion, tears, laughter, connection, tender intimacy"),
+        ("composition",       "subject framing, environmental context, visual storytelling"),
+        ("light_quality",     "golden hour, window light, candlelight, quality of ceremony light"),
+        ("story_telling",     "narrative arc, before/after energy, cultural tradition visible"),
+        ("technical",         "sharpness on faces, exposure in difficult ceremony light"),
+    ],
+    pos_probes=[
+        "wedding photography emotional moment ceremony beautiful",
+        "first kiss ceremony wedding photography authentic",
+        "bride groom portrait golden hour wedding photography",
+        "wedding reception dance celebration candid photography",
+        "detail wedding ring flowers dress photography",
+        "family portrait wedding emotional candid laughter",
+        "cultural wedding ceremony tradition photography authentic",
+    ],
+    neg_probes=[
+        "flat emotionless posed wedding photo no feeling",
+        "blurry out of focus wedding technical failure",
+        "empty venue no subjects no ceremony context",
+        "awkward forced pose wedding photo unnatural",
+    ],
+)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CREATIVE & SPECIALIZED
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_reg(
+    key="landscape",
+    label="Landscape",
+    category="Creative & Specialized",
+    mode_label="landscape photography",
+    calibration=(
+        "A competent landscape scores 55-65; "
+        "one with exceptional light, depth, and atmosphere scores 70-80; "
+        "a transformative landscape with painterly quality scores 85+. "
+        "Reserve below 40 for flat, featureless, or technically poor landscapes."
+    ),
+    axes=[
+        ("light_quality",   "golden hour, dramatic sky, tonal richness, shadow depth"),
+        ("landscape_comp",  "foreground interest, layers, horizon placement, scale"),
+        ("weather_drama",   "clouds, storm, mist, fog, atmospheric conditions"),
+        ("depth_scale",     "sense of vastness, scale, spatial recession, infinity"),
+        ("technical",       "sharpness throughout, exposure balance, color rendering"),
+    ],
+    pos_probes=[
+        "landscape photography golden hour dramatic light",
+        "mountain landscape dramatic clouds atmospheric photography",
+        "coastal seascape golden hour wave photography",
+        "forest landscape misty fog atmospheric photography",
+        "desert landscape minimalist vast photography",
+        "Ansel Adams style black white landscape photography",
+        "aurora borealis northern lights landscape photography",
+    ],
+    neg_probes=[
+        "flat overcast featureless boring landscape",
+        "snapshot landscape no composition no light interest",
+        "blown sky or foreground exposure failure landscape",
+        "tourist snapshot landmark no landscape artistry",
+    ],
+)
+
+_reg(
+    key="abstract",
+    label="Abstract",
+    category="Creative & Specialized",
+    mode_label="abstract photography",
+    calibration=(
+        "A competent abstract scores 55-65; "
+        "one with strong visual rhythm and graphic power scores 70-80; "
+        "exceptional abstraction with color, form, and tension scores 85+. "
+        "Reserve below 40 for accidental abstractions with no visual interest."
+    ),
+    axes=[
+        ("visual_abstraction", "departure from representation, non-literal reading, visual puzzle"),
+        ("pattern_texture",    "rhythm, repetition, surface quality, tactile visual"),
+        ("color_form",         "color relationships, tonal contrast, shape tension"),
+        ("graphic_impact",     "boldness, visual punch, striking first impression"),
+        ("technical",          "sharpness on intended plane, exposure control, color fidelity"),
+    ],
+    pos_probes=[
+        "abstract photography pattern texture visual rhythm",
+        "geometric abstraction architecture color form photography",
+        "macro texture abstract close-up surface photography",
+        "reflection water abstract impressionist photography",
+        "shadow pattern abstract graphic photography",
+        "intentional camera movement ICM abstract photography",
+        "multiple exposure abstract photography visual experiment",
+    ],
+    neg_probes=[
+        "accidental random blur no artistic abstract intent",
+        "clearly representational subject no abstraction",
+        "random texture no composition no visual interest",
+        "technical failure masquerading as abstract",
+    ],
+)
+
+_reg(
+    key="macro",
+    label="Macro / Close-up",
+    category="Creative & Specialized",
+    mode_label="macro and close-up photography",
+    calibration=(
+        "A competent macro with sharp subject scores 55-65; "
+        "one with beautiful depth of field and subject detail scores 70-80; "
+        "exceptional micro world with composition and light mastery scores 85+. "
+        "Reserve below 40 for out-of-focus or compositionally empty macro attempts."
+    ),
+    axes=[
+        ("subject_detail",  "fine detail revelation, texture richness, close-up discovery"),
+        ("depth_of_field",  "deliberate bokeh quality, focus plane choice, optical rendering"),
+        ("composition",     "subject placement within tight frame, negative space, angle"),
+        ("light_quality",   "macro lighting, rim light, diffused close-up light, color"),
+        ("technical",       "critical sharpness on focus plane, diffraction control, stacking"),
+    ],
+    pos_probes=[
+        "macro photography extreme close-up fine detail revelation",
+        "flower petal dew drop macro photography",
+        "insect eye compound macro photography extreme close-up",
+        "water drop splash macro high speed photography",
+        "food macro extreme close-up texture photography",
+        "circuit board technology macro abstract photography",
+        "fabric textile fiber macro texture photography",
+    ],
+    neg_probes=[
+        "out of focus macro wrong plane blurry subject",
+        "random close-up no detail interest no composition",
+        "normal lens close-up not true macro",
+        "technically failed macro diffraction blur",
+    ],
+)
+
+_reg(
+    key="experimental",
+    label="Experimental / Conceptual",
+    category="Creative & Specialized",
+    mode_label="experimental and conceptual photography",
+    calibration=(
+        "An experimental image with clear concept scores 55-65; "
+        "one with strong visual innovation and execution scores 70-80; "
+        "exceptional avant-garde work with transformative vision scores 85+. "
+        "Reserve below 40 for accidental failures with no discernible concept."
+    ),
+    axes=[
+        ("conceptual_strength", "clarity of concept, intellectual or emotional statement"),
+        ("visual_innovation",   "departure from convention, new ways of seeing, originality"),
+        ("execution",           "concept translated into visual reality with skill"),
+        ("intent_clarity",      "deliberate vs accidental, purposeful choices, cohesion"),
+        ("technical",           "technical choices serve concept, exposure, focus as tools"),
+    ],
+    pos_probes=[
+        "experimental photography avant-garde visual concept",
+        "conceptual photography artistic statement new vision",
+        "multiple exposure surreal photography experimental",
+        "cameraless photogram lumen print alternative process",
+        "infrared conceptual photography otherworldly",
+        "solarization darkroom experimental photography",
+        "constructed narrative staged conceptual photography",
+    ],
+    neg_probes=[
+        "accidental technical failure random mistake",
+        "random snapshot no concept no artistic intent",
+        "technical error presented as experimental",
+        "conventional photo labeled experimental with no reason",
+    ],
+)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PUBLIC INTERFACE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Map legacy preset strings to registry keys for backward compatibility
+LEGACY_MAP: dict[str, str] = {
+    "classic street": "classic_street",
+    "street":         "classic_street",
+    "architectural":  "architectural",
+    "fine art":       "fine_art",
+    "liminal":        "liminal",
+    "story":          "documentary",
+    "competition":    "photojournalism",
+}
+
+# Ordered category list for UI grouping
+CATEGORIES: list[str] = [
+    "Street & Documentary",
+    "Architecture & Space",
+    "Light & Mood",
+    "Subject-Focused",
+    "Creative & Specialized",
+]
+
+
+def get_niche(preset: str) -> dict | None:
+    """Return niche dict for a preset string (key or legacy name)."""
+    key = preset.lower().strip()
+    if key in REGISTRY:
+        return REGISTRY[key]
+    if key in LEGACY_MAP:
+        return REGISTRY[LEGACY_MAP[key]]
+    return None
+
+
+def niche_clip_probes(preset: str) -> tuple[list[str], list[str]]:
+    """
+    Return (pos_probes, neg_probes) for SigLIP-2 CLIP pre-filter.
+    Falls back to classic_street probes if preset is unknown.
+    """
+    niche = get_niche(preset) or REGISTRY["classic_street"]
+    return niche["pos_probes"], niche["neg_probes"]
+
+
+def build_niche_prompt(preset: str, rag_block: str = "") -> str:
+    """
+    Build a Qwen2.5-VL scoring prompt for the given niche.
+    Returns the full prompt string ready to pass to the VLM.
+    """
+    import json as _json
+
+    niche = get_niche(preset) or REGISTRY["classic_street"]
+    mode_label  = niche["mode_label"]
+    calibration = niche["calibration"]
+    axes        = niche["axes"]
+
+    json_keys: dict = {"score": 0}
+    for key, _ in axes:
+        json_keys[key] = 0
+    json_keys["critique"] = "one sentence"
+    json_schema = _json.dumps(json_keys).replace('"one sentence"', '"one sentence"')
+
+    axes_desc = "\n".join(f"  {key:<18} {desc}" for key, desc in axes)
+
+    return (
+        f"You are a photography editor evaluating a photograph for a {mode_label} edit.\n\n"
+        f"Rate this image honestly. Output ONLY valid JSON — no prose, no markdown fences:\n"
+        f"{json_schema}\n\n"
+        f"All values are integers 0–100. {calibration}\n"
+        f"{axes_desc}\n"
+        f"  critique           one specific sentence naming the strongest element and biggest weakness\n"
+        f"{rag_block}"
+        f"JSON only:"
+    )
+
+
+def _norm_key(k: str) -> str:
+    """Collapse a key to a comparison form: lowercase alphanumerics only.
+
+    Lets 'Human/Culture', 'human_culture', 'Human Culture' all match 'human'."""
+    return "".join(ch for ch in str(k).lower() if ch.isalnum())
+
+
+def _coerce_score(v) -> int | None:
+    """Pull an int 0–100 out of whatever the VLM put in a value slot.
+
+    Handles ints, floats, numeric strings ('75', '75/100', '0.75'), and nested
+    dicts ({'score': 70}, {'value': 70}). Returns None when nothing usable."""
+    import re as _re
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        f = float(v)
+        # A 0–1 float (some models emit normalised scores) → scale to 0–100.
+        if 0.0 < f <= 1.0:
+            f *= 100.0
+        return max(0, min(100, int(round(f))))
+    if isinstance(v, dict):
+        for sub in ("score", "value", "rating", "val"):
+            if sub in v:
+                return _coerce_score(v[sub])
+        return None
+    if isinstance(v, str):
+        m = _re.search(r'-?\d+(?:\.\d+)?', v)
+        if m:
+            return _coerce_score(float(m.group()))
+    return None
+
+
+def parse_niche_breakdown(data: dict, preset: str) -> tuple[float, dict, str]:
+    """
+    Parse a VLM JSON response into (score_0_1, breakdown_dict, critique).
+    Handles all 20 niches dynamically — no hardcoded axis names.
+
+    Robust to the ways a VLM drifts from the requested schema: key casing,
+    spaces vs underscores, separator variants ('Human/Culture'), numeric values
+    embedded in strings ('75/100'), nested score objects, and a missing overall
+    'score' (derived from the aspect mean rather than silently defaulting to 50).
+    """
+    if not isinstance(data, dict):
+        return 0.5, {}, ""
+
+    # Normalised lookup of the model's actual keys → first occurrence value.
+    norm_lookup: dict[str, object] = {}
+    for k, v in data.items():
+        nk = _norm_key(k)
+        if nk and nk not in norm_lookup:
+            norm_lookup[nk] = v
+
+    niche = get_niche(preset) or REGISTRY["classic_street"]
+
+    display_breakdown: dict[str, float] = {}
+    aspect_vals: list[float] = []
+    for key, _ in niche["axes"]:
+        v = norm_lookup.get(_norm_key(key))
+        s = _coerce_score(v) if v is not None else None
+        if s is None:
+            continue
+        display_key = key.replace("_", " ").title()
+        display_breakdown[display_key] = s / 100.0
+        aspect_vals.append(s / 100.0)
+
+    # Overall score: prefer the model's own, else fall back to the aspect mean
+    # so a valid-but-unlabelled response never collapses to a flat MID 50.
+    overall = _coerce_score(norm_lookup.get("score") or norm_lookup.get("overall"))
+    if overall is not None:
+        score = overall / 100.0
+    elif aspect_vals:
+        score = sum(aspect_vals) / len(aspect_vals)
+    else:
+        score = 0.5
+
+    critique = ""
+    for ckey in ("critique", "comment", "summary", "reason", "feedback"):
+        cv = norm_lookup.get(_norm_key(ckey))
+        if isinstance(cv, str) and cv.strip():
+            critique = cv.strip()[:140]
+            break
+
+    return score, display_breakdown, critique

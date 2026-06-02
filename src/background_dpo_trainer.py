@@ -1,9 +1,10 @@
 """
 Online DPO (Direct Preference Optimization) trainer for the 1.5B draft model.
 
-Each bucket-move event (Mid → Strong, etc.) queues a (winner, loser) preference
-pair. A single DPO gradient step is taken per pair using a QLoRA Rank-4 adapter
-on top of the INT4 quantized base model.
+Preferences are persisted to SQLite (dpo_prefs.db) instead of an in-memory queue.
+Training fires only when ≥ 20 untrained preferences have accumulated, mixing the
+20 newest untrained rows with 5 random historical trained rows to prevent
+catastrophic forgetting.
 
 Reference policy: base model with LoRA adapters disabled (no second model copy).
 Adapter footprint: ~6 MB (Rank 4, four attention projections, 28 layers).
@@ -14,7 +15,8 @@ from __future__ import annotations
 
 import gc
 import json
-import queue
+import os
+import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -29,15 +31,16 @@ STYLE_LOG_PATH  = ADAPTER_PATH / "style_log.json"
 MODEL_CACHE_DIR = Path("models/deepseek/deepseek-ai_DeepSeek-R1-Distill-Qwen-1.5B")
 
 # ── Hyperparameters ────────────────────────────────────────────────────────────
-LORA_RANK     = 4
-LORA_ALPHA    = 8
-LORA_DROPOUT  = 0.05
-DPO_LR        = 5e-5
-DPO_BETA      = 0.1
-VRAM_LIMIT_GB = 5.2
-MAX_SEQ_LEN   = 256
-SLEEP_IDLE    = 30     # seconds to sleep when queue is empty
-MAX_BATCH     = 8      # events processed per model-load cycle
+LORA_RANK        = 4
+LORA_ALPHA       = 8
+LORA_DROPOUT     = 0.05
+DPO_LR           = 5e-5
+DPO_BETA         = 0.1
+VRAM_LIMIT_GB    = 5.2
+MAX_SEQ_LEN      = 256
+SLEEP_IDLE       = 30      # seconds to sleep when batch threshold not met
+BATCH_THRESHOLD  = 20      # minimum untrained rows before training fires
+HISTORY_MIX      = 5       # historical trained rows mixed in for replay
 
 # ── Grade → target score ───────────────────────────────────────────────────────
 _GRADE_SCORE = {
@@ -64,7 +67,6 @@ def _purge_vram() -> None:
 
 
 def _model_input_device(model) -> torch.device:
-    """Return the device of the first non-meta parameter."""
     for p in model.parameters():
         if p.device.type != "meta":
             return p.device
@@ -74,7 +76,6 @@ def _model_input_device(model) -> torch.device:
 # ── Log-prob helper ────────────────────────────────────────────────────────────
 
 def _seq_log_prob(model, tokenizer, text: str) -> torch.Tensor:
-    """Sum of per-token log-probabilities for `text` under `model`."""
     enc = tokenizer(
         text, return_tensors="pt",
         truncation=True, max_length=MAX_SEQ_LEN,
@@ -83,7 +84,7 @@ def _seq_log_prob(model, tokenizer, text: str) -> torch.Tensor:
     ids = enc["input_ids"].to(_model_input_device(model))
     out = model(input_ids=ids, labels=ids)
     seq_len = max(ids.shape[1] - 1, 1)
-    return -out.loss * seq_len   # sum log-prob (positive)
+    return -out.loss * seq_len
 
 
 # ── Trainer class ──────────────────────────────────────────────────────────────
@@ -93,29 +94,50 @@ class BackgroundDPOTrainer:
     Daemon thread that processes bucket-move preference pairs and updates
     a QLoRA Rank-4 adapter on the DeepSeek-R1-Distill-1.5B draft model.
 
-    VRAM protocol: loads model only when VRAM < VRAM_LIMIT_GB, unloads
-    and purges after every batch. Never interferes with SpecVLM grading.
+    Preferences are stored in SQLite; training fires once 20 untrained rows
+    accumulate, mixing in 5 historical trained rows to prevent forgetting.
     """
 
     def __init__(self) -> None:
-        self._q: queue.Queue = queue.Queue(maxsize=100)
+        self._db_path  = ADAPTER_PATH / "dpo_prefs.db"
+        self._db_lock  = threading.Lock()
         self._model    = None
         self._tokenizer = None
         self._optimizer = None
+        self._init_db()
         self._thread = threading.Thread(
             target=self._run, daemon=True, name="dpo-trainer"
         )
         self._thread.start()
 
+    # ── DB setup ───────────────────────────────────────────────────────────────
+
+    def _init_db(self) -> None:
+        ADAPTER_PATH.mkdir(parents=True, exist_ok=True)
+        with self._db_lock:
+            with sqlite3.connect(str(self._db_path)) as conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS dpo_prefs (
+                        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                        prompt     TEXT    NOT NULL,
+                        winner     TEXT    NOT NULL,
+                        loser      TEXT    NOT NULL,
+                        path       TEXT    NOT NULL,
+                        old_grade  TEXT    NOT NULL,
+                        new_grade  TEXT    NOT NULL,
+                        trained    INTEGER NOT NULL DEFAULT 0,
+                        created_at REAL    NOT NULL DEFAULT (strftime('%s', 'now'))
+                    )
+                """)
+                conn.commit()
+
     # ── Public API ─────────────────────────────────────────────────────────────
 
     def queue_event(self, image_path: str, old_grade: str, new_grade: str) -> None:
         """
-        Queue a preference pair derived from a bucket move.
+        Persist a preference pair derived from a bucket move to SQLite.
 
-        Generates synthetic JSON completions (winner = higher-score response,
-        loser = lower-score response) so the model learns the user's editorial
-        direction without needing the original image or prompt replay.
+        Training is deferred until BATCH_THRESHOLD untrained rows accumulate.
         """
         winner_score = _GRADE_SCORE.get(new_grade, 0.5)
         loser_score  = _GRADE_SCORE.get(old_grade, 0.5)
@@ -123,14 +145,13 @@ class BackgroundDPOTrainer:
         if winner_score == loser_score:
             return
         if winner_score < loser_score:
-            # Downgrade: swap so winner is always the higher-ranked outcome
             winner_score, loser_score = loser_score, winner_score
 
         fname  = Path(image_path).name
         prompt = (
             "You are a professional street photo editor.\n"
             f"Grade this image: {fname}\n"
-            'Respond as JSON: {"score": <0.0–1.0>, "reasoning_log": "<text>"}'
+            'Respond as JSON: {"score": <0.0-1.0>, "reasoning_log": "<text>"}'
         )
         winner = (
             f'{{"score": {winner_score:.2f}, '
@@ -142,63 +163,129 @@ class BackgroundDPOTrainer:
         )
 
         try:
-            self._q.put_nowait({
-                "prompt":    prompt,
-                "winner":    winner,
-                "loser":     loser,
-                "path":      image_path,
-                "old_grade": old_grade,
-                "new_grade": new_grade,
-            })
-        except queue.Full:
-            pass  # silently drop when saturated
+            with self._db_lock:
+                with sqlite3.connect(str(self._db_path)) as conn:
+                    conn.execute(
+                        "INSERT INTO dpo_prefs "
+                        "(prompt, winner, loser, path, old_grade, new_grade) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (prompt, winner, loser, image_path, old_grade, new_grade),
+                    )
+                    conn.commit()
+        except Exception as _e:
+            print(f"[dpo] queue_event insert failed: {_e}")
 
     # ── Background loop ────────────────────────────────────────────────────────
 
     def _run(self) -> None:
         while True:
-            if self._q.empty():
+            # Check how many untrained preferences are waiting.
+            try:
+                with self._db_lock:
+                    with sqlite3.connect(str(self._db_path)) as conn:
+                        (untrained_count,) = conn.execute(
+                            "SELECT COUNT(*) FROM dpo_prefs WHERE trained=0"
+                        ).fetchone()
+            except Exception as _e:
+                print(f"[dpo] DB read error: {_e}")
+                time.sleep(10)
+                continue
+
+            if untrained_count < BATCH_THRESHOLD:
                 time.sleep(SLEEP_IDLE)
                 continue
+
             if _vram_used_gb() > VRAM_LIMIT_GB:
                 time.sleep(10)
                 continue
 
-            # Drain up to MAX_BATCH events before loading the model
-            batch = []
-            while not self._q.empty() and len(batch) < MAX_BATCH:
-                try:
-                    batch.append(self._q.get_nowait())
-                except queue.Empty:
-                    break
+            # Fetch BATCH_THRESHOLD untrained rows — hard negatives first.
+            # grade_delta = |rank(new_grade) - rank(old_grade)|
+            # delta=2 → Strong↔Weak flip (hardest mistake); delta=1 → adjacent move
+            # 40 % of the batch is reserved for delta=2 rows; remainder fills by recency.
+            _RANK_SQL = (
+                "CASE {col} "
+                "WHEN 'Strong ✅' THEN 2 "
+                "WHEN 'Mid ⚠️'   THEN 1 "
+                "ELSE 0 END"
+            )
+            _delta_expr = (
+                f"ABS({_RANK_SQL.format(col='new_grade')} "
+                f"  - {_RANK_SQL.format(col='old_grade')})"
+            )
+            _HARD_NEG_SLOTS = max(1, int(BATCH_THRESHOLD * 0.40))   # ≥40 % hard negatives
+            _SOFT_SLOTS     = BATCH_THRESHOLD - _HARD_NEG_SLOTS
+            try:
+                with self._db_lock:
+                    with sqlite3.connect(str(self._db_path)) as conn:
+                        conn.row_factory = sqlite3.Row
+                        # Hard negatives: delta=2 rows (Strong↔Weak), newest first
+                        hard_rows = conn.execute(
+                            f"SELECT * FROM dpo_prefs WHERE trained=0 "
+                            f"AND {_delta_expr} = 2 "
+                            f"ORDER BY created_at DESC LIMIT ?",
+                            (_HARD_NEG_SLOTS,),
+                        ).fetchall()
+                        # Remaining slots: any untrained row not already selected, by delta then recency
+                        hard_ids  = {r["id"] for r in hard_rows}
+                        excl      = ",".join("?" * len(hard_ids)) if hard_ids else "0"
+                        soft_rows = conn.execute(
+                            f"SELECT * FROM dpo_prefs WHERE trained=0 "
+                            f"AND id NOT IN ({excl}) "
+                            f"ORDER BY {_delta_expr} DESC, created_at DESC LIMIT ?",
+                            list(hard_ids) + [_SOFT_SLOTS],
+                        ).fetchall()
+                        new_rows = list(hard_rows) + list(soft_rows)
+                        hist_rows = conn.execute(
+                            "SELECT * FROM dpo_prefs WHERE trained=1 "
+                            "ORDER BY RANDOM() LIMIT ?",
+                            (HISTORY_MIX,),
+                        ).fetchall()
+                batch   = [dict(r) for r in new_rows] + [dict(r) for r in hist_rows]
+                new_ids = [r["id"] for r in new_rows]
+            except Exception as _e:
+                print(f"[dpo] batch fetch error: {_e}")
+                time.sleep(10)
+                continue
 
             if not batch:
+                time.sleep(SLEEP_IDLE)
                 continue
 
             try:
                 if not self._load():
-                    for ev in batch:
-                        try: self._q.put_nowait(ev)
-                        except queue.Full: pass
                     time.sleep(60)
                     continue
 
                 for ev in batch:
                     if _vram_used_gb() > VRAM_LIMIT_GB:
-                        try: self._q.put_nowait(ev)
-                        except queue.Full: pass
                         break
                     try:
                         loss = self._step(ev["prompt"], ev["winner"], ev["loser"])
                         print(
                             f"[dpo] loss={loss:.4f}  {Path(ev['path']).name}"
-                            f"  ({ev['old_grade']} → {ev['new_grade']})"
+                            f"  ({ev['old_grade']} -> {ev['new_grade']})"
                         )
                     except Exception as e_step:
                         print(f"[dpo] step error: {e_step}")
 
                 self._save()
-                _update_style_log(batch)
+                _update_style_log([dict(r) for r in new_rows])
+
+                # Mark the newly trained rows so they become history for replay.
+                if new_ids:
+                    placeholders = ",".join("?" * len(new_ids))
+                    try:
+                        with self._db_lock:
+                            with sqlite3.connect(str(self._db_path)) as conn:
+                                conn.execute(
+                                    f"UPDATE dpo_prefs SET trained=1 "
+                                    f"WHERE id IN ({placeholders})",
+                                    new_ids,
+                                )
+                                conn.commit()
+                    except Exception as _e:
+                        print(f"[dpo] mark trained error: {_e}")
 
             except Exception as e:
                 print(f"[dpo] batch error: {e}")
@@ -208,7 +295,6 @@ class BackgroundDPOTrainer:
     # ── Model management ───────────────────────────────────────────────────────
 
     def _load(self) -> bool:
-        """Load INT4 base model + LoRA adapter for training. Returns True on success."""
         if not MODEL_CACHE_DIR.exists():
             print("[dpo] Draft model not cached — DPO skipped.")
             return False
@@ -278,25 +364,21 @@ class BackgroundDPOTrainer:
             return False
 
     def _step(self, prompt: str, winner: str, loser: str) -> float:
-        """Single DPO gradient update for one (winner, loser) pair. Returns loss."""
         assert self._model is not None and self._optimizer is not None
 
         full_w = prompt + "\n" + winner
         full_l = prompt + "\n" + loser
 
-        # Reference log-probs: base model only (LoRA disabled = straight-through reference)
         self._model.disable_adapter_layers()
         with torch.no_grad():
             ref_lp_w = _seq_log_prob(self._model, self._tokenizer, full_w)
             ref_lp_l = _seq_log_prob(self._model, self._tokenizer, full_l)
         self._model.enable_adapter_layers()
 
-        # Policy log-probs: base + LoRA (with gradients for LoRA params)
         self._optimizer.zero_grad()
         pi_lp_w = _seq_log_prob(self._model, self._tokenizer, full_w)
         pi_lp_l = _seq_log_prob(self._model, self._tokenizer, full_l)
 
-        # DPO objective: -log σ(β * ((log π/π_ref)_winner - (log π/π_ref)_loser))
         log_ratio = (pi_lp_w - ref_lp_w.detach()) - (pi_lp_l - ref_lp_l.detach())
         loss = -F.logsigmoid(DPO_BETA * log_ratio)
         loss.backward()
@@ -310,10 +392,21 @@ class BackgroundDPOTrainer:
         if self._model is None:
             return
         ADAPTER_PATH.mkdir(parents=True, exist_ok=True)
+        tmp_path = ADAPTER_PATH.parent / "dpo_adapter.tmp"
         try:
-            self._model.save_pretrained(str(ADAPTER_PATH))
+            self._model.save_pretrained(str(tmp_path))
+            # Atomic swap: rename temp dir over the live adapter dir.
+            import shutil
+            if ADAPTER_PATH.exists():
+                shutil.rmtree(str(ADAPTER_PATH))
+            tmp_path.rename(ADAPTER_PATH)
         except Exception as e:
             print(f"[dpo] Adapter save failed: {e}")
+            try:
+                import shutil
+                shutil.rmtree(str(tmp_path), ignore_errors=True)
+            except Exception:
+                pass
 
     def _unload(self) -> None:
         self._model     = None
@@ -325,7 +418,6 @@ class BackgroundDPOTrainer:
 # ── Style log ──────────────────────────────────────────────────────────────────
 
 def _update_style_log(events: list[dict]) -> None:
-    """Accumulate user preference statistics for system-prompt injection."""
     ADAPTER_PATH.mkdir(parents=True, exist_ok=True)
     log: dict = {}
     if STYLE_LOG_PATH.exists():
@@ -358,11 +450,13 @@ def _update_style_log(events: list[dict]) -> None:
         note = ""
     log["style_note"] = note
 
-    STYLE_LOG_PATH.write_text(json.dumps(log, indent=2), encoding="utf-8")
+    # Atomic write.
+    tmp = STYLE_LOG_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(log, indent=2), encoding="utf-8")
+    os.replace(str(tmp), str(STYLE_LOG_PATH))
 
 
 def load_style_instruction() -> str:
-    """Return the accumulated style note for prompt injection (empty string if none)."""
     try:
         if STYLE_LOG_PATH.exists():
             log = json.loads(STYLE_LOG_PATH.read_text(encoding="utf-8"))
@@ -379,7 +473,6 @@ _trainer_lock = threading.Lock()
 
 
 def get_trainer() -> BackgroundDPOTrainer:
-    """Return the global BackgroundDPOTrainer singleton (lazy-init, thread-safe)."""
     global _trainer
     if _trainer is None:
         with _trainer_lock:

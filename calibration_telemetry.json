@@ -1,0 +1,45 @@
+{
+  "slot_stats": {
+    "Closer/Resolution": {
+      "area_pct": {
+        "mean": 5.7,
+        "std": 0.0,
+        "n": 1
+      },
+      "h_gap": {
+        "mean": -209,
+        "std": 0.0,
+        "n": 1
+      }
+    },
+    "Detail/Accent": {
+      "area_pct": {
+        "mean": 2.3,
+        "std": 0.0,
+        "n": 1
+      },
+      "h_gap": {
+        "mean": -386,
+        "std": 0.0,
+        "n": 1
+      }
+    },
+    "Subject/Interaction": {
+      "area_pct": {
+        "mean": 18.3,
+        "std": 0.0,
+        "n": 1
+      },
+      "h_gap": {
+        "mean": -130,
+        "std": 0.0,
+        "n": 1
+      }
+    }
+  },
+  "calibrated_thresholds": {
+    "DOMINANT_AREA_PCT": 18.3,
+    "H_CONTRAST_THRESH": 161.0,
+    "OPENER_MAX_AREA": 30.0
+  }
+}

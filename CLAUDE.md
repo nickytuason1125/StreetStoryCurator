@@ -2,33 +2,55 @@
 
 ## Model Stack (Sequential, VRAM-safe)
 
-| Phase | Model | Size | VRAM |
-|---|---|---|---|
-| Embedding | SigLIP-2 ViT-g/14 NaFlex FP8 | 1536-d | ~1.5 GB |
-| Draft grading | DeepSeek-R1-Distill-Qwen-1.5B INT4 | always runs | ~1.0 GB |
-| Verify grading | DeepSeek-R1-Distill-Qwen-7B INT4 | threshold-gated | ~3.5 GB |
-| Sequencing | NSGA-III (pymoo) | CPU | 0 GB |
-| Preference | PersonalHead MLP 1536→256→64→1 | CPU | 0 GB |
+| Phase | Model | Size | VRAM | Status |
+|---|---|---|---|---|
+| Embedding + dedup | SigLIP-2 ViT-g/14 NaFlex | 1536-d | ~1.5 GB | always runs |
+| **Primary grader** | **Qwen2.5-VL-3B-Instruct INT4** | vision scoring | **~2.2 GB** | **runs when cached** |
+| Fallback grader | SpecVLMPipeline (CLIP cosine sim) | instant | 0 GB extra | when Qwen absent |
+| IQA heads | TOPIQ NR + MANIQA | technical quality | ~0.5 GB | always runs |
+| Sequencing | NSGA-III (pymoo) | CPU | 0 GB | always runs |
+| Preference | PersonalHead MLP 1536→256→64→1 | CPU | 0 GB | when weights present |
+| Annotations / Critique | Qwen2.5-VL-2B GGUF | UI overlays only | ~1.5 GB | when GGUF present |
 
 **Hard constraint: MAX 5.5 GB VRAM peak. Models never run concurrently.**
+
+> **Note:** DeepSeek-R1-Distill GGUF entries have been removed — those weights were
+> never downloaded and the code paths were dead. The primary grader is now
+> Qwen2.5-VL-3B (transformers INT4, cached to `models/qwen_vlm/`). If that cache
+> is absent the pipeline falls back to SpecVLM CLIP cosine similarity automatically.
 
 ## VRAM Sequential Protocol
 
 ```
-SigLIP-2.encode_images()
-  → VRAMManager.purge_vram()          # empty_cache + ipc_collect + gc.collect
-  → SpecVLM.grade_all()
+SigLIP-2.encode_images()          # dedup + archetype embeddings
   → VRAMManager.purge_vram()
-  → PersonalHead.adjust_scores()      # CPU only
+  → QwenVLMGrader.grade_images_scored()   # primary: direct vision scoring
+      OR SpecVLMPipeline.grade_images()   # fallback: CLIP cosine similarity
+  → VRAMManager.purge_vram()
+  → IQA heads (TOPIQ NR + MANIQA)
+  → VRAMManager.purge_vram()
+  → PersonalHead.adjust_scores()  # CPU only
 ```
 
 `purge_vram()` must always call all three: `torch.cuda.empty_cache()`,
 `torch.cuda.ipc_collect()`, and `gc.collect()`.
 
-## Priority Gate Threshold
+## RAG Context Injection
 
-`DRAFT_CONFIDENCE_THRESHOLD = 0.85` in `src/specvlm_pipeline.py`.
-The verifier (7B) fires only when draft confidence **≤ 0.85**.
+PDF reference books can be uploaded via the UI (`POST /api/rag/upload`).
+Concept phrases are extracted and stored in `cache/rag_concepts.json`.
+At grade time, up to 8 phrases are injected into the Qwen2.5-VL scoring prompt
+as a rubric block — providing style-aware context without embedding computation.
+When no PDFs are uploaded the prompt runs without the rubric block.
+
+## Grading Path Decision Tree
+
+```
+scan_mode=True  → SpecVLM CLIP (always — speed over accuracy)
+scan_mode=False → models/qwen_vlm/*.safetensors present?
+                    yes → Qwen2.5-VL-3B  (direct vision, RAG context)
+                    no  → SpecVLM CLIP   (cosine similarity fallback)
+```
 
 ## Vector Store
 
@@ -37,8 +59,9 @@ Auto-migrates from legacy 1152-d (SigLIP-So400M) on first run.
 
 ## Grade Buckets
 
-- Strong ✅ ≥ 0.60
-- Mid ⚠️  0.41–0.59
+Relative quantile per run (n ≥ 4): top 25% → Strong, bottom 20% → Weak, rest → Mid.
+Absolute floor: Strong requires score ≥ 0.50 (uniformly bad batch gets no Strong).
+Fallback for n < 4: Strong ≥ 0.60, Weak < 0.41.
 - Weak ❌  ≤ 0.40
 
 ## PersonalHead / DPO
@@ -56,10 +79,12 @@ or `lightweight_analyzer` directly — use `grade_pipeline_v2.run_v2()`.
 
 ## Frontend Reasoning Display
 
-The right panel has four tabs when graded: Breakdown · Analysis · Reasoning · EXIF.
-- **Reasoning tab**: shows `photo.reasoning_log` (raw VLM chain-of-thought).
-  Displays `VERIFIED · 7B` badge when `photo.is_verified === true`.
-- **Analysis tab**: shows `reasoning_log` falling back to `critique`.
+The right panel has three tabs when graded: Breakdown · Analysis · EXIF.
+- **Analysis tab**: merged tab showing score, verdict, per-aspect observation rows,
+  best/weakest footer, and jury critique fallback. Displays `VERIFIED · 7B` badge
+  when `photo.is_verified === true`. Contains a "Draw on image" / "Hide overlay"
+  toggle button (Eye/EyeOff) that controls `isAuditModeActive` — when active,
+  the `reasoningOverlayUrl` annotation PNG is overlaid on the photo in the viewer.
 
 ## --force-frontier Flag
 

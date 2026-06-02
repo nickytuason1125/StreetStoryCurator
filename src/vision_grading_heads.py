@@ -55,24 +55,19 @@ def _purge_vram() -> None:
 
 
 def _batch_normalize(scores: np.ndarray) -> np.ndarray:
-    """Min-Max scaling with a floor of 0.20: batch_min→0.20, batch_max→1.0.
+    """Pass-through: return raw UniQA scores clipped to [0.10, 1.0].
 
-    The 0.20 floor prevents artistic motion-blur or high-ISO grain — intentional
-    street photography choices — from being zeroed out purely because they happen
-    to be the worst-technical photo in a given batch.
+    Min-max batch stretching removed — it inflated weak batches and deflated
+    strong ones, producing relative rather than absolute technical scores.
+    UniQA outputs a calibrated absolute scale; use it directly.
     """
-    if len(scores) < 2:
-        return np.clip(scores.astype(np.float32), 0.20, 1.0)
-    lo   = float(np.min(scores))
-    hi   = float(np.max(scores))
-    span = max(hi - lo, 1e-4)
-    return np.clip((scores - lo) / span * 0.80 + 0.20, 0.20, 1.0).astype(np.float32)
+    return np.clip(scores.astype(np.float32), 0.10, 1.0)
 
 
 def _load_images_parallel(
     image_paths: List[str],
     n_workers: int = 8,
-    max_size: int = 768,
+    max_size: int = 512,
 ) -> List[Optional[torch.Tensor]]:
     """
     Decode images in parallel via TurboJPEG (JPEG) / PIL (other formats).
@@ -134,41 +129,61 @@ def _run_yolo_seg(
             person_detected[p] = True   # safe default: treat as person present
         return person_detected, subject_bboxes
 
+    def _parse_yolo_result(path: str, t: "torch.Tensor", result) -> None:
+        boxes = result.boxes if result else None
+        if boxes is None or len(boxes) == 0:
+            person_detected[path] = False
+            return
+        _, H, W = t.shape
+        xyxy_arr = boxes.xyxy.cpu().numpy()
+        conf_arr = boxes.conf.cpu().numpy()
+        bboxes_norm: list = []
+        for box_coords, conf_val in zip(xyxy_arr, conf_arr):
+            if float(conf_val) < 0.55:
+                continue
+            x1n = float(box_coords[0]) / W
+            y1n = float(box_coords[1]) / H
+            x2n = float(box_coords[2]) / W
+            y2n = float(box_coords[3]) / H
+            if (x2n - x1n) * (y2n - y1n) < 0.005:
+                continue
+            bboxes_norm.append([x1n, y1n, x2n, y2n])
+        if bboxes_norm:
+            person_detected[path] = True
+            subject_bboxes[path]  = bboxes_norm
+        else:
+            person_detected[path] = False
+
+    # Batch YOLO: one forward pass per group — ~8x fewer Python/GPU round-trips than
+    # the previous per-image loop. Falls back to per-image on any batch error.
+    _YOLO_BATCH = 16
+    valid_pairs = [(path, t) for path, t in zip(image_paths, tensors) if t is not None]
     for path, t in zip(image_paths, tensors):
         if t is None:
             person_detected[path] = False
-            continue
+
+    for b_start in range(0, max(len(valid_pairs), 1), _YOLO_BATCH):
+        batch = valid_pairs[b_start : b_start + _YOLO_BATCH]
+        if not batch:
+            break
+        b_imgs = [
+            (t.permute(1, 2, 0).cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
+            for _, t in batch
+        ]
         try:
-            img_np = (t.permute(1, 2, 0).cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
-            results = yolo(img_np, verbose=False, classes=[0])   # 0 = person
-            boxes   = results[0].boxes if results else None
-            if boxes is None or len(boxes) == 0:
-                person_detected[path] = False
-            else:
-                _, H, W = t.shape
-                xyxy_arr = boxes.xyxy.cpu().numpy()   # (N, 4)
-                conf_arr = boxes.conf.cpu().numpy()   # (N,)
-                bboxes_norm: list = []
-                for box_coords, conf_val in zip(xyxy_arr, conf_arr):
-                    # Confidence gate: drop faint shadow artefacts below 0.55.
-                    # Area gate: drop sub-0.5% detections (noise / distant pixels).
-                    if float(conf_val) < 0.55:
-                        continue
-                    x1n = float(box_coords[0]) / W
-                    y1n = float(box_coords[1]) / H
-                    x2n = float(box_coords[2]) / W
-                    y2n = float(box_coords[3]) / H
-                    if (x2n - x1n) * (y2n - y1n) < 0.005:
-                        continue
-                    bboxes_norm.append([x1n, y1n, x2n, y2n])
-                if bboxes_norm:
-                    person_detected[path] = True
-                    subject_bboxes[path]  = bboxes_norm
-                else:
-                    person_detected[path] = False
+            b_results = yolo(b_imgs, verbose=False, classes=[0])
+            for (path, t), result in zip(batch, b_results):
+                _parse_yolo_result(path, t, result)
         except Exception as e:
-            print(f"[uniqa_head] YOLO failed for {Path(path).name}: {e}")
-            person_detected[path] = True   # safe default
+            print(f"[uniqa_head] YOLO batch failed ({e}) — per-image fallback")
+            for path, t in batch:
+                try:
+                    img_np = (t.permute(1, 2, 0).cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
+                    res = yolo(img_np, verbose=False, classes=[0])
+                    _parse_yolo_result(path, t, res[0])
+                except Exception as e2:
+                    print(f"[uniqa_head] YOLO fallback failed for {Path(path).name}: {e2}")
+                    person_detected[path] = True
 
     n_person = sum(1 for v in person_detected.values() if v)
     print(f"[uniqa_head] YOLO: {n_person}/{len(image_paths)} images with person detected")
@@ -301,8 +316,8 @@ class UniQAHead:
     """
 
     _METRIC_NAME = "topiq_nr"
-    _BATCH_SIZE  = 8
-    _INPUT_SIZE  = 512
+    _BATCH_SIZE  = 16   # was 8 — doubled; 130 images = 9 batches instead of 17
+    _INPUT_SIZE  = 384  # was 512 — TOPIQ NR trains at 224; 384 saves ~44% compute
 
     def __init__(self) -> None:
         self._model  = None
@@ -665,4 +680,5 @@ def run_vision_heads(
         "chiaroscuro_flags":      chiaroscuro_flags,
         "person_detected":        person_detected_dict,
         "framing_obstruction":    framing_obstruction_dict,
+        "subject_bboxes":         subject_bboxes_dict,
     }

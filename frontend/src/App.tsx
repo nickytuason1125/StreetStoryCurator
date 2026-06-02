@@ -14,7 +14,7 @@ import {
   ImageOff, X, Sparkles, Copy, Flag,
   LayoutGrid, RectangleHorizontal, SlidersHorizontal,
   Download, CheckSquare, ArrowUpDown, ArrowUp, ArrowDown,
-  Wand2, Zap,
+  Wand2, Zap, Eye, EyeOff, Upload, Search,
 } from "lucide-react";
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -90,6 +90,31 @@ function gIcon(g: string) {
   return '';
 }
 
+const _SLOGANS: Array<[RegExp, string]> = [
+  [/scan|found.*image|new image/i,        "Pulling the contact sheet…"],
+  [/blur|early.exit|laplacian/i,          "Culling the camera-shake casualties…"],
+  [/siglip|encod/i,                       "Reading the light in every frame…"],
+  [/duplicat/i,                           "Picking the best frame from each burst…"],
+  [/loading qwen|qwen.*load/i,            "The photo editor is pulling up a chair…"],
+  [/qwen|vlm grad|vision grad/i,          "Studying composition, moment, and story…"],
+  [/iqa|topiq|maniqa|technical.*scor/i,   "Running the darkroom technical check…"],
+  [/luminance|light.*stat/i,              "Measuring the exposure…"],
+  [/specvlm|clip.*sim/i,                  "Comparing against the reference portfolio…"],
+  [/personal|head.*scor/i,                "Recalling your editorial eye…"],
+  [/gemma|spatial|second/i,               "Second shooter weighing in…"],
+  [/sequenc|sort|bucket|calibrat|thresh/i,"Building the selects…"],
+  [/archetype|fusion|fus/i,               "Matching each frame to its genre…"],
+  [/deduplic|similar/i,                   "One frame per moment — killing your darlings…"],
+  [/persona|preference/i,                 "Tuning to your shooting style…"],
+];
+function toSlogan(desc: string): string {
+  if (!desc) return '';
+  for (const [re, slogan] of _SLOGANS) {
+    if (re.test(desc)) return slogan;
+  }
+  return desc;
+}
+
 function SortableItem({ id, children }: { id: string; children: React.ReactNode }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
   const style = transform
@@ -129,7 +154,14 @@ const FilmThumb = memo(function FilmThumb({
           </div>
         )}
         {p.grade !== 'Pending' && gc(p.grade) !== C.text3 && (
-          <div style={{ position:'absolute', bottom:3, left:3, width:6, height:6, borderRadius:'50%', background:gc(p.grade), boxShadow:`0 0 5px ${gc(p.grade)}99` }}/>
+          <div style={{ position:'absolute', bottom:3, left:3, display:'flex', alignItems:'center', gap:2 }}>
+            <div style={{ width:6, height:6, borderRadius:'50%', background:gc(p.grade), boxShadow:`0 0 5px ${gc(p.grade)}99` }}/>
+            {p.has_annotations && (
+              <svg width="7" height="7" viewBox="0 0 24 24" fill="none" stroke={C.accent} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+              </svg>
+            )}
+          </div>
         )}
       </div>
       {showFn && (
@@ -377,9 +409,11 @@ function GridView({
                       borderRadius:5, padding:'3px 7px', display:'flex', alignItems:'center', gap:4,
                       border:`1px solid ${gc(p.grade)}44`, pointerEvents:'none' }}>
                       <div style={{ width:6, height:6, borderRadius:'50%', background:gc(p.grade), flexShrink:0 }}/>
-                      <span style={{ fontSize:12, fontWeight:800, color:'#fff', lineHeight:1, letterSpacing:'-.01em', fontVariantNumeric:'tabular-nums' }}>
-                        {Math.round(p.score * 100)}
-                      </span>
+                      {p.has_annotations && (
+                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke={C.accent} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink:0 }}>
+                          <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+                        </svg>
+                      )}
                     </div>
                   )}
                 </div>
@@ -424,10 +458,361 @@ function GridView({
   );
 }
 
+/* ── Critique trigger parser ────────────────────────────────────── */
+// Parses <trigger type="blur|heatmap|grid">text</trigger> tags emitted by the
+// jury LLM into hoverable inline spans that drive the image overlay state.
+// Falls back to plain text if the LLM produces no tags.
+function parseCritique(
+  text: string,
+  onEnter: (type: string) => void,
+  onLeave: () => void,
+): React.ReactNode[] {
+  const RE = /<trigger\s+type="([^"]+)">([^<]*)<\/trigger>/g;
+  const nodes: React.ReactNode[] = [];
+  let last = 0;
+  let key  = 0;
+  let m: RegExpExecArray | null;
+  const COLORS: Record<string, string> = {
+    blur:    '#60a5fa',
+    heatmap: '#fb923c',
+    grid:    '#a78bfa',
+  };
+  while ((m = RE.exec(text)) !== null) {
+    if (m.index > last) nodes.push(text.slice(last, m.index));
+    const typ   = m[1];
+    const label = m[2];
+    const col   = COLORS[typ] ?? '#60a5fa';
+    nodes.push(
+      <span key={key++}
+        onMouseEnter={() => onEnter(typ)}
+        onMouseLeave={onLeave}
+        style={{ cursor:'pointer', textDecorationLine:'underline', textDecorationStyle:'dotted',
+                 textUnderlineOffset:'2px', color:col, fontWeight:600 }}
+      >{label}</span>
+    );
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) nodes.push(text.slice(last));
+  return nodes.length ? nodes : [text];
+}
+
+function buildReasoningFromBreakdown(score: number, grade: string, breakdown: Record<string,number>): string {
+  // Intentional low-light / chiaroscuro / soft-focus detection.
+  // Strong Narrative intent alongside lower Lighting CLIP score = deliberate mood.
+  const narrativeScore = (breakdown['Narrative'] ?? 0) as number;
+  const lightingScore  = (breakdown['Lighting']  ?? 1.0) as number;
+  const isMoody = narrativeScore >= 0.38 && lightingScore < 0.55;
+
+  const NOTES_LIGHTING: [number,string][] = isMoody
+    ? [[0.78,"Light has direction and authority — shadow play is doing the work."],[0.62,"Light is readable; contrast holds."],[0.45,"Low-key rendering — shadow weight reads as intentional mood."],[0,"Deep shadow dominance. Chiaroscuro or available-light approach — darkness as intent."]]
+    : [[0.78,"Light has direction and authority — shadow play is doing the work."],[0.62,"Light is readable; contrast holds."],[0.45,"Flat light. No drama, no depth — nothing to push the subject forward."],[0,"Light is fighting the image. Blown highlights or dead-flat exposure."]];
+
+  const NOTES_TECHNICAL: [number,string][] = isMoody
+    ? [[0.78,"Technical execution disappears into the image — as it should."],[0.62,"Technically clean. No distraction."],[0.45,"Soft rendering or organic grain — intentional aesthetic signature, not a failure."],[0,"Technical compromise is visible — in fine-art work, intentional grain and glow are valid."]]
+    : [[0.78,"Technical execution disappears into the image — as it should."],[0.62,"Technically clean. No distraction."],[0.45,"Some softness or exposure drift. Manageable, not invisible."],[0,"Technical failure is visible — motion blur, clipping, or heavy noise."]];
+
+  const NOTES: Record<string, [number,string][]> = {
+    Composition:     [[0.78,"Frame is airtight — every element earns its place."],[0.62,"Geometry works; the eye moves without fighting the edges."],[0.45,"Framing is serviceable but the edges carry dead weight."],[0,"Frame is loose — crop it or reshoot it."]],
+    Lighting:        NOTES_LIGHTING,
+    Narrative:       [[0.78,"The moment is decisive — gesture or tension frozen at exactly the right frame."],[0.62,"A moment caught, not staged — feels authentic."],[0.45,"Something is happening but nothing is at stake."],[0,"No moment. The scene is static and the camera just witnessed it."]],
+    'Human/Culture': [[0.78,"The human subject commands the frame — presence is undeniable."],[0.62,"Human element adds weight; the figure belongs here."],[0.45,"Figures are present but incidental — they don't anchor anything."],[0,"No human element. Architectural or environmental — works only if intentional."]],
+    Technical:       NOTES_TECHNICAL,
+  };
+
+  const tier = grade?.includes('Strong') ? 'strong' : grade?.includes('Weak') ? 'weak' : 'mid';
+  // Use the actual graded score for display — this is the final fused pipeline value.
+  // avgScore is kept for internal note selection only (moody/chiaroscuro detection).
+  const bdVals = Object.values(breakdown).filter(v => typeof v === 'number') as number[];
+  const avgScore = bdVals.length > 0 ? bdVals.reduce((s, v) => s + v, 0) / bdVals.length : score;
+  const pct  = Math.round(score * 100);
+  // Only rank real photographic aspects (keys with copy in NOTES). Excludes private
+  // metadata and technical-audit fields so the Best/Weakest footer never names jargon.
+  const sorted = Object.entries(breakdown)
+    .filter(([k,v]) => typeof v === 'number' && k in NOTES)
+    .sort((a,b) => b[1]-a[1]);
+  const topKey    = sorted[0]?.[0]       ?? 'Narrative';
+  const bottomKey = sorted.at(-1)?.[0]   ?? 'Technical';
+
+  const VERDICT_LIGHTING_WEAK = isMoody
+    ? "Atmospheric depth through shadow — low-key is the visual language here."
+    : "Light is the problem here, not the solution.";
+  const VERDICT_LIGHTING_MID = isMoody
+    ? "Shadow and atmosphere doing most of the work — mood over exposure."
+    : "Light is present but not working hard enough.";
+
+  const VERDICT: Record<string, Record<string,string>> = {
+    strong: { Narrative:"Street photographer's instinct — right place, right frame, right moment.", Composition:"Geometric authority. The structure carries the image.", Lighting:"Light as subject. Everything else serves the atmosphere.", 'Human/Culture':"The figure is the photograph. Everything else is context.", Technical:"Technically confident — the craft is invisible." },
+    mid:    { Narrative:"The moment is there but the frame doesn't fully commit to it.", Composition:"Decent bones. The structure works but doesn't surprise.", Lighting: VERDICT_LIGHTING_MID, 'Human/Culture':"The human element is in the frame but not in control of it.", Technical:"Technically adequate. Won't lose the shot but won't win it either." },
+    weak:   { Narrative:"No decisive moment — the shutter fired but nothing was caught.", Composition:"The frame is not resolved. Too much, too little, or in the wrong place.", Lighting: VERDICT_LIGHTING_WEAK, 'Human/Culture':"The subject is lost. Distance, angle, or timing killed it.", Technical:"Technical compromise dominates. The image can't recover from it." },
+  };
+
+  const LBL: Record<string,string> = { Narrative:'Moment', 'Human/Culture':'Human' };
+  const verdict = VERDICT[tier]?.[topKey] ?? '';
+  const lines: string[] = [tier[0].toUpperCase()+tier.slice(1)];
+  if (verdict) lines.push(verdict);
+  lines.push('');
+  for (const [k,v] of sorted) {
+    const note = (NOTES[k] ?? []).find(([t]) => v >= t)?.[1] ?? '';
+    if (note) lines.push(`${LBL[k]??k}: ${note}`);
+  }
+  lines.push(`\nBest: ${LBL[topKey]??topKey}   ·   Weakest: ${LBL[bottomKey]??bottomKey}`);
+  return lines.join('\n');
+}
+
+/* ── Aspect → canonical dimension classifier ───────────────────────
+ * The Judge's Eye Evidence Checklist has five fixed photographic rows:
+ *   tech → Focus · light → Exposure · human → Subject · auth → Moment · comp → Geometry
+ * The Qwen primary grader emits niche-specific axis names (20 niches, ~70 distinct
+ * axes), so a hardcoded lookup on 'Lighting'/'Human/Culture'/'Narrative' leaves rows
+ * unrated. This maps every known axis (display Title-Case) onto a dimension; a keyword
+ * fallback covers anything unseen. Where a niche genuinely lacks a dimension (e.g.
+ * Landscape has no human axis) the row stays empty and falls back to a context label. */
+const ASPECT_DIM: Record<string,'tech'|'light'|'human'|'auth'|'comp'> = {
+  // canonical 5 (SpecVLM fallback + legacy)
+  Technical:'tech', Composition:'comp', Lighting:'light', Narrative:'auth', 'Human/Culture':'human',
+  // tech
+  Detail:'tech', Execution:'tech', 'Depth Of Field':'tech', 'Detail Retention':'tech',
+  Cleanliness:'tech', 'News Sharpness':'tech', 'Sharpness & Detail':'tech',
+  // comp (geometry / framing / spatial)
+  Geometry:'comp', 'Compositional Urgency':'comp', 'City Texture':'comp', 'Landscape Comp':'comp',
+  'Depth Scale':'comp', 'Negative Space':'comp', 'Graphic Simplicity':'comp',
+  'Visual Abstraction':'comp', 'Pattern Texture':'comp', 'Graphic Impact':'comp',
+  'Framing':'comp', 'Geometry & Balance':'comp', 'Framing Instinct':'comp', 'Layered Depth':'comp',
+  // light (lighting / mood / colour / atmosphere)
+  'Light Atmosphere':'light', 'Light Quality':'light', 'Light Mood':'light', 'Nocturnal Mood':'light',
+  'Color Palette':'light', 'Light Painting':'light', 'Color Form':'light', 'Tonal Balance':'light',
+  Atmosphere:'light', 'Weather Drama':'light', Mood:'light',
+  'Natural Light':'light', 'Mood & Tone':'light', 'Tonal Purity':'light', 'Contrast Purity':'light',
+  'Available Light':'light', 'Natural Light Quality':'light',
+  // human (subject / figure / expression / emotion)
+  Human:'human', Expression:'human', 'Model Expression':'human', 'Subject Behavior':'human',
+  'Subject Detail':'human', Emotion:'human', 'Emotional Moment':'human', 'Styling Aesthetic':'human',
+  'Sense Of Place':'human', 'Subject Isolation':'human', 'Human Impact':'human',
+  'Character Presence':'human', 'Emotional Resonance':'human', 'Scale Element':'human',
+  Presence:'human', 'Scale & Life':'human',
+  // auth (moment / narrative / concept / authenticity)
+  Moment:'auth', 'Narrative Impact':'auth', Authenticity:'auth', Context:'auth', 'News Impact':'auth',
+  'Cultural Authenticity':'auth', 'Urban Energy':'auth', 'Motion Quality':'auth', 'Temporal Effect':'auth',
+  'Artistic Vision':'auth', 'Visual Poetry':'auth', 'Environmental Context':'auth', 'Habitat Context':'auth',
+  'Editorial Mood':'auth', 'Peak Action':'auth', 'Story Telling':'auth', 'Conceptual Strength':'auth',
+  'Visual Innovation':'auth', 'Intent Clarity':'auth',
+  'Decisive Moment':'auth', 'Cultural Depth':'auth', 'Journalistic Integrity':'auth',
+  'Narrative Suggestion':'auth', 'Conceptual Weight':'auth', Reduction:'auth', Immediacy:'auth',
+  'Environmental Truth':'auth',
+};
+function aspectDim(label: string): 'tech'|'light'|'human'|'auth'|'comp'|'' {
+  const hit = ASPECT_DIM[label];
+  if (hit) return hit;
+  const s = label.toLowerCase();
+  if (/sharp|noise|technical|execution|clean|grain|render/.test(s)) return 'tech';
+  if (/light|tonal|expos|contrast|atmos|mood|colou?r|nocturn|weather|night|chiaroscuro/.test(s)) return 'light';
+  if (/human|subject|express|emotion|character|model|portrait|gesture|presence|behavio|figure|face|styling/.test(s)) return 'human';
+  if (/moment|narrative|story|authentic|action|temporal|concept|news|energy|vision|urgenc|context|peak|innovation|intent/.test(s)) return 'auth';
+  if (/compos|geometr|framing|negative|graphic|pattern|landscape|depth|abstract|place|texture|scale|spatial/.test(s)) return 'comp';
+  return '';
+}
+
+/* ── Factor Annotations overlay ────────────────────────────────── */
+const REGION_BOX: Record<string, [number,number,number,number]> = {
+  'top-third':    [0,      0,      1,    0.33],
+  'center':       [0.2,    0.2,    0.6,  0.6],
+  'bottom-third': [0,      0.67,   1,    0.33],
+  'full':         [0,      0,      1,    1],
+  'left-half':    [0,      0,      0.5,  1],
+  'right-half':   [0.5,    0,      0.5,  1],
+  'top-left':     [0,      0,      0.5,  0.5],
+  'top-right':    [0.5,    0,      0.5,  0.5],
+  'bottom-left':  [0,      0.5,    0.5,  0.5],
+  'bottom-right': [0.5,    0.5,    0.5,  0.5],
+};
+const FACTOR_COLORS: Record<string, string> = {
+  blur:    '#60a5fa',
+  heatmap: '#fb923c',
+  grid:    '#a78bfa',
+};
+
+const _INK  = 'rgba(255,255,255,0.92)';
+const _SH   = '0 0 8px rgba(0,0,0,1), 0 1px 3px rgba(0,0,0,.95)';
+const _MONO = "'Courier New', monospace";
+
+function FactorAnnotations({ factors }: { factors: any[] }) {
+  if (!factors || factors.length === 0) return null;
+  return (
+    <svg
+      style={{ position:'absolute', top:0, left:0, width:'100%', height:'100%', pointerEvents:'none' }}
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <defs>
+        <filter id="fa-txt" x="-5%" y="-20%" width="110%" height="140%">
+          <feDropShadow dx="0" dy="0" stdDeviation="2.5" floodColor="#000" floodOpacity="1"/>
+        </filter>
+      </defs>
+      {factors.map((f: any, i: number) => {
+        const [bx, by, bw, bh] = REGION_BOX[f.region] ?? REGION_BOX['full'];
+        const isStrength = (f.impact ?? 0) > 0;
+        const isWeakness = (f.impact ?? 0) < 0;
+        const color = isStrength ? '#f5c842' : isWeakness ? '#ef4444' : (FACTOR_COLORS[f.type] ?? '#94a3b8');
+
+        // Region in %, clamped so edges are always inside the frame
+        const rx = bx * 100, ry = by * 100, rw = bw * 100, rh = bh * 100;
+        const rx2 = rx + rw, ry2 = ry + rh;
+        // Center point
+        const cx = rx + rw / 2, cy = ry + rh / 2;
+
+        // Label: inside top-left of region, always on-screen
+        const lx = Math.max(1, Math.min(rx + 1.5, 70));
+        const ly = Math.max(4, ry + 5);
+
+        const impactAbs = Math.round(Math.abs(f.impact ?? 0) * 100);
+        const badge = isStrength ? `[+${impactAbs}]` : isWeakness ? `[-${impactAbs}]` : null;
+        const glyph = isStrength ? '●' : isWeakness ? '✕' : '○';
+
+        return (
+          <g key={i}>
+            {/* Region fill wash */}
+            <rect x={`${rx}%`} y={`${ry}%`} width={`${rw}%`} height={`${rh}%`}
+              fill={color} fillOpacity="0.10" stroke="none"/>
+
+            {/* Region border */}
+            <rect x={`${rx}%`} y={`${ry}%`} width={`${rw}%`} height={`${rh}%`}
+              fill="none" stroke={color} strokeWidth="1.8" strokeOpacity="0.75"
+              strokeDasharray="6 3"/>
+
+            {/* Strength: bold dashed ellipse around region */}
+            {isStrength && (
+              <ellipse cx={`${cx}%`} cy={`${cy}%`}
+                rx={`${rw * 0.44}%`} ry={`${rh * 0.42}%`}
+                fill="none" stroke="#f5c842" strokeWidth="2.2"
+                strokeOpacity="0.85" strokeDasharray="7 4"/>
+            )}
+
+            {/* Weakness: bold X-strike */}
+            {isWeakness && (<>
+              <line x1={`${rx + rw*0.06}%`} y1={`${ry + rh*0.06}%`}
+                    x2={`${rx + rw*0.94}%`} y2={`${ry + rh*0.94}%`}
+                stroke="#ef4444" strokeWidth="2.2" strokeOpacity="0.8"/>
+              <line x1={`${rx + rw*0.94}%`} y1={`${ry + rh*0.06}%`}
+                    x2={`${rx + rw*0.06}%`} y2={`${ry + rh*0.94}%`}
+                stroke="#ef4444" strokeWidth="2.2" strokeOpacity="0.8"/>
+            </>)}
+
+            {/* Center dot */}
+            <circle cx={`${cx}%`} cy={`${cy}%`} r="0.6%"
+              fill={color} fillOpacity="1"/>
+
+            {/* Connector: center dot → label */}
+            <line x1={`${cx}%`} y1={`${cy}%`} x2={`${lx}%`} y2={`${ly}%`}
+              stroke={color} strokeWidth="1" strokeOpacity="0.5" strokeDasharray="3 3"/>
+
+            {/* Label: glyph + name + badge, inside region */}
+            <text x={`${lx}%`} y={`${ly}%`}
+              fill={color} fontSize="12" fontWeight="700"
+              fontFamily="'Courier New', monospace"
+              filter="url(#fa-txt)">
+              {glyph} {f.label}{badge ? ` ${badge}` : ''}
+            </text>
+
+            {/* Note on second line */}
+            {f.note && (
+              <text x={`${lx}%`} y={`${Math.min(ly + 4, ry2 - 2)}%`}
+                fill={color} fontSize="10" fillOpacity="0.75"
+                fontFamily="'Courier New', monospace"
+                filter="url(#fa-txt)">
+                {f.note}
+              </text>
+            )}
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+/* ── Analysis HUD — pen-notation corner annotation on the image ──── */
+function AnalysisHUD({ grade, score, breakdown }: { grade: string; score: number; breakdown: Record<string,number> }) {
+  const ASPECT_KEYS = ['Technical','Composition','Lighting','Narrative','Human/Culture'];
+  const aspects = ASPECT_KEYS.map(k => [k, (breakdown[k] ?? 0)] as [string,number]);
+  const maxV = Math.max(...aspects.map(([,v]) => v));
+  const minV = Math.min(...aspects.map(([,v]) => v));
+  const pct  = Math.round(score * 100);
+  const gradeColor = gc(grade);
+  return (
+    <div style={{ position:'absolute', bottom:62, left:20, pointerEvents:'none', zIndex:2 }}>
+      {/* Score + grade written directly on the photo */}
+      <div style={{ display:'flex', alignItems:'baseline', gap:6, marginBottom:10 }}>
+        <span style={{ fontFamily:_MONO, fontSize:32, fontWeight:700, lineHeight:1,
+          color:gradeColor, textShadow:_SH, letterSpacing:'-.01em' }}>{pct}</span>
+        <span style={{ fontFamily:_MONO, fontSize:11, color:_INK, textShadow:_SH, opacity:.45 }}>/100</span>
+        <span style={{ fontFamily:_MONO, fontSize:11, fontWeight:700, letterSpacing:'.1em',
+          color:gradeColor, textShadow:_SH, marginLeft:4 }}>{gl(grade).toUpperCase()}</span>
+      </div>
+      {/* Aspect scores as pen-ruled tick lines */}
+      <div style={{ display:'flex', flexDirection:'column', gap:5 }}>
+        {aspects.map(([k, v]) => {
+          const vpct = Math.round((v as number) * 100);
+          const isTop = v === maxV;
+          const isBot = v === minV && v !== maxV;
+          const col = isTop ? C.strong : isBot ? C.weak : _INK;
+          const filled = vpct * 0.76;
+          return (
+            <div key={k} style={{ display:'flex', alignItems:'center', gap:8 }}>
+              <span style={{ fontFamily:_MONO, fontSize:9, color:col, textShadow:_SH,
+                width:82, textAlign:'right', flexShrink:0, opacity:.85, letterSpacing:'.02em' }}>
+                {k}
+              </span>
+              <svg width="80" height="9" style={{ flexShrink:0, overflow:'visible' }}>
+                <line x1="0" y1="4.5" x2="76" y2="4.5" stroke={`${col}`} strokeWidth="0.75" opacity="0.25"/>
+                <line x1="0" y1="4.5" x2={filled} y2="4.5" stroke={col} strokeWidth="1.5" strokeLinecap="round"/>
+                <line x1={filled} y1="1" x2={filled} y2="8" stroke={col} strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+              <span style={{ fontFamily:_MONO, fontSize:10, fontWeight:700, color:col,
+                textShadow:_SH, flexShrink:0, width:22 }}>{vpct}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ── Niche registry (mirrors src/niche_registry.py) ─────────────── */
+const NICHE_GROUPS = [
+  { category: "Street & Documentary", niches: [
+    { key: "classic_street",  label: "Classic Street" },
+    { key: "documentary",     label: "Documentary" },
+    { key: "photojournalism", label: "Photojournalism" },
+    { key: "travel_cultural", label: "Travel & Cultural" },
+  ]},
+  { category: "Architecture & Space", niches: [
+    { key: "architectural", label: "Architectural" },
+    { key: "liminal",       label: "Liminal / Atmospheric" },
+    { key: "urban_city",    label: "Urban & City" },
+  ]},
+  { category: "Light & Mood", niches: [
+    { key: "night",         label: "Night Photography" },
+    { key: "long_exposure", label: "Long Exposure" },
+    { key: "fine_art",      label: "Fine Art" },
+    { key: "minimalist",    label: "Minimalist" },
+  ]},
+  { category: "Subject-Focused", niches: [
+    { key: "portrait",          label: "Portrait" },
+    { key: "wildlife",          label: "Wildlife" },
+    { key: "fashion_editorial", label: "Fashion & Editorial" },
+    { key: "sports_action",     label: "Sports & Action" },
+    { key: "wedding",           label: "Wedding" },
+  ]},
+  { category: "Creative & Specialized", niches: [
+    { key: "landscape",    label: "Landscape" },
+    { key: "abstract",     label: "Abstract" },
+    { key: "macro",        label: "Macro / Close-up" },
+    { key: "experimental", label: "Experimental" },
+  ]},
+];
+
 /* ── App ────────────────────────────────────────────────────────── */
 export default function App() {
   const [folder,     setFolder]     = useState("");
-  const [preset,     setPreset]     = useState("Classic Street");
+  const [preset,     setPreset]     = useState("classic_street");
   const [photos,     setPhotos]     = useState<any[]>([]);
   const [carousel,   setCarousel]   = useState<any[]>([]);
   const [saved,      setSaved]      = useState<{name: string; sequence: any[]}[]>([]);
@@ -435,13 +820,15 @@ export default function App() {
   const [listLoading,  setListLoading]  = useState(false);
   const [gradeProgress, setGradeProgress] = useState(0);
   const [gradeDesc,     setGradeDesc]     = useState("");
+  const [gradeStartMs,  setGradeStartMs]  = useState<number | null>(null);
+  const [gradeEtaSecs,  setGradeEtaSecs]  = useState<number | null>(null);
   const [toast,      setToast]      = useState<{msg: string; type: "success"|"error"|"info"} | null>(null);
   const [selId,      setSelId]      = useState<string | null>(null);
   const [nicheRec,   setNicheRec]   = useState<any>(null);
-  const [infoTab,    setInfoTab]    = useState<"exif"|"analysis">("analysis");
+  const [infoTab,    setInfoTab]    = useState<"exif"|"breakdown"|"analysis">("breakdown");
   const [scanMode,   setScanMode]   = useState(false);
   const [mainTab,    setMainTab]    = useState<"gallery"|"duplicates"|"creative">("gallery");
-  const [seqMode,    setSeqMode]    = useState<'auto'|'director'>('auto');
+  const [seqMode,    setSeqMode]    = useState<'auto'|'director'|'story'|'competition'>('story');
   const [directorPrompt,  setDirectorPrompt]  = useState('');
   const [directorResult,  setDirectorResult]  = useState<any>(null);
   const [directorLoading, setDirectorLoading] = useState(false);
@@ -484,12 +871,40 @@ export default function App() {
   const [dragOver,    setDragOver]      = useState(false);
   const [backendReady,   setBackendReady]   = useState(false);
   const [backendError,   setBackendError]   = useState(false);
-  const [graderStatus,   setGraderStatus]   = useState<{last_mode:string,draft_available:boolean,verify_available:boolean,last_error:string|null}|null>(null);
+  const [graderStatus,   setGraderStatus]   = useState<{last_mode:string,draft_available:boolean,verify_available:boolean,last_error:string|null,qwen_warm:boolean,qwen_loading:boolean,qwen_download_pct:number|null,warmup_done:boolean,warmup_running:boolean,compute_device?:string,vram_free_gb?:number|null,vram_total_gb?:number|null,gpu_name?:string|null}|null>(null);
+  const [preGradeModal,  setPreGradeModal]  = useState<{photoCount:number}|null>(null);
+  const [rescanAll,      setRescanAll]      = useState(true);
+  const [heatmapB64,     setHeatmapB64]     = useState<string | null>(null);
+  const [heatmapPath,    setHeatmapPath]    = useState<string | null>(null);
+  const [showHeatmap,    setShowHeatmap]    = useState(false);
+  const [critTrigger,    setCritTrigger]    = useState<string>('');
+  const [heatmapLoading, setHeatmapLoading] = useState(false);
+  const [pegFile,        setPegFile]        = useState<File | null>(null);
+  const [pegHash,        setPegHash]        = useState<string | null>(null);
+  const [pegLoading,     setPegLoading]     = useState(false);
+  // ── Semantic search state ─────────────────────────────────────────────────
+  const [searchQuery,    setSearchQuery]    = useState("");
+  const [searchResults,  setSearchResults]  = useState<Set<string> | null>(null); // Set of paths
+  const [searchLoading,  setSearchLoading]  = useState(false);
+  // ── Jury critique state ───────────────────────────────────────────────────
+  const [juryLoading,    setJuryLoading]    = useState(false);
+  const [juryCritique,   setJuryCritique]   = useState<string | null>(null);
+  const [juryThink,      setJuryThink]      = useState<string | null>(null);
+  const [juryCritPath,   setJuryCritPath]   = useState<string | null>(null);
+  // ── Engine health state ───────────────────────────────────────────────────
+  const [engineHealth,        setEngineHealth]        = useState<{ status: "checking"|"online"|"offline"; missing: string[] }>({ status: "checking", missing: [] });
+  const [ollamaPs,            setOllamaPs]            = useState<{name:string; size_vram:number; size_total:number}[]>([]);
+  const [bannerDismissed,     setBannerDismissed]     = useState(false);
+  const [isDownloading,       setIsDownloading]       = useState(false);
+  const [downloadProgress,    setDownloadProgress]    = useState(0);
+  const [currentDownloadModel,setCurrentDownloadModel]= useState("");
+  const [downloadError,       setDownloadError]       = useState<string | null>(null);
+  const [updateRequired,      setUpdateRequired]      = useState(false);
   // ── Creative Direction state ──────────────────────────────────────────────
   const [creativeAnchor,   setCreativeAnchor]   = useState<string | null>(null);
   const [creativePrompt,   setCreativePrompt]   = useState("");
   const [creativeMode,     setCreativeMode]     = useState<"canny"|"depth">("canny");
-  const [creativeCount,    setCreativeCount]    = useState(7);
+  const [creativeCount,    setCreativeCount]    = useState(5);
   const [creativeLoading,  setCreativeLoading]  = useState(false);
   const [creativeProgress, setCreativeProgress] = useState(0);
   const [creativeStage,    setCreativeStage]    = useState("");
@@ -498,6 +913,17 @@ export default function App() {
   const [creativeShowOriginal,setCreativeShowOriginal]= useState(false);
   const [usedCount,           setUsedCount]           = useState(0);
   const [sequenceSaving,      setSequenceSaving]      = useState(false);
+  // ── PDF RAG state ─────────────────────────────────────────────────────────
+  const [ragPdfs,       setRagPdfs]       = useState<{name:string,pages:number,phrases:number}[]>([]);
+  const [ragUploading,  setRagUploading]  = useState(false);
+  // ── Auditor / XAI overlay state ───────────────────────────────────────────
+  const [isAuditModeActive,     setIsAuditModeActive]     = useState(false);
+  const [reasoningOverlayUrl,   setReasoningOverlayUrl]   = useState<string | null>(null);
+  const [reasoningOverlayPath,  setReasoningOverlayPath]  = useState<string | null>(null);
+  const [showEyeOverlay,        setShowEyeOverlay]        = useState(false);
+  const [photoNatDims,          setPhotoNatDims]          = useState<{w:number;h:number}|null>(null);
+  const [deepCritique,          setDeepCritique]          = useState<{narrative_arc:string;geometry_composition:string}|null>(null);
+  const [deepCritiqueLoading,   setDeepCritiqueLoading]   = useState(false);
 
   const filmRef    = useRef<HTMLDivElement>(null);
   const dragCounter = useRef(0);
@@ -515,6 +941,24 @@ export default function App() {
     const t = setTimeout(() => setToast(null), 3200);
     return () => clearTimeout(t);
   }, [toast]);
+
+  /* live ETA countdown while grading is in progress */
+  const gradeProgressRef = useRef(gradeProgress);
+  gradeProgressRef.current = gradeProgress;
+  useEffect(() => {
+    if (!loading || gradeStartMs === null) {
+      setGradeEtaSecs(null);
+      return;
+    }
+    const id = setInterval(() => {
+      const p = gradeProgressRef.current;
+      if (p <= 0.02) return;
+      const elapsed = (Date.now() - gradeStartMs) / 1000;
+      const total   = elapsed / p;
+      setGradeEtaSecs(Math.max(0, Math.round(total - elapsed)));
+    }, 1000);
+    return () => clearInterval(id);
+  }, [loading, gradeStartMs]);
 
   /* poll backend until it responds — shows loading screen until ready */
   useEffect(() => {
@@ -537,6 +981,128 @@ export default function App() {
     return () => { cancelled = true; clearTimeout(timerId); };
   }, []);
 
+  /* poll Ollama engine health every 10 s */
+  const fetchEngineHealth = useCallback(async () => {
+    try {
+      const r = await fetch(`${API}/api/health/engine`);
+      if (r.ok) {
+        const d = await r.json();
+        const status = d.status ?? "offline";
+        if (status === "offline") setBannerDismissed(false);
+        setEngineHealth({ status, missing: d.missing_models ?? [] });
+      } else {
+        setBannerDismissed(false);
+        setEngineHealth({ status: "offline", missing: [] });
+      }
+    } catch {
+      setBannerDismissed(false);
+      setEngineHealth({ status: "offline", missing: [] });
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchEngineHealth();
+    const id = setInterval(fetchEngineHealth, 10_000);
+    return () => clearInterval(id);
+  }, [fetchEngineHealth]);
+
+  const fetchOllamaPs = useCallback(async () => {
+    try {
+      const r = await fetch(`${API}/api/ollama/status`);
+      if (r.ok) {
+        const d = await r.json();
+        setOllamaPs(d.models ?? []);
+      } else {
+        setOllamaPs([]);
+      }
+    } catch {
+      setOllamaPs([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchOllamaPs();
+    const id = setInterval(fetchOllamaPs, 15_000);
+    return () => clearInterval(id);
+  }, [fetchOllamaPs]);
+
+  const fetchRagStatus = useCallback(async () => {
+    try {
+      const resp = await axios.get<{phrases: string[], pdfs: {name:string,pages:number,phrases:number}[]}>(`${API}/api/rag/concepts`);
+      setRagPdfs(resp.data.pdfs ?? []);
+    } catch { /* silent */ }
+  }, []);
+
+  useEffect(() => { fetchRagStatus(); }, [fetchRagStatus]);
+
+  /* download missing Ollama models one-by-one with live progress */
+  const handleDownloadMissing = useCallback(async () => {
+    const ollamaModels = engineHealth.missing.filter(m => !m.endsWith('.gguf'));
+    if (ollamaModels.length === 0) return;
+    setIsDownloading(true);
+    setDownloadError(null);
+    setUpdateRequired(false);
+    try {
+      for (const model of ollamaModels) {
+        setCurrentDownloadModel(model);
+        setDownloadProgress(0);
+        let modelError: string | null = null;
+        try {
+          const resp = await fetch(`${API}/api/models/pull`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model_name: model }),
+          });
+          if (!resp.ok) throw new Error(`Server returned ${resp.status}`);
+          const reader  = resp.body!.getReader();
+          const decoder = new TextDecoder('utf-8');
+          let buffer = '';
+          outer: while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+            for (const line of lines) {
+              if (!line.trim()) continue;
+              try {
+                const data = JSON.parse(line);
+                if (data.error) {
+                  modelError = data.error;
+                  if (data.error.includes('newer version') || data.error.includes('412')) {
+                    console.warn('[pull] Ollama out of date:', data.error);
+                    setUpdateRequired(true);
+                  } else {
+                    console.error('[pull] Ollama error:', data.error);
+                  }
+                  reader.cancel();
+                  break outer;          // exit the while loop, not just the for loop
+                }
+                if (data.total && data.completed) {
+                  setDownloadProgress(Math.round((data.completed / data.total) * 100));
+                }
+                if (data.status === 'success') setDownloadProgress(100);
+              } catch { /* skip malformed chunk */ }
+            }
+          }
+        } catch (e: any) {
+          modelError = e?.message ?? 'Network error — is Ollama running?';
+        }
+        if (modelError) {
+          console.error('[pull] Error downloading', model, ':', modelError);
+          setDownloadError(`Failed to download ${model}: ${modelError}`);
+          return;   // abort remaining models, go straight to finally
+        }
+      }
+    } finally {
+      setIsDownloading(false);
+      setCurrentDownloadModel('');
+      setDownloadProgress(0);
+      await new Promise(r => setTimeout(r, 2000));
+      fetchEngineHealth();
+    }
+  }, [engineHealth.missing, fetchEngineHealth]);
+
   /* fetch grader model status on startup and after each grading run */
   const isDoneForStatus = !loading && photos.length > 0 && photos.some((p:any) => p.grade !== 'Pending');
   useEffect(() => {
@@ -546,6 +1112,23 @@ export default function App() {
       .then(d => { if (d) setGraderStatus(d); })
       .catch(() => {});
   }, [backendReady, isDoneForStatus]);
+
+  /* Poll status every 3 s while the pre-grade modal is open and anything is still loading */
+  useEffect(() => {
+    const _active = preGradeModal && (
+      graderStatus?.qwen_loading ||
+      graderStatus?.qwen_download_pct != null ||
+      graderStatus?.warmup_running
+    );
+    if (!_active) return;
+    const id = setInterval(() => {
+      fetch(`${API}/api/models/status`)
+        .then(r => r.ok ? r.json() : null)
+        .then(d => { if (d) setGraderStatus(d); })
+        .catch(() => {});
+    }, 3000);
+    return () => clearInterval(id);
+  }, [preGradeModal, graderStatus?.qwen_loading, graderStatus?.qwen_download_pct, graderStatus?.warmup_running]);
 
   /* fetch excluded-photo count from the server */
   useEffect(() => {
@@ -564,12 +1147,14 @@ export default function App() {
   /* lazy EXIF fetch — load when a photo is selected and has no EXIF yet */
   useEffect(() => {
     if (!sel || Object.keys(sel.exif || {}).length > 0) return;
-    axios.get(`${API}/api/exif`, { params: { path: sel.path } })
+    const ctrl = new AbortController();
+    axios.get(`${API}/api/exif`, { params: { path: sel.path }, signal: ctrl.signal })
       .then(r => {
         if (Object.keys(r.data).length > 0)
           setPhotos(prev => prev.map(p => p.id === sel.id ? { ...p, exif: r.data } : p));
       })
-      .catch(() => {});
+      .catch(e => { if (!axios.isCancel(e)) console.warn('[exif]', e); });
+    return () => ctrl.abort();
   }, [sel?.id]);
 
   /* auto-scroll filmstrip to selected thumb */
@@ -585,6 +1170,7 @@ export default function App() {
   const filteredPhotos = useMemo(() => {
     const carouselPaths = new Set(carousel.map((c: any) => c.path));
     const base = photos.filter(p => {
+      if (searchResults !== null && !searchResults.has(p.path)) return false; // semantic search filter
       if (!showDuplicates && redacted.has(p.path)) return false;   // non-best duplicates hidden unless toggled
       const starsOk = filterStars === null || p.stars === filterStars;
       if (filterGrade) return gl(p.grade) === filterGrade && starsOk;
@@ -593,7 +1179,7 @@ export default function App() {
     });
     if (!sortScore) return base;
     return [...base].sort((a, b) => sortScore === 'desc' ? b.score - a.score : a.score - b.score);
-  }, [photos, filterGrade, filterStars, redacted, showDuplicates, sortScore, carousel]);
+  }, [photos, filterGrade, filterStars, redacted, showDuplicates, sortScore, carousel, searchResults]);
 
   /* keyboard nav */
   useEffect(() => {
@@ -633,7 +1219,7 @@ export default function App() {
         const res = await axios.post(`${API}/api/list-folder`, { folder_path: sanitizePath(folder) });
         const rawPhotos: {path:string;exif:any}[] = res.data.photos || res.data.paths?.map((p: string) => ({path:p,exif:{}})) || [];
         if (!rawPhotos.length) notify("No images found in selected folder", "info");
-        const ps = rawPhotos.map((p, i) => ({ id:`p-${i}`, path:p.path, grade:'Pending', score:0, breakdown:{}, critique:'', stars:0, exif:p.exif||{} }));
+        const ps = rawPhotos.map((p, i) => ({ id:`p-${i}`, path:p.path, grade:'Pending', score:0, breakdown:{}, critique:'', reasoning_log:'', is_verified:false, stars:0, exif:p.exif||{} }));
         setPhotos(ps);
         setFolders([folder]);
         setSelId(ps[0]?.id ?? null);
@@ -668,6 +1254,189 @@ export default function App() {
       axios.post(`${API}/api/catalog/save`, { photos: photosToSave, folders }).catch(() => {});
     }, 2000);
   }, [photos, folders]);
+
+  // Hide heatmap overlay whenever the selected photo changes
+  useEffect(() => { setShowHeatmap(false); }, [selId]);
+
+  // Reset jury critique state when selected photo changes
+  useEffect(() => {
+    setJuryCritique(null);
+    setJuryThink(null);
+    setJuryCritPath(null);
+    setCritTrigger('');
+    setIsAuditModeActive(false);
+    setShowEyeOverlay(false);
+    setPhotoNatDims(null);
+    setDeepCritique(null);
+    setDeepCritiqueLoading(false);
+  }, [selId]);
+
+  // Disable overlay when leaving the analysis tab; user toggles it on manually
+  useEffect(() => {
+    if (infoTab !== 'analysis') setIsAuditModeActive(false);
+  }, [infoTab]);
+
+  // Poll for annotation readiness when a photo is selected but not yet annotated
+  useEffect(() => {
+    if (!sel || (sel.has_annotations && sel.eye_overlay_url !== undefined)) return;
+    let cancelled = false;
+    const check = async () => {
+      if (cancelled) return;
+      try {
+        const stem = sel.path.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, '') ?? '';
+        const r = await fetch(`${API}/api/annotations/${encodeURIComponent(stem)}`);
+        if (!r.ok || cancelled) return;
+        const d = await r.json();
+        const gotAnnotations = d.has_annotations && d.score_factors?.length > 0;
+        const gotOverlay     = Boolean(d.eye_overlay_url);
+        if (gotAnnotations || gotOverlay) {
+          setPhotos(prev => prev.map(p =>
+            p.path === sel.path
+              ? {
+                  ...p,
+                  ...(gotAnnotations ? {
+                    has_annotations: d.has_annotations,
+                    score_factors:   d.score_factors,
+                  } : {}),
+                  ...(gotOverlay ? { eye_overlay_url: d.eye_overlay_url } : {}),
+                }
+              : p
+          ));
+        }
+      } catch { /* silent */ }
+    };
+    const id = setInterval(check, 8000);
+    check();
+    return () => { cancelled = true; clearInterval(id); };
+  }, [selId, sel?.has_annotations]);
+
+  const toggleHeatmap = useCallback(async () => {
+    if (!sel) return;
+    if (showHeatmap) { setShowHeatmap(false); return; }
+    if (heatmapPath === sel.path && heatmapB64) { setShowHeatmap(true); return; }
+    setHeatmapLoading(true);
+    try {
+      const resp = await axios.get<{b64: string}>(
+        `${API}/api/heatmap/technical/${encodeURIComponent(sel.path)}`
+      );
+      setHeatmapB64(resp.data.b64);
+      setHeatmapPath(sel.path);
+      setShowHeatmap(true);
+    } catch { /* silent fail */ } finally {
+      setHeatmapLoading(false);
+    }
+  }, [sel, showHeatmap, heatmapPath, heatmapB64]);
+
+  /* critique trigger hover — lazy-loads heatmap when blur/heatmap type is hovered */
+  const handleTriggerEnter = useCallback(async (type: string) => {
+    setCritTrigger(type);
+    if ((type === 'blur' || type === 'heatmap') && sel && (heatmapPath !== sel.path || !heatmapB64)) {
+      setHeatmapLoading(true);
+      try {
+        const resp = await axios.get<{b64: string}>(
+          `${API}/api/heatmap/technical/${encodeURIComponent(sel.path)}`
+        );
+        setHeatmapB64(resp.data.b64);
+        setHeatmapPath(sel.path);
+      } catch { /* silent — overlay just won't show */ } finally {
+        setHeatmapLoading(false);
+      }
+    }
+  }, [sel, heatmapPath, heatmapB64]);
+
+  const handleTriggerLeave = useCallback(() => setCritTrigger(''), []);
+
+  const handleRagUpload = useCallback(async (file: File) => {
+    setRagUploading(true);
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      await axios.post(`${API}/api/rag/upload`, form, { timeout: 300000 });
+      await fetchRagStatus();
+      notify(`"${file.name}" ingested as reference`, 'success');
+    } catch {
+      notify('PDF ingestion failed — check server logs', 'error');
+    } finally {
+      setRagUploading(false);
+    }
+  }, [fetchRagStatus]);
+
+  const handleRagClear = useCallback(async () => {
+    try {
+      await axios.delete(`${API}/api/rag/clear`);
+      setRagPdfs([]);
+      notify('Reference library cleared', 'info');
+    } catch {
+      notify('Clear failed', 'error');
+    }
+  }, []);
+
+  const handlePegUpload = useCallback(async (file: File) => {
+    setPegFile(file);
+    setPegHash(null);
+    setPegLoading(true);
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      const resp = await axios.post<{status: string, hash: string}>(`${API}/api/upload`, form);
+      setPegHash(resp.data.hash);
+    } catch {
+      notify('Reference upload failed', 'error');
+      setPegFile(null);
+    } finally {
+      setPegLoading(false);
+    }
+  }, []);
+
+  const handleSemanticSearch = useCallback(async (q: string) => {
+    if (!q.trim()) { setSearchResults(null); return; }
+    setSearchLoading(true);
+    try {
+      const resp = await axios.get<{results: {hash: string; path: string; score: number}[]}>(
+        `${API}/api/search/semantic`, { params: { q } }
+      );
+      const paths = new Set(resp.data.results.map(r => r.path));
+      setSearchResults(paths);
+      if (paths.size === 0) notify(`No results for "${q}"`, 'info');
+    } catch {
+      notify('Semantic search failed', 'error');
+    } finally {
+      setSearchLoading(false);
+    }
+  }, [notify]);
+
+  const handleJuryCritique = useCallback(async (path: string) => {
+    if (!path) return;
+    // Use the path stem as image_hash (MD5 stem used by the ingestion pipeline)
+    const hash = path.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, '') ?? '';
+    if (!hash) return;
+    if (juryCritPath === path && juryCritique) return; // already loaded
+    setJuryLoading(true);
+    setJuryCritique(null);
+    setJuryThink(null);
+    try {
+      const resp = await axios.get<{critique: string; think?: string; error?: string}>(
+        `${API}/api/critique/jury/${encodeURIComponent(hash)}`
+      );
+      if (resp.data.error) {
+        // Backend returned a structured error (GGUF missing, model crash, etc.)
+        setJuryCritique(`Critique failed: ${resp.data.error}`);
+        console.error('[jury] backend error:', resp.data.error);
+      } else {
+        setJuryCritique(resp.data.critique);
+        setJuryThink(resp.data.think ?? null);
+        setJuryCritPath(path);
+        if (resp.data.think) console.debug('[jury <think>]', resp.data.think);
+      }
+    } catch (err: any) {
+      // Network-level failure (server offline, timeout, etc.)
+      const detail = err?.response?.data?.error ?? err?.response?.data?.detail ?? null;
+      setJuryCritique(detail ? `Critique failed: ${detail}` : 'Server unreachable — is the backend running?');
+      console.error('[jury] network error:', err);
+    } finally {
+      setJuryLoading(false);
+    }
+  }, [juryCritPath, juryCritique]);
 
   /* folder browser */
   const loadBrowser = useCallback(async (path: string) => {
@@ -742,7 +1511,7 @@ export default function App() {
         const existing = new Set(prev.map(p => p.path));
         const added = rawPhotos
           .filter(p => !existing.has(p.path))
-          .map((p, i) => ({ id:`p-${prev.length + i}`, path:p.path, grade:'Pending', score:0, breakdown:{}, critique:'', stars:0, exif:p.exif||{} }));
+          .map((p, i) => ({ id:`p-${prev.length + i}`, path:p.path, grade:'Pending', score:0, breakdown:{}, critique:'', reasoning_log:'', is_verified:false, stars:0, exif:p.exif||{} }));
         return [...prev, ...added];
       });
       setFolders(prev => prev.includes(newFolder) ? prev : [...prev, newFolder]);
@@ -771,12 +1540,24 @@ export default function App() {
   }, [notify]);
 
   /* grade — uses SSE stream so large folders never time out */
-  const handleGrade = useCallback(async (forceRescan = false) => {
+  const handleGrade = useCallback(async (forceRescan = false, skipModal = false) => {
     const safePath = sanitizePath(folder);
     if (!safePath && folders.length === 0) { notify("Paste a valid folder path first.", "error"); return; }
+    if (!skipModal) {
+      const photoCount = photos.length > 0 ? photos.length : 0;
+      setPreGradeModal({ photoCount });
+      // Kick off Vision Engine preload as soon as modal opens so it's warm by the time
+      // the user clicks Start Culling.
+      if (!graderStatus?.qwen_warm && !graderStatus?.qwen_loading) {
+        axios.post(`${API}/api/models/preload`).catch(() => {});
+      }
+      return;
+    }
     setLoading(true);
     setGradeProgress(0);
     setGradeDesc("");
+    setGradeStartMs(Date.now());
+    setGradeEtaSecs(null);
     const allFolderPaths = folders.length > 0 ? folders.map(sanitizePath) : [safePath];
     try {
       const resp = await fetch(`${API}/api/grade/v2/stream`, {
@@ -784,12 +1565,25 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ folder_path: allFolderPaths[0], folder_paths: allFolderPaths, preset, scan_mode: scanMode, force_rescan: forceRescan }),
       });
-      if (!resp.ok) throw new Error(`Server error ${resp.status}`);
+      if (!resp.ok) {
+        try { const d = await resp.json(); throw new Error(d.error ?? `Server error ${resp.status}`); }
+        catch (e: any) { if (e.message && !e.message.startsWith('{')) throw e; throw new Error(`Server error ${resp.status}`); }
+      }
       const reader = resp.body!.getReader();
       const decoder = new TextDecoder();
       let buf = '';
+      const _readWithTimeout = (): Promise<ReadableStreamReadResult<Uint8Array>> =>
+        Promise.race([
+          reader.read(),
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () => reject(new Error('No response from server for 45 s — the grader may have crashed. Check the server log and click Grade to retry.')),
+              45_000,
+            )
+          ),
+        ]);
       outer: while (true) {
-        const { done, value } = await reader.read();
+        const { done, value } = await _readWithTimeout();
         if (done) break;
         buf += decoder.decode(value, { stream: true });
         const lines = buf.split('\n');
@@ -820,7 +1614,7 @@ export default function App() {
             }
             setMainTab('gallery');
             setLoupeMode('loupe');
-            setInfoTab('analysis');
+            setInfoTab('breakdown');
             setLoading(false);
             setGradeProgress(0);
             setGradeDesc("");
@@ -890,7 +1684,6 @@ export default function App() {
   }, []);
 
   const handleRunCreativeDirection = useCallback(async () => {
-    if (!creativeAnchor) { notify('Select an anchor image first', 'error'); return; }
     if (photos.length === 0) { notify('No photos loaded.', 'error'); return; }
     setCreativeLoading(true);
     setCreativeProgress(0);
@@ -901,11 +1694,13 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          anchor_path:    sanitizePath(creativeAnchor),
-          folder_path:    sanitizePath(folders[0] || folder),
-          style_prompt:   creativePrompt,
-          structure_mode: creativeMode,
-          n_target:       creativeCount,
+          anchor_path:     creativeAnchor ? sanitizePath(creativeAnchor) : '',
+          folder_path:     sanitizePath(folders[0] || folder),
+          style_prompt:    creativePrompt,
+          structure_mode:  creativeMode,
+          n_target:        creativeCount,
+          peg_image_hash:  pegHash ?? null,
+          mode:            seqMode === 'competition' ? 'competition' : 'story',
         }),
       });
       if (!resp.ok) throw new Error(`Server error ${resp.status}`);
@@ -1055,7 +1850,12 @@ export default function App() {
 
   const handleSetStars = useCallback((id: string, stars: number) => {
     setPhotos(prev => prev.map(p => p.id === id ? { ...p, stars } : p));
-  }, []);
+    // Fire-and-forget: train PersonalHead + queue DPO event
+    const path = photos.find(p => p.id === id)?.path;
+    if (path) {
+      axios.post(`${API}/api/personal/star`, { path, stars }).catch(() => {});
+    }
+  }, [photos]);
 
   const handleCreateFromSelection = useCallback(() => {
     if (!selectedIds.size) { notify('Select photos first', 'error'); return; }
@@ -1174,7 +1974,7 @@ export default function App() {
         ) : (
           <>
             <div style={{ width:40, height:40, border:'3px solid #333', borderTopColor:'#7c6af7', borderRadius:'50%', animation:'spin .8s linear infinite' }}/>
-            <span style={{ fontSize:14, color:'#888', letterSpacing:'.05em' }}>Starting Street Story Curator…</span>
+            <span style={{ fontSize:14, color:'#888', letterSpacing:'.05em' }}>Starting FrameGrade…</span>
           </>
         )}
       </div>
@@ -1213,6 +2013,295 @@ export default function App() {
         }}>{toast.msg}</div>
       )}
 
+      {/* Engine health warning banner */}
+      {engineHealth.status !== "checking" && (() => {
+        const missingOllama = engineHealth.missing.filter(m => !m.endsWith('.gguf'));
+        const missingGguf   = engineHealth.missing.filter(m => m.endsWith('.gguf'));
+        const isOffline     = engineHealth.status === "offline";
+
+        // Model load state chips — gemma3:4b and qwen2.5vl:3b
+        const VLM_TARGETS = ["gemma3:4b", "qwen2.5vl:3b"] as const;
+        const MODEL_DISPLAY: Record<string, string> = {
+          "gemma3:4b":    "Spatial Judge",
+          "qwen2.5vl:3b": "Vision Eye",
+        };
+        const modelChips = VLM_TARGETS.map(target => {
+          const found = ollamaPs.find(m => m.name === target || m.name.startsWith(target.split(":")[0] + ":"));
+          if (!found) return { label: target, display: MODEL_DISPLAY[target] ?? target, state: "absent" as const };
+          const onGpu = found.size_vram > 0;
+          return { label: target, display: MODEL_DISPLAY[target] ?? target, state: onGpu ? "gpu" as const : "cpu" as const, size_vram: found.size_vram };
+        });
+        const anyCpu    = modelChips.some(c => c.state === "cpu");
+        const anyAbsent = modelChips.some(c => c.state === "absent");
+        const showBanner = isOffline || missingOllama.length > 0 || missingGguf.length > 0 || anyCpu;
+        if (!showBanner) return null;
+        if (bannerDismissed && !isOffline) return null;
+
+        return (
+          <div style={{
+            position:'fixed', top:0, left:0, right:0, zIndex:250,
+            padding: isOffline ? '10px 18px' : '7px 16px',
+            fontSize: isOffline ? 13 : 12.5, fontWeight: isOffline ? 600 : 500,
+            background: isOffline ? 'oklch(72% .19 55)' : 'oklch(18% .12 25)',
+            borderBottom: isOffline ? '2px solid oklch(52% .22 50)' : '1px solid oklch(44% .18 25)',
+            color: isOffline ? 'oklch(12% .04 55)' : 'oklch(85% .08 25)',
+            display:'flex', alignItems:'center', gap:10, flexWrap:'wrap',
+            boxShadow: isOffline ? '0 2px 8px oklch(0% 0 0 / .25)' : 'none',
+          }}>
+            <span style={{ fontSize: isOffline ? 16 : 14, flexShrink:0 }}>
+              {isOffline ? '🔴' : '⚠'}
+            </span>
+            {isOffline ? (
+              <span style={{ flex:1, minWidth:0 }}>
+                <strong>Ollama is offline.</strong>{' '}
+                Jury Critique, Creative Director, and photo annotations are unavailable.{' '}
+                <span style={{ fontWeight:400, opacity:.85 }}>Start Ollama to enable AI features.</span>
+              </span>
+            ) : (
+              <span style={{ flex:1, minWidth:0 }}>
+                {missingOllama.length > 0 && <>Missing vision engines: <strong>{missingOllama.map(m => MODEL_DISPLAY[m] ?? m).join(", ")}</strong>{missingGguf.length > 0 ? " · " : ""}</>}
+                {missingGguf.length > 0 && <>Missing local file{missingGguf.length > 1 ? "s" : ""}: <strong>{missingGguf.join(", ")}</strong> — place manually in <code style={{ fontSize:11 }}>models/</code></>}
+              </span>
+            )}
+            {/* Ollama out-of-date — overrides all other controls */}
+            {updateRequired ? (
+              <>
+                <span style={{ flex:1, minWidth:0, fontSize:12, fontWeight:600, color:'oklch(80% .15 25)' }}>
+                  Your Ollama engine is out of date and cannot run these models.
+                </span>
+                <a
+                  href="https://ollama.com/download"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ flexShrink:0, padding:'4px 12px', fontSize:12, fontWeight:700,
+                    background:'oklch(44% .18 25)', color:'oklch(92% .05 25)',
+                    border:'1px solid oklch(58% .2 25)', borderRadius:6, cursor:'pointer',
+                    whiteSpace:'nowrap', textDecoration:'none' }}>
+                  Download Ollama Update
+                </a>
+              </>
+            ) : (
+              <>
+                {/* Generic error */}
+                {downloadError && !isDownloading && (
+                  <span style={{ fontSize:11.5, color:'oklch(72% .18 25)', fontWeight:600, flex:1, minWidth:0 }}>
+                    ✕ {downloadError}
+                  </span>
+                )}
+                {/* Download / Retry button */}
+                {missingOllama.length > 0 && !isDownloading && (
+                  <button
+                    onClick={() => { setDownloadError(null); handleDownloadMissing(); }}
+                    style={{ flexShrink:0, padding:'4px 12px', fontSize:12, fontWeight:700,
+                      background: downloadError ? 'oklch(38% .18 25)' : 'oklch(44% .18 25)',
+                      color:'oklch(92% .05 25)', border:`1px solid ${downloadError ? 'oklch(58% .2 25)' : 'oklch(55% .18 25)'}`,
+                      borderRadius:6, cursor:'pointer', whiteSpace:'nowrap' }}>
+                    {downloadError ? 'Retry Download' : 'Download Missing Models'}
+                  </button>
+                )}
+              </>
+            )}
+            {/* VLM model load state chips */}
+            {!isOffline && (anyCpu || anyAbsent) && (
+              <div style={{ display:'flex', alignItems:'center', gap:6, flexShrink:0, flexWrap:'wrap' }}>
+                {modelChips.map(chip => {
+                  const isGpu = chip.state === "gpu";
+                  const isCpu = chip.state === "cpu";
+                  return (
+                    <span key={chip.label} title={isGpu ? `${chip.display} loaded in VRAM` : isCpu ? `${chip.display} running on CPU — VRAM headroom low` : `${chip.display} not loaded`}
+                      style={{
+                        padding:'2px 8px', borderRadius:4, fontSize:11, fontWeight:700, whiteSpace:'nowrap',
+                        background: isGpu ? 'oklch(22% .09 145)' : isCpu ? 'oklch(22% .12 55)' : 'oklch(20% .04 0)',
+                        border: `1px solid ${isGpu ? 'oklch(46% .14 145)' : isCpu ? 'oklch(52% .18 55)' : 'oklch(36% .04 0)'}`,
+                        color: isGpu ? 'oklch(72% .16 145)' : isCpu ? 'oklch(80% .14 55)' : 'oklch(55% .04 0)',
+                      }}>
+                      {chip.display} {isGpu ? '✓ GPU' : isCpu ? '⚡ CPU' : '—'}
+                    </span>
+                  );
+                })}
+                {anyCpu && <span style={{ fontSize:11, color:'oklch(75% .12 55)', fontWeight:500 }}>VRAM pressure — inference may be slow</span>}
+              </div>
+            )}
+            {/* Progress indicator while downloading */}
+            {isDownloading && (
+              <div style={{ flexShrink:0, display:'flex', alignItems:'center', gap:8 }}>
+                <div style={{ width:120, height:6, background:'oklch(28% .08 25)', borderRadius:3, overflow:'hidden' }}>
+                  <div style={{ width:`${downloadProgress}%`, height:'100%', background:'oklch(62% .18 145)', borderRadius:3, transition:'width .3s ease' }}/>
+                </div>
+                <span style={{ fontSize:11, whiteSpace:'nowrap', color:'oklch(75% .06 25)' }}>
+                  {currentDownloadModel}: {downloadProgress}% — do not close the app
+                </span>
+              </div>
+            )}
+            {/* Dismiss button */}
+            {!isOffline && !isDownloading && (
+              <button
+                onClick={() => setBannerDismissed(true)}
+                title="Dismiss"
+                style={{ marginLeft:'auto', flexShrink:0, background:'none', border:'none', cursor:'pointer',
+                  color: isOffline ? 'oklch(20% .04 55)' : 'oklch(55% .06 25)', fontSize:16, lineHeight:1, padding:'2px 4px' }}>
+                ✕
+              </button>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* Pre-grade info modal */}
+      {preGradeModal && (
+        <div style={{ position:'fixed', inset:0, zIndex:400, background:'rgba(0,0,0,1)', display:'flex', alignItems:'center', justifyContent:'center' }}
+          onClick={() => setPreGradeModal(null)}>
+          <div style={{ background:C.surf1, border:`1px solid ${C.bdr2}`, borderRadius:12, padding:'28px 32px', maxWidth:420, width:'90%', display:'flex', flexDirection:'column', gap:16 }}
+            onClick={e => e.stopPropagation()}>
+            <div style={{ fontSize:16, fontWeight:700, color:C.text }}>Before you start</div>
+
+            {/* Vision Engine status */}
+            <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+              {!graderStatus?.draft_available ? (
+                <div style={{ padding:'10px 14px', borderRadius:8, background:'oklch(22% .12 55 / .25)', border:'1px solid oklch(52% .18 55 / .4)' }}>
+                  <div style={{ fontSize:13, fontWeight:700, color:'oklch(80% .14 55)', marginBottom:4 }}>
+                    {graderStatus?.qwen_download_pct != null
+                      ? `Downloading Vision Engine — ${graderStatus.qwen_download_pct}%`
+                      : 'Vision Engine: downloading in background…'}
+                  </div>
+                  {graderStatus?.qwen_download_pct != null && (
+                    <div style={{ height:4, background:'rgba(255,255,255,.1)', borderRadius:2, overflow:'hidden', marginBottom:8 }}>
+                      <div style={{ height:'100%', width:`${graderStatus.qwen_download_pct}%`,
+                        background:'oklch(70% .18 55)', borderRadius:2,
+                        transition:'width .8s cubic-bezier(.2,0,0,1)' }}/>
+                    </div>
+                  )}
+                  <div style={{ fontSize:12, color:C.text2, lineHeight:1.5 }}>
+                    ~6 GB one-time download — runs automatically in the background.
+                    {graderStatus?.qwen_download_pct != null
+                      ? ' Grading will start automatically once complete.'
+                      : ' You can start grading now; it will begin once the download finishes.'}
+                  </div>
+                </div>
+              ) : graderStatus?.qwen_warm ? (
+                <div style={{ padding:'10px 14px', borderRadius:8, background:'oklch(20% .09 145 / .3)', border:'1px solid oklch(46% .14 145 / .4)' }}>
+                  <div style={{ fontSize:13, fontWeight:700, color:'oklch(72% .16 145)', marginBottom:4 }}>Vision Engine: warm and ready</div>
+                  <div style={{ fontSize:12, color:C.text2 }}>Already loaded in VRAM. Grading will start immediately.</div>
+                </div>
+              ) : graderStatus?.qwen_loading ? (
+                <div style={{ padding:'10px 14px', borderRadius:8, background:`${C.accent}18`, border:`1px solid ${C.accent}44` }}>
+                  <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
+                    <div style={{ width:10, height:10, borderRadius:'50%', border:`2px solid ${C.accent}`, borderTopColor:'transparent', animation:'spin .8s linear infinite', flexShrink:0 }}/>
+                    <span style={{ fontSize:13, fontWeight:700, color:C.accent }}>Vision Engine: loading into VRAM…</span>
+                  </div>
+                  <div style={{ fontSize:12, color:C.text2 }}>
+                    Loading model weights from disk. Takes <strong>~30–60 seconds</strong> — Start Culling will unlock automatically.
+                  </div>
+                </div>
+              ) : (
+                <div style={{ padding:'10px 14px', borderRadius:8, background:`${C.accent}18`, border:`1px solid ${C.accent}44` }}>
+                  <div style={{ fontSize:13, fontWeight:700, color:C.accent, marginBottom:4 }}>Vision Engine: ready to load</div>
+                  <div style={{ fontSize:12, color:C.text2 }}>
+                    Model is cached on disk. Loading starts now — will be ready in <strong>~30–60 seconds</strong>.
+                  </div>
+                </div>
+              )}
+
+              {/* Pipeline calibration warmup status */}
+              {graderStatus?.warmup_running && (
+                <div style={{ padding:'10px 14px', borderRadius:8, background:'oklch(20% .08 270 / .3)', border:'1px solid oklch(52% .14 270 / .35)' }}>
+                  <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}>
+                    <div style={{ width:9, height:9, borderRadius:'50%', border:'2px solid oklch(70% .16 270)', borderTopColor:'transparent', animation:'spin .8s linear infinite', flexShrink:0 }}/>
+                    <span style={{ fontSize:13, fontWeight:700, color:'oklch(74% .14 270)' }}>Calibrating pipeline…</span>
+                  </div>
+                  <div style={{ fontSize:12, color:C.text2 }}>Running your best photos through the engine to warm up CUDA kernels. Start Culling will unlock when done.</div>
+                </div>
+              )}
+              {graderStatus?.warmup_done && !graderStatus?.warmup_running && (
+                <div style={{ display:'flex', alignItems:'center', gap:7, padding:'8px 12px', borderRadius:8,
+                  background:'oklch(20% .09 145 / .2)', border:'1px solid oklch(46% .14 145 / .3)' }}>
+                  <div style={{ width:7, height:7, borderRadius:'50%', background:'oklch(64% .18 145)', flexShrink:0 }}/>
+                  <span style={{ fontSize:12, color:'oklch(70% .14 145)' }}>Pipeline calibrated — first cull of this session will be fast</span>
+                </div>
+              )}
+
+              {/* Re-grade toggle */}
+              <div style={{ display:'flex', gap:6 }}>
+                {(['all','new'] as const).map(opt => {
+                  const active = opt === 'all' ? rescanAll : !rescanAll;
+                  return (
+                    <button key={opt} onClick={() => setRescanAll(opt === 'all')}
+                      style={{ flex:1, padding:'7px 10px', borderRadius:7, fontSize:12, fontWeight:600,
+                        cursor:'pointer', border:`1px solid ${active ? C.accent : C.bdr2}`,
+                        background: active ? `${C.accent}22` : 'transparent',
+                        color: active ? C.accent : C.text2,
+                        transition:'all .15s' }}>
+                      {opt === 'all' ? 'Re-grade everything' : 'New photos only'}
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{ fontSize:11, color:C.text3, paddingLeft:2, marginTop:-6 }}>
+                {rescanAll
+                  ? 'Every photo runs through the full pipeline.'
+                  : 'Already-graded photos are skipped — only new additions are scored.'}
+              </div>
+
+              {/* Niche picker */}
+              <div style={{ display:'flex', flexDirection:'column', gap:5 }}>
+                <div style={{ fontSize:11, fontWeight:600, color:C.text3, letterSpacing:'.06em', textTransform:'uppercase' }}>
+                  Photography Niche
+                </div>
+                <select
+                  value={preset}
+                  onChange={e => setPreset(e.target.value)}
+                  style={{ width:'100%', padding:'7px 10px', borderRadius:7, fontSize:13,
+                    background:C.surf2, border:`1px solid ${C.bdr2}`, color:C.text,
+                    cursor:'pointer', outline:'none' }}>
+                  {NICHE_GROUPS.map(g => (
+                    <optgroup key={g.category} label={g.category}>
+                      {g.niches.map(n => (
+                        <option key={n.key} value={n.key}>{n.label}</option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+              </div>
+
+              {/* Photo count */}
+              {preGradeModal.photoCount > 0 && (
+                <div style={{ fontSize:12, color:C.text3, paddingLeft:2 }}>
+                  {preGradeModal.photoCount} photo{preGradeModal.photoCount !== 1 ? 's' : ''} in folder
+                </div>
+              )}
+            </div>
+
+            {/* Actions */}
+            {(() => {
+              const _notReady = graderStatus?.qwen_loading || graderStatus?.qwen_download_pct != null || graderStatus?.warmup_running;
+              return (
+                <div style={{ display:'flex', gap:10, justifyContent:'flex-end', marginTop:4 }}>
+                  <button onClick={() => setPreGradeModal(null)}
+                    style={{ padding:'7px 18px', borderRadius:7, fontSize:13, fontWeight:600, cursor:'pointer',
+                      background:'transparent', border:`1px solid ${C.bdr2}`, color:C.text2 }}>
+                    Cancel
+                  </button>
+                  <button
+                    disabled={!!_notReady}
+                    onClick={() => { setPreGradeModal(null); handleGrade(rescanAll, true); }}
+                    style={{ padding:'7px 20px', borderRadius:7, fontSize:13, fontWeight:700,
+                      cursor: _notReady ? 'not-allowed' : 'pointer',
+                      background: _notReady ? C.surf3 : C.accent,
+                      border:'none', color: _notReady ? C.text3 : '#fff',
+                      display:'flex', alignItems:'center', gap:7,
+                      transition:'background .2s, color .2s' }}>
+                    {(graderStatus?.qwen_loading || graderStatus?.warmup_running) && (
+                      <div style={{ width:10, height:10, borderRadius:'50%', border:'2px solid currentColor', borderTopColor:'transparent', animation:'spin .8s linear infinite' }}/>
+                    )}
+                    {graderStatus?.qwen_loading ? 'Loading Engine…' : graderStatus?.warmup_running ? 'Calibrating…' : 'Start Culling'}
+                  </button>
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      )}
+
       {/* Export modal */}
       {exportModal && (
         <ExportModal
@@ -1244,23 +2333,29 @@ export default function App() {
 
         {/* Preset — hidden; value retained for grading logic */}
 
+        {/* Vision Engine download progress chip */}
+        {graderStatus?.qwen_download_pct != null && (
+          <div style={{ display:'flex', alignItems:'center', gap:7, flexShrink:0, padding:'0 10px', height:26, borderRadius:5, fontSize:12, fontWeight:600, border:'1px solid oklch(52% .18 55 / .5)', color:'oklch(78% .15 55)', background:'oklch(18% .08 55 / .4)', overflow:'hidden', position:'relative' }}>
+            {/* Animated fill */}
+            <div style={{ position:'absolute', left:0, top:0, bottom:0, width:`${graderStatus.qwen_download_pct}%`, background:'oklch(52% .18 55 / .18)', transition:'width .8s cubic-bezier(.2,0,0,1)' }}/>
+            <div style={{ width:6, height:6, borderRadius:'50%', background:'oklch(70% .18 55)', flexShrink:0, animation:'pulse 1.5s ease-in-out infinite', position:'relative' }}/>
+            <span style={{ position:'relative' }}>Downloading {graderStatus.qwen_download_pct}%</span>
+          </div>
+        )}
+
         {/* Grader mode indicator */}
         {graderStatus && (() => {
           const m = graderStatus.last_mode;
-          const noModel = !graderStatus.draft_available;
-          const isClip  = m === 'clip_only' || noModel;
-          const isQwen  = m === 'qwen_fallback';
-          const isSpec  = m === 'specvlm';
-          const isIdle  = m === 'idle' || !m;
-          const dot  = isClip ? '#ef4444' : isQwen ? '#f59e0b' : isSpec ? '#22c55e' : C.text3;
-          const label= isClip ? 'CLIP only' : isQwen ? 'Qwen fallback' : isSpec ? (graderStatus.last_verify_used ? 'VLM + 7B' : 'VLM draft') : 'Ready';
-          const tip  = graderStatus.last_error ? `Error: ${graderStatus.last_error}` :
-                       isClip ? 'DeepSeek unavailable — grading with CLIP embeddings only' :
-                       isQwen ? 'DeepSeek failed — using Qwen2.5-VL fallback' :
-                       isSpec && graderStatus.last_verify_used ? 'DeepSeek 1.5B draft + 7B verification active' :
-                       isSpec ? 'DeepSeek 1.5B draft-only (7B not available)' :
-                       !graderStatus.draft_available ? 'DeepSeek weights not found' : 'No grading run yet';
-          if (isIdle && graderStatus.draft_available) return null;
+          const isIqaHeads = m === 'iqa_heads';
+          const isClip     = m === 'clip_only';
+          const isIdle     = m === 'idle' || !m;
+          const dot   = isIqaHeads ? '#22c55e' : isClip ? '#f59e0b' : C.text3;
+          const label = isIqaHeads ? 'Deep Edit' : isClip ? 'Scout Mode' : 'Ready';
+          const tip   = graderStatus.last_error ? `Error: ${graderStatus.last_error}` :
+                        isIqaHeads ? 'Full vision pipeline — composition, light, and moment scored' :
+                        isClip     ? 'Fast contact-sheet pass — style matching only' :
+                        'No grading run yet';
+          if (isIdle) return null;
           return (
             <div title={tip} style={{ display:'flex', alignItems:'center', gap:5, flexShrink:0, padding:'0 9px', height:26, borderRadius:5, fontSize:12, fontWeight:600, border:`1px solid ${C.bdr2}`, color:C.text3, background:C.surf2 }}>
               <div style={{ width:6, height:6, borderRadius:'50%', background:dot, flexShrink:0 }}/>
@@ -1269,13 +2364,35 @@ export default function App() {
           );
         })()}
 
-        {/* Detected niche */}
-        {nicheRec?.preset && (
-          <div style={{ display:'flex', flexDirection:'column', justifyContent:'center', flexShrink:0, padding:'0 10px', height:30, borderRadius:6, background:C.surf2, border:`1px solid ${C.bdr2}`, animation:'fadeIn .32s cubic-bezier(.2,0,0,1)', lineHeight:1 }}>
-            <span style={{ fontSize:9, fontWeight:700, letterSpacing:'.1em', textTransform:'uppercase', color:C.text3 }}>Detected niche</span>
-            <span style={{ fontSize:13, fontWeight:600, color:C.text, marginTop:2 }}>{nicheRec.preset}</span>
-          </div>
-        )}
+        {/* GPU / CPU compute chip */}
+        {graderStatus && (() => {
+          const dev = graderStatus.compute_device;
+          if (!dev) return null;
+          const isGpu  = dev === 'gpu';
+          const free   = graderStatus.vram_free_gb;
+          const total  = graderStatus.vram_total_gb;
+          const gpuName = graderStatus.gpu_name;
+          const vramStr = free != null && total != null
+            ? `${free.toFixed(1)} / ${total.toFixed(1)} GB VRAM`
+            : free != null ? `${free.toFixed(1)} GB free` : '';
+          const tip = isGpu
+            ? [gpuName, vramStr].filter(Boolean).join(' · ')
+            : 'Models running on CPU — no CUDA GPU detected or VRAM too low';
+          const label = isGpu ? 'GPU' : 'CPU';
+          const chipBg     = isGpu ? 'oklch(18% .10 145 / .5)' : 'oklch(25% .10 55 / .5)';
+          const chipBorder = isGpu ? 'oklch(46% .16 145 / .5)' : 'oklch(52% .18 55 / .4)';
+          const chipColor  = isGpu ? 'oklch(74% .18 145)' : 'oklch(80% .16 55)';
+          const dotColor   = isGpu ? '#22c55e' : '#f59e0b';
+          return (
+            <div title={tip} style={{ display:'flex', alignItems:'center', gap:5, flexShrink:0, padding:'0 9px', height:26, borderRadius:5, fontSize:12, fontWeight:700, border:`1px solid ${chipBorder}`, color:chipColor, background:chipBg }}>
+              <div style={{ width:6, height:6, borderRadius:'50%', background:dotColor, flexShrink:0 }}/>
+              {label}
+              {vramStr && isGpu && (
+                <span style={{ fontWeight:400, opacity:.75, fontSize:11 }}>{vramStr}</span>
+              )}
+            </div>
+          );
+        })()}
 
         {/* Grade filter pills — only after grading */}
         {isDone && (
@@ -1319,12 +2436,13 @@ export default function App() {
 
         {/* Tab switcher: Gallery / Sequence / Duplicates / Director */}
         {(() => {
-          const dupCount = photos.filter(p => p.cluster_id >= 0 && !(p.sim_flag||'').includes('Best')).length;
-          const hasDups  = isDone && photos.some(p => p.cluster_id >= 0 && (p.sim_flag||'').includes('Best'));
+          const dupCount = redacted.size > 0
+            ? redacted.size
+            : photos.filter(p => p.cluster_id >= 0 && !(p.sim_flag||'').includes('Best')).length;
           const tabs: [string, string, React.ReactNode][] = [
             ...(isDone ? [
               ['gallery',    'Gallery',                                  <LayoutGrid size={11}/>],
-              ...(hasDups ? [['duplicates', `Duplicates (${dupCount})`, <ImageOff size={11}/>] as [string,string,React.ReactNode]] : []),
+              ['duplicates', dupCount > 0 ? `Duplicates (${dupCount})` : 'Duplicates', <ImageOff size={11}/>],
               ['creative', `Creative${creativeResults.length ? ` (${creativeResults.filter((r:any)=>r.success).length})` : ''}`, <Wand2 size={11}/>],
             ] as [string,string,React.ReactNode][] : []),
           ];
@@ -1414,14 +2532,23 @@ export default function App() {
 
         {/* Grade button */}
         {isGrading ? (
-          <div style={{ display:'flex', alignItems:'center', gap:7, padding:'0 12px', height:30, borderRadius:7, background:C.surf2, border:`1px solid ${C.bdr2}`, color:C.text2, fontSize:12, fontWeight:600, flexShrink:0, minWidth:0 }}>
-            <span style={{ width:10, height:10, borderRadius:'50%', border:`1.5px solid ${C.accent}`, borderTopColor:'transparent', animation:'spin .7s linear infinite', display:'inline-block', flexShrink:0 }}/>
-            <span style={{ fontVariantNumeric:'tabular-nums', flexShrink:0 }}>{Math.round(gradeProgress * 100)}%</span>
-            {gradeDesc && <span style={{ color:C.text3, fontSize:11, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:160 }}>{gradeDesc}</span>}
+          <div style={{ display:'flex', alignItems:'center', gap:8, padding:'0 12px', height:30, borderRadius:7, background:C.surf2, border:`1px solid ${C.bdr2}`, flexShrink:0, minWidth:190 }}>
+            {/* Percent bar */}
+            <div style={{ flex:1, height:4, background:C.surf3, borderRadius:2, overflow:'hidden' }}>
+              <div style={{ height:'100%', width:`${Math.max(2, gradeProgress * 100)}%`, background:`linear-gradient(90deg,${C.accent},oklch(70% .19 205))`, borderRadius:2, transition:'width .4s cubic-bezier(.2,0,0,1)' }}/>
+            </div>
+            <span style={{ fontSize:11, fontWeight:700, color:C.accent, fontVariantNumeric:'tabular-nums', flexShrink:0 }}>
+              {Math.round(gradeProgress * 100)}%
+            </span>
+            {gradeEtaSecs !== null && gradeEtaSecs > 3 && (
+              <span style={{ fontSize:11, color:C.text3, flexShrink:0, fontVariantNumeric:'tabular-nums' }}>
+                ~{gradeEtaSecs >= 60 ? `${Math.floor(gradeEtaSecs / 60)}m ${gradeEtaSecs % 60}s` : `${gradeEtaSecs}s`}
+              </span>
+            )}
           </div>
         ) : (
-          <button onClick={() => handleGrade(isDone)}
-            title={isDone ? 'Re-grade all images (force full rescan)' : 'Grade new images only — already-graded images are skipped'}
+          <button onClick={() => handleGrade(true, false)}
+            title="Grade all images (force fresh scores)"
             style={{
               display:'flex', alignItems:'center', gap:6, padding:'0 14px', height:30,
               borderRadius:7, flexShrink:0, fontSize:13, fontWeight:700, cursor:'pointer',
@@ -1436,16 +2563,23 @@ export default function App() {
         )}
       </header>
 
-      {/* Progress bar */}
-      <div style={{ height:2, flexShrink:0, background:C.border, overflow:'hidden', position:'relative' }}>
-        {listLoading && (
-          <div style={{ position:'absolute', top:0, height:'100%', background:`linear-gradient(90deg,transparent,${C.accent},transparent)`, animation:'sweep 1.2s ease-in-out infinite' }}/>
-        )}
-        {!listLoading && isGrading && (
-          <div style={{ height:'100%', width:`${Math.max(4, gradeProgress * 100)}%`, background:`linear-gradient(90deg,${C.accent},oklch(70% .19 205))`, transition:'width .35s cubic-bezier(.2,0,0,1)' }}/>
-        )}
-        {!listLoading && !isGrading && isDone && (
-          <div style={{ height:'100%', width:'100%', background:`linear-gradient(90deg,${C.accent},oklch(70% .19 205))` }}/>
+      {/* Progress bar + slogan */}
+      <div style={{ flexShrink:0 }}>
+        <div style={{ height:2, background:C.border, overflow:'hidden', position:'relative' }}>
+          {listLoading && (
+            <div style={{ position:'absolute', top:0, height:'100%', background:`linear-gradient(90deg,transparent,${C.accent},transparent)`, animation:'sweep 1.2s ease-in-out infinite' }}/>
+          )}
+          {!listLoading && isGrading && (
+            <div style={{ height:'100%', width:`${Math.max(4, gradeProgress * 100)}%`, background:`linear-gradient(90deg,${C.accent},oklch(70% .19 205))`, transition:'width .35s cubic-bezier(.2,0,0,1)' }}/>
+          )}
+          {!listLoading && !isGrading && isDone && (
+            <div style={{ height:'100%', width:'100%', background:`linear-gradient(90deg,${C.accent},oklch(70% .19 205))` }}/>
+          )}
+        </div>
+        {isGrading && gradeDesc && (
+          <div key={toSlogan(gradeDesc)} style={{ padding:'3px 14px 4px', fontSize:10.5, color:C.text3, fontStyle:'italic', borderBottom:`1px solid ${C.border}`, animation:'fadeIn .4s cubic-bezier(.2,0,0,1)' }}>
+            {toSlogan(gradeDesc)}
+          </div>
         )}
       </div>
 
@@ -1558,12 +2692,202 @@ export default function App() {
                 </div>
               ) : sel ? (
                 <>
+                  {/* Base photo — always rendered; eye overlay crossfades on top */}
                   <img
                     key={sel.path}
                     src={photoUrl(sel.path)}
                     alt=""
-                    style={{ maxWidth:'100%', maxHeight:'100%', objectFit:'contain', display:'block', userSelect:'none', animation:'fadeIn .35s cubic-bezier(.2,0,0,1)', outline: selectedIds.has(selId ?? '') ? `3px solid ${C.accent}` : 'none', outlineOffset:'-3px', transition:'outline .22s ease' }}
+                    onLoad={e => setPhotoNatDims({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })}
+                    style={{ maxWidth:'100%', maxHeight:'100%', objectFit:'contain', display:'block', userSelect:'none',
+                      animation:'fadeIn .35s cubic-bezier(.2,0,0,1)',
+                      outline: selectedIds.has(selId ?? '') ? `3px solid ${C.accent}` : 'none',
+                      outlineOffset:'-3px', transition:'outline .22s ease',
+                    }}
                   />
+                  {/* Eye overlay — crossfades in when showEyeOverlay is true */}
+                  {sel.eye_overlay_url && (
+                    <img
+                      key={`overlay-${sel.path}`}
+                      src={`${API}${sel.eye_overlay_url}`}
+                      alt="judge overlay"
+                      style={{ position:'absolute', inset:0, width:'100%', height:'100%',
+                        objectFit:'contain', display:'block', pointerEvents:'none',
+                        opacity: showEyeOverlay ? 1 : 0,
+                        transition:'opacity .35s ease-in-out',
+                      }}
+                    />
+                  )}
+                  {/* Floating Judge's Critique toggle button */}
+                  {sel.eye_overlay_url && (
+                    <button
+                      onClick={() => setShowEyeOverlay(v => !v)}
+                      title={showEyeOverlay ? "Hide judge's critique" : "Show judge's critique"}
+                      style={{
+                        position:'absolute', top:10, right:10, zIndex:20,
+                        width:34, height:34, borderRadius:8,
+                        display:'flex', alignItems:'center', justifyContent:'center',
+                        background: showEyeOverlay ? C.accent : 'rgba(10,10,13,.72)',
+                        border: `1px solid ${showEyeOverlay ? C.accent : 'rgba(255,255,255,.12)'}`,
+                        backdropFilter:'blur(8px)',
+                        cursor:'pointer',
+                        transition:'background .2s ease, border-color .2s ease, box-shadow .2s ease',
+                        boxShadow: showEyeOverlay ? `0 0 0 3px ${C.accent}33` : '0 2px 8px rgba(0,0,0,.5)',
+                        color: showEyeOverlay ? '#fff' : 'rgba(255,255,255,.75)',
+                      }}
+                      onMouseEnter={e => { if (!showEyeOverlay) (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,.12)'; }}
+                      onMouseLeave={e => { if (!showEyeOverlay) (e.currentTarget as HTMLButtonElement).style.background = 'rgba(10,10,13,.72)'; }}
+                    >
+                      {/* Eye icon */}
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                        <circle cx="12" cy="12" r="3"/>
+                        {showEyeOverlay && <line x1="2" y1="2" x2="22" y2="22" strokeWidth="2"/>}
+                      </svg>
+                    </button>
+                  )}
+                  {(showHeatmap || critTrigger === 'blur' || critTrigger === 'heatmap') && heatmapB64 && (
+                    <img
+                      src={`data:image/png;base64,${heatmapB64}`}
+                      alt=""
+                      style={{ position:'absolute', top:0, left:0, width:'100%', height:'100%', objectFit:'contain', mixBlendMode:'multiply', pointerEvents:'none', transition:'opacity .2s ease', opacity: critTrigger ? 0.85 : 0.7 }}
+                    />
+                  )}
+                  {critTrigger === 'grid' && (
+                    <svg style={{ position:'absolute', top:0, left:0, width:'100%', height:'100%', pointerEvents:'none' }} xmlns="http://www.w3.org/2000/svg">
+                      <line x1="33.33%" y1="0%" x2="33.33%" y2="100%" stroke="rgba(255,255,255,0.55)" strokeWidth="1"/>
+                      <line x1="66.66%" y1="0%" x2="66.66%" y2="100%" stroke="rgba(255,255,255,0.55)" strokeWidth="1"/>
+                      <line x1="0%" y1="33.33%" x2="100%" y2="33.33%" stroke="rgba(255,255,255,0.55)" strokeWidth="1"/>
+                      <line x1="0%" y1="66.66%" x2="100%" y2="66.66%" stroke="rgba(255,255,255,0.55)" strokeWidth="1"/>
+                    </svg>
+                  )}
+                  {/* Criteria overlay — shown when eye/audit mode is active */}
+                  {isAuditModeActive && isGraded && photoNatDims && (() => {
+                    const _bd_vlm = sel?.breakdown as any;
+                    const _bboxes = (_bd_vlm?.vlm_bboxes as Array<{label:string;bbox_2d:number[]}>) ?? [];
+                    const W = photoNatDims.w, H = photoNatDims.h;
+                    const sw  = Math.max(3, W * 0.003);
+
+                    // Aspect scores
+                    const _ASPECT_KEYS = ['Composition','Lighting','Narrative','Atmosphere','Geometry','Technical','Human/Culture'];
+                    const _aspects = _ASPECT_KEYS
+                      .map(k => [k === 'Human/Culture' ? 'Human' : k, _bd_vlm?.[k]] as [string, number])
+                      .filter(([, v]) => typeof v === 'number' && v > 0.05);
+                    const _strongA = [..._aspects].sort((a,b) => (b[1] as number)-(a[1] as number)).find(([,v]) => (v as number) >= 0.55) ?? null;
+                    const _weakA   = [..._aspects].sort((a,b) => (a[1] as number)-(b[1] as number)).find(([,v]) => (v as number) < 0.55) ?? null;
+
+                    // Typography — scales with image resolution
+                    const nameFs   = Math.max(26, W * 0.026);
+                    const labelFs  = Math.max(14, W * 0.015);
+                    const edge     = Math.max(14, W * 0.020);
+                    const ulThick  = Math.max(2.5, W * 0.0028);
+                    const weakCol  = 'oklch(72% .18 50)';
+
+                    // Approximate text width for underline sizing
+                    const _tw = (t: string, fs: number) => t.length * fs * 0.60;
+
+                    return (
+                      <svg
+                        style={{ position:'absolute', inset:0, width:'100%', height:'100%',
+                          pointerEvents:'none', zIndex:5,
+                          animation:'fadeIn .3s cubic-bezier(.2,0,0,1)' }}
+                        viewBox={`0 0 ${W} ${H}`}
+                        preserveAspectRatio="xMidYMid meet"
+                      >
+                        {/* ── Strongest aspect — top-left ─────────────────── */}
+                        {_strongA && (() => {
+                          const name = (_strongA[0] as string).toUpperCase();
+                          const uw   = _tw('✓ ' + name, nameFs);
+                          const ty   = edge + nameFs;
+                          return (
+                            <g style={{ animation:'fadeIn .5s .06s both' }}>
+                              <text x={edge} y={ty}
+                                fill="#ffffff" fontSize={nameFs} fontWeight="700"
+                                fontFamily="'SF Mono',ui-monospace,monospace"
+                                stroke="rgba(0,0,0,0.75)" strokeWidth={sw*1.8} paintOrder="stroke fill">
+                                <tspan fill={C.strong} fontWeight="800">{'✓ '}</tspan>{name}
+                              </text>
+                              <line x1={edge} y1={ty + nameFs*0.20}
+                                    x2={edge + uw} y2={ty + nameFs*0.20}
+                                stroke={C.strong} strokeWidth={ulThick} strokeLinecap="round"/>
+                              <text x={edge} y={ty + nameFs*0.20 + labelFs*1.5}
+                                fill={C.strong} fontSize={labelFs} fontWeight="600"
+                                fontFamily="'SF Mono',ui-monospace,monospace" opacity={0.75}
+                                stroke="rgba(0,0,0,0.65)" strokeWidth={sw*1.4} paintOrder="stroke fill">
+                                STRONGEST ASPECT
+                              </text>
+                            </g>
+                          );
+                        })()}
+
+                        {/* ── Weakest aspect — top-right ──────────────────── */}
+                        {_weakA && (() => {
+                          const name = (_weakA[0] as string).toUpperCase();
+                          const uw   = _tw(name + ' ↑', nameFs);
+                          const ty   = edge + nameFs;
+                          return (
+                            <g style={{ animation:'fadeIn .5s .16s both' }}>
+                              <text x={W - edge} y={ty}
+                                textAnchor="end"
+                                fill="#ffffff" fontSize={nameFs} fontWeight="700"
+                                fontFamily="'SF Mono',ui-monospace,monospace"
+                                stroke="rgba(0,0,0,0.75)" strokeWidth={sw*1.8} paintOrder="stroke fill">
+                                {name}<tspan fill={weakCol} fontWeight="800">{' ↑'}</tspan>
+                              </text>
+                              <line x1={W - edge - uw} y1={ty + nameFs*0.20}
+                                    x2={W - edge}       y2={ty + nameFs*0.20}
+                                stroke={weakCol} strokeWidth={ulThick} strokeLinecap="round"/>
+                              <text x={W - edge} y={ty + nameFs*0.20 + labelFs*1.5}
+                                textAnchor="end"
+                                fill={weakCol} fontSize={labelFs} fontWeight="600"
+                                fontFamily="'SF Mono',ui-monospace,monospace" opacity={0.75}
+                                stroke="rgba(0,0,0,0.65)" strokeWidth={sw*1.4} paintOrder="stroke fill">
+                                NEEDS MOST WORK
+                              </text>
+                            </g>
+                          );
+                        })()}
+
+                        {/* ── Spatial bboxes from pipeline ─────────────────── */}
+                        {_bboxes.map((b, bi) => {
+                          if (!b.bbox_2d?.length) return null;
+                          const [x1, y1, x2, y2] = b.bbox_2d;
+                          const bw  = Math.max(x2-x1, sw*4), bh = Math.max(y2-y1, sw*4);
+                          const isNeg = ['focal_point_miss','blown_highlight','motion_blur'].includes(b.label);
+                          const col   = isNeg ? C.weak : C.strong;
+                          const lbl   = b.label.replace(/_/g,' ').toUpperCase();
+                          const lblFs = Math.max(14, W * 0.014);
+                          const lblPad = sw * 2.5;
+                          const lblW  = lbl.length * lblFs * 0.60 + lblPad * 2;
+                          const lblH  = lblFs * 1.5 + lblPad;
+                          const lblY  = y1 >= lblH + sw*3 ? y1 - lblH - sw : y2 + sw;
+                          const lblX  = Math.min(Math.max(x1, sw), W - lblW - sw);
+                          return (
+                            <g key={bi} style={{ animation:`fadeIn .3s ${bi*0.07}s both` }}>
+                              {/* Region fill */}
+                              <rect x={x1} y={y1} width={bw} height={bh}
+                                fill={col+'0e'} stroke={col} strokeWidth={sw*0.8}
+                                strokeDasharray={`${sw*4} ${sw*2}`} rx={sw*1.5}/>
+                              {/* Corner marks */}
+                              <path d={`M${x1+sw} ${y1+sw*5} L${x1+sw} ${y1+sw} L${x1+sw*5} ${y1+sw}`}
+                                fill="none" stroke={col} strokeWidth={sw*1.3} strokeLinecap="round"/>
+                              <path d={`M${x2-sw*5} ${y1+sw} L${x2-sw} ${y1+sw} L${x2-sw} ${y1+sw*5}`}
+                                fill="none" stroke={col} strokeWidth={sw*1.3} strokeLinecap="round"/>
+                              <path d={`M${x1+sw} ${y2-sw*5} L${x1+sw} ${y2-sw} L${x1+sw*5} ${y2-sw}`}
+                                fill="none" stroke={col} strokeWidth={sw*1.3} strokeLinecap="round"/>
+                              <path d={`M${x2-sw*5} ${y2-sw} L${x2-sw} ${y2-sw} L${x2-sw} ${y2-sw*5}`}
+                                fill="none" stroke={col} strokeWidth={sw*1.3} strokeLinecap="round"/>
+                              {/* Label */}
+                              <rect x={lblX} y={lblY} width={lblW} height={lblH}
+                                fill="rgba(4,4,9,0.82)" stroke={col} strokeWidth={sw*0.4} rx={sw}/>
+                              <text x={lblX+lblPad} y={lblY+lblFs+lblPad*0.5}
+                                fill={col} fontSize={lblFs} fontWeight="700"
+                                fontFamily="'SF Mono',ui-monospace,monospace">{lbl}</text>
+                            </g>
+                          );
+                        })}
+                      </svg>
+                    );
+                  })()}
                   <button onClick={() => hasPrev && setSelId(filteredPhotos[selIdx-1].id)} disabled={!hasPrev}
                     style={{ position:'absolute', left:12, top:'50%', transform:'translateY(-50%)', width:34, height:34, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', background:'rgba(0,0,0,.55)', backdropFilter:'blur(12px)', color:hasPrev?C.text:C.text3, opacity:hasPrev?1:0, border:'1px solid rgba(255,255,255,.07)', pointerEvents:hasPrev?'auto':'none', cursor:'pointer', fontSize:18 }}>‹</button>
                   <button onClick={() => hasNext && setSelId(filteredPhotos[selIdx+1].id)} disabled={!hasNext}
@@ -1623,7 +2947,6 @@ export default function App() {
                       <div style={{ display:'flex', alignItems:'center', gap:6, background:'rgba(0,0,0,.6)', backdropFilter:'blur(8px)', borderRadius:6, padding:'6px 12px', border:`1px solid ${gc(sel.grade)}44` }}>
                         <div style={{ width:8, height:8, borderRadius:'50%', background:gc(sel.grade), flexShrink:0 }}/>
                         <span style={{ fontSize:15, fontWeight:700, color:C.text }}>{gl(sel.grade)}</span>
-                        <span style={{ fontSize:20, fontWeight:800, color:'#fff', fontVariantNumeric:'tabular-nums', fontFamily:'monospace', textShadow:'0 2px 8px rgba(0,0,0,.6)' }}>{Math.round(sel.score*100)}</span>
                       </div>
                     </div>
                   )}
@@ -1647,7 +2970,9 @@ export default function App() {
                   {isDone && (
                     <div style={{ display:'flex', gap:4, marginTop:8 }}>
                       {(['Strong ✅','Mid ⚠️','Weak ❌'] as const).map(g => {
-                        const isActive = sel.grade === g;
+                        const _sc = sel.score ?? 0;
+                        const derivedGrade = _sc >= 0.60 ? 'Strong ✅' : _sc >= 0.41 ? 'Mid ⚠️' : 'Weak ❌';
+                        const isActive = derivedGrade === g;
                         const col = g.includes('Strong') ? C.strong : g.includes('Mid') ? C.mid : C.weak;
                         return (
                           <div key={g}
@@ -1685,13 +3010,16 @@ export default function App() {
               {sel && (
                 <div style={{ flexShrink:0, display:'flex', borderBottom:`1px solid ${C.border}` }}>
                   {(isDone
-                    ? [['analysis','Analysis'],['exif','EXIF']]
+                    ? [['breakdown','Breakdown'],['analysis','Analysis'],['exif','EXIF']]
                     : [['exif','EXIF']]
-                  ).map(([id, label]) => (
-                    <button key={id} onClick={() => setInfoTab(id as any)}
-                      style={{ flex:1, height:34, fontSize:12.5, fontWeight:600, cursor:'pointer', background:'none', border:'none', borderBottom:`2px solid ${infoTab===id ? C.accent : 'transparent'}`, color:infoTab===id ? C.accent : C.text3, transition:'all .25s cubic-bezier(.2,0,0,1)', letterSpacing:'.03em', marginBottom:-1 }}>
-                      {label}
-                    </button>
+                  ).map(([id, label], mapIdx, arr) => (
+                    <>
+                      <button key={id}
+                        onClick={() => setInfoTab(id as any)}
+                        style={{ flex:1, height:34, fontSize:11.5, fontWeight:600, cursor:'pointer', background:'none', border:'none', borderBottom:`2px solid ${infoTab===id ? C.accent : 'transparent'}`, color:infoTab===id ? C.accent : C.text3, transition:'all .25s cubic-bezier(.2,0,0,1)', letterSpacing:'.03em', marginBottom:-1 }}>
+                        {label}
+                      </button>
+                    </>
                   ))}
                 </div>
               )}
@@ -1704,71 +3032,721 @@ export default function App() {
                     : null
                 )}
                 {infoTab === 'analysis' && (
-                  isGrading ? (
-                    <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'100%', gap:8 }}>
-                      <span style={{ width:20, height:20, borderRadius:'50%', border:`2px solid ${C.accent}`, borderTopColor:'transparent', animation:'spin .8s linear infinite', display:'inline-block' }}/>
-                      <p style={{ fontSize:13, color:C.text3 }}>Analysing…</p>
-                    </div>
-                  ) : isGraded ? (
+                  sel && isGraded ? (() => {
+                    const bd = sel.breakdown ?? {};
+                    // Verified photos: use stored 7B chain-of-thought (richer, model-generated).
+                    // All others: always regenerate from aspect scores so moody-aware text
+                    // is applied fresh — bypasses any old penalizing text stored in the DB.
+                    const rl = (sel.is_verified && sel.reasoning_log)
+                      ? sel.reasoning_log
+                      : (Object.keys(bd).length > 0
+                          ? buildReasoningFromBreakdown(sel.score, sel.grade, bd)
+                          : sel.reasoning_log || '');
+                    const rlines   = rl.split('\n');
+                    const header   = rlines[0] ?? '';
+                    const verdict  = rlines[1] ?? '';
+                    const footer   = rlines.find(l => l.trimStart().startsWith('Best:')) ?? '';
+                    const obsLines = rlines.slice(3).filter(l => l && !l.trimStart().startsWith('Best:'));
+                    const tierWord = header.split(/\s+/)[0] ?? '';
+                    const scorePct = header.match(/(\d+)%/)?.[1] ?? '';
+                    const gradeCol = gc(sel.grade ?? '');
+                    const _handleReveal = async () => {
+                      if (!sel?.path) return;
+                      setDeepCritiqueLoading(true);
+                      try {
+                        const r = await axios.post(`${API}/api/critique/details`, {
+                          image_path: sel.path,
+                          mode: (sel as any).preset || 'story',
+                        });
+                        setDeepCritique(r.data);
+                      } catch {
+                        setDeepCritique({ narrative_arc: 'Critique unavailable — is Ollama running?', geometry_composition: '' });
+                      } finally {
+                        setDeepCritiqueLoading(false);
+                      }
+                    };
+                    return (
+                      <div style={{ display:'flex', flexDirection:'column', gap:14, animation:'fadeIn .32s cubic-bezier(.2,0,0,1)' }}>
+                        {/* Draw-on-image toggle + deep critique trigger */}
+                        <button
+                          onClick={() => {
+                            const next = !isAuditModeActive;
+                            setIsAuditModeActive(next);
+                            if (next && !deepCritique) _handleReveal();
+                          }}
+                          title={isAuditModeActive ? 'Hide annotation overlay' : 'Show critique overlay and narrative analysis'}
+                          style={{ display:'flex', alignItems:'center', gap:7, padding:'7px 13px',
+                            borderRadius:7, alignSelf:'flex-start', cursor:'pointer',
+                            fontWeight:700, fontSize:11.5, letterSpacing:'.03em',
+                            border:`1px solid ${isAuditModeActive ? C.accent : C.border}`,
+                            background: isAuditModeActive ? `${C.accent}22` : C.surf2,
+                            color: isAuditModeActive ? C.accent : C.text2,
+                            transition:'all .2s cubic-bezier(.2,0,0,1)' }}>
+                          {isAuditModeActive ? <EyeOff size={12}/> : <Eye size={12}/>}
+                          {isAuditModeActive ? 'Hide Critique' : 'Vision Critique'}
+                          {deepCritiqueLoading && (
+                            <span style={{ width:8, height:8, borderRadius:'50%',
+                              border:'1.5px solid currentColor', borderTopColor:'transparent',
+                              animation:'spin .8s linear infinite', display:'inline-block' }}/>
+                          )}
+                          {!deepCritiqueLoading && isAuditModeActive && reasoningOverlayUrl && (
+                            <span style={{ width:5, height:5, borderRadius:'50%',
+                              background:C.strong, flexShrink:0 }}/>
+                          )}
+                        </button>
+                        {/* VERIFIED badge */}
+                        {sel.is_verified && (
+                          <div style={{ display:'inline-flex', alignItems:'center', gap:5, padding:'4px 10px', borderRadius:5, background:'oklch(65% .17 148 / .14)', border:'1px solid oklch(65% .17 148 / .35)', alignSelf:'flex-start' }}>
+                            <div style={{ width:6, height:6, borderRadius:'50%', background:C.strong }}/>
+                            <span style={{ fontSize:11, fontWeight:700, letterSpacing:'.08em', color:C.strong }}>VERIFIED</span>
+                          </div>
+                        )}
+                        {/* Tier label */}
+                        {tierWord && (
+                          <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                            <div style={{ width:10, height:10, borderRadius:'50%', background:gradeCol, flexShrink:0 }}/>
+                            <span style={{ fontSize:20, fontWeight:800, letterSpacing:'.08em', color:gradeCol }}>{tierWord.toUpperCase()}</span>
+                          </div>
+                        )}
+                        {/* Verdict */}
+                        {verdict && (
+                          <p style={{ fontSize:12.5, color:C.text2, lineHeight:1.7, margin:0, fontStyle:'italic' }}>{verdict}</p>
+                        )}
+                        {/* Per-aspect observations */}
+                        {obsLines.length > 0 && (
+                          <div style={{ display:'flex', flexDirection:'column', gap:1,
+                            borderRadius:8, overflow:'hidden', border:`1px solid ${C.border}` }}>
+                            {obsLines.map((line, idx) => {
+                              const colon = line.indexOf(':');
+                              const label = colon > 0 ? line.slice(0, colon).trim() : '';
+                              const note  = colon > 0 ? line.slice(colon + 1).trim() : line;
+                              const bdKey = label === 'Moment' ? 'Narrative'
+                                          : label === 'Human'  ? 'Human/Culture'
+                                          : label;
+                              const v    = typeof bd[bdKey] === 'number' ? bd[bdKey] as number : null;
+                              const vpct = v !== null ? Math.round(v * 100) : null;
+                              const bc   = v === null ? C.accent
+                                         : v >= 0.6  ? C.strong
+                                         : v >= 0.41 ? '#f5a623' : C.weak;
+                              const isLast = idx === obsLines.length - 1;
+                              return (
+                                <div key={idx} style={{ padding:'10px 13px',
+                                  background: idx % 2 === 0 ? C.surf2 : C.bg,
+                                  borderBottom: isLast ? 'none' : `1px solid ${C.border}` }}>
+                                  <div style={{ display:'flex', justifyContent:'space-between',
+                                    alignItems:'center', marginBottom: v !== null ? 5 : 0 }}>
+                                    {label && (
+                                      <span style={{ fontSize:10, fontWeight:700,
+                                        letterSpacing:'.08em', color:bc }}>{label.toUpperCase()}</span>
+                                    )}
+                                    {vpct !== null && (
+                                      <span style={{ fontSize:10, fontWeight:600, letterSpacing:'.05em', textTransform:'uppercase',
+                                        color:bc }}>{vpct >= 60 ? 'Strong' : vpct >= 41 ? 'Good' : 'Weak'}</span>
+                                    )}
+                                  </div>
+                                  {v !== null && (
+                                    <div style={{ height:2, background:C.bg, borderRadius:1,
+                                      overflow:'hidden', marginBottom:6 }}>
+                                      <div style={{ width:`${vpct}%`, height:'100%',
+                                        background:bc, borderRadius:1,
+                                        transition:'width .5s cubic-bezier(.2,0,0,1)' }}/>
+                                    </div>
+                                  )}
+                                  <p style={{ fontSize:11.5, color:C.text2, margin:0, lineHeight:1.6 }}>{note}</p>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                        {/* Best / Weakest */}
+                        {footer && (
+                          <p style={{ fontSize:11, color:C.text3, margin:0, letterSpacing:'.02em' }}>{footer.trim()}</p>
+                        )}
+                        {/* Vision Critique — fast-scan bboxes + on-demand deep text */}
+                        {(() => {
+                          const _bdv    = bd as any;
+                          const _vbboxes = (_bdv.vlm_bboxes as Array<{label:string;bbox_2d:number[];justification?:string}>) || [];
+                          const _qwenCritique = (_bdv._critique as string) || '';
+                          if (!_vbboxes.length && !deepCritique && !_qwenCritique) return null;
+
+                          const _dnarr = deepCritique?.narrative_arc        || '';
+                          const _dgeo  = deepCritique?.geometry_composition || '';
+                          const _hasDeep = Boolean(_dnarr || _dgeo);
+
+                          return (
+                            <div style={{ display:'flex', flexDirection:'column', gap:10,
+                              paddingTop:10, borderTop:`1px solid ${C.border}` }}>
+                              <div style={{ display:'flex', alignItems:'center' }}>
+                                <span style={{ fontSize:10, fontWeight:700, letterSpacing:'.1em', color:C.accent }}>
+                                  VISION CRITIQUE
+                                </span>
+                              </div>
+                              {_dnarr && (
+                                <div style={{ animation:'fadeIn .4s cubic-bezier(.2,0,0,1)' }}>
+                                  <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:'.08em', color:C.text3 }}>NARRATIVE</span>
+                                  <p style={{ fontSize:11.5, color:C.text2, lineHeight:1.65, margin:'4px 0 0' }}>{_dnarr}</p>
+                                </div>
+                              )}
+                              {_dgeo && (
+                                <div style={{ animation:'fadeIn .4s cubic-bezier(.2,0,0,1)' }}>
+                                  <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:'.08em', color:C.text3 }}>GEOMETRY</span>
+                                  <p style={{ fontSize:11.5, color:C.text2, lineHeight:1.65, margin:'4px 0 0' }}>{_dgeo}</p>
+                                </div>
+                              )}
+                              {_qwenCritique && !_hasDeep && (
+                                <p style={{ fontSize:12, color:C.text2, lineHeight:1.7, margin:0,
+                                  fontStyle:'italic', padding:'8px 10px', background:C.surf2,
+                                  borderRadius:6, border:`1px solid ${C.border}` }}>
+                                  {_qwenCritique}
+                                </p>
+                              )}
+                              {_vbboxes.length > 0 && (
+                                <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
+                                  <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:'.08em', color:C.text3 }}>SPATIAL ANCHORS</span>
+                                  {_vbboxes.map((b, bi) => {
+                                    const isPositive = b.label === 'anchor_subject' || b.label === 'composition_anchor';
+                                    const dotCol = isPositive ? C.strong : C.mid;
+                                    return (
+                                      <div key={bi} style={{ display:'flex', gap:8, alignItems:'flex-start',
+                                        padding:'6px 10px', background:C.surf2, borderRadius:6,
+                                        border:`1px solid ${C.border}` }}>
+                                        <div style={{ width:6, height:6, borderRadius:'50%',
+                                          background:dotCol, flexShrink:0, marginTop:4 }}/>
+                                        <div style={{ flex:1, minWidth:0 }}>
+                                          <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:'.06em',
+                                            color:dotCol }}>{b.label.replace(/_/g,' ').toUpperCase()}</span>
+                                          {b.justification && (
+                                            <p style={{ fontSize:11, color:C.text2, lineHeight:1.6, margin:'2px 0 0' }}>
+                                              {b.justification}
+                                            </p>
+                                          )}
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
+                        {/* Jury critique fallback */}
+                        {!rl && juryCritique && (
+                          <div style={{ fontSize:13, color:C.text2, lineHeight:1.75 }}>
+                            {parseCritique(juryCritique, setCritTrigger, () => setCritTrigger(''))}
+                          </div>
+                        )}
+                        {!rl && !juryCritique && (
+                          <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+                            <p style={{ fontSize:12, color:C.text3, lineHeight:1.7 }}>No grader analysis. Generate a jury critique:</p>
+                            <button
+                              onClick={() => sel && handleJuryCritique(sel.path)}
+                              disabled={juryLoading}
+                              style={{ display:'flex', alignItems:'center', gap:6, padding:'7px 14px', borderRadius:7, background:C.surf2, border:`1px solid ${C.bdr2}`, color:C.text2, fontSize:12, fontWeight:700, cursor: juryLoading ? 'wait' : 'pointer', alignSelf:'flex-start' }}>
+                              {juryLoading
+                                ? <><span style={{ width:10, height:10, borderRadius:'50%', border:`1.5px solid ${C.accent}`, borderTopColor:'transparent', animation:'spin .8s linear infinite', display:'inline-block' }}/> Generating…</>
+                                : <><Wand2 size={11}/> Jury Critique</>}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })() : (
+                    <p style={{ fontSize:12, color:C.text3, lineHeight:1.7 }}>Grade your folder to see analysis.</p>
+                  )
+                )}
+                {infoTab === 'breakdown' && (
+                  isGraded ? (
                     (() => {
-                      const raw: Record<string,number> = sel?.breakdown ?? {};
-                      // Strip meta-scores — only keep real CLIP aspect dimensions
-                      // Fixed 5-dimension order — always shown uniformly on every photo
+                      const raw: Record<string, any> = sel?.breakdown ?? {};
+
+                      // ── Archetype weights ─────────────────────────────────────
+                      const archW = raw['_arch_w'] as Record<string,number> | undefined;
+                      const ARCH_LABELS: Record<string,string> = {
+                        geo:'Lines & Form', night:'Night Scene', layer:'Layered Depth', messy:'Raw Street', maxdoc:'Documentary'
+                      };
+                      const ARCH_COLORS: Record<string,string> = {
+                        geo: C.accent, night:'oklch(60% .19 280)', layer:'oklch(68% .18 148)',
+                        messy:'oklch(68% .17 45)', maxdoc:'oklch(62% .18 0)'
+                      };
+                      let archEntries: [string,number][] = [];
+                      let domArch = '';
+                      if (archW) {
+                        archEntries = Object.entries(archW).sort((a,b) => b[1]-a[1]);
+                        domArch = archEntries[0]?.[0] ?? '';
+                      }
+                      const archTotal = archEntries.reduce((s,[,v]) => s+v, 0) || 1;
+
+                      // ── Qwen one-liner critique ───────────────────────────────
+                      const qwenCritique = typeof raw['_critique'] === 'string' ? (raw['_critique'] as string).trim() : '';
+
+                      // ── Aspect bars ───────────────────────────────────────────
                       const ASPECT_KEYS = ['Technical','Composition','Lighting','Narrative','Human/Culture'] as const;
-                      const META_KEYS = new Set(['aesthetic','personal','nima']);
-                      // Merge raw breakdown; fall back to 0 so every bar is always present
+                      const SKIP_KEYS   = new Set(['aesthetic','personal','nima','_grader','_arch_w','gemma_score','vlm_bboxes','vlm_status','_critique','_tech_audit',
+                        // legacy flat technical-audit keys (pre-redaction breakdowns)
+                        'blur_type','highlight_clip','highlight_spread','shadow_clip','has_horizon','horizon_tilt_deg']);
                       const aspectMap: Record<string,number> = {};
                       Object.entries(raw).forEach(([k,v]) => {
-                        if (!META_KEYS.has(k.toLowerCase())) aspectMap[k] = v as number;
+                        if (!SKIP_KEYS.has(k.toLowerCase()) && !SKIP_KEYS.has(k) &&
+                            typeof v === 'number' && isFinite(v as number)) {
+                          aspectMap[k] = v as number;
+                        }
                       });
-                      // Build sorted list: known keys first in fixed order, then any extras
-                      const known = ASPECT_KEYS.map(k => [k, aspectMap[k] ?? 0] as [string,number]);
-                      const extra = Object.entries(aspectMap).filter(([k]) => !(ASPECT_KEYS as readonly string[]).includes(k));
+                      // Filter v≤0.05: Qwen returns 0 for N/A aspects (e.g. Human/Culture when no person)
+                      const known   = ASPECT_KEYS
+                        .map(k => [k, aspectMap[k] ?? 0] as [string,number])
+                        .filter(([, v]) => v > 0.05);
+                      const extra   = Object.entries(aspectMap).filter(([k, v]) => !(ASPECT_KEYS as readonly string[]).includes(k) && v > 0.05);
                       const aspects = [...known, ...extra].sort((a,b) => b[1]-a[1]);
-                      const gradeColor = gc(sel?.grade ?? '');
-                      const pct  = Math.round((sel?.score ?? 0) * 100);
-                      const tier = gl(sel?.grade ?? '');
                       const best    = aspects[0]?.[0] ?? '';
                       const weakest = aspects[aspects.length - 1]?.[0] ?? '';
+
+                      // ── Canonical dimensions (niche-agnostic) ─────────────────
+                      // Resolve the five Judge's Eye rows from whatever axes this grader
+                      // emitted. Qwen uses niche-specific names (e.g. "Moment", "Human",
+                      // "Light Quality") that don't match the canonical keys; aspectDim
+                      // maps them. Averages when several axes share a dimension; stays 0
+                      // when the niche genuinely has none (row falls back to a context label).
+                      const _dimAgg: Record<string,{ s:number; n:number }> = {};
+                      Object.entries(aspectMap).forEach(([k, v]) => {
+                        const d = aspectDim(k);
+                        if (d && (v as number) > 0.05) {
+                          (_dimAgg[d] ??= { s:0, n:0 });
+                          _dimAgg[d].s += v as number; _dimAgg[d].n++;
+                        }
+                      });
+                      const _dimV   = (d: string) => _dimAgg[d]?.n ? _dimAgg[d].s / _dimAgg[d].n : 0;
+                      const _techV  = _dimV('tech');
+                      const _lightV = _dimV('light');
+                      const _hcV    = _dimV('human');
+                      const _narrV  = _dimV('auth');
+                      const _compV  = _dimV('comp');
+
+                      // ── Context flags ─────────────────────────────────────────
+                      const _isGeo     = domArch === 'geo'    || (archW?.geo    ?? 0) > 0.30;
+                      const _isLayered = domArch === 'layer'  || (archW?.layer  ?? 0) > 0.30;
+                      const _isNight   = domArch === 'night'  || (archW?.night  ?? 0) > 0.28;
+                      const _isMaxDoc  = domArch === 'maxdoc' || (archW?.maxdoc ?? 0) > 0.28;
+                      const _isMoody   = _narrV >= 0.38 && (_lightV || 1.0) < 0.55;
+                      const _isLowKey  = _isNight || _isMoody;
+                      const _isEnvShot = (_isGeo || _isMaxDoc) && _hcV < 0.05;
+
+                      // ── Grade rationale (qualitative — no numbers) ─────────────
+                      const _tier       = (sel?.grade ?? '').includes('Strong') ? 'strong'
+                                        : (sel?.grade ?? '').includes('Weak')   ? 'weak'
+                                        : 'mid';
+                      const _gradeColor = gc(sel?.grade ?? '');
+                      const _bestLabel  = aspectDim(best)    === 'human' ? 'Human presence' : (best ?? '');
+                      const _weakLabel  = aspectDim(weakest) === 'human' ? 'Human presence' : (weakest ?? '');
+                      const _bestPct    = best    ? Math.round((aspectMap[best]    ?? 0) * 100) : 0;
+                      const _weakPct    = weakest ? Math.round((aspectMap[weakest] ?? 0) * 100) : 0;
+                      const _ql = (p: number) =>
+                        p >= 80 ? 'exceptional' : p >= 65 ? 'strong' : p >= 50 ? 'solid' : p >= 35 ? 'weak' : 'failing';
+                      // ── Technical audit fields from backend ───────────────────
+                      // Declared here (before _gradeWhy) because the reasoning IIFE
+                      // below reads them. A `const` declared after the IIFE would be
+                      // in the temporal dead zone when the IIFE runs, throwing a
+                      // ReferenceError that unmounts the whole tree → blank screen.
+                      // Technical-audit fields live under the private `_tech_audit`
+                      // namespace so their raw backend names never surface as aspects.
+                      // Fall back to legacy flat keys for breakdowns cached pre-redaction.
+                      const _ta = (raw['_tech_audit'] as Record<string, unknown>) ?? {};
+                      const _blurType        = ((_ta.blur_type        ?? raw['blur_type'])        as string)  ?? 'sharp';
+                      const _hlSpread        = ((_ta.highlight_spread  ?? raw['highlight_spread']) as boolean) ?? false;
+                      const _hlClip          = ((_ta.highlight_clip    ?? raw['highlight_clip'])   as number)  ?? 0;
+                      const _hasHorizon      = ((_ta.has_horizon       ?? raw['has_horizon'])      as boolean) ?? false;
+                      const _horizTilt       = ((_ta.horizon_tilt_deg  ?? raw['horizon_tilt_deg']) as number)  ?? 0;
+
+                      // ── Educational grade reasoning ───────────────────────────
+                      // Voice: photography mentor — explains photographic concepts,
+                      // names what's working and why, names what to fix and how.
+                      const _gradeWhy = (() => {
+                        if (!best || aspects.length === 0) return '';
+
+                        // Technical audit context for reasoning
+                        const _shakeBlur = _blurType === 'shake' || _blurType === 'severe';
+                        const _bokehBlur = _blurType === 'bokeh';
+                        const _panBlur   = _blurType === 'panning';
+                        const _isTilted = _hasHorizon && _horizTilt > 3;
+
+                        if (_tier === 'strong') {
+                          if (best === 'Narrative' && _bestPct >= 70)
+                            return `Decisive moment caught — gesture, light, and composition align in the same frame. That's the hardest thing to do consistently in street photography.`;
+                          if (best === 'Composition' && _isGeo)
+                            return `The geometric structure carries the frame. Strong compositional intentionality — leading lines, form, and light are working together.`;
+                          if (best === 'Lighting' && _isLowKey)
+                            return `Chiaroscuro — the darkness is doing compositional work, directing attention to the lit subject. Shadow is a tool here, not a failure.`;
+                          if (best === 'Composition' && _isLayered)
+                            return `Foreground-background layering creates depth. The compressed perspective pulls the viewer through the frame.`;
+                          if (_bestPct >= 75)
+                            return `${_bestLabel} is at portfolio level — that's what defines this frame. No critical failures pulling it down.`;
+                          return `No critical failures, and ${_bestLabel} is doing portfolio-level work. That's the formula for a consistent keeper.`;
+                        }
+
+                        if (_tier === 'weak') {
+                          if (_shakeBlur)
+                            return `Camera shake is destroying the frame — unrecoverable. At street focal lengths, 1/250s is a safe minimum shutter. If light is low, raise ISO before slowing down.`;
+                          if (_hlSpread)
+                            return `Blown highlights are pulling the viewer's eye to empty white areas. Expose for the bright areas and recover the shadows in post — you can't recover clipped highlights.`;
+                          if (aspectDim(weakest) === 'auth' && _weakPct < 35 && _hcV > 0.2)
+                            return `A person walking past isn't a decisive moment. Street photography is about the split second when gesture, light, and geometry say something together. Here, nothing has happened yet.`;
+                          if (_blurType === 'severe' || _weakPct < 32)
+                            return `${_weakLabel} is failing — the frame can't recover from it. ${_bestPct >= 55 ? `${_bestLabel} shows real intent, but one catastrophic failure outweighs everything else.` : 'Rebuild from the technical floor first.'}`;
+                          return `${_weakLabel} is the floor — too weak to pull the grade up. Identify and solve that one problem and revisit this frame's potential.`;
+                        }
+
+                        // Mid — explain the ceiling and how to break through it
+                        if (_shakeBlur)
+                          return `Camera shake is the ceiling — it caps the technical score and drags down everything else. Fix the shutter speed first; the other dimensions have potential.`;
+                        if (aspectDim(weakest) === 'auth' && _weakPct < 45 && _hcV > 0.2)
+                          return `The light and frame are ready but the decisive moment hasn't arrived. Pre-focus and wait — the geometry is already there for a strong frame when something happens.`;
+                        if (aspectDim(weakest) === 'tech' && _weakPct < 50)
+                          return `The intent is here but the technical floor is the ceiling. At this focal length, a faster shutter or steadier hold would lock in the sharpness that's missing.`;
+                        if (aspectDim(weakest) === 'human' && _weakPct < 45 && !_isEnvShot)
+                          return `Strong environmental frame — the light and geometry are working — but it needs a human anchor. Even a peripheral figure adds scale and completes the narrative.`;
+                        if (_hlSpread)
+                          return `Blown highlights are competing with the subject for attention. In harsh light, expose for the bright areas — protected highlights read cleaner than blown ones.`;
+                        if (_isTilted && _isGeo)
+                          return `The horizon tilt reads as accidental rather than intentional. Commit to a perfectly level frame or a deliberate extreme Dutch angle — the in-between is ambiguous.`;
+                        if (_bestPct >= 65 && _weakPct < 50)
+                          return `${_bestLabel} is at a strong level. ${_weakLabel} is the ceiling — bringing that up would push this to portfolio-worthy.`;
+                        if (_bestPct >= 60)
+                          return `Good instincts across the board — no single dimension is carrying it. Identify one element to lead and build the frame around it deliberately.`;
+                        return `Technically acceptable but no dimension reaches portfolio level yet. Study what's strongest here and push it further in the next frame.`;
+                      })();
+
+                      // ── Evidence Checklist ─────────────────────────────────────
+                      type _CS = 'good' | 'ok' | 'bad' | 'neutral';
+                      // _techV/_lightV/_hcV/_narrV/_compV resolved above via aspectDim.
+                      const _vlmSt  = (raw['vlm_status'] as string) ?? '';
+
+                      // Technical audit fields (_blurType/_hlSpread/_hlClip/_hasHorizon/
+                      // _horizTilt) are declared above, before _gradeWhy.
+
+                      // Map the weakest VLM aspect to its checklist row via its dimension,
+                      // so niche-specific axis names ("Moment", "Light Quality"…) resolve too.
+                      const _DIM_TO_CHECK: Record<string,string> = {
+                        tech:'FOCUS', light:'EXPOSURE', human:'SUBJECT', auth:'MOMENT', comp:'GEOMETRY',
+                      };
+                      const _limitingCheck = _DIM_TO_CHECK[aspectDim(weakest)] ?? '';
+
+                      const _checks: Array<{ key:string; label:string; value:string; state:_CS; isLimit:boolean; note:string }> = [];
+
+                      // FOCUS — blur_type from technical audit takes priority over TOPIQ range labels
+                      {
+                        let s: _CS; let v: string; let note: string;
+                        if (_blurType === 'severe' || _vlmSt === 'CRITICAL_BLUR') {
+                          s = 'bad'; v = 'Severe Blur';
+                          note = 'Unrecoverable. Check that autofocus locked before shooting, or that the shutter was fast enough.';
+                        } else if (_blurType === 'shake') {
+                          s = 'bad'; v = 'Camera Shake';
+                          note = 'Minimum safe shutter is 1/focal length. If light is low, raise ISO before slowing the shutter.';
+                        } else if (_blurType === 'bokeh') {
+                          s = 'good'; v = 'Subject Sharp / Bokeh';
+                          note = 'Intentional depth of field — subject isolated against a defocused background. This is a technique, not a flaw.';
+                        } else if (_blurType === 'panning') {
+                          s = 'ok'; v = 'Intentional Motion Blur';
+                          note = 'Panning blur conveys speed and energy. The subject stays sharp while the background streaks — a deliberate choice.';
+                        } else {
+                          s = _techV >= 0.72 ? 'good' : _techV >= 0.50 ? 'ok' : 'bad';
+                          v = _techV >= 0.72 ? 'Tack-Sharp' : _techV >= 0.50 ? 'Acceptable' : 'Soft';
+                          note = _techV >= 0.72 ? 'Focus is locked — technical floor is solid.'
+                            : _techV >= 0.50 ? 'Usable sharpness. A slightly faster shutter or smaller aperture would sharpen this.'
+                            : 'The focus plane may have shifted. Zone focus or a smaller aperture increases your keeper rate.';
+                        }
+                        _checks.push({ key:'FOCUS', label:'Focus', value:v, state:s, isLimit:_limitingCheck === 'FOCUS' && _tier !== 'strong', note });
+                      }
+                      // EXPOSURE — highlight_spread overrides lighting score; night/moody exempted
+                      {
+                        let s: _CS; let v: string; let note: string;
+                        if (_lightV < 0.05) {
+                          s = 'neutral'; v = 'Not Scored';
+                          note = 'This style is judged on its core dimensions — light reads as part of the overall craft rather than a separate score.';
+                        } else if (_hlSpread && !_isLowKey) {
+                          s = 'bad'; v = `Blown Highlights (${Math.round(_hlClip * 100)}% clipped)`;
+                          note = 'Clipped highlights can\'t be recovered in post. Expose for the bright areas and lift the shadows instead.';
+                        } else if (_isLowKey) {
+                          s = _lightV >= 0.65 ? 'good' : 'ok';
+                          v = _lightV >= 0.65 ? 'Protected'
+                            : _lightV >= 0.55 ? 'Atmospheric'
+                            : _lightV >= 0.40 ? 'Low-Key / Intentional'
+                            : 'Deep Shadow';
+                          note = _lightV >= 0.65
+                            ? 'Shadow detail is preserved — the dark areas are intentional, not a failure.'
+                            : 'Low-key exposure is the artistic choice here. The darkness is directing attention.';
+                        } else {
+                          s = _lightV >= 0.65 ? 'good' : _lightV >= 0.50 ? 'ok' : _lightV >= 0.35 ? 'ok' : 'bad';
+                          v = _lightV >= 0.65 ? 'Protected'
+                            : _lightV >= 0.50 ? 'Acceptable'
+                            : _lightV >= 0.35 ? 'Flat / Weak'
+                            : 'Blown / Dead-flat';
+                          note = _lightV >= 0.65 ? 'Exposure is controlled — highlights and shadows both readable.'
+                            : _lightV >= 0.50 ? 'Workable light. Look for directional sources to add dimension.'
+                            : _lightV >= 0.35 ? 'Flat light is workable — use it for even portraits or lean into the mood deliberately.'
+                            : 'Light is too flat or blown. Reposition relative to the light source.';
+                        }
+                        _checks.push({ key:'EXPOSURE', label:'Exposure', value:v, state:s, isLimit:_limitingCheck === 'EXPOSURE' && _tier !== 'strong', note });
+                      }
+                      // SUBJECT — environmental/geo shots don't need a subject
+                      if (_hcV > 0.05) {
+                        const s: _CS = _hcV >= 0.65 ? 'good' : _hcV >= 0.50 ? 'ok' : 'bad';
+                        const v = _hcV >= 0.65 ? 'Active Presence' : _hcV >= 0.50 ? 'Incidental Figure' : 'Background Only';
+                        const note = _hcV >= 0.65 ? 'The human element is doing narrative work — gesture or expression is present.'
+                          : _hcV >= 0.50 ? 'Subject is present but peripheral. Closer proximity or a stronger gesture would anchor the frame.'
+                          : 'Subject is lost in the scene. Move closer or wait for the subject to separate from the background.';
+                        _checks.push({ key:'SUBJECT', label:'Subject', value:v, state:s, isLimit:_limitingCheck === 'SUBJECT' && _tier !== 'strong', note });
+                      } else if (_isEnvShot) {
+                        _checks.push({ key:'SUBJECT', label:'Subject', value:'Not Required', state:'neutral', isLimit:false,
+                          note:'Environmental frame — geometry and light carry the image without a human anchor.' });
+                      } else {
+                        _checks.push({ key:'SUBJECT', label:'Subject', value:'Empty Scene', state:'neutral', isLimit:_limitingCheck === 'SUBJECT' && _tier !== 'strong',
+                          note:'No subject detected. Even a peripheral figure adds scale and narrative to an empty scene.' });
+                      }
+                      // MOMENT — always shown; N/A for pure architectural (Qwen returns 0)
+                      {
+                        let s: _CS; let v: string; let note: string;
+                        if (_narrV < 0.05) {
+                          s = 'neutral'; v = _isEnvShot ? 'Not Applicable' : 'Not Scored';
+                          note = _isEnvShot
+                            ? 'Architectural and environmental frames are judged on geometry and light, not narrative moment.'
+                            : 'This style is judged on its core dimensions — narrative moment isn\'t scored separately here.';
+                        } else {
+                          s = _narrV >= 0.65 ? 'good' : _narrV >= 0.50 ? 'ok' : 'bad';
+                          v = _narrV >= 0.65 ? 'Decisive Moment'
+                            : _narrV >= 0.50 ? 'Something Happening'
+                            : 'Static / No Tension';
+                          note = _narrV >= 0.65
+                            ? 'Peak gesture or expression caught — this is the hardest thing to do consistently in street photography.'
+                            : _narrV >= 0.50
+                            ? 'Action is present. Pushing closer to the peak of the gesture would strengthen the narrative.'
+                            : 'Nothing decisive has happened yet. Anticipate — pre-focus and wait for the moment when body language, light, and geometry converge.';
+                        }
+                        _checks.push({ key:'MOMENT', label:'Moment', value:v, state:s, isLimit:_limitingCheck === 'MOMENT' && _tier !== 'strong', note });
+                      }
+                      // GEOMETRY — horizon tilt takes priority when a real horizon is detected
+                      {
+                        let s: _CS; let v: string; let note: string;
+                        if (_hasHorizon && _horizTilt > 10) {
+                          s = 'bad'; v = `Excessive Tilt (${_horizTilt}°)`;
+                          note = 'Beyond intentional Dutch angle range. Straighten the horizon or commit to an extreme tilt — the in-between reads as accidental.';
+                        } else if (_hasHorizon && _isGeo && _horizTilt > 3) {
+                          s = 'bad'; v = `Tilted Horizon (${_horizTilt}°)`;
+                          note = 'In geometric and architectural work, a level horizon is part of the craft. A few degrees of correction would resolve this.';
+                        } else if (_hasHorizon && _horizTilt > 3 && !_isGeo) {
+                          s = 'ok'; v = `Dynamic Tilt (${_horizTilt}°)`;
+                          note = 'Winogrand-style tilt adds energy and instability. Works in street — just make sure it reads as intentional.';
+                        } else {
+                          const _geoStrict = _isGeo && _compV < 0.40;
+                          s = _compV >= 0.65 ? 'good' : _compV >= 0.50 ? 'ok' : _geoStrict ? 'bad' : 'ok';
+                          v = _isGeo && _compV >= 0.65 ? 'Leading Lines / Frame-within-Frame'
+                            : _isLayered && _compV >= 0.65 ? 'Foreground + Background Depth'
+                            : _compV >= 0.65 ? 'Clean Hierarchy'
+                            : _compV >= 0.50 ? 'Serviceable Frame'
+                            : 'Loose Frame';
+                          note = _compV >= 0.65
+                            ? 'Compositional intentionality is clear — the frame directs the viewer\'s eye deliberately.'
+                            : _compV >= 0.50
+                            ? 'Structure is there. A tighter crop or a more deliberate entry point would sharpen the composition.'
+                            : 'The frame is loose — the viewer\'s eye doesn\'t have a clear path. Find a foreground element or a stronger subject relationship.';
+                        }
+                        _checks.push({ key:'GEOMETRY', label:'Geometry', value:v, state:s, isLimit:_limitingCheck === 'GEOMETRY' && _tier !== 'strong', note });
+                      }
+
+                      const _csCol = (s: _CS) =>
+                        s === 'good' ? C.strong : s === 'ok' ? '#f5a623' : s === 'bad' ? C.weak : C.text3;
+
+                      // ── Telemetry Tags ─────────────────────────────────────────
+                      const _ARCH_TAG: Record<string,{ icon:string; detail:string }> = {
+                        geo:    { icon:'📐', detail:'Leading Lines / Symmetrical Geometry' },
+                        layer:  { icon:'👥', detail:'Layered Depth — Foreground + Background' },
+                        night:  { icon:'🌙', detail:'Night / Low-Key — Chiaroscuro' },
+                        messy:  { icon:'⚡', detail:'Raw Street Energy' },
+                        maxdoc: { icon:'📰', detail:'Dense Documentary Coverage' },
+                      };
+                      const _teleTags: Array<{ key:string; label:string; icon:string; detail:string; dominant:boolean }> = [];
+                      // Build per-image detail strings from actual aspect scores + archetype weight
+                      archEntries.filter(([, v]) => v > 0.15).forEach(([k, kv], i) => {
+                        const t = _ARCH_TAG[k];
+                        if (!t) return;
+                        const w = Math.round((kv as number) * 100);
+                        let detail = t.detail;
+                        if (k === 'geo') {
+                          detail = _compV >= 0.65
+                            ? `Strong geometric structure — ${w}% geometric signal`
+                            : `Geometric intent present — composition needs tightening`;
+                        } else if (k === 'layer') {
+                          detail = _hcV >= 0.65
+                            ? `Subject isolated in depth — foreground/background contrast working`
+                            : _hcV >= 0.50
+                            ? `Layering present — subject needs stronger separation`
+                            : `Layered scene — no clear subject anchor`;
+                        } else if (k === 'night') {
+                          detail = _lightV >= 0.55
+                            ? `Low-key lighting controlled — shadow detail preserved`
+                            : _lightV >= 0.40
+                            ? `Night / available light — exposure borderline`
+                            : `Dark scene — underexposure risk`;
+                        } else if (k === 'messy') {
+                          detail = _narrV >= 0.65
+                            ? `Chaotic energy — decisive moment caught in the disorder`
+                            : `Raw street chaos — no clear moment anchors it`;
+                        } else if (k === 'maxdoc') {
+                          detail = _compV >= 0.65
+                            ? `Dense documentary — layered scene with readable hierarchy`
+                            : `Documentary density — frame needs stronger visual entry point`;
+                        }
+                        _teleTags.push({ key:k, label:ARCH_LABELS[k] ?? k, icon:t.icon, detail, dominant:i === 0 });
+                      });
+                      if (_narrV >= 0.55) _teleTags.push({
+                        key:'timing', label:'Timing', icon:'⏳',
+                        detail: _narrV >= 0.75
+                          ? `Peak decisive moment — gesture or tension locked at exactly the right frame`
+                          : `Active moment caught — scene energy is readable`,
+                        dominant: _teleTags.length === 0,
+                      });
+
+                      // ── Burst Context ──────────────────────────────────────────
+                      const _simFlag   = (sel?.sim_flag as string) ?? '';
+                      const _isBurst   = (sel?.cluster_id ?? -1) >= 0 && _simFlag.length > 0;
+                      const _isPrimary = _simFlag.startsWith('★');
+                      const _burstCntM = _simFlag.match(/Best of (\d+)/);
+                      const _burstCnt  = _burstCntM ? parseInt(_burstCntM[1]) : 0;
+                      const _altM      = _simFlag.match(/Duplicate — (.+?) is better/);
+                      const _altName   = _altM ? _altM[1] : '';
+
                       return (
-                        <div style={{ display:'flex', flexDirection:'column', gap:16, animation:'fadeIn .32s cubic-bezier(.2,0,0,1)' }}>
-                          {/* Aspect bars */}
-                          {aspects.length > 0 && (
-                            <div style={{ display:'flex', flexDirection:'column', gap:9 }}>
-                              {aspects.map(([k, v], idx) => {
-                                const isTop = idx === 0;
-                                const isBot = idx === aspects.length - 1;
-                                const barCol = isTop ? C.strong : isBot ? C.weak : C.accent;
-                                const labelCol = isTop ? C.strong : isBot ? C.weak : C.text2;
-                                const vpct = Math.round(v * 100);
-                                return (
-                                  <div key={k}>
-                                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom:4 }}>
-                                      <span style={{ fontSize:11, fontWeight:600, color:labelCol, letterSpacing:'.01em' }}>{k}</span>
-                                      <span style={{ fontSize:11, fontWeight:700, color:labelCol, fontVariantNumeric:'tabular-nums' }}>{vpct}</span>
+                        <div style={{ display:'flex', flexDirection:'column', gap:14, animation:'fadeIn .32s cubic-bezier(.2,0,0,1)' }}>
+
+                          {/* ── Burst Context ─────────────────────────────────── */}
+                          {_isBurst && (
+                            <div style={{ padding:'10px 13px', borderRadius:8,
+                              background: _isPrimary ? `${C.strong}0d` : `${C.mid}0d`,
+                              border:`1px solid ${_isPrimary ? C.strong : C.mid}33` }}>
+                              <div style={{ fontSize:9.5, fontWeight:700, letterSpacing:'.10em', color:C.text3, marginBottom:5 }}>
+                                BURST SELECTION
+                              </div>
+                              <div style={{ display:'flex', alignItems:'baseline', gap:6, marginBottom:5 }}>
+                                <span style={{ fontSize:11.5, fontWeight:800, letterSpacing:'.04em',
+                                  color: _isPrimary ? C.strong : '#f5a623' }}>
+                                  {_isPrimary ? '★ Primary Pick' : '↩ Alternate'}
+                                </span>
+                                {_isPrimary && _burstCnt > 0 && (
+                                  <span style={{ fontSize:10.5, color:C.text3 }}>of {_burstCnt} similar frames</span>
+                                )}
+                              </div>
+                              <p style={{ fontSize:11, color:C.text2, lineHeight:1.6, margin:0 }}>
+                                {_isPrimary
+                                  ? 'Highest-scoring frame in this burst. Alternate frames scored lower on overall quality.'
+                                  : `${_altName || 'Another frame'} is the primary pick — scored higher. Compare before rejecting.`}
+                              </p>
+                            </div>
+                          )}
+
+                          {/* ── Grade verdict ─────────────────────────────────── */}
+                          <div style={{ padding:'11px 13px', borderRadius:8,
+                            background:`${_gradeColor}0f`, border:`1px solid ${_gradeColor}33` }}>
+                            <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom: _gradeWhy ? 7 : 0 }}>
+                              <div style={{ width:9, height:9, borderRadius:'50%', background:_gradeColor, flexShrink:0 }}/>
+                              <span style={{ fontSize:13, fontWeight:800, letterSpacing:'.06em', color:_gradeColor }}>
+                                {_tier.toUpperCase()}
+                              </span>
+                            </div>
+                            {_gradeWhy && (
+                              <p style={{ fontSize:12, color:C.text2, lineHeight:1.65, margin:0 }}>
+                                {_gradeWhy}
+                              </p>
+                            )}
+                          </div>
+
+                          {/* ── Qwen one-liner ────────────────────────────────── */}
+                          {qwenCritique && (
+                            <p style={{ fontSize:11.5, color:C.text3, lineHeight:1.7, margin:0,
+                              fontStyle:'italic', paddingLeft:10,
+                              borderLeft:`2px solid ${C.border}` }}>
+                              {qwenCritique}
+                            </p>
+                          )}
+
+                          {/* ── Evidence Checklist ────────────────────────────── */}
+                          {_checks.length > 0 && (
+                            <div>
+                              <div style={{ display:'flex', alignItems:'baseline', gap:8, marginBottom:8 }}>
+                                <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:'.09em',
+                                  textTransform:'uppercase', color:C.text3 }}>Judge's Eye</span>
+                                <span style={{ fontSize:9.5, color:C.text3, opacity:.6 }}>— what's working and what to fix</span>
+                              </div>
+                              <div style={{ display:'flex', flexDirection:'column',
+                                borderRadius:7, overflow:'hidden', border:`1px solid ${C.border}` }}>
+                                {_checks.map(({ key, label, value, state, isLimit, note }, ci) => {
+                                  const col = _csCol(state);
+                                  const showNote = !!note && (state === 'bad' || isLimit || _tier !== 'strong');
+                                  return (
+                                    <div key={key} style={{
+                                      padding:'8px 11px',
+                                      background: isLimit ? (
+                                        _tier === 'weak' ? `${C.weak}14` : `${C.mid}14`
+                                      ) : ci % 2 === 0 ? C.surf2 : C.bg,
+                                      borderBottom: ci < _checks.length - 1 ? `1px solid ${C.border}` : 'none' }}>
+                                      <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                                        <div style={{ width:6, height:6, borderRadius:'50%',
+                                          background:col, flexShrink:0 }}/>
+                                        <span style={{ fontSize:10, fontWeight:700, letterSpacing:'.07em',
+                                          color:C.text3, minWidth:62, textTransform:'uppercase' }}>{label}</span>
+                                        <span style={{ fontSize:11.5, fontWeight:600, color:col }}>{value}</span>
+                                        {isLimit && (
+                                          <span style={{ marginLeft:'auto', fontSize:9, fontWeight:800,
+                                            letterSpacing:'.08em', color: _tier === 'weak' ? C.weak : C.mid,
+                                            textTransform:'uppercase' }}>
+                                            {_tier === 'weak' ? '↑ WHAT FAILED' : '↑ WHAT TO FIX'}
+                                          </span>
+                                        )}
+                                      </div>
+                                      {showNote && (
+                                        <p style={{ fontSize:10.5, color:C.text3, lineHeight:1.55,
+                                          margin:'5px 0 0 16px', fontStyle:'italic' }}>
+                                          {note}
+                                        </p>
+                                      )}
                                     </div>
-                                    <div style={{ height:3, background:C.surf3, borderRadius:2, overflow:'hidden' }}>
-                                      <div style={{ height:'100%', width:`${vpct}%`, background:barCol, borderRadius:2, transition:'width .45s cubic-bezier(.2,0,0,1)' }}/>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* ── Telemetry Tags ────────────────────────────────── */}
+                          {_teleTags.length > 0 && (
+                            <div>
+                              <div style={{ display:'flex', alignItems:'baseline', gap:8, marginBottom:8 }}>
+                                <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:'.09em',
+                                  textTransform:'uppercase', color:C.text3 }}>Visual Language</span>
+                                <span style={{ fontSize:9.5, color:C.text3, opacity:.6 }}>— the photographic tradition this frame is working in</span>
+                              </div>
+                              <div style={{ display:'flex', flexDirection:'column', gap:5, marginTop:8 }}>
+                                {_teleTags.map(({ key, label, icon, detail, dominant }) => (
+                                  <div key={key} style={{ display:'flex', alignItems:'center', gap:9,
+                                    padding:'7px 11px', borderRadius:6,
+                                    background: dominant ? `${C.accent}12` : C.surf2,
+                                    border:`1px solid ${dominant ? C.accent + '40' : C.border}` }}>
+                                    <span style={{ fontSize:13, lineHeight:1, flexShrink:0 }}>{icon}</span>
+                                    <div style={{ flex:1, minWidth:0 }}>
+                                      <span style={{ fontSize:10, fontWeight:700, letterSpacing:'.06em',
+                                        color: dominant ? C.accent : C.text2,
+                                        textTransform:'uppercase' }}>{label}</span>
+                                      <span style={{ fontSize:10.5, color:C.text3, marginLeft:7 }}>{detail}</span>
                                     </div>
                                   </div>
-                                );
-                              })}
+                                ))}
+                              </div>
                             </div>
                           )}
-                          {/* Best / weakest callout */}
-                          {best && weakest && best !== weakest && (
-                            <div style={{ display:'flex', gap:6 }}>
-                              <span style={{ fontSize:11, color:C.strong, fontWeight:600, background:`${C.strong}18`, borderRadius:4, padding:'2px 7px' }}>↑ {best}</span>
-                              <span style={{ fontSize:11, color:C.weak,   fontWeight:600, background:`${C.weak}18`,   borderRadius:4, padding:'2px 7px' }}>↓ {weakest}</span>
-                            </div>
-                          )}
+
                         </div>
                       );
                     })()
                   ) : (
                     <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:8, padding:'20px 0' }}>
                       <Layers size={24} strokeWidth={1} style={{ color:C.text3 }}/>
-                      <p style={{ fontSize:13, color:C.text3, textAlign:'center', lineHeight:1.6 }}>Grade your folder to see analysis.</p>
+                      <p style={{ fontSize:13, color:C.text3, textAlign:'center', lineHeight:1.6 }}>Grade your folder to see breakdown.</p>
                     </div>
                   )
                 )}
@@ -1988,7 +3966,7 @@ export default function App() {
               return (ai<0?99:ai)-(bi<0?99:bi);
             });
           const hasResults = successResults.length > 0;
-          const canGenerate = !creativeLoading && photos.length > 0;
+          const canGenerate = !creativeLoading && photos.length > 0 && engineHealth.status === 'online';
 
           return (
           <div style={{ flex:1, display:'flex', overflow:'hidden', background:C.bg }}>
@@ -2026,21 +4004,84 @@ export default function App() {
                   />
                 </div>
 
+                {/* PDF Reference Library */}
+                <div>
+                  <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:6 }}>
+                    <label style={{ fontSize:11, fontWeight:700, letterSpacing:'.07em', textTransform:'uppercase', color:C.text2 }}>
+                      Photo Reference PDFs
+                    </label>
+                    {ragPdfs.length > 0 && (
+                      <button onClick={handleRagClear}
+                        style={{ fontSize:10, color:C.text3, background:'none', border:'none', cursor:'pointer', padding:0 }}>
+                        clear all
+                      </button>
+                    )}
+                  </div>
+                  <p style={{ fontSize:11, color:C.text3, lineHeight:1.4, marginBottom:8 }}>
+                    Upload photography books or reference PDFs. Concepts are extracted and blend into the grading anchor (30%).
+                  </p>
+                  {ragPdfs.length > 0 && (
+                    <div style={{ marginBottom:8, display:'flex', flexDirection:'column', gap:4 }}>
+                      {ragPdfs.map(p => (
+                        <div key={p.name} style={{ display:'flex', alignItems:'center', gap:6, padding:'5px 8px', background:C.surf2, borderRadius:6, border:`1px solid ${C.bdr2}` }}>
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={C.accent} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20,6 9,17 4,12"/></svg>
+                          <span style={{ flex:1, fontSize:10, color:C.text2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{p.name}</span>
+                          <span style={{ fontSize:9, color:C.text3, flexShrink:0 }}>{p.phrases} phrases</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <label style={{ display:'flex', alignItems:'center', gap:7, padding:'8px 12px', border:`2px dashed ${ragUploading ? C.accent : C.bdr2}`, borderRadius:8, cursor: ragUploading ? 'wait' : 'pointer', color: ragUploading ? C.accent : C.text3, fontSize:12, transition:'border-color .2s, color .2s' }}>
+                    {ragUploading
+                      ? <span style={{ width:11, height:11, borderRadius:'50%', border:`1.5px solid ${C.accent}`, borderTopColor:'transparent', animation:'spin .7s linear infinite', display:'inline-block', flexShrink:0 }}/>
+                      : <Upload size={13} strokeWidth={1.5}/>
+                    }
+                    <span>{ragUploading ? 'Extracting concepts…' : 'Add PDF reference'}</span>
+                    <input type="file" accept="application/pdf" style={{ display:'none' }} disabled={ragUploading}
+                      onChange={e => { const f = e.target.files?.[0]; if (f) handleRagUpload(f); e.target.value = ''; }}
+                    />
+                  </label>
+                </div>
+
+                {/* Peg reference upload */}
+                <div>
+                  <label style={{ display:'block', fontSize:11, fontWeight:700, letterSpacing:'.07em', textTransform:'uppercase', color:C.text2, marginBottom:4 }}>
+                    Reference Peg <span style={{ fontWeight:400, textTransform:'none', letterSpacing:0, fontSize:10, color:C.text3 }}>optional · overrides anchor pool</span>
+                  </label>
+                  {pegFile ? (
+                    <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 10px', background:C.surf2, border:`1px solid ${pegHash ? C.accent : C.bdr2}`, borderRadius:8 }}>
+                      {pegLoading
+                        ? <span style={{ width:10, height:10, borderRadius:'50%', border:`1.5px solid ${C.accent}`, borderTopColor:'transparent', animation:'spin .7s linear infinite', display:'inline-block', flexShrink:0 }}/>
+                        : <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={pegHash ? C.accent : C.text3} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20,6 9,17 4,12"/></svg>
+                      }
+                      <span style={{ flex:1, fontSize:11, color:C.text2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{pegFile.name}</span>
+                      <button onClick={() => { setPegFile(null); setPegHash(null); }}
+                        style={{ padding:0, border:'none', background:'transparent', color:C.text3, cursor:'pointer', fontSize:14, lineHeight:1 }}>✕</button>
+                    </div>
+                  ) : (
+                    <label style={{ display:'flex', alignItems:'center', gap:7, padding:'8px 12px', border:`2px dashed ${C.bdr2}`, borderRadius:8, cursor:'pointer', color:C.text3, fontSize:12 }}>
+                      <Upload size={13} strokeWidth={1.5}/>
+                      <span>Upload reference image</span>
+                      <input type="file" accept="image/*" style={{ display:'none' }}
+                        onChange={e => { const f = e.target.files?.[0]; if (f) handlePegUpload(f); e.target.value = ''; }}
+                      />
+                    </label>
+                  )}
+                </div>
+
                 {/* Sequence length */}
                 <div>
                   <label style={{ display:'block', fontSize:11, fontWeight:700, letterSpacing:'.07em', textTransform:'uppercase', color:C.text2, marginBottom:8 }}>
                     Sequence Length
                   </label>
-                  <div style={{ display:'flex', gap:5 }}>
-                    {[5,6,7,8].map(n => (
-                      <button key={n} onClick={()=>setCreativeCount(n)}
-                        style={{ flex:1, height:34, borderRadius:7, fontSize:13, fontWeight:700, cursor:'pointer', transition:'all .15s',
-                          background:creativeCount===n?C.accent:C.surf2, border:`1px solid ${creativeCount===n?C.accent:C.bdr2}`,
-                          color:creativeCount===n?'#fff':C.text2 }}>
-                        {n}
-                      </button>
+                  <select value={creativeCount} onChange={e => setCreativeCount(Number(e.target.value))}
+                    style={{ width:'100%', height:36, borderRadius:7, fontSize:13, fontWeight:600, cursor:'pointer',
+                      background:C.surf2, border:`1px solid ${C.bdr2}`, color:C.text2, padding:'0 10px',
+                      appearance:'auto', outline:'none' }}>
+                    {[3,4,5,6,7,8,9,10].map(n => (
+                      <option key={n} value={n}>{n} photos</option>
                     ))}
-                  </div>
+                  </select>
                 </div>
 
                 {/* Reference photo */}
@@ -2097,6 +4138,19 @@ export default function App() {
 
               {/* Generate button — pinned to bottom */}
               <div style={{ padding:'14px 18px', borderTop:`1px solid ${C.border}`, flexShrink:0 }}>
+                {/* Mode selector: Story / Competition */}
+                <div style={{ display:'flex', gap:5, marginBottom:10 }}>
+                  {(['story','competition'] as const).map(m => (
+                    <button key={m} onClick={()=>setSeqMode(m as any)}
+                      style={{ flex:1, height:30, borderRadius:7, fontSize:11, fontWeight:700, cursor:'pointer', transition:'all .15s',
+                        background: seqMode===m ? C.accent : C.surf2,
+                        border: `1px solid ${seqMode===m ? C.accent : C.bdr2}`,
+                        color: seqMode===m ? '#fff' : C.text2,
+                        textTransform:'capitalize' }}>
+                      {m}
+                    </button>
+                  ))}
+                </div>
                 {photos.length===0 && (
                   <p style={{ fontSize:11, color:C.text3, textAlign:'center', marginBottom:10 }}>Grade a folder first to load photos.</p>
                 )}
@@ -2107,7 +4161,7 @@ export default function App() {
                     cursor: canGenerate ? 'pointer' : 'not-allowed', opacity:photos.length===0?0.45:1, transition:'all .18s' }}>
                   {creativeLoading
                     ? <><div style={{width:13,height:13,border:'2px solid #888',borderTopColor:'transparent',borderRadius:'50%',animation:'spin .8s linear infinite'}}/> Building sequence…</>
-                    : <><Wand2 size={13}/> {hasResults ? 'Rebuild Sequence' : 'Build Story Sequence'}</>}
+                    : <><Wand2 size={13}/> {hasResults ? 'Rebuild Sequence' : (seqMode==='competition' ? 'Build Competition Set' : 'Build Story Sequence')}</>}
                 </button>
                 {usedCount>0 && (
                   <button onClick={handleClearUsed}

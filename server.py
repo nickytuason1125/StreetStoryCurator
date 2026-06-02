@@ -1,6 +1,13 @@
+import suppress_console  # patches subprocess/multiprocessing/asyncio/BLAS before anything else imports them
 import os
+import sys
 # Prevent any joblib/loky worker process from spawning (flashes a cmd window on Windows).
 os.environ.setdefault("LOKY_MAX_CPU_COUNT", "1")
+# Force matplotlib to the non-interactive Agg backend before pymoo or any other library
+# imports it.  pymoo's Display callback pulls in matplotlib on the first minimize() call;
+# the default TkAgg/Qt5Agg backend creates a GUI handle that Windows briefly shows as a
+# CMD prompt flash.  Agg renders to memory only -- no window, no flash.
+os.environ.setdefault("MPLBACKEND", "Agg")
 # Suppress the "unauthenticated requests" noise from HuggingFace hub without going full offline
 # (HF_HUB_OFFLINE=1 breaks timm/open_clip local cache resolution).
 os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
@@ -10,7 +17,9 @@ try:
 except Exception:
     pass
 
+import asyncio
 import uvicorn, signal, sys, time, threading
+import requests as _requests
 # Force UTF-8 output so emoji in print() don't crash on cp1252 terminals/threads.
 for _s in (sys.stdout, sys.stderr):
     try:
@@ -20,10 +29,11 @@ for _s in (sys.stdout, sys.stderr):
         pass
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form, Request
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.concurrency import run_in_threadpool
 from pathlib import Path
 from pydantic import BaseModel, field_validator
 from typing import List
@@ -115,6 +125,52 @@ def _save_used_cd_paths(used: set) -> None:
     _USED_CD_PATHS_FILE.parent.mkdir(parents=True, exist_ok=True)
     _USED_CD_PATHS_FILE.write_text(_j.dumps(sorted(used), indent=2), encoding="utf-8")
 
+# GPU mutex — serialises all VRAM-using operations (grading + annotation daemon).
+# Initialised in lifespan() once the event loop is running.
+gpu_lock:         asyncio.Lock  | None = None
+annotation_queue: asyncio.Queue | None = None
+
+# ── Persistent grade worker ───────────────────────────────────────────────────
+# A single long-lived subprocess keeps SigLIP-2 + text embeddings resident in
+# memory between grading runs, avoiding the 15-30 s cold-load penalty on repeat
+# grades.  If the worker dies (crash / OOM kill), it is transparently respawned
+# on the next Grade click via _ensure_worker().
+import multiprocessing as _mpw
+_worker_proc:  "_mpw.Process | None" = None
+_worker_req_q: "_mpw.Queue  | None" = None
+_worker_resp_q:"_mpw.Queue  | None" = None
+_worker_lock   = threading.Lock()
+
+
+def _ensure_worker():
+    """Return (req_q, resp_q), spawning or respawning the worker as needed."""
+    global _worker_proc, _worker_req_q, _worker_resp_q
+    with _worker_lock:
+        if _worker_proc is not None and not _worker_proc.is_alive():
+            print("[server] Grade worker died — respawning on next request")
+            try:
+                _worker_proc.kill()
+            except Exception:
+                pass
+            _worker_proc = _worker_req_q = _worker_resp_q = None
+
+        if _worker_proc is None:
+            import grade_worker as _gw
+            req_q  = _mpw.Queue()
+            resp_q = _mpw.Queue()
+            proc   = _mpw.Process(
+                target=_gw.grade_worker_loop,
+                args=(req_q, resp_q),
+                daemon=True,
+            )
+            proc.start()
+            _worker_proc  = proc
+            _worker_req_q = req_q
+            _worker_resp_q = resp_q
+            print(f"[server] Grade worker started (pid={proc.pid})")
+
+        return _worker_req_q, _worker_resp_q
+
 # Background pre-computation
 # Keyed by folder path so stale clusters from a previous grade never bleed through.
 GLOBAL_CLUSTER_CACHE: dict = {}          # {"folder": str, "labels": ndarray, "paths": list}
@@ -168,16 +224,28 @@ def _get_editorial_fns():
     return generate_magazine_carousel, render_editorial_carousel
 
 def _bg_model_prefetch():
-    """Run model auto-download in a daemon thread so server stays responsive."""
+    """Download missing models, then run pipeline calibration warmup."""
     try:
         from model_loader import ensure_all_models_downloaded
         ensure_all_models_downloaded()
     except Exception as exc:
         print(f"⚠️  Background model prefetch error: {exc}")
+    # Chain calibration warmup — uses top Strong photos from LanceDB history
+    # to pre-populate Inductor + BnB CUDA kernel caches on disk.
+    try:
+        from warmup_runner import run_warmup
+        run_warmup()
+    except Exception as exc:
+        print(f"⚠️  Pipeline warmup error: {exc}")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global gpu_lock, annotation_queue
+    # Initialise VRAM mutex and annotation queue now that the event loop is running.
+    gpu_lock         = asyncio.Lock()
+    annotation_queue = asyncio.Queue()
+
     # Delete any stale catalog.json from a prior session so the frontend cannot
     # serve outdated scores before a new grading run has completed.
     try:
@@ -187,10 +255,65 @@ async def lifespan(app: FastAPI):
             print("[server] Startup: cleared stale catalog.json")
     except OSError as _e_cat_boot:
         print(f"[server] Startup catalog clear skipped: {_e_cat_boot}")
-    # Kick off model auto-download without blocking server startup.
-    _t = threading.Thread(target=_bg_model_prefetch, daemon=True, name="model-prefetch")
-    _t.start()
+    # Storage housekeeping — runs once on startup, non-blocking.
+    threading.Thread(target=_evict_preview_cache, daemon=True, name="preview-evict").start()
+    threading.Thread(target=_cleanup_old_zips,    daemon=True, name="zip-cleanup").start()
+    # Background model prefetch is intentionally DISABLED.
+    # On Windows, BitsAndBytes INT4 + pyiqa loaded from a daemon thread before
+    # CUDA is initialised by the main grading path causes a fatal C-level crash
+    # (hard process kill, no traceback). All models load on-demand when Grade is
+    # clicked — preloading from a thread here only crashes the startup.
+    # _t = threading.Thread(target=_bg_model_prefetch, daemon=True, name="model-prefetch")
+    # _t.start()
+
+    # ── Pre-load LanceDB (Rust DLL) on the server thread ─────────────────────
+    # On Windows, loading a Rust DLL for the FIRST TIME from a nested daemon
+    # thread (main → server-thread → grade-daemon) can hit the Windows DLL
+    # loader lock and cause a fatal C-level process kill with no traceback.
+    # Loading it here (in the uvicorn server thread, one level from main)
+    # puts the DLL in the OS loader cache before any grade thread needs it.
+    # Also pre-opens the LanceDB table so the grade thread finds _tbl != None
+    # and skips lancedb.connect() entirely.
+    try:
+        import shutil as _shutil_ldb
+        import lance_store as _ls_boot
+        import lancedb as _ldb_boot          # load Rust DLL now, not in daemon thread
+        import pyarrow as _pa_boot           # load Arrow C++ DLL now as well
+        print(f"[server] lancedb {getattr(_ldb_boot, '__version__', '?')} pre-loaded on server thread")
+        try:
+            _ls_boot._open_table()           # cache _tbl so grade thread skips connect()
+            print("[server] LanceDB table pre-opened OK")
+        except Exception as _e_open:
+            # DB is corrupt — delete it so lancedb recreates it fresh on first grade.
+            _shutil_ldb.rmtree(_ls_boot._DB_DIR, ignore_errors=True)
+            print(f"[server] LanceDB corrupt ({_e_open}) — deleted for fresh start")
+    except Exception as _e_ldb_boot:
+        print(f"[server] LanceDB pre-load warning: {_e_ldb_boot}")
+
+    # Start event-driven async annotation daemon (replaces 30-second polling).
+    try:
+        import queue_manager as _qm
+        asyncio.create_task(_qm.start_async(annotation_queue, gpu_lock))
+    except Exception as _qm_err:
+        print(f"[server] Queue manager start failed: {_qm_err}")
+
+    # Pre-start the persistent grade worker so first Grade click is instant.
+    try:
+        threading.Thread(target=_ensure_worker, daemon=True, name="worker-prestart").start()
+    except Exception as _e_pw:
+        print(f"[server] Grade worker pre-start failed: {_e_pw}")
+
     yield
+    # Shut down the persistent grade worker gracefully.
+    try:
+        if _worker_req_q is not None:
+            _worker_req_q.put({"_stop": True})
+        if _worker_proc is not None:
+            _worker_proc.join(timeout=5.0)
+            if _worker_proc.is_alive():
+                _worker_proc.kill()
+    except Exception:
+        pass
 
 app = FastAPI(lifespan=lifespan)
 
@@ -208,10 +331,42 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def cache_control_middleware(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+
+    if path.startswith("/api/"):
+        # API responses: never cache
+        response.headers["Cache-Control"] = "no-store"
+
+    elif path.startswith("/assets/") or path.startswith("/thumbs/"):
+        # Vite content-hashed assets + thumbnails: cache aggressively
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+
+    else:
+        # HTML / SPA fallback / root — force fresh fetch every time
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        # Strip conditional-request headers so browser can't 304 a stale shell
+        for _h in ("ETag", "Last-Modified"):
+            if _h in response.headers:
+                del response.headers[_h]
+
+    return response
+
+
 # Thumbnail cache served as static files
 THUMB_DIR = _DATA_DIR / "cache" / "thumbs"
 THUMB_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/thumbs", StaticFiles(directory=str(THUMB_DIR)), name="thumbs")
+
+# Eye feature overlays served at /static/eye_feature_overlays/
+_STATIC_DIR = Path(__file__).parent / "static"
+_STATIC_DIR.mkdir(parents=True, exist_ok=True)
+(_STATIC_DIR / "eye_feature_overlays").mkdir(parents=True, exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
 
 def shutdown(signum, frame):
@@ -236,6 +391,46 @@ _PREVIEW_DIR = _DATA_DIR / "cache" / "previews"
 _PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
 
 _HEIC_EXTS = frozenset({".heic", ".heif"})
+
+_PREVIEW_MAX = 200  # keep newest N previews; delete oldest beyond this
+
+def _evict_preview_cache() -> None:
+    """Keep only the _PREVIEW_MAX most-recently-accessed previews; delete the rest."""
+    try:
+        files = sorted(_PREVIEW_DIR.glob("*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for old in files[_PREVIEW_MAX:]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+        evicted = max(0, len(files) - _PREVIEW_MAX)
+        if evicted:
+            print(f"[server] Preview cache eviction: removed {evicted} old preview(s)")
+    except Exception as _e_ev:
+        print(f"[server] Preview cache eviction skipped: {_e_ev}")
+
+
+_OUTPUT_DIR_ZIP = _DATA_DIR / "output"
+_ZIP_MAX_AGE_DAYS = 30
+
+def _cleanup_old_zips() -> None:
+    """Delete ZIP exports older than _ZIP_MAX_AGE_DAYS days from the output directory."""
+    import time as _time
+    cutoff = _time.time() - _ZIP_MAX_AGE_DAYS * 86400
+    removed = 0
+    try:
+        for z in _OUTPUT_DIR_ZIP.rglob("*.zip"):
+            try:
+                if z.stat().st_mtime < cutoff:
+                    z.unlink()
+                    removed += 1
+            except OSError:
+                pass
+        if removed:
+            print(f"[server] ZIP cleanup: removed {removed} export(s) older than {_ZIP_MAX_AGE_DAYS} days")
+    except Exception as _e_zip:
+        print(f"[server] ZIP cleanup skipped: {_e_zip}")
+
 
 def _gen_preview(path: str) -> Path | None:
     """Return a JPEG preview for RAW/HEIC files; None for browser-renderable formats."""
@@ -274,6 +469,8 @@ def _gen_preview(path: str) -> Path | None:
                     img = _PILImg.fromarray(rgb)
             img = img.convert("RGB")
         img.save(str(dest), "JPEG", quality=90)
+        # Async-safe fire-and-forget: evict oldest previews if cache is getting large.
+        threading.Thread(target=_evict_preview_cache, daemon=True, name="preview-evict").start()
         return dest
     except Exception:
         return None
@@ -295,32 +492,123 @@ async def model_status():
     """Return current grader mode and model availability for the frontend indicator."""
     from pathlib import Path as _P
 
-    draft_ok  = (_P("models/deepseek/deepseek-ai_DeepSeek-R1-Distill-Qwen-1.5B") / "model.safetensors").exists()
-    # 7B is available only when shard files are present, not just the index
-    verify_dir = _P("models/deepseek/deepseek-ai_DeepSeek-R1-Distill-Qwen-7B")
-    verify_ok  = any(verify_dir.glob("model-*-of-*.safetensors")) if verify_dir.exists() else False
-    judge_ok   = _P("models/deepseek-r1-8b-q5.gguf").exists()
-    phi4_ok    = _P("models/phi4-mini-reasoning-q4.gguf").exists()
+    # Qwen2.5-VL-3B is the primary grader — HuggingFace nests safetensors in subdirs
+    qwen_dir  = _P("models/qwen_vlm")
+    draft_ok  = any(qwen_dir.rglob("*.safetensors")) if qwen_dir.exists() else False
+    # SpecVLM CLIP weights (fallback grader)
+    spec_dir  = _P("models/specvlm")
+    verify_ok = any(spec_dir.glob("*.safetensors")) if spec_dir.exists() else False
+    judge_ok  = _P("models/deepseek-r1-8b-q5.gguf").exists()
+    phi4_ok   = _P("models/phi4-mini-reasoning-q4.gguf").exists()
 
     try:
         import sys, os
         src_dir = os.path.join(os.path.dirname(__file__), "src")
         if src_dir not in sys.path:
             sys.path.insert(0, src_dir)
-        from grade_pipeline_v2 import _grader_status
-        last = dict(_grader_status)
+        from grade_pipeline_v2 import _grader_status, _qwen_singleton, _qwen_loading
+        last         = dict(_grader_status)
+        qwen_warm    = _qwen_singleton is not None
+        qwen_loading = _qwen_loading
     except Exception:
-        last = {"mode": "idle", "verify_used": False, "photos_last": 0, "error": None}
+        last         = {"mode": "idle", "verify_used": False, "photos_last": 0, "error": None}
+        qwen_warm    = False
+        qwen_loading = False
+
+    # Qwen background-download progress from model_loader
+    qwen_dl_pct: int | None = None
+    try:
+        from model_loader import _DOWNLOAD_STATUS as _DL
+        _qs = _DL.get("qwen_vlm", "pending")
+        if isinstance(_qs, str) and _qs.startswith("downloading:"):
+            qwen_dl_pct = int(_qs.split(":")[1])
+    except Exception:
+        pass
+
+    # Pipeline calibration warmup status
+    warmup_done    = False
+    warmup_running = False
+    try:
+        from warmup_runner import get_status as _ws
+        _wst = _ws()
+        warmup_done    = _wst["warmup_done"]
+        warmup_running = _wst["warmup_running"]
+    except Exception:
+        pass
+
+    # GPU / VRAM telemetry
+    vram_free_gb  = None
+    vram_total_gb = None
+    gpu_name      = last.get("gpu_name")
+    compute_device = "unknown"
+    try:
+        import torch as _t
+        if _t.cuda.is_available():
+            _props = _t.cuda.get_device_properties(0)
+            vram_total_gb = round(_props.total_memory / 1e9, 1)
+            vram_free_gb  = round((_props.total_memory - _t.cuda.memory_reserved(0)) / 1e9, 1)
+            if not gpu_name:
+                gpu_name = _t.cuda.get_device_name(0)
+            # Derive dominant compute device from last run's recorded devices
+            _sd = last.get("siglip_device", "unknown")
+            _qd = last.get("qwen_device",   "unknown")
+            if _qd == "gpu" or _sd == "gpu":
+                compute_device = "gpu"
+            elif _qd == "cpu" or _sd == "cpu":
+                compute_device = "cpu"
+            else:
+                compute_device = "gpu"   # CUDA available, assume GPU until proven otherwise
+        else:
+            compute_device = "cpu"
+    except Exception:
+        pass
 
     return JSONResponse({
-        "draft_available":  draft_ok,
-        "verify_available": verify_ok,
-        "judge_available":  judge_ok,
-        "phi4_available":   phi4_ok,
-        "last_mode":        last["mode"],
-        "last_verify_used": last["verify_used"],
-        "last_error":       last["error"],
+        "draft_available":    draft_ok,
+        "verify_available":   verify_ok,
+        "judge_available":    judge_ok,
+        "phi4_available":     phi4_ok,
+        "last_mode":          last["mode"],
+        "last_verify_used":   last["verify_used"],
+        "last_error":         last["error"],
+        "qwen_warm":          qwen_warm,
+        "qwen_loading":       qwen_loading,
+        "qwen_download_pct":  qwen_dl_pct,
+        "warmup_done":        warmup_done,
+        "warmup_running":     warmup_running,
+        "compute_device":     compute_device,  # "gpu" | "cpu" | "unknown"
+        "vram_free_gb":       vram_free_gb,
+        "vram_total_gb":      vram_total_gb,
+        "gpu_name":           gpu_name,
     })
+
+
+@app.post("/api/models/preload")
+async def preload_vision_engine():
+    """
+    Preload is intentionally a no-op.
+    Loading BnB INT4 Qwen from a ThreadPoolExecutor thread before CUDA is
+    initialised by the grading path causes a fatal C-level crash on Windows.
+    Models load on-demand inside run_v2() which runs in a dedicated daemon thread.
+    """
+    try:
+        from grade_pipeline_v2 import _qwen_singleton
+        if _qwen_singleton is not None:
+            return JSONResponse({"status": "already_warm"})
+        return JSONResponse({"status": "will_load_on_grade"})
+    except Exception:
+        return JSONResponse({"status": "will_load_on_grade"})
+
+
+@app.post("/api/models/warmup/reset")
+async def reset_warmup():
+    """Delete the warmup sentinel so calibration re-runs on next startup."""
+    try:
+        from warmup_runner import reset_sentinel
+        reset_sentinel()
+        return JSONResponse({"status": "sentinel_cleared"})
+    except Exception as exc:
+        return JSONResponse({"status": "error", "detail": str(exc)}, status_code=500)
 
 
 @app.get("/api/models/download-status")
@@ -354,7 +642,7 @@ async def serve_thumb(path: str = Query(...)):
             # fallback to preview for RAW/HEIC
             if src.suffix.lower() in (_RAW_EXTS | _HEIC_EXTS):
                 import asyncio
-                preview = await asyncio.get_event_loop().run_in_executor(None, _gen_preview, str(src))
+                preview = await asyncio.get_running_loop().run_in_executor(None, _gen_preview, str(src))
                 if preview:
                     return FileResponse(str(preview), media_type="image/jpeg")
             # otherwise return 404
@@ -367,7 +655,7 @@ async def serve_photo(path: str = Query(...)):
     p = _safe_image_path(path)
     if p.suffix.lower() in (_RAW_EXTS | _HEIC_EXTS):
         import asyncio
-        preview = await asyncio.get_event_loop().run_in_executor(None, _gen_preview, str(p))
+        preview = await asyncio.get_running_loop().run_in_executor(None, _gen_preview, str(p))
         if preview:
             return FileResponse(str(preview), media_type="image/jpeg")
     return FileResponse(str(p))
@@ -640,7 +928,7 @@ async def list_folder(body: dict):
             if p.is_file() and p.suffix.lower() in exts
         )
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     paths = await loop.run_in_executor(None, _scan)
 
     # Pre-warm ALL thumbnails in the background — no cap.
@@ -659,28 +947,9 @@ async def get_exif(path: str = Query(...)):
     """Lazy EXIF loader — called by the frontend when a photo is selected."""
     import asyncio
     p = _safe_image_path(path)
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     data = await loop.run_in_executor(None, _read_exif, str(p))
     return data
-
-
-@app.get("/api/thumb")
-async def serve_thumb(path: str = Query(...)):
-    import asyncio, hashlib
-    src = _safe_image_path(path)                          # resolves symlinks
-    safe = hashlib.md5(str(src).encode()).hexdigest()[:10] + ".webp"
-    dest = THUMB_DIR / safe
-    if not dest.exists():
-        await asyncio.get_event_loop().run_in_executor(_THUMB_ONDEMAND, _gen_one_thumb, str(src))
-        if not dest.exists():
-            return FileResponse(str(src))                 # fallback: already resolved
-    # Symlink-escape guard: ensure the cached thumb hasn't been tampered with
-    if not str(dest.resolve()).startswith(str(THUMB_DIR.resolve())):
-        raise HTTPException(403, "Forbidden")
-    return FileResponse(
-        str(dest),
-        headers={"Cache-Control": "public, max-age=604800, immutable"},
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -781,7 +1050,7 @@ async def grade_photos(req: GradeRequest):
     if not os.path.isdir(req.folder_path):
         raise HTTPException(400, "Invalid folder path")
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         results = await loop.run_in_executor(
             None,
             lambda: analyzer.analyze_folder(req.folder_path, preset=req.preset, force_rescan=True),
@@ -825,6 +1094,31 @@ async def grade_photos(req: GradeRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/ollama/status")
+async def ollama_status():
+    """
+    Returns Ollama daemon health + currently resident models from /api/ps.
+    Used by the frontend banner and the grade endpoint health gate.
+    Response: {alive: bool, models: [{name, size_vram, size_total, until}]}
+    """
+    # Run all blocking Ollama HTTP calls in a thread — combined timeout up to 5 s.
+    def _sync() -> dict:
+        try:
+            import sys as _s, os as _o
+            _s.path.insert(0, _o.path.join(_o.path.dirname(__file__), "src"))
+            from critique_engine import _check_ollama_available, get_ollama_ps
+            import critique_engine as _ce
+            _ce._ollama_last_check = 0.0   # force fresh check
+            alive  = _check_ollama_available()
+            models = get_ollama_ps() if alive else []
+            return {"alive": alive, "models": models}
+        except Exception as _e:
+            return {"alive": False, "models": [], "error": str(_e)}
+
+    result = await asyncio.get_running_loop().run_in_executor(None, _sync)
+    return JSONResponse(result)
+
+
 @app.post("/api/grade/v2/stream")
 async def grade_photos_v2_stream(req: GradeRequest):
     """
@@ -832,8 +1126,40 @@ async def grade_photos_v2_stream(req: GradeRequest):
     Same SSE format as /api/grade/stream for drop-in frontend compatibility.
     Supports multi-folder: grades each folder, then runs MOGCO-II once across all.
     """
-    import asyncio as _aio, json as _json
+    import json as _json
     from fastapi.responses import StreamingResponse
+
+    # ── System RAM gate — fail fast if < 3 GB free to avoid silent OOM crash ────
+    try:
+        import psutil as _psutil
+        _free_gb = _psutil.virtual_memory().available / 1e9
+        if _free_gb < 3.0:
+            return JSONResponse(
+                status_code=503,
+                content={"error": f"Not enough RAM to grade safely — only {_free_gb:.1f} GB free, need at least 3 GB. "
+                         "Close Chrome tabs or other apps and retry."},
+            )
+    except Exception:
+        pass
+
+    # ── Ollama health gate — fail fast before spawning the grading thread ────────
+    if not req.scan_mode:
+        try:
+            import sys as _sys2, os as _os2
+            _sys2.path.insert(0, _os2.path.join(_os2.path.dirname(__file__), "src"))
+            import critique_engine as _ce2
+            _ce2._ollama_last_check = 0.0          # force fresh ping
+            from critique_engine import _check_ollama_available as _chk_oll
+            # Run in executor — this makes a blocking HTTP call (timeout=2 s).
+            _ollama_alive = await asyncio.get_running_loop().run_in_executor(None, _chk_oll)
+            if not _ollama_alive:
+                return JSONResponse(
+                    status_code=503,
+                    content={"error": "Ollama service is unresponsive. "
+                             "Start Ollama and ensure gemma3:4b is pulled, then retry."},
+                )
+        except Exception:
+            pass   # if the import itself fails, let the pipeline handle it
 
     # Resolve all valid folders — folder_paths (multi) takes priority over folder_path
     all_folders = [str(Path(fp).resolve()) for fp in req.folder_paths if os.path.isdir(fp)]
@@ -843,181 +1169,80 @@ async def grade_photos_v2_stream(req: GradeRequest):
         else:
             raise HTTPException(400, "No valid folder path provided")
 
-    aqueue: _aio.Queue = _aio.Queue()
-    loop   = _aio.get_running_loop()
-
-    def _progress(frac: float, desc: str = "") -> None:
-        loop.call_soon_threadsafe(
-            aqueue.put_nowait, {"progress": round(frac, 3), "desc": desc}
-        )
-
-    def _run() -> None:
+    async def _stream_with_lock():
+        # Hold gpu_lock for the full grading run so the annotation daemon
+        # cannot load its GGUF concurrently and bust the 5.5 GB VRAM ceiling.
+        _gl = gpu_lock
+        if _gl is not None:
+            await _gl.acquire()
         try:
-            from grade_pipeline_v2 import run_v2
-            n = len(all_folders)
-            combined_gallery: list = []
+            import queue as _std_queue
 
-            # Clear stale catalog before grading — Step 8b in grade_pipeline_v2
-            # will rebuild it after LanceDB upsert.
-            if _CATALOG_PATH.exists():
-                try:
-                    _CATALOG_PATH.unlink()
-                    print("[grade_v2] Cleared stale catalog.json — will be rebuilt after grading")
-                except OSError as _e_del:
-                    print(f"[grade_v2] WARNING: catalog.json delete failed ({_e_del}) — proceeding")
-
-            for i, fp in enumerate(all_folders):
-                # Slice the 0→1 progress bar across folders
-                p_start = i / n
-                p_end   = (i + 1) / n
-
-                def _fp(frac: float, desc: str = "", _s=p_start, _e=p_end) -> None:
-                    _progress(_s + frac * (_e - _s), desc)
-
-                if n > 1:
-                    _fp(0.0, f"Grading folder {i+1}/{n}: {Path(fp).name}")
-
-                result = run_v2(
-                    fp,
-                    preset       = req.preset,
-                    force_rescan = req.force_rescan,
-                    progress     = _fp,
-                    mogco_target = 0,   # skip per-folder MOGCO; run once at end
-                    scan_mode    = req.scan_mode,
-                )
-                combined_gallery.extend(result.get("gallery", []))
-
-            # Strip embeddings before sending over SSE
-            gallery_slim = [
-                {k: v for k, v in photo.items() if k != "embedding"}
-                for photo in combined_gallery
-            ]
-
-            # NSGA-III across all photos (strict literal constraints)
-            _progress(0.97, "Running NSGA-III (strict literal constraints)…")
-            mogco_sequence: list = []
-            mogco_error_msg: str = ""
-            try:
-                import numpy as _np
-                from nsga3_sequencer import run_nsga3_sequence_with_vlm, SequencerConstraintError
-                try:
-                    from specvlm_pipeline import _CD_BRIEF as _brief
-                except Exception:
-                    _brief = ""
-                seq_candidates = [
-                    {
-                        "path":          g["path"],
-                        "score":         g.get("score", 0.5),
-                        "embedding":     _np.array(
-                            combined_gallery[idx].get("embedding", []),
-                            dtype=_np.float32,
-                        ),
-                        "reasoning_log": g.get("reasoning_log", ""),
-                        "breakdown":     g.get("breakdown", {}),
-                    }
-                    for idx, g in enumerate(gallery_slim)
-                    if "Strong" in g.get("grade", "") or "Mid" in g.get("grade", "")
-                ]
-                selected = run_nsga3_sequence_with_vlm(
-                    seq_candidates, target=5, brief=_brief
-                )
-                info_by_path = {g["path"]: g for g in gallery_slim}
-                for rank, frame in enumerate(selected):
-                    base = dict(info_by_path.get(frame["path"], {"path": frame["path"]}))
-                    base.update({
-                        "slot":             frame.get("slot", f"Slot {rank+1}"),
-                        "slot_role":        frame.get("slot_role", ""),
-                        "slot_score":       frame.get("slot_score", 0.0),
-                        "mogco_objectives": frame.get("nsga3_objectives", {}),
-                        "engine":           "nsga3",
-                    })
-                    mogco_sequence.append(base)
-            except SequencerConstraintError as e:
-                mogco_error_msg = str(e)
-                print(f"[v2] NSGA-III constraint error: {e}")
-            except Exception as e:
-                print(f"[v2] NSGA-III multi-folder failed: {e}")
-
-            # ── DeepSeek-R1 per-slot curation rationales ─────────────────────
-            # Runs after NSGA-III; merges one-sentence rationales into both
-            # mogco_sequence entries and gallery_slim before catalog write.
-            _slim_by_path = {g["path"]: g for g in gallery_slim}
-            if mogco_sequence:
-                try:
-                    from creative_director_agent import generate_curation_rationales as _gen_rat
-                    _rationale_map = _gen_rat(mogco_sequence, _brief)
-                    for _r_path, _rat in _rationale_map.items():
-                        if _r_path in _slim_by_path:
-                            _slim_by_path[_r_path]["curation_rationale"] = _rat
-                    for _entry in mogco_sequence:
-                        _rat = _rationale_map.get(_entry.get("path", ""), "")
-                        if _rat:
-                            _entry["curation_rationale"] = _rat
-                    if _rationale_map:
-                        _progress(0.99, f"Rationales ready for {len(_rationale_map)} images…")
-                except Exception as _e_rat:
-                    print(f"[v2] Curation rationale generation failed: {_e_rat}")
-
-            strong = sum(1 for g in combined_gallery if "Strong" in g.get("grade", ""))
-            mid    = sum(1 for g in combined_gallery if "Mid"    in g.get("grade", ""))
-            weak   = sum(1 for g in combined_gallery if "Weak"   in g.get("grade", ""))
-
-            # Always write final catalog after rationales are merged — overwrites
-            # per-folder Step 8b writes so the React frontend gets rationale strings.
-            try:
-                import time as _cat_time
-                _cat_folders = list(dict.fromkeys(str(Path(g["path"]).parent) for g in gallery_slim))
-                _CATALOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-                _cat_tmp = _CATALOG_PATH.with_suffix(".json.tmp")
-                _cat_tmp.write_text(
-                    json.dumps({
-                        "photos":   gallery_slim,
-                        "folders":  _cat_folders,
-                        "saved_at": _cat_time.strftime("%Y-%m-%dT%H:%M:%S"),
-                    }, ensure_ascii=False, indent=2,
-                    default=lambda o: o.item() if hasattr(o, "item") else str(o)),
-                    encoding="utf-8",
-                )
-                _cat_tmp.replace(_CATALOG_PATH)
-                print(f"[grade_v2] catalog.json → {len(gallery_slim)} photos ({len(all_folders)} folders, w/ rationales)")
-            except Exception as _e_cat_sv:
-                print(f"[grade_v2] catalog.json final write failed: {_e_cat_sv}")
-
-            loop.call_soon_threadsafe(aqueue.put_nowait, {
-                "done":           True,
-                "total":          len(combined_gallery),
-                "strong":         strong,
-                "mid":            mid,
-                "weak":           weak,
-                "data":           gallery_slim,
-                "mogco_sequence": mogco_sequence,
-                "mogco_error":    mogco_error_msg,
-                "pipeline":       "v2",
+            # Get (or spawn) the persistent worker — O(1) if already alive
+            req_q, resp_q = await asyncio.get_running_loop().run_in_executor(
+                None, _ensure_worker
+            )
+            req_q.put({
+                "folders":      all_folders,
+                "preset":       req.preset,
+                "force_rescan": req.force_rescan,
+                "scan_mode":    req.scan_mode,
+                "catalog_path": str(_CATALOG_PATH),
+                "data_dir":     str(_DATA_DIR),
             })
-        except Exception as exc:
-            import traceback as _tb
-            _full_tb = _tb.format_exc()
-            print(f"[grade_v2_stream] CRASH:\n{_full_tb}", file=sys.stderr, flush=True)
-            try:
-                _crash_path = _DATA_DIR / "crash.log"
-                with open(_crash_path, "a", encoding="utf-8") as _cf:
-                    import datetime as _dt
-                    _cf.write(f"\n{'='*60}\n{_dt.datetime.now().isoformat()} grade_v2_stream crash:\n{_full_tb}\n")
-            except Exception:
-                pass
-            loop.call_soon_threadsafe(aqueue.put_nowait, {"error": str(exc), "traceback": _full_tb})
 
-    import threading as _th
-    _th.Thread(target=_run, daemon=True).start()
+            _running_loop = asyncio.get_running_loop()
 
-    async def _stream():
-        while True:
-            msg = await aqueue.get()
-            yield f"data: {_json.dumps(msg, default=lambda o: o.item() if hasattr(o, 'item') else str(o))}\n\n"
-            if msg.get("done") or msg.get("error"):
-                break
+            def _try_get():
+                try:
+                    return resp_q.get(timeout=1.0)
+                except _std_queue.Empty:
+                    return None
 
-    return StreamingResponse(_stream(), media_type="text/event-stream")
+            while True:
+                try:
+                    msg = await asyncio.wait_for(
+                        _running_loop.run_in_executor(None, _try_get),
+                        timeout=20.0,
+                    )
+                except asyncio.TimeoutError:
+                    msg = None
+
+                if msg is None:
+                    # Check whether the worker is still alive
+                    if _worker_proc is None or not _worker_proc.is_alive():
+                        # Drain any remaining messages
+                        while True:
+                            try:
+                                _tail = resp_q.get_nowait()
+                                yield f"data: {_json.dumps(_tail, default=lambda o: o.item() if hasattr(o, 'item') else str(o))}\n\n"
+                                if _tail.get("done") or _tail.get("error"):
+                                    if _tail.get("done") and annotation_queue is not None:
+                                        for _g in _tail.get("data", []):
+                                            _gpath = _g.get("path", "")
+                                            if _gpath and float(_g.get("score", 0.0)) > 0.0 and not _g.get("has_annotations"):
+                                                annotation_queue.put_nowait(_gpath)
+                                    return
+                            except Exception:
+                                break
+                        yield f"data: {_json.dumps({'error': 'Grade worker process died unexpectedly — check crash.log'})}\n\n"
+                        return
+                    yield ": heartbeat\n\n"
+                    continue
+
+                yield f"data: {_json.dumps(msg, default=lambda o: o.item() if hasattr(o, 'item') else str(o))}\n\n"
+                if msg.get("done") or msg.get("error"):
+                    if msg.get("done") and annotation_queue is not None:
+                        for _g in msg.get("data", []):
+                            _gpath = _g.get("path", "")
+                            if _gpath and float(_g.get("score", 0.0)) > 0.0 and not _g.get("has_annotations"):
+                                annotation_queue.put_nowait(_gpath)
+                    break
+        finally:
+            if _gl is not None:
+                _gl.release()
+
+    return StreamingResponse(_stream_with_lock(), media_type="text/event-stream")
 
 
 @app.post("/api/regrade")
@@ -1070,13 +1295,13 @@ async def personal_update(payload: dict):
 
         emb1 = by_path[path1]["embedding"]
         emb2 = by_path[path2]["embedding"]
-        loss = ph.update(emb1, grade1, emb2, grade2)
+        loss = await run_in_threadpool(ph.update, emb1, grade1, emb2, grade2)
 
         # Refresh personal scores for all stored photos
         all_rows = ls.query_all()
         if all_rows:
             all_embs = np.stack([r["embedding"] for r in all_rows])
-            new_pers = ph.score(all_embs)
+            new_pers = await run_in_threadpool(ph.score, all_embs)
             ls.update_personal_scores({r["path"]: float(s) for r, s in zip(all_rows, new_pers)})
 
         # Queue DPO preference events for background soul-alignment training
@@ -1089,6 +1314,73 @@ async def personal_update(payload: dict):
             pass  # DPO is best-effort; never block the main update
 
         return JSONResponse({"ok": True, "loss": round(loss, 5)})
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/personal/star")
+async def personal_star(payload: dict):
+    """
+    Train PersonalHead from a star rating on a single photo.
+
+    Stars map to grade labels:
+        4-5 → Strong ✅   3 → Mid ⚠️   1-2 → Weak ❌   0 → skip
+
+    A contrastive photo with a different grade is pulled from LanceDB to form
+    a preference pair for MarginRankingLoss.  The DPO queue is also updated so
+    BackgroundDPOTrainer can fire once 20 events accumulate.
+    """
+    import random as _random
+    try:
+        path  = str(payload.get("path", "")).strip()
+        stars = int(payload.get("stars", 0))
+        if not path or stars == 0:
+            return JSONResponse({"ok": True, "skipped": True})
+
+        star_grade = "Strong ✅" if stars >= 4 else ("Mid ⚠️" if stars == 3 else "Weak ❌")
+        _RANK = {"Strong ✅": 2, "Mid ⚠️": 1, "Weak ❌": 0}
+        star_rank = _RANK[star_grade]
+
+        import personal_head as ph
+        import lance_store   as ls
+
+        rows = ls.query_by_paths([path])
+        if not rows:
+            return JSONResponse({"ok": False, "error": "path not found in LanceDB"})
+
+        this_row   = rows[0]
+        this_emb   = this_row["embedding"]
+        this_grade = this_row.get("grade") or "Mid ⚠️"
+
+        # Queue DPO event: auto grade → user star grade
+        try:
+            import background_dpo_trainer as _dpo
+            _dpo.get_trainer().queue_event(path, this_grade, star_grade)
+        except Exception as _e_dpo:
+            print(f"[star] DPO queue skipped: {_e_dpo}")
+
+        # PersonalHead pair update: find a contrastive photo
+        all_rows    = ls.query_all()
+        contrastive = [r for r in all_rows
+                       if r["path"] != path
+                       and _RANK.get(r.get("grade") or "Mid ⚠️", 1) != star_rank]
+
+        loss = 0.0
+        if contrastive:
+            other      = _random.choice(contrastive[:40])
+            other_emb  = other["embedding"]
+            other_grade = other.get("grade") or "Mid ⚠️"
+            loss = await run_in_threadpool(ph.update, this_emb, star_grade, other_emb, other_grade)
+
+            # Refresh personal scores across all stored photos
+            if all_rows:
+                all_embs = np.stack([r["embedding"] for r in all_rows])
+                new_pers = await run_in_threadpool(ph.score, all_embs)
+                ls.update_personal_scores(
+                    {r["path"]: float(s) for r, s in zip(all_rows, new_pers)}
+                )
+
+        return JSONResponse({"ok": True, "star_grade": star_grade, "loss": round(loss, 5)})
     except Exception as e:
         raise HTTPException(500, str(e))
 
@@ -1116,13 +1408,13 @@ async def update_preference(payload: dict):
         emb_w = by_path[winner]["embedding"]
         emb_l = by_path[loser]["embedding"]
 
-        loss = ph.update(emb_w, 1, emb_l, 0)
+        loss = await run_in_threadpool(ph.update, emb_w, 1, emb_l, 0)
 
         # Refresh personal scores for all stored photos (LanceDB)
         all_rows = ls.query_all()
         if all_rows:
             all_embs = np.stack([r["embedding"] for r in all_rows])
-            new_pers = ph.score(all_embs)
+            new_pers = await run_in_threadpool(ph.score, all_embs)
             ls.update_personal_scores({r["path"]: float(s) for r, s in zip(all_rows, new_pers)})
 
         return JSONResponse({"ok": True, "loss": round(loss, 5)})
@@ -1165,14 +1457,15 @@ async def creative_direction_stream(payload: dict):
     import asyncio, json, numpy as _np
     from fastapi.responses import StreamingResponse
 
-    anchor_path  = (payload.get("anchor_path") or "").strip()
-    folder_path  = (payload.get("folder_path") or "").strip()
-    style_prompt = (payload.get("style_prompt") or "").strip()
-    n_target     = int(payload.get("n_target", 7))
-    n_target     = max(5, min(10, n_target))
-
-    if not anchor_path:
-        return JSONResponse({"error": "anchor_path is required"}, status_code=400)
+    anchor_path     = (payload.get("anchor_path") or "").strip()
+    folder_path     = (payload.get("folder_path") or "").strip()
+    style_prompt    = (payload.get("style_prompt") or "").strip()
+    n_target        = int(payload.get("n_target", 7))
+    n_target        = max(3, min(10, n_target))
+    peg_image_hash  = (payload.get("peg_image_hash") or "").strip() or None
+    mode            = (payload.get("mode") or "story").strip().lower()
+    if mode not in ("story", "competition"):
+        mode = "story"
 
     queue = asyncio.Queue()
     loop  = asyncio.get_running_loop()
@@ -1308,12 +1601,14 @@ async def creative_direction_stream(payload: dict):
                 aspect_scores_list= aspect_scores or None,
                 anchor_path       = anchor_path,
                 output_dir        = folder_path or str(
-                    Path(anchor_path).parent
+                    Path(anchor_path).parent if anchor_path else _DATA_DIR / "cache"
                 ),
                 style_prompt      = style_prompt,
                 n_target          = n_target,
                 avoid_paths       = avoid_paths,
                 progress          = _progress,
+                peg_image_hash    = peg_image_hash,
+                mode              = mode,
             )
 
             # Auto-mark generated images as used so next generation picks different ones.
@@ -1471,7 +1766,7 @@ async def grade_photos_stream(req: GradeRequest):
         else:
             raise HTTPException(400, "No valid folder path provided")
 
-    loop: asyncio.AbstractEventLoop = asyncio.get_event_loop()
+    loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
     aqueue: asyncio.Queue = asyncio.Queue()
 
     def _progress(frac: float, desc: str = "") -> None:
@@ -1585,7 +1880,7 @@ async def detect_niches(payload: dict):
 async def build_niche_anchors():
     """(Re)build NicheClassifier visual prototypes from the current cache."""
     import asyncio
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     built = await loop.run_in_executor(None, get_analyzer()._build_niche_anchors)
     clf   = get_analyzer()._niche_clf
     return {
@@ -1733,7 +2028,7 @@ async def mogco_sequence_simple(payload: dict):
         beam_width = int(payload.get("beam_width", 4))
         # vibe_prompt reserved — encode to vector here when text encoder is added
         from mogco_sequencer import run_mogco_sequence
-        result = await asyncio.get_event_loop().run_in_executor(
+        result = await asyncio.get_running_loop().run_in_executor(
             None,
             lambda: run_mogco_sequence(
                 vibe_vec=None,
@@ -1875,7 +2170,7 @@ async def mogco_sequence_endpoint(payload: dict):
                         vibe_vec = np.array(raw, dtype=np.float64)
 
             from mogco_sequencer import run_mogco_sequence
-            beam_result = await asyncio.get_event_loop().run_in_executor(
+            beam_result = await asyncio.get_running_loop().run_in_executor(
                 None,
                 lambda: run_mogco_sequence(
                     vibe_vec=vibe_vec,
@@ -1947,7 +2242,7 @@ async def mogco_sequence_endpoint(payload: dict):
             })
 
         from mogco_engine import mogco_sequence
-        result = await asyncio.get_event_loop().run_in_executor(
+        result = await asyncio.get_running_loop().run_in_executor(
             None,
             lambda: mogco_sequence(candidates, target=target, stype=stype, rng_seed=seed),
         )
@@ -2202,11 +2497,11 @@ async def director_sequence(payload: dict):
         # CLIP text-image ranking: encodes brief → 512-dim embedding, ranks photos
         # by cosine similarity (CLIP trained on 400M image-text pairs).
         if prompt:
-            input_data = await _aio.get_event_loop().run_in_executor(
+            input_data = await _aio.get_running_loop().run_in_executor(
                 None, lambda: _clip_rank_by_brief(input_data, prompt)
             )
 
-        loop = _aio.get_event_loop()
+        loop = _aio.get_running_loop()
         seq_paths, rationale, seq_type = await loop.run_in_executor(
             None,
             lambda: analyzer.sequence_story(
@@ -2265,7 +2560,7 @@ async def director_upload_grade(
         dest.write_bytes(await f.read())
 
     # Grade using existing pipeline
-    loop = _aio.get_event_loop()
+    loop = _aio.get_running_loop()
     results = await loop.run_in_executor(
         None,
         lambda: analyzer.analyze_folder(str(batch_dir), preset=preset),
@@ -2469,9 +2764,9 @@ async def analyze_niche(payload: dict):
         0.15 * clamp(t)
     ) - clamp(a - 0.65) * 0.45                  # harder penalty if clearly candid
 
-    # LSPF (LONDON STREET): atmosphere + human, urban mood, between street and cinematic
+    # London Street: atmosphere + human, urban mood, between street and cinematic
     # Needs both human presence AND decent light — penalise if either is absent
-    raw["LSPF (London Street)"] = (
+    raw["London Street"] = (
         0.35 * clamp(l * 1.2) +
         0.30 * clamp(human_x_auth * 1.8) +
         0.20 * clamp(h) +
@@ -2511,7 +2806,7 @@ async def analyze_niche(payload: dict):
             "Composition is the single strongest signal. Clean reduction, negative space, and structural purity.",
         "Fine Art/Contemporary":
             "Compositional intent over candid capture. Conceptual framing and tonal control elevate it beyond documentation.",
-        "LSPF (London Street)":
+        "London Street":
             "Urban atmosphere and human presence in soft, directional light. Between street photography and cinematic mood.",
     }
 
@@ -2547,7 +2842,7 @@ async def analyze_niche(payload: dict):
             "market":  "Interior design publications, architectural practices, fine art print collectors, corporate art acquisitions.",
             "study":   ["Fan Ho", "Michael Kenna", "Hiroshi Sugimoto"],
         },
-        "LSPF (London Street)": {
+        "London Street": {
             "submit":  ["LSPF Annual Exhibition", "Street Foto San Francisco", "Sony World Photography (Street)", "Street Photo Prize"],
             "market":  "UK cultural institutions, editorial press, documentary photobooks, urban lifestyle brands.",
             "study":   ["Nick Turpin", "Matt Stuart", "Jesse Marlow"],
@@ -3007,9 +3302,9 @@ async def _warm_and_run(fn):
     """Ensure ONNX is loaded, then run fn() in a thread executor."""
     import asyncio
     if analyzer._ort_sessions is None:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, analyzer._ensure_sessions)
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, fn)
 
 
@@ -3233,14 +3528,525 @@ async def load_flags():
         return {"locked": [], "used": []}
 
 
+@app.post("/api/upload")
+async def upload_image(file: UploadFile = File(...)):
+    """
+    Ingest a local image file for use as a Creative Director peg.
+
+    Saves the file to data/ingestion_queue/, hashes it with MD5,
+    and inserts a stub LanceDB record so vector_search can locate it.
+    Returns {"status": "success", "hash": file_hash, "path": saved_path}.
+    """
+    import hashlib as _hl
+
+    data      = await file.read()
+    file_hash = _hl.md5(data).hexdigest()
+
+    queue_dir = _DATA_DIR / "data" / "ingestion_queue"
+    queue_dir.mkdir(parents=True, exist_ok=True)
+
+    suffix = Path(file.filename or "upload.jpg").suffix.lower() or ".jpg"
+    if suffix not in _IMAGE_EXTS:
+        raise HTTPException(400, "Unsupported image format")
+    dest = queue_dir / f"{file_hash}{suffix}"
+    dest.write_bytes(data)
+
+    # Phase 1 — VLM Pixel Inspector (Ollama qwen2.5vl:3b)
+    # Runs before LanceDB insertion so the semantic profile is stored in breakdown.
+    semantic_profile = ""
+    try:
+        import asyncio as _aio
+        from fast_ingestion import run_pixel_inspector
+        loop = _aio.get_running_loop()
+        semantic_profile = await loop.run_in_executor(
+            None, run_pixel_inspector, str(dest), 0.0
+        )
+    except Exception as _e_pi:
+        print(f"[upload] pixel_inspector skipped: {_e_pi}")
+
+    # Insert stub LanceDB record — zero-vector placeholder so peg lookup resolves.
+    # semantic_profile is embedded in breakdown JSON so downstream Art Director can use it.
+    import json as _json_mod
+    breakdown_stub = _json_mod.dumps({"semantic_profile": semantic_profile})
+    try:
+        import lance_store as _ls
+        _ls.upsert_batch([{
+            "path":           str(dest),
+            "embedding":      [0.0] * 1536,
+            "score":          0.0,
+            "personal_score": 0.0,
+            "grade":          "Pending",
+            "reasoning_log":  semantic_profile,
+            "breakdown":      breakdown_stub,
+            "exif_ts":        0.0,
+        }])
+        print(f"[upload] stub record inserted: {dest.name}  hash={file_hash}")
+    except Exception as _e_ldb:
+        print(f"[upload] LanceDB stub insert failed: {_e_ldb}")
+
+    # TODO: Trigger full grading pipeline here
+
+    return JSONResponse({"status": "success", "hash": file_hash, "path": str(dest)})
+
+
+@app.get("/api/heatmap/technical/{image_hash:path}")
+async def heatmap_technical(image_hash: str):
+    """Return a Base64-encoded RGBA PNG blur heatmap for the given image path."""
+    import asyncio
+    from pipeline.heatmaps import generate_technical_heatmap
+
+    p = _safe_image_path(image_hash)
+    readable_path = str(p)
+
+    if p.suffix.lower() in (_RAW_EXTS | _HEIC_EXTS):
+        preview = _gen_preview(str(p))
+        if preview:
+            readable_path = str(preview)
+        else:
+            raise HTTPException(422, "Could not decode RAW/HEIC for heatmap")
+
+    try:
+        loop = asyncio.get_running_loop()
+        b64 = await loop.run_in_executor(None, generate_technical_heatmap, readable_path)
+        return JSONResponse({"b64": b64})
+    except Exception as exc:
+        raise HTTPException(500, f"Heatmap generation failed: {exc}")
+
+
+@app.get("/api/search/semantic")
+async def search_semantic(q: str = Query(default="", description="Free-text photo description")):
+    """
+    Natural-language semantic search over the LanceDB embedding index.
+
+    Uses SigLIP-2's text tower to encode the query and returns the top-20
+    most visually similar photos.  Reuses the grading singleton if loaded
+    (no extra VRAM); falls back to a CPU encoder otherwise.
+    """
+    import asyncio as _aio
+
+    if not q.strip():
+        raise HTTPException(400, "Query parameter 'q' is required and must be non-empty")
+
+    try:
+        from creative_director import semantic_search as _ss
+        loop    = _aio.get_running_loop()
+        results = await loop.run_in_executor(None, lambda: _ss(query=q, limit=20))
+        return JSONResponse({"results": results, "query": q})
+    except Exception as exc:
+        raise HTTPException(500, f"Semantic search failed: {exc}")
+
+
+@app.post("/api/critique/details")
+async def critique_details(req: Request):
+    """
+    On-demand deep text critique for a single selected photo.
+
+    Sends the image to Qwen2.5-VL via Ollama using GENERATE_DEEP_TEXT_PROMPT —
+    text only, no scores, no bounding boxes.  RAG context from
+    cache/rag_concepts.json is injected automatically.
+
+    Body: { "image_path": str, "mode": "story" | "competition" }
+    Returns: { "narrative_arc": str, "geometry_composition": str }
+    """
+    data = await req.json()
+    raw_path = data.get("image_path", "").strip()
+    mode     = data.get("mode", "story")
+
+    if not raw_path:
+        raise HTTPException(400, "image_path is required")
+
+    try:
+        img_path = str(_safe_image_path(raw_path))
+    except HTTPException:
+        raise
+    except Exception as _e:
+        raise HTTPException(400, f"Invalid image path: {_e}")
+
+    from qwen_vlm_grader import execute_vlm_text_deep_dive
+    result = await run_in_threadpool(execute_vlm_text_deep_dive, img_path, mode)
+
+    if result is None:
+        raise HTTPException(503, "Ollama unavailable or VLM critique failed — is qwen2.5-vl:3b running?")
+
+    return JSONResponse(result)
+
+
+@app.get("/api/critique/jury/{image_hash:path}")
+async def jury_critique(image_hash: str):
+    """
+    Generate a 3-paragraph DeepSeek-R1:8b jury critique for a single image.
+
+    Runs the GGUF inference in an isolated subprocess so a C-level crash or
+    OOM in llama-cpp-python kills only the child, not this server process.
+
+    image_hash : MD5 stem used as the LanceDB path identifier.
+    Returns {"critique": str, "think": str}.
+    """
+    import sys as _sys
+    import asyncio as _aio
+    import json as _json
+    import subprocess as _sp
+
+    if not image_hash.strip():
+        raise HTTPException(400, "image_hash is required")
+
+    # Inline script executed in the child process.
+    # Uses sys.path.insert so it can import from src/ without package install.
+    _critique_script = r"""
+import sys, json
+sys.path.insert(0, 'src')
+image_hash = sys.argv[1]
+try:
+    from critique_engine import run_jury_critique
+    result = run_jury_critique(image_hash=image_hash)
+    print(json.dumps(result), flush=True)
+except Exception as _e:
+    import traceback
+    print(json.dumps({
+        "error":   f"{type(_e).__name__}: {_e}",
+        "critique": "",
+        "think":   traceback.format_exc(),
+    }), flush=True)
+"""
+
+    try:
+        # Use pythonw.exe on Windows — windowless Python never flashes a console.
+        _py = _sys.executable
+        if os.name == "nt" and _py.lower().endswith("python.exe"):
+            _pyw = _py[:-10] + "pythonw.exe"
+            if os.path.exists(_pyw):
+                _py = _pyw
+        _cflags = _sp.CREATE_NO_WINDOW if os.name == "nt" else 0
+        proc = await _aio.create_subprocess_exec(
+            _py, "-c", _critique_script, image_hash,
+            stdout=_aio.subprocess.PIPE,
+            stderr=_aio.subprocess.PIPE,
+            cwd=str(Path(__file__).parent),
+            creationflags=_cflags,
+        )
+
+        try:
+            stdout_b, stderr_b = await _aio.wait_for(proc.communicate(), timeout=90)
+        except _aio.TimeoutError:
+            # Kill and reap the child so it doesn't linger as a zombie
+            try:
+                proc.kill()
+                await _aio.wait_for(proc.wait(), timeout=5)
+            except Exception:
+                pass
+            print("[jury] subprocess timed out after 90 s — killed and reaped")
+            return JSONResponse(
+                {"error": "Critique timed out (90 s). Model may still be loading — try again.", "critique": "", "think": ""},
+                status_code=504,
+            )
+
+        stderr_txt = stderr_b.decode(errors="replace").strip()
+        if stderr_txt:
+            # Forward child stderr to server log for debugging (truncated)
+            print(f"[jury subprocess] {stderr_txt[:800]}")
+
+        stdout_txt = stdout_b.decode(errors="replace").strip()
+        if not stdout_txt:
+            code = proc.returncode
+            print(f"[jury] subprocess exited {code} with no stdout")
+            return JSONResponse(
+                {"error": f"Critique engine exited ({code}) with no output.", "critique": "", "think": stderr_txt[:400]},
+                status_code=500,
+            )
+
+        # The child may emit debug prints before the final JSON line — find the last one.
+        result: dict = {}
+        for _line in reversed(stdout_txt.splitlines()):
+            _line = _line.strip()
+            if _line.startswith("{"):
+                try:
+                    result = _json.loads(_line)
+                    break
+                except _json.JSONDecodeError:
+                    continue
+
+        if not result:
+            return JSONResponse(
+                {"error": f"Could not parse critique output: {stdout_txt[:200]}", "critique": "", "think": ""},
+                status_code=500,
+            )
+
+        if result.get("error") and not result.get("critique"):
+            print(f"[jury] critique error from child: {result['error'][:200]}")
+            return JSONResponse({"error": result["error"], "critique": "", "think": result.get("think", "")})
+
+        return JSONResponse(result)
+
+    except Exception as exc:
+        import traceback as _tb
+        _tb.print_exc()
+        return JSONResponse(
+            {"error": f"Server error: {type(exc).__name__}: {exc}", "critique": "", "think": ""},
+            status_code=500,
+        )
+
+
+class ModelPullRequest(BaseModel):
+    model_name: str
+
+@app.post("/api/models/pull")
+async def pull_model_stream(req: ModelPullRequest):
+    """Proxy Ollama's pull stream so the frontend can show live download progress."""
+    def _stream():
+        try:
+            with _requests.post(
+                "http://localhost:11434/api/pull",
+                json={"name": req.model_name, "stream": True},
+                stream=True,
+                timeout=None,
+            ) as r:
+                for line in r.iter_lines():
+                    if line:
+                        yield line + b"\n"
+                        # Close early — don't wait for Ollama to drop the connection
+                        if b'"success"' in line:
+                            break
+        except Exception as exc:
+            import json as _j
+            yield (_j.dumps({"error": str(exc)}) + "\n").encode()
+
+    return StreamingResponse(_stream(), media_type="application/x-ndjson")
+
+
+@app.get("/api/health/engine")
+async def health_engine():
+    """Check Ollama reachability and required model availability (hybrid: Ollama + local GGUF).
+
+    Logic:
+      - status "online"  : Ollama is reachable (models may still be missing)
+      - status "offline" : Ollama unreachable AND no local GGUF fallback exists
+      - missing_models   : Ollama models not yet pulled (can be auto-downloaded)
+      - missing_files    : GGUF files not present (must be placed manually in models/)
+      At least one of (any Ollama model OR any local GGUF) must exist for AI features to work.
+    """
+    # Run the blocking Ollama HTTP check in a thread so the event loop is never stalled.
+    def _check_sync() -> dict:
+        _ollama_models = ["qwen2.5vl:3b", "deepseek-r1:8b"]
+        _local_ggufs   = [
+            Path("models/qwen2.5-vl-2b-instruct-q4_k_m.gguf"),
+            Path("models/mmproj-qwen2.5-vl-2b-instruct-f16.gguf"),
+            Path("models/deepseek-r1-8b-q5.gguf"),
+        ]
+        gguf_present  = [g for g in _local_ggufs if g.exists()]
+        missing_files = [g.name for g in _local_ggufs if not g.exists()]
+        try:
+            resp = _requests.get("http://localhost:11434/api/tags", timeout=2)
+            resp.raise_for_status()
+            installed_names = [m.get("name", "") for m in resp.json().get("models", [])]
+            missing_ollama: list = []
+            for _m in _ollama_models:
+                base = _m.split(":")[0]
+                if not any(_i == _m or _i.startswith(base + ":") for _i in installed_names):
+                    missing_ollama.append(_m)
+            extra = missing_files if not gguf_present else []
+            return {"status": "online", "missing_models": missing_ollama + extra}
+        except Exception:
+            if gguf_present:
+                return {"status": "online", "missing_models": ["qwen2.5vl:3b", "deepseek-r1:8b"]}
+            return {"status": "offline", "missing_models": []}
+
+    result = await asyncio.get_running_loop().run_in_executor(None, _check_sync)
+    return JSONResponse(result)
+
+
+@app.get("/api/annotations/{image_hash:path}")
+async def get_annotations(image_hash: str):
+    """Return has_annotations, score_factors, and eye_overlay_url for a single image."""
+    # Resolve eye overlay URLs for canvas_renderer.py outputs
+    _overlay_base = Path(__file__).parent / "static" / "eye_feature_overlays"
+    _verified     = _overlay_base / f"verified_{image_hash}.png"
+    _critique     = _overlay_base / f"critique_{image_hash}.png"
+    eye_overlay_url: str = ""
+    if _verified.exists():
+        eye_overlay_url = f"/static/eye_feature_overlays/verified_{image_hash}.png"
+    elif _critique.exists():
+        eye_overlay_url = f"/static/eye_feature_overlays/critique_{image_hash}.png"
+
+    try:
+        import lance_store as _ls
+        all_rows = _ls.query_all(min_score=0.0)
+        record   = next(
+            (r for r in all_rows
+             if Path(r["path"]).stem == image_hash or image_hash in Path(r["path"]).stem),
+            None,
+        )
+        if record is None:
+            return JSONResponse({
+                "has_annotations": "",
+                "score_factors":   [],
+                "eye_overlay_url": eye_overlay_url,
+            })
+        import json as _json
+        _sf_raw = record.get("score_factors", "")
+        try:
+            _sf = _json.loads(_sf_raw) if _sf_raw else []
+        except Exception:
+            _sf = []
+        return JSONResponse({
+            "has_annotations": record.get("has_annotations", ""),
+            "score_factors":   _sf,
+            "eye_overlay_url": eye_overlay_url,
+        })
+    except Exception as _e:
+        return JSONResponse({
+            "has_annotations": "",
+            "score_factors":   [],
+            "eye_overlay_url": eye_overlay_url,
+            "error": str(_e),
+        })
+
+
+@app.post("/api/rag/upload")
+async def rag_upload(file: UploadFile = File(...)):
+    """
+    Upload a PDF reference document. Extracts text, runs LLM concept extraction,
+    appends phrases to cache/rag_concepts.json.
+    """
+    import tempfile as _tmp, shutil as _sh
+    try:
+        if not (file.filename or "").lower().endswith(".pdf"):
+            raise HTTPException(400, "Only PDF files are supported")
+
+        # Save upload to a temp file then hand off to pdf_rag.ingest_pdf
+        suffix = ".pdf"
+        with _tmp.NamedTemporaryFile(delete=False, suffix=suffix) as tf:
+            _sh.copyfileobj(file.file, tf)
+            tmp_path = tf.name
+
+        from pdf_rag import ingest_pdf as _ingest
+        phrases = await run_in_threadpool(_ingest, tmp_path, file.filename)
+
+        Path(tmp_path).unlink(missing_ok=True)
+
+        from pdf_rag import list_pdfs as _list
+
+        # Bust the SigLIP-2 text embedding cache so next grade run re-encodes
+        # with the new PDF phrases baked into the positive rubric.
+        try:
+            import sys as _sys
+            _gp = _sys.modules.get("grade_pipeline_v2")
+            if _gp is not None:
+                _gp._text_emb_cache.clear()
+                print("[server] RAG upload: cleared SigLIP text embedding cache")
+        except Exception as _e_cache:
+            print(f"[server] Cache clear skipped: {_e_cache}")
+
+        return JSONResponse({"ok": True, "phrases": phrases, "pdfs": _list()})
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback as _tb
+        _tb.print_exc()
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/rag/concepts")
+async def rag_concepts():
+    """Return all stored concept phrases and PDF metadata."""
+    from pdf_rag import load_concepts as _lc, list_pdfs as _lp
+    return JSONResponse({"phrases": _lc(), "pdfs": _lp()})
+
+
+@app.delete("/api/rag/clear")
+async def rag_clear():
+    """Remove all stored concept phrases and uploaded PDF records."""
+    from pdf_rag import clear_concepts as _cc
+    await run_in_threadpool(_cc)
+    try:
+        import sys as _sys
+        _gp = _sys.modules.get("grade_pipeline_v2")
+        if _gp is not None:
+            _gp._text_emb_cache.clear()
+    except Exception:
+        pass
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/reasoning_overlay")
+async def reasoning_overlay(req: Request):
+    """
+    Render photographer-style reasoning annotations onto the image server-side.
+    Body: { path: str }
+    Returns: { overlay_url: str } or { error: str }
+    """
+    try:
+        body      = await req.json()
+        raw_path  = body.get("path", "")
+        if not raw_path:
+            return JSONResponse({"error": "path required"}, status_code=400)
+        img_path  = sanitize_path(raw_path)
+
+        import lance_store as _ls
+        rows = _ls.query_all(min_score=0.0)
+        record = next(
+            (r for r in rows if str(Path(r["path"])) == str(Path(img_path))),
+            None,
+        )
+        if record is None:
+            return JSONResponse({"error": "image not found in DB"}, status_code=404)
+
+        bd = record.get("breakdown") or {}
+        if isinstance(bd, str):
+            import json as _json
+            try:
+                bd = _json.loads(bd)
+            except Exception:
+                bd = {}
+
+        reasoning_log = record.get("reasoning_log", "")
+        if not reasoning_log and bd:
+            from src.specvlm_pipeline import _build_reasoning as _br, _detect_genre as _dg
+            reasoning_log = _br(
+                float(record.get("score", 0.5)),
+                bd,
+                bool(record.get("is_verified", False)),
+                grade=record.get("grade", ""),
+                genre=_dg(bd),
+            )
+        if not reasoning_log:
+            return JSONResponse({"error": "no reasoning data for this image"}, status_code=404)
+
+        from canvas_renderer import render_reasoning_overlay as _rro
+        overlay_url = await run_in_threadpool(
+            _rro,
+            img_path,
+            reasoning_log,
+            bd,
+            float(record.get("score", 0.5)),
+            record.get("grade", ""),
+        )
+        return JSONResponse({"overlay_url": overlay_url})
+    except Exception as _e:
+        import traceback as _tb
+        _tb.print_exc()
+        return JSONResponse({"error": str(_e)}, status_code=500)
+
+
 @app.get("/{full_path:path}")
 async def serve_spa(full_path: str):
     candidate = DIST / full_path
     if candidate.exists() and candidate.is_file():
-        return FileResponse(str(candidate))
+        # Hashed assets (JS/CSS with content-hash filenames) are safe to cache forever.
+        # index.html must never be cached — always revalidate so a new build is picked up instantly.
+        suffix = candidate.suffix.lower()
+        if suffix in (".js", ".css") and any(
+            c in candidate.stem for c in ("-", "_")
+        ):
+            headers = {"Cache-Control": "public, max-age=31536000, immutable"}
+        else:
+            headers = {"Cache-Control": "no-cache, no-store, must-revalidate"}
+        return FileResponse(str(candidate), headers=headers)
     index = DIST / "index.html"
     if index.exists():
-        return FileResponse(str(index))
+        return FileResponse(
+            str(index),
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
     raise HTTPException(404, "Frontend not built. Run: cd frontend && npm run build")
 
 

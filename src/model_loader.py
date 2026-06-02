@@ -30,8 +30,12 @@ _DOWNLOAD_STATUS: dict = {
     "deepseek_draft": "pending",
     "deepseek_verify": "pending",
     "topiq_nr": "pending",
+    "qwen_vlm": "pending",
 }
 _DOWNLOAD_LOCK = threading.Lock()
+
+# Expected size of Qwen2.5-VL-3B-Instruct safetensors + config (~6.8 GB).
+_QWEN_EXPECTED_BYTES = 6_800_000_000
 
 
 # ── TOPIQ NR weight prefetch ──────────────────────────────────────────────────
@@ -68,6 +72,70 @@ def _download_topiq_nr_if_needed() -> bool:
     return True
 
 
+# ── Qwen2.5-VL-3B-Instruct prefetch ──────────────────────────────────────────
+
+def _download_qwen_if_needed() -> bool:
+    """
+    Download Qwen2.5-VL-3B-Instruct weights to models/qwen_vlm/ via
+    huggingface_hub.snapshot_download().  A background watcher thread updates
+    _DOWNLOAD_STATUS["qwen_vlm"] with "downloading:<pct>" every 3 s so the
+    frontend can show a live progress bar without polling the filesystem itself.
+    """
+    import time as _time
+    qwen_dir = Path("models/qwen_vlm")
+
+    # Fast-path: weights already present.
+    if any(qwen_dir.rglob("*.safetensors")):
+        print("[model_loader] Qwen2.5-VL already cached — skipping download")
+        return True
+
+    try:
+        from huggingface_hub import snapshot_download
+
+        qwen_dir.mkdir(parents=True, exist_ok=True)
+        _DOWNLOAD_STATUS["qwen_vlm"] = "downloading:0"
+
+        # Watcher thread: update progress every 3 s based on downloaded bytes.
+        stop_evt = threading.Event()
+
+        def _watch():
+            while not stop_evt.is_set():
+                try:
+                    total = sum(
+                        f.stat().st_size
+                        for f in qwen_dir.rglob("*")
+                        if f.is_file()
+                    )
+                    pct = min(99, int(total / _QWEN_EXPECTED_BYTES * 100))
+                    _DOWNLOAD_STATUS["qwen_vlm"] = f"downloading:{pct}"
+                except Exception:
+                    pass
+                stop_evt.wait(3)
+
+        watcher = threading.Thread(target=_watch, daemon=True, name="qwen-dl-watch")
+        watcher.start()
+
+        print("[model_loader] Downloading Qwen2.5-VL-3B-Instruct (~6.8 GB) …")
+        snapshot_download(
+            repo_id="Qwen/Qwen2.5-VL-3B-Instruct",
+            local_dir=str(qwen_dir),
+            local_dir_use_symlinks=False,
+            # Skip non-PyTorch weight formats to save ~2 GB.
+            ignore_patterns=["*.msgpack", "*.h5", "flax_model*", "tf_model*", "rust_model*"],
+        )
+        stop_evt.set()
+        watcher.join(timeout=5)
+
+        _DOWNLOAD_STATUS["qwen_vlm"] = "ready"
+        print("[model_loader] Qwen2.5-VL download complete")
+        return True
+
+    except Exception as exc:
+        print(f"[model_loader] Qwen2.5-VL download failed: {exc}")
+        _DOWNLOAD_STATUS["qwen_vlm"] = "failed"
+        return False
+
+
 # ── Central download orchestration ────────────────────────────────────────────
 
 
@@ -88,17 +156,27 @@ def ensure_all_models_downloaded(progress_cb=None) -> dict:
     """
     global _DOWNLOAD_STATUS
 
-    if _SENTINEL.exists():
+    # Sentinel is only valid if Qwen weights are also present — older sentinels
+    # were written before Qwen was added to the task list.
+    _qwen_cached = any(Path("models/qwen_vlm").rglob("*.safetensors"))
+    if _SENTINEL.exists() and _qwen_cached:
         ready = {k: "ready" for k in _DOWNLOAD_STATUS}
         _DOWNLOAD_STATUS.update(ready)
         return ready
 
     with _DOWNLOAD_LOCK:
-        # Re-check after acquiring the lock (another thread may have finished).
-        if _SENTINEL.exists():
+        _qwen_cached = any(Path("models/qwen_vlm").rglob("*.safetensors"))
+        if _SENTINEL.exists() and _qwen_cached:
             ready = {k: "ready" for k in _DOWNLOAD_STATUS}
             _DOWNLOAD_STATUS.update(ready)
             return ready
+
+        # Invalidate stale sentinel (written before Qwen was in the task list).
+        if _SENTINEL.exists() and not _qwen_cached:
+            try:
+                _SENTINEL.unlink()
+            except OSError:
+                pass
 
         from siglip2_encoder import _download_siglip2_if_needed
         from deepseek_model import (
@@ -119,6 +197,7 @@ def ensure_all_models_downloaded(progress_cb=None) -> dict:
                 _DS_CACHE / "deepseek-ai_DeepSeek-R1-Distill-Qwen-7B",
             )),
             ("topiq_nr", _download_topiq_nr_if_needed),
+            ("qwen_vlm",  _download_qwen_if_needed),
         ]
 
         for key, fn in _model_tasks:

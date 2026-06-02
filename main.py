@@ -1,5 +1,5 @@
 """
-Street Story Curator — CLI entrypoint.
+FrameGrade — CLI entrypoint.
 
 Usage
 -----
@@ -32,7 +32,7 @@ logger = logging.getLogger("main")
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Street Story Curator — Frontier 2026 Edition",
+        description="FrameGrade — Frontier 2026 Edition",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -56,7 +56,7 @@ _FRONTIER_REQUIRED_BANNER = """
 ╔══════════════════════════════════════════════════════════════════╗
 ║            FRONTIER 2026 — ENFORCEMENT REQUIRED                  ║
 ╠══════════════════════════════════════════════════════════════════╣
-║  Street Story Curator requires --force-frontier to launch.       ║
+║  FrameGrade requires --force-frontier to launch.        ║
 ║  Legacy graders have been permanently removed.                   ║
 ║                                                                  ║
 ║  Run:   python main.py --force-frontier                          ║
@@ -91,7 +91,7 @@ def main() -> None:
 
     import uvicorn
     logger.info(
-        f"Starting Street Story Curator  host={args.host}  port={args.port}  "
+        f"Starting FrameGrade  host={args.host}  port={args.port}  "
         f"force_frontier={args.force_frontier}"
     )
     uvicorn.run(

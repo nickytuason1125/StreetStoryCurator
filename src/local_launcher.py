@@ -1,12 +1,16 @@
 """
-Street Story Curator — local desktop launcher.
+FrameGrade — local desktop launcher.
 Starts FastAPI, then opens the UI in a local pywebview window.
 Errors are written to crash.log in the project root.
 """
 import os, sys, time, threading, socket, traceback, urllib.request, subprocess
 from pathlib import Path
 
-_ROOT   = Path(__file__).resolve().parent.parent
+_ROOT = Path(__file__).resolve().parent.parent
+# Must be first — patches subprocess/multiprocessing/asyncio, allocates hidden
+# console so any native child that omits CREATE_NO_WINDOW inherits it silently.
+sys.path.insert(0, str(_ROOT))
+import suppress_console
 _LOG    = _ROOT / "crash.log"
 _APP_ID = "StreetPhotography.StreetStoryCurator.1"
 
@@ -21,17 +25,42 @@ if sys.platform == "win32":
         pass
 
 
-def _log(msg):
+# Kill any stale port-8000 process BEFORE opening crash.log.
+# The previous uvicorn instance is the most common holder of a locked crash.log.
+if sys.platform == "win32":
     try:
-        with open(_LOG, "a", encoding="utf-8") as f:
-            f.write(msg + "\n")
+        import subprocess as _sp_early
+        _early_out = _sp_early.check_output(
+            "netstat -ano | findstr :8000",
+            shell=True, text=True, creationflags=0x08000000,
+        )
+        for _ln in _early_out.splitlines():
+            _parts = _ln.split()
+            if len(_parts) >= 5 and _parts[3] == "LISTENING":
+                _sp_early.run(
+                    ["taskkill", "/F", "/PID", _parts[4]],
+                    creationflags=0x08000000, capture_output=True,
+                )
+        time.sleep(0.3)  # give OS time to release the file handle
     except Exception:
         pass
 
-
-_log_fh = open(_LOG, "a", encoding="utf-8", buffering=1)
+try:
+    _log_fh = open(_LOG, "a", encoding="utf-8", buffering=1)
+except PermissionError:
+    # Fallback: write to a temp file so the app can still start and log.
+    import tempfile as _tmp
+    _log_fh = open(_tmp.mktemp(suffix=".log", prefix="ssc_"), "a", encoding="utf-8", buffering=1)
 sys.stdout = _log_fh
 sys.stderr = _log_fh
+
+
+def _log(msg):
+    try:
+        _log_fh.write(msg + "\n")
+        _log_fh.flush()
+    except Exception:
+        pass
 
 # pythonw.exe has NULL C-level file descriptors (fd 1/2). C extensions that
 # write to them directly bypass sys.stdout and crash the process. Redirect them
@@ -298,7 +327,7 @@ def main():
 
         _log(f"Opening local pywebview window: {url}")
         win = webview.create_window(
-            title="Street Story Curator",
+            title="FrameGrade",
             url=url,
             width=1400,
             height=900,

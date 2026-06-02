@@ -23,6 +23,10 @@ frontend/src-tauri/target/
 *.pt
 *.bin
 *.gguf
+*.safetensors
+*.h5
+*.msgpack
+*.ckpt
 models/**/*.onnx
 # root-level stragglers
 /*.pt
@@ -41,3 +45,6 @@ Thumbs.db
 
 # Isolated Edge profile
 StreetStoryCurator/
+
+# CI workflow — push blocked by PAT lacking workflow scope; add manually via web UI
+.github/workflows/

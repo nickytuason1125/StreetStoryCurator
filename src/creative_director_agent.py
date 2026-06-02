@@ -544,81 +544,81 @@ def generate_judges_verdict_8b(
     scores: Optional[list[float]] = None,
 ) -> str:
     """
-    Use DeepSeek-R1-Distill-Llama-8B Q5_K_M GGUF (GPU-offloaded) to write the
-    official Judge's Verdict for the chosen story sequence.
+    Write the Judge's Verdict for the chosen story sequence.
 
-    Output safeguard: re.search(r'</think>\\s*(.*)', response, re.DOTALL)
-    strips everything before and including the closing think tag.  Only the
-    clean downstream string is returned and stored in LanceDB.
-
-    Returns empty string if GGUF absent or llama-cpp unavailable.
+    Priority: Ollama HTTP (no GPU init, no CMD flash) → GGUF fallback.
+    Returns empty string if all backends unavailable.
     """
+    seq_lines: list[str] = []
+    for i, (img, role) in enumerate(zip(selected_images, roles)):
+        bd = img.get("breakdown", {}) or {}
+        co = int(float(img.get("Composition",   bd.get("Composition",   0.5))) * 100)
+        li = int(float(img.get("Lighting",      bd.get("Lighting",      0.5))) * 100)
+        na = int(float(img.get("Narrative",     bd.get("Narrative",     0.5))) * 100)
+        hc = int(float(img.get("Human/Culture", bd.get("Human/Culture", 0.5))) * 100)
+        sc = int(float((scores[i] if scores and i < len(scores) else 0.5)) * 100)
+        seq_lines.append(
+            f"{i+1}. [{role.upper()}] Score:{sc}% Comp:{co}% Light:{li}% Narr:{na}% HC:{hc}%"
+        )
+
+    thematic_niche = director_brief.thematic_niche if director_brief else "street photography"
+    color_profile  = director_brief.color_profile_target if director_brief else "natural ambient"
+
+    prompt = _VERDICT_PROMPT.format(
+        brief          = style_prompt[:300],
+        thematic_niche = thematic_niche,
+        color_profile  = color_profile,
+        sequence       = "\n".join(seq_lines),
+    )
+
+    def _strip_think(raw: str) -> str:
+        m = re.search(r'</think>\s*(.*)', raw, re.DOTALL)
+        if m:
+            return m.group(1).strip()
+        if "<think>" in raw:
+            return ""
+        return raw
+
+    # ── 1. Ollama HTTP ────────────────────────────────────────────────────────
+    try:
+        import requests as _req
+        resp = _req.post(
+            "http://localhost:11434/api/generate",
+            json={"model": "deepseek-r1:8b", "prompt": prompt, "stream": False,
+                  "options": {"temperature": 0.4, "num_predict": 400}},
+            timeout=60,
+        )
+        if resp.ok:
+            raw = resp.json().get("response", "").strip()
+            if raw:
+                verdict = _strip_think(raw).split("\n\n")[0].strip()
+                if verdict:
+                    print(f"[agent] 8B Judge's Verdict (ollama): {len(verdict)} chars")
+                    return verdict
+    except Exception as _e:
+        print(f"[agent] Ollama verdict skipped ({_e})")
+
+    # ── 2. GGUF fallback ──────────────────────────────────────────────────────
     if not _JUDGE_GGUF_PATH.exists():
         print(f"[agent] 8B Judge GGUF not found at {_JUDGE_GGUF_PATH} — verdict skipped")
         return ""
 
     try:
         from llama_cpp import Llama
-
-        seq_lines: list[str] = []
-        for i, (img, role) in enumerate(zip(selected_images, roles)):
-            # Aspects are stored as top-level keys, not nested under "breakdown"
-            bd = img.get("breakdown", {}) or {}
-            co = int(float(img.get("Composition",   bd.get("Composition",   0.5))) * 100)
-            li = int(float(img.get("Lighting",      bd.get("Lighting",      0.5))) * 100)
-            na = int(float(img.get("Narrative",     bd.get("Narrative",     0.5))) * 100)
-            hc = int(float(img.get("Human/Culture", bd.get("Human/Culture", 0.5))) * 100)
-            sc = int(float((scores[i] if scores and i < len(scores) else 0.5)) * 100)
-            # Do NOT include filename or path in verdict prompt
-            seq_lines.append(
-                f"{i+1}. [{role.upper()}] Score:{sc}% Comp:{co}% Light:{li}% Narr:{na}% HC:{hc}%"
-            )
-
-        thematic_niche = (
-            director_brief.thematic_niche if director_brief else "street photography"
-        )
-        color_profile = (
-            director_brief.color_profile_target if director_brief else "natural ambient"
-        )
-
-        prompt = _VERDICT_PROMPT.format(
-            brief          = style_prompt[:300],
-            thematic_niche = thematic_niche,
-            color_profile  = color_profile,
-            sequence       = "\n".join(seq_lines),
-        )
-
         judge_llm = Llama(
             model_path   = str(_JUDGE_GGUF_PATH),
             n_ctx        = 2048,
-            n_gpu_layers = -1,
-            n_threads    = 2,
+            n_gpu_layers = 0,   # CPU only — no CUDA init, no CMD flash
+            n_threads    = min(8, __import__("os").cpu_count() or 4),
             verbose      = False,
         )
         out  = judge_llm(prompt, max_tokens=400, temperature=0.4, echo=False)
         raw  = out["choices"][0]["text"].strip()
-
-        # ── DeepSeek-R1 think-tag stripper ──────────────────────────────────
-        # Strip everything before and including </think> — only the clean
-        # post-reasoning narrative is stored or returned to the frontend.
-        m = re.search(r'</think>\s*(.*)', raw, re.DOTALL)
-        if m:
-            text = m.group(1).strip()
-            print(f"[agent] </think> stripped — extracted {len(text)} chars of verdict")
-        elif "<think>" in raw:
-            # Unclosed think block — discard entire response to prevent leakage
-            print("[agent] DeepSeek-R1: unclosed <think> block — verdict discarded")
-            text = ""
-        else:
-            text = raw
-
-        # Take only the first paragraph (no multi-topic prose)
-        verdict = text.split("\n\n")[0].strip()
-
         del judge_llm
         gc.collect()
 
-        print(f"[agent] 8B Judge's Verdict: {len(verdict)} chars")
+        verdict = _strip_think(raw).split("\n\n")[0].strip()
+        print(f"[agent] 8B Judge's Verdict (gguf/cpu): {len(verdict)} chars")
         return verdict
 
     except Exception as e:
@@ -628,22 +628,45 @@ def generate_judges_verdict_8b(
 
 # ── DeepSeek-R1 per-slot curation rationales ─────────────────────────────────
 
+def _parse_rationale_raw(raw: str, token_map: dict) -> dict:
+    """Strip think tokens, extract JSON object, map tokens back to paths."""
+    m = re.search(r'</think>\s*(.*)', raw, re.DOTALL)
+    if m:
+        raw = m.group(1).strip()
+    elif "<think>" in raw:
+        return {}
+    start = raw.find("{")
+    end   = raw.rfind("}") + 1
+    if start < 0 or end <= start:
+        return {}
+    try:
+        parsed = json.loads(raw[start:end])
+    except json.JSONDecodeError:
+        return {}
+    result: dict[str, str] = {}
+    for token, orig_path in token_map.items():
+        rationale = str(parsed.get(token, "")).strip()
+        if orig_path and rationale:
+            result[orig_path] = rationale
+    return result
+
+
 def generate_curation_rationales(
     sequence: list[dict],
     style_prompt: str = "",
 ) -> dict[str, str]:
     """
-    Use DeepSeek-R1-Distill-8B to generate one-sentence per-slot rationales
-    for the finalized NSGA-III sequence.
+    Generate one-sentence per-slot rationales for the NSGA-III sequence.
 
-    Paths are tokenized (IMG_01…) before the LLM call — the model never sees
-    filenames. Returns dict[path → rationale]. Falls back to {} on any error
-    or if the GGUF is absent.
+    Priority: Ollama HTTP (model stays warm, no GPU init, no CMD flash)
+              → GGUF subprocess fallback.
+    Paths are tokenized (IMG_01…) — model never sees filenames.
+    Returns dict[path → rationale].
     """
-    if not sequence or not _JUDGE_GGUF_PATH.exists():
+    if not sequence:
         return {}
 
-    token_map: dict[str, str] = {}   # IMG_0N → path
+    token_map: dict[str, str] = {}
     tokens:    list[str]      = []
     seq_lines: list[str]      = []
 
@@ -653,7 +676,6 @@ def generate_curation_rationales(
         token_map[token] = path
         tokens.append(token)
 
-        # Parse breakdown — may arrive as dict or JSON string
         bd_raw = item.get("breakdown", {}) or {}
         if isinstance(bd_raw, str):
             try:
@@ -666,7 +688,6 @@ def generate_curation_rationales(
         tech   = int(float(bd_raw.get("Technical",    0.5)) * 100)
         slot   = item.get("slot",    f"Slot {i+1}")
         route  = item.get("route_triggered", "")
-        # First 60 chars of SpecVLM tags — no full path leakage
         tags   = (item.get("reasoning_log", "") or "")[:60].strip()
 
         line = f"{token} [{slot}] Score:{score}% Tech:{tech}% Comp:{comp}%"
@@ -676,15 +697,38 @@ def generate_curation_rationales(
             line += f" Tags:{tags!r}"
         seq_lines.append(line)
 
-    schema = _build_rationale_schema(tokens)
     prompt = _RATIONALE_PROMPT.format(
         n        = len(sequence),
         sequence = "\n".join(seq_lines),
     )
 
+    # ── 1. Ollama HTTP (preferred — no subprocess, no CUDA init, no CMD flash) ──
+    try:
+        import requests as _req
+        resp = _req.post(
+            "http://localhost:11434/api/generate",
+            json={"model": "deepseek-r1:8b", "prompt": prompt, "stream": False,
+                  "options": {"temperature": 0.3, "num_predict": 600}},
+            timeout=60,
+        )
+        if resp.ok:
+            raw = resp.json().get("response", "").strip()
+            if raw:
+                result = _parse_rationale_raw(raw, token_map)
+                if result:
+                    print(f"[agent] curation rationales (ollama): {len(result)}/{len(sequence)}")
+                    return result
+    except Exception as _e:
+        print(f"[agent] Ollama rationale generation skipped ({_e})")
+
+    # ── 2. GGUF fallback (GPU, only if GGUF file present) ────────────────────
+    if not _JUDGE_GGUF_PATH.exists():
+        return {}
+
     try:
         from llama_cpp import Llama
 
+        schema  = _build_rationale_schema(tokens)
         grammar = None
         try:
             from llama_cpp import LlamaGrammar
@@ -695,8 +739,8 @@ def generate_curation_rationales(
         judge_llm = Llama(
             model_path   = str(_JUDGE_GGUF_PATH),
             n_ctx        = 2048,
-            n_gpu_layers = -1,
-            n_threads    = 2,
+            n_gpu_layers = 0,   # CPU only — no CUDA init, no CMD flash
+            n_threads    = min(8, __import__("os").cpu_count() or 4),
             verbose      = False,
         )
         kwargs: dict = dict(max_tokens=600, temperature=0.3, echo=False)
@@ -709,29 +753,9 @@ def generate_curation_rationales(
         del judge_llm
         gc.collect()
 
-        # Strip DeepSeek think tokens — same pattern as generate_judges_verdict_8b
-        m = re.search(r'</think>\s*(.*)', raw, re.DOTALL)
-        if m:
-            raw = m.group(1).strip()
-        elif "<think>" in raw:
-            print("[agent] rationales: unclosed <think> block — discarded")
-            return {}
-
-        start = raw.find("{")
-        end   = raw.rfind("}") + 1
-        if start < 0 or end <= start:
-            print(f"[agent] rationales: no JSON object in output — raw: {raw[:80]!r}")
-            return {}
-
-        parsed: dict = json.loads(raw[start:end])
-
-        result: dict[str, str] = {}
-        for token, orig_path in token_map.items():
-            rationale = str(parsed.get(token, "")).strip()
-            if orig_path and rationale:
-                result[orig_path] = rationale
-
-        print(f"[agent] curation rationales: {len(result)}/{len(sequence)} generated")
+        result = _parse_rationale_raw(raw, token_map)
+        if result:
+            print(f"[agent] curation rationales (gguf/cpu): {len(result)}/{len(sequence)}")
         return result
 
     except Exception as e:

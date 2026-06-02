@@ -12,15 +12,65 @@ inference — hiding H2D transfer latency behind compute.
 """
 from __future__ import annotations
 
+import base64
+import json
 import numpy as np
 from pathlib import Path
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
 
+print("[fast_ingestion] V3 Vision-to-Text Architecture loaded")
+
+_OLLAMA_URL  = "http://localhost:11434/api/chat"
+_PIXEL_MODEL = "qwen2.5vl:3b"
+
+
+def run_pixel_inspector(image_path: str, technical_score: float = 0.5) -> str:
+    """
+    Phase 1 — VLM Pixel Inspector.
+
+    Sends the image as base64 to a local qwen2.5vl:3b Ollama instance and
+    returns a 2-sentence semantic profile focused on lighting, tension, and mood.
+    Context is hard-locked to 2048 tokens to respect the 6 GB VRAM budget.
+
+    Returns "" if Ollama is offline or the image cannot be read.
+    """
+    try:
+        import requests as _req
+        with open(image_path, "rb") as fh:
+            b64 = base64.b64encode(fh.read()).decode("ascii")
+        prompt = (
+            f"Analyze this street photograph. Its technical score is {technical_score:.2f}. "
+            "Write a strict 2-sentence semantic profile focusing on lighting, visual tension, "
+            "and mood. No filler."
+        )
+        resp = _req.post(
+            _OLLAMA_URL,
+            json={
+                "model":   _PIXEL_MODEL,
+                "stream":  False,
+                "messages": [
+                    {"role": "user", "content": prompt, "images": [b64]},
+                ],
+                "options": {"num_ctx": 2048},
+            },
+            timeout=90,
+        )
+        resp.raise_for_status()
+        profile = resp.json().get("message", {}).get("content", "").strip()
+        print(f"[fast_ingestion] pixel_inspector: {Path(image_path).name} → {len(profile)} chars")
+        return profile
+    except ConnectionError as _e:
+        print(f"[fast_ingestion] Ollama unreachable for pixel_inspector: {_e}")
+    except Exception as _e:
+        print(f"[fast_ingestion] pixel_inspector failed ({_e})")
+    return ""
+
 import torch
 import torchvision.transforms.functional as TF
 
 _JPEG_EXTS = {".jpg", ".jpeg"}
+from raw_support import RAW_EXTS as _RAW_EXTS
 
 _tj = None   # singleton TurboJPEG instance (thread-safe after init)
 
@@ -59,6 +109,9 @@ def decode_one(
             else:
                 from PIL import Image
                 rgb = np.array(Image.open(path).convert("RGB"), dtype=np.uint8)
+        elif ext in _RAW_EXTS:
+            from raw_support import _rawpy_decode
+            rgb = _rawpy_decode(path)
         else:
             from PIL import Image
             rgb = np.array(Image.open(path).convert("RGB"), dtype=np.uint8)

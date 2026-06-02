@@ -27,6 +27,12 @@ API
 """
 from __future__ import annotations
 
+import os
+import sys
+# Must be set before pymoo's first import — pymoo's Display callback pulls in matplotlib,
+# and the default Windows backend (TkAgg/Qt5Agg) flashes a CMD window on minimize().
+os.environ.setdefault("MPLBACKEND", "Agg")
+
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
@@ -269,12 +275,19 @@ def _slot_score_for(
     elif slot == "Opener":
         lum_sc = float(np.clip(lum * 1.5, 0.0, 1.0))
 
+    # Raw grader score (already blends PersonalHead preference at 0.20 weight)
+    raw_sc = float(np.clip(candidate.get("score", 0.5), 0.0, 1.0))
+
     if slot == "Contrast":
         return round(float(0.30 * kw_sc + 0.30 * asp_sc + 0.40 * lum_sc), 3)
     elif slot == "Opener":
-        return round(float(0.30 * kw_sc + 0.55 * asp_sc + 0.15 * lum_sc), 3)
+        # Establishing shot: composition/aspect + luminance governs; score secondary
+        return round(float(0.25 * kw_sc + 0.50 * asp_sc + 0.20 * lum_sc + 0.05 * raw_sc), 3)
+    elif slot == "Subject":
+        # Decisive-moment slot: DPO-flavoured score dominates to pick the strongest human element
+        return round(float(0.20 * kw_sc + 0.45 * asp_sc + 0.35 * raw_sc), 3)
     else:
-        return round(float(0.35 * kw_sc + 0.65 * asp_sc), 3)
+        return round(float(0.30 * kw_sc + 0.60 * asp_sc + 0.10 * raw_sc), 3)
 
 
 def _classify_slot_roles(candidates: List[Dict[str, Any]]) -> np.ndarray:
@@ -667,9 +680,9 @@ def run_nsga3_sequence_with_vlm(
                 slot_thresholds=slot_thresholds,
                 sim_limit=sim_limit,
             )
-            ref_dirs = get_reference_directions("energy", 3, min(100, n * 2), seed=1)
+            ref_dirs = get_reference_directions("energy", 3, min(15, n), seed=1)
             algorithm = NSGA3(
-                pop_size=max(len(ref_dirs), 30),
+                pop_size=max(len(ref_dirs), 20),
                 ref_dirs=ref_dirs,
                 sampling=IntegerRandomSampling(),
                 crossover=SBX(prob=0.9, eta=15, vtype=float),
@@ -677,7 +690,7 @@ def run_nsga3_sequence_with_vlm(
                 repair=_UniqueRepair(),
                 eliminate_duplicates=True,
             )
-            n_gen = max(40, min(100, n * 2))
+            n_gen = max(20, min(40, n))
             res   = minimize(problem, algorithm, ("n_gen", n_gen), seed=42, verbose=False)
 
             if res.X is not None and res.F is not None:

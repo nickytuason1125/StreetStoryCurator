@@ -31,12 +31,21 @@ def load_image_optimized(path: str, target_size: int = 224) -> np.ndarray | None
     pyvips path: JPEG shrink-on-load decodes at native 1/8 resolution — avoids
     reading the full pixel buffer for large RAW/JPEG files.
     cv2 fallback: np.fromfile + imdecode for unicode-safe Windows paths.
+    RAW fallback: rawpy decode for camera RAW formats.
 
     Returns: (C, H, W) float32 [0.0, 1.0], or None on failure.
     Pyvips Image and memory buffer go out of scope here — no leak.
     """
+    from pathlib import Path as _Path
+    from raw_support import RAW_EXTS as _RAW_EXTS_IO
+
     try:
-        if _HAS_VIPS:
+        if _Path(path).suffix.lower() in _RAW_EXTS_IO:
+            from raw_support import _rawpy_decode
+            import cv2
+            arr = _rawpy_decode(path)               # HWC uint8 RGB
+            arr = cv2.resize(arr, (target_size, target_size), interpolation=cv2.INTER_AREA)
+        elif _HAS_VIPS:
             vimg = pyvips.Image.thumbnail(
                 path, target_size, height=target_size, crop="centre"
             )

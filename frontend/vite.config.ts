@@ -2,17 +2,22 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import path from 'path'
 
+const backendProxy = {
+  '/api':    { target: 'http://127.0.0.1:8000', changeOrigin: true },
+  '/thumbs': { target: 'http://127.0.0.1:8000', changeOrigin: true },
+  '/static': { target: 'http://127.0.0.1:8000', changeOrigin: true },
+};
+
 export default defineConfig({
   plugins: [react()],
   server: {
     open: false,
     port: 5173,
-    proxy: {
-      // Forward all API and static-asset requests to the FastAPI backend.
-      // Keeps the Vite dev server in sync without CORS issues.
-      '/api':    { target: 'http://127.0.0.1:8000', changeOrigin: true },
-      '/thumbs': { target: 'http://127.0.0.1:8000', changeOrigin: true },
-    },
+    proxy: backendProxy,
+  },
+  preview: {
+    port: 5173,
+    proxy: backendProxy,
   },
   resolve: {
     // Force CJS builds of @dnd-kit to avoid ESM circular-dependency TDZ errors.
@@ -23,7 +28,7 @@ export default defineConfig({
     },
   },
   build: {
-    emptyOutDir: false,
+    emptyOutDir: true,
     rollupOptions: {
       output: {
         entryFileNames: 'assets/[name]-[hash].js',
