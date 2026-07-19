@@ -1206,6 +1206,16 @@ def run_creative_direction(
     except Exception as _e_brief:
         _p(0.08, f"Director Brief skipped ({_e_brief}) — verdict uses fallback context")
 
+    # Release the Step-1 CPU GGUF singleton (rule set + director brief share
+    # one lazy-loaded instance) — an 8B Q5 GGUF is ~5-6GB of CPU RAM and this
+    # pipeline runs once per user action, not per-frame, so it should not
+    # stay resident for the remainder of the run.
+    try:
+        from creative_director_agent import unload_agent_model
+        unload_agent_model()
+    except Exception:
+        pass
+
     # ── Step 2: YOLO26-nano person_kill_switch ────────────────────────────────
     yolo_blocked: set[str] = set()
     if rule_set["HARD_FILTER_PEOPLE"]:
@@ -1419,18 +1429,22 @@ def run_creative_direction(
     # DeepSeek-R1-Distill-Llama-8B (INT4) generates the official competition
     # narrative. VRAM is purged by the caller via purge_vram() after this step.
     # Skipped gracefully if 8B weights absent.
-    _p(0.36, "Generating Judge's Verdict (8B, GPU)…")
-    from creative_director_agent import generate_judges_verdict_8b
-    seq_narrative = generate_judges_verdict_8b(
-        selected_images=[
-            {"filename": p, **(seq_aspects[i] if seq_aspects else {})}
-            for i, p in enumerate(seq_paths)
-        ],
-        style_prompt=style_prompt,
-        roles=roles,
-        director_brief=_director_brief,
-        scores=seq_scores,
-    )
+    _p(0.36, "Generating Judge's Verdict…")
+    seq_narrative: Optional[str] = None
+    try:
+        from creative_director_agent import generate_judges_verdict_8b
+        seq_narrative = generate_judges_verdict_8b(
+            selected_images=[
+                {"filename": p, **(seq_aspects[i] if seq_aspects else {})}
+                for i, p in enumerate(seq_paths)
+            ],
+            style_prompt=style_prompt,
+            roles=roles,
+            director_brief=_director_brief,
+            scores=seq_scores,
+        )
+    except Exception as _e_verdict:
+        _p(0.38, f"Judge's Verdict skipped ({_e_verdict})")
     if seq_narrative:
         _p(0.40, "Judge's Verdict complete")
     else:

@@ -1,50 +1,294 @@
 """
-Creative Director Agent — Frontier 2026
-Bridges the 'Style Brief' to the NSGA-III Sequencer.
+Creative Director Agent — Rule Set, Director Brief, Legacy Sequence Fallback.
+
+Generates the Style Brief interpretation used by run_creative_direction():
+  generate_rule_set()          -> Boolean/keyword constraints (HARD_FILTER_PEOPLE, etc.)
+  generate_director_brief()    -> thematic_niche / color_profile_target for the Judge's Verdict
+  select_sequence_from_batch() -> legacy fallback-of-a-fallback sequence selector
+  generate_judges_verdict_8b() -> Phase-0 stub verdict (single Ollama call);
+                                   replaced by jury_engine.py's multi-persona
+                                   jury in a later phase.
+
+Rule-set/brief generation is keyword-first — the same keyword tables already
+used elsewhere in creative_director.py (_compute_brief_scores, _empty_brief_
+detected) — with an optional CPU GGUF (models/deepseek-r1-8b-q5.gguf,
+n_gpu_layers=0, same loading pattern already proven in pdf_rag.py) refinement
+pass only when the keyword pass finds nothing at all. Every public function
+here degrades gracefully and never raises — the pipeline must complete even
+with no GGUF present and Ollama unreachable.
 """
+from __future__ import annotations
 
 import json
+import re
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
 
-class CreativeDirectorAgent:
-    def __init__(self, model_client):
-        self.model = model_client # e.g., DeepSeek-R1-7B
+_ROOT = Path(__file__).resolve().parent.parent
+_GGUF = _ROOT / "models" / "deepseek-r1-8b-q5.gguf"
 
-    def generate_constraints(self, user_brief: str) -> dict:
-        """
-        Translates human vibes into sequencer-ready math.
-        """
-        system_prompt = (
-            "You are a professional Creative Director. Translate the user's brief into "
-            "technical constraints for an image sequencer. Output ONLY JSON.\n"
-            "Constraints to control: \n"
-            "- diversity_weight (0.0 to 1.0)\n"
-            "- human_limit (0.0 to 1.0, 0.0 = empty)\n"
-            "- focal_theme (angle, contrast, or color)\n"
-            "- novelty_bias (1.0 = strictly avoid previous results)"
+# ── Keyword tables (mirror creative_director.py's existing heuristics) ───────
+
+_EMPTY_KW = {"empty", "liminal", "desert", "void", "abandoned", "desolate"}
+_GEO_KW   = {"geometry", "geometric", "architecture", "architectural", "pattern",
+             "lines", "symmetry", "abstract", "structure", "grid", "form",
+             "minimal", "minimalist"}
+_MOOD_KW: list[tuple[str, set[str]]] = [
+    ("moody/high-contrast", {"rain", "wet", "reflection", "reflections", "puddle",
+                              "fog", "mist", "shadow", "shadows", "night", "dusk",
+                              "overcast", "cloudy", "moody", "hazy"}),
+    ("warm/golden",         {"golden", "sunset", "sunrise", "dawn", "warm"}),
+    ("neon/night",          {"neon", "twilight", "blue hour"}),
+]
+_NICHE_KW: dict[str, set[str]] = {
+    "portrait":     {"portrait", "faces", "human", "stranger", "strangers"},
+    "architecture": {"architecture", "architectural", "geometry", "geometric", "structure"},
+    "documentary":  {"documentary", "candid", "life", "community", "culture"},
+    "night street": {"night", "neon", "dusk", "twilight"},
+    "minimalist":   {"minimal", "minimalist", "negative space", "empty", "void"},
+}
+_COLOR_KW: dict[str, set[str]] = {
+    "black and white": {"black and white", "b&w", "monochrome", "grayscale"},
+    "warm/golden":     {"warm", "golden", "sunset", "sunrise"},
+    "cool/blue":       {"cool", "blue", "night", "rain", "wet"},
+    "neon/saturated":  {"neon", "vibrant", "saturated"},
+}
+
+
+@dataclass
+class DirectorBrief:
+    thematic_niche: str
+    color_profile_target: str
+
+
+# ── Shared CPU GGUF singleton (loaded lazily, reused across Step 1's two
+#    calls within one run_creative_direction() invocation, then explicitly
+#    unloaded — an 8B Q5 GGUF is ~5-6GB of CPU RAM and this pipeline runs
+#    once per user action, not per-frame, so it should not stay resident
+#    between requests the way critique_engine's GPU model does) ─────────────
+
+_llm_singleton: Optional[object] = None
+
+
+def _load_agent_llm():
+    global _llm_singleton
+    if _llm_singleton is not None:
+        return _llm_singleton
+    if not _GGUF.exists():
+        return None
+    try:
+        from llama_cpp import Llama
+        _llm_singleton = Llama(
+            model_path=str(_GGUF), n_ctx=1024, n_gpu_layers=0, verbose=False,
         )
-        
-        # This is where the 'Repetition' is killed
-        user_prompt = f"Brief: {user_brief}. I am seeing repetitive results, so ensure novelty is high."
-        
-        raw_output = self.model.generate(system_prompt, user_prompt)
-        return json.loads(raw_output)
+    except Exception as _e:
+        print(f"[cda] GGUF load failed: {_e}")
+        _llm_singleton = None
+    return _llm_singleton
 
-# --- Integration Example for VS Code ---
 
-def run_creative_direction_ui(user_brief, source_anchor):
-    agent = CreativeDi
-    
-    rectorAgent(vlm_client)
-    
-    # 1. The LLM 'thinks' about the creative direction
-    constraints = agent.generate_constraints(user_brief)
-    
-    # 2. Pass those dynamic weights to the sequencer
-    sequence = run_nsga3_sequence(
-        candidates=pool,
-        target=7,
-        diversity_weight=constraints['diversity_weight'],
-        human_penalty=8.0 if constraints['human_limit'] < 0.2 else 0.0,
-        novelty_boost=constraints['novelty_bias']
-    )
-    return sequence
+def unload_agent_model() -> None:
+    """Release the CPU GGUF singleton. Call once per run_creative_direction()
+    invocation after Step 1 completes."""
+    global _llm_singleton
+    _llm_singleton = None
+    import gc
+    gc.collect()
+
+
+def _extract_json_obj(raw: str) -> Optional[dict]:
+    """Brace-balanced JSON object extraction, tolerant of <think> preambles
+    and surrounding prose — same defensive style as critique_engine's
+    bracket-matching JSON extraction."""
+    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+    start = raw.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    for i, ch in enumerate(raw[start:], start):
+        if esc:
+            esc = False
+            continue
+        if ch == "\\" and in_str:
+            esc = True
+            continue
+        if ch == '"':
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    obj = json.loads(raw[start:i + 1])
+                    return obj if isinstance(obj, dict) else None
+                except Exception:
+                    return None
+    return None
+
+
+# ── generate_rule_set ─────────────────────────────────────────────────────
+
+def _keyword_rule_set(style_prompt: str) -> dict:
+    text = (style_prompt or "").lower()
+    matched_kw = [kw for kw in (_EMPTY_KW | _GEO_KW) if kw in text]
+    return {
+        "HARD_FILTER_PEOPLE": any(kw in text for kw in _EMPTY_KW),
+        "GEOMETRIC_PRIORITY": "High" if any(kw in text for kw in _GEO_KW) else "Normal",
+        "LIGHTING_MOOD": next((label for label, kws in _MOOD_KW if any(kw in text for kw in kws)), "neutral"),
+        "BRIEF_KEYWORDS": matched_kw,
+    }
+
+
+def _gguf_refine_rule_set(style_prompt: str) -> Optional[dict]:
+    llm = _load_agent_llm()
+    if llm is None:
+        return None
+    try:
+        prompt = (
+            "Analyze this street-photography style brief and answer with "
+            "compact JSON only, no explanation:\n"
+            f'Brief: "{style_prompt[:200]}"\n'
+            '{"HARD_FILTER_PEOPLE": true|false, "GEOMETRIC_PRIORITY": "High"|"Normal", '
+            '"LIGHTING_MOOD": "<=3 words"}\n'
+            "JSON:"
+        )
+        out = llm(prompt, max_tokens=120, temperature=0.1, stop=["\n\n"])
+        raw = out["choices"][0]["text"]
+        obj = _extract_json_obj(raw)
+        if not obj:
+            return None
+        return {
+            "HARD_FILTER_PEOPLE": bool(obj.get("HARD_FILTER_PEOPLE", False)),
+            "GEOMETRIC_PRIORITY": obj.get("GEOMETRIC_PRIORITY", "Normal") if obj.get("GEOMETRIC_PRIORITY") in ("High", "Normal") else "Normal",
+            "LIGHTING_MOOD": str(obj.get("LIGHTING_MOOD", "neutral"))[:40],
+        }
+    except Exception as _e:
+        print(f"[cda] rule-set GGUF refinement skipped: {_e}")
+        return None
+
+
+def generate_rule_set(style_prompt: str) -> dict:
+    """
+    Returns a fully-populated dict:
+      {HARD_FILTER_PEOPLE: bool, GEOMETRIC_PRIORITY: "High"|"Normal",
+       LIGHTING_MOOD: str, BRIEF_KEYWORDS: list[str]}
+
+    Keyword heuristics are the primary path — the same signals that already
+    drive _compute_brief_scores/_empty_brief_detected downstream, so the rule
+    set stays consistent with how the brief is interpreted elsewhere in the
+    pipeline. A CPU GGUF refinement pass only fires when the keyword pass
+    finds nothing at all (a fully ambiguous brief) and never blocks or
+    overrides a confident keyword match.
+    """
+    rule_set = _keyword_rule_set(style_prompt)
+    if not rule_set["BRIEF_KEYWORDS"] and style_prompt.strip():
+        refined = _gguf_refine_rule_set(style_prompt)
+        if refined:
+            rule_set.update(refined)
+    return rule_set
+
+
+# ── generate_director_brief ───────────────────────────────────────────────
+
+def _keyword_director_brief(style_prompt: str) -> DirectorBrief:
+    text = (style_prompt or "").lower()
+    niche = next((name for name, kws in _NICHE_KW.items() if any(kw in text for kw in kws)), "street")
+    color = next((name for name, kws in _COLOR_KW.items() if any(kw in text for kw in kws)), "natural")
+    return DirectorBrief(thematic_niche=niche, color_profile_target=color)
+
+
+def generate_director_brief(style_prompt: str) -> DirectorBrief:
+    """
+    Returns DirectorBrief(thematic_niche, color_profile_target).
+    Keyword-first, same rationale as generate_rule_set. The call site
+    (creative_director.py Step 1) already wraps this in try/except, but the
+    function degrades gracefully on its own too, so it never needs that
+    safety net to behave correctly.
+    """
+    return _keyword_director_brief(style_prompt)
+
+
+# ── select_sequence_from_batch (legacy fallback-of-a-fallback) ───────────
+
+def select_sequence_from_batch(
+    candidates: list[dict],
+    n_target: int,
+    style_prompt: str,
+    rule_set: dict,
+) -> list[int]:
+    """
+    Only reached when ask_local_art_director() returns [] — which itself
+    already falls back internally to top-N-by-score whenever candidate_pool
+    is non-empty, so this path is close to unreachable in practice. Simple
+    score-sort suffices: the candidate dict shape here (creative_director.py
+    ~L1355-1369) carries per-aspect floats but no embeddings, so a
+    diversity-aware pick isn't even possible from this data — no new GGUF
+    call is justified for a fallback-of-a-fallback.
+
+    candidates: each dict has at least "id" (int) and "score" (float).
+    Returns list[int] of `id` values, length <= n_target.
+    """
+    if not candidates:
+        return []
+    ranked = sorted(candidates, key=lambda c: -float(c.get("score", 0.0)))
+    return [c["id"] for c in ranked[:n_target]]
+
+
+# ── generate_judges_verdict_8b (Phase-0 stub) ─────────────────────────────
+
+def generate_judges_verdict_8b(
+    selected_images: list[dict],
+    style_prompt: str,
+    roles: list[str],
+    director_brief: Optional[DirectorBrief],
+    scores: list[float],
+) -> Optional[str]:
+    """
+    Phase-0 stub: a single Ollama deepseek-r1:8b call, same HTTP pattern as
+    the already-working ask_local_art_director()/generate_jury_critique() in
+    creative_director.py. Replaced by jury_engine.py's multi-persona jury in
+    a later phase — this exists only to unblock this call site immediately.
+
+    Never raises; returns None on any failure (Ollama down, timeout, empty
+    response) so the caller's "8B Judge unavailable — verdict skipped"
+    branch handles it gracefully.
+    """
+    try:
+        import requests
+        niche = director_brief.thematic_niche if director_brief else "street photography"
+        color = director_brief.color_profile_target if director_brief else "natural"
+        pairs = zip(roles, (c.get("filename", "") for c in selected_images))
+        names = ", ".join(f"{r}: {Path(p).name}" for r, p in pairs if p)
+        prompt = (
+            "ROLE: Competition jury chair delivering a final verdict on a curated "
+            f"{len(selected_images)}-image street photo sequence.\n"
+            f"Style brief: '{style_prompt[:150]}'. Theme: {niche}. Color: {color}.\n"
+            f"Sequence roles: {names[:400]}\n"
+            "Use <think> tags to weigh pacing and cohesion. Then write a "
+            "2-3 sentence public verdict explaining why this sequence works."
+        )
+        resp = requests.post(
+            "http://localhost:11434/api/chat",
+            json={
+                "model":   "deepseek-r1:8b",
+                "stream":  False,
+                "messages": [{"role": "user", "content": prompt}],
+                "options": {"num_ctx": 2048, "temperature": 0.3},
+            },
+            timeout=90,
+        )
+        resp.raise_for_status()
+        raw = resp.json().get("message", {}).get("content", "").strip()
+        m = re.search(r"</think>\s*(.*)", raw, re.DOTALL)
+        verdict = m.group(1).strip() if m else re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        return verdict or None
+    except Exception as _e:
+        print(f"[cda] Judge's Verdict unavailable: {_e}")
+        return None
