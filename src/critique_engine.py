@@ -27,6 +27,47 @@ _MMPROJ     = _ROOT / "models" / "mmproj-qwen2.5-vl-2b-instruct-f16.gguf"
 
 _llm: object = None   # cached Llama instance
 
+# Grammar-constrained decoding for the contact-sheet swap verdict — same
+# pattern as vlm_niche_detector.py's _GRAMMAR_SRC (grammar built once,
+# passed per-call via grammar=). Only applies to the local GGUF path —
+# Ollama's HTTP API has no GBNF grammar support, so that fallback still
+# relies on _parse_swap_json's loose parsing.
+_SWAP_GRAMMAR_SRC = r'''
+root   ::= "{" ws '"action"' ws ":" ws action ws "," ws '"swap_slot"' ws ":" ws slot ws "," ws '"reason"' ws ":" ws string ws "}"
+action ::= "\"accept\"" | "\"swap\""
+slot   ::= "null" | [0-9] [0-9]?
+string ::= "\"" ([^"\\] | "\\" .)* "\""
+ws     ::= [ \t\r\n]*
+'''
+_swap_grammar: object = None   # cached LlamaGrammar instance
+
+# Circuit breaker: some llama-cpp-python + GGUF combinations hit a native
+# access-violation inside the grammar-constrained sampler (observed
+# elsewhere in this codebase with a different GGUF on this build). It's
+# caught as a Python exception, not a hard crash, but repeatedly retrying a
+# known-broken path per call is wasteful — after the first failure, fall
+# back to unconstrained decoding (+ the existing loose JSON parsing, which
+# worked reliably before grammar was added) for the rest of the process.
+_swap_grammar_broken = False
+
+
+def _load_swap_grammar():
+    global _swap_grammar
+    if _swap_grammar is not None:
+        return _swap_grammar
+    try:
+        from llama_cpp import LlamaGrammar
+        _swap_grammar = LlamaGrammar.from_string(_SWAP_GRAMMAR_SRC)
+    except Exception as e:
+        print(f"[ce] swap grammar build failed ({e}) — falling back to unconstrained decoding")
+        _swap_grammar = None
+    return _swap_grammar
+
+
+def _mark_swap_grammar_broken() -> None:
+    global _swap_grammar_broken
+    _swap_grammar_broken = True
+
 # ── Ollama availability cache ─────────────────────────────────────────────────
 _ollama_last_check: float = 0.0
 _ollama_ok: bool = False
@@ -339,9 +380,10 @@ def run_contact_sheet_critique(
 
     Reuses the same Qwen2.5-VL-2B GGUF singleton as run_jury_critique/
     run_audit_annotation (free if either already warmed it this session).
-    Loose JSON parsing (brace-matching, same style as _parse_factor_json) —
-    a later phase upgrades this to grammar-constrained decoding via
-    LlamaGrammar, following vlm_niche_detector.py's pattern.
+    The local GGUF path is grammar-constrained (_SWAP_GRAMMAR_SRC,
+    LlamaGrammar, following vlm_niche_detector.py's pattern) — the Ollama
+    fallback has no GBNF support, so it still relies on _parse_swap_json's
+    loose brace-matching parse.
 
     Never raises — returns action="accept" on any failure so the caller's
     revision loop always terminates safely.
@@ -364,7 +406,7 @@ def run_contact_sheet_critique(
     if llm is not None:
         try:
             b64 = secure_image_for_vram(sheet_path, max_dimension=1280)
-            output = llm.create_chat_completion(  # type: ignore[union-attr]
+            base_kwargs: dict = dict(
                 messages=[{"role": "user", "content": [
                     {"type": "image_url",
                      "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
@@ -373,6 +415,18 @@ def run_contact_sheet_critique(
                 temperature=0.1,
                 max_tokens=200,
             )
+            output = None
+            if not _swap_grammar_broken:
+                grammar = _load_swap_grammar()
+                if grammar is not None:
+                    try:
+                        output = llm.create_chat_completion(grammar=grammar, **base_kwargs)  # type: ignore[union-attr]
+                    except Exception as _e_g:
+                        print(f"[ce] grammar-constrained swap decoding failed ({_e_g}) — "
+                              "disabling grammar for this process, retrying unconstrained")
+                        _mark_swap_grammar_broken()
+            if output is None:
+                output = llm.create_chat_completion(**base_kwargs)  # type: ignore[union-attr]
             raw = (output["choices"][0]["message"]["content"] or "").strip()
             parsed = _parse_swap_json(raw)
             if parsed:

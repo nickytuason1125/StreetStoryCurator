@@ -28,6 +28,31 @@ from typing import Optional
 _ROOT = Path(__file__).resolve().parent.parent
 _GGUF = _ROOT / "models" / "deepseek-r1-8b-q5.gguf"
 
+# Grammar-constrained decoding for the rule-set refinement call — same
+# pattern as vlm_niche_detector.py's _GRAMMAR_SRC (grammar built once,
+# passed per-call via grammar=).
+_RULE_SET_GRAMMAR_SRC = r'''
+root   ::= "{" ws '"HARD_FILTER_PEOPLE"' ws ":" ws bool ws "," ws '"GEOMETRIC_PRIORITY"' ws ":" ws geo ws "," ws '"LIGHTING_MOOD"' ws ":" ws string ws "}"
+bool   ::= "true" | "false"
+geo    ::= "\"High\"" | "\"Normal\""
+string ::= "\"" ([^"\\] | "\\" .)* "\""
+ws     ::= [ \t\r\n]*
+'''
+_rule_set_grammar: object = None
+
+
+def _load_rule_set_grammar():
+    global _rule_set_grammar
+    if _rule_set_grammar is not None:
+        return _rule_set_grammar
+    try:
+        from llama_cpp import LlamaGrammar
+        _rule_set_grammar = LlamaGrammar.from_string(_RULE_SET_GRAMMAR_SRC)
+    except Exception as e:
+        print(f"[cda] rule-set grammar build failed ({e}) — falling back to unconstrained decoding")
+        _rule_set_grammar = None
+    return _rule_set_grammar
+
 # ── Keyword tables (mirror creative_director.py's existing heuristics) ───────
 
 _EMPTY_KW = {"empty", "liminal", "desert", "void", "abandoned", "desolate"}
@@ -146,32 +171,59 @@ def _keyword_rule_set(style_prompt: str) -> dict:
     }
 
 
+# Circuit breaker: some llama-cpp-python + GGUF combinations hit a native
+# access-violation inside the grammar-constrained sampler (observed with
+# deepseek-r1-8b-q5.gguf on this build). It's caught as a Python exception,
+# not a hard crash, but repeatedly retrying a known-broken path per call is
+# wasteful — after the first grammar failure, fall back to unconstrained
+# decoding (+ the existing brace-matching JSON extraction, which worked
+# reliably before grammar was added) for the rest of the process.
+_grammar_broken = False
+
+
 def _gguf_refine_rule_set(style_prompt: str) -> Optional[dict]:
+    global _grammar_broken
     llm = _load_agent_llm()
     if llm is None:
         return None
+    prompt = (
+        "Analyze this street-photography style brief and answer with "
+        "compact JSON only, no explanation:\n"
+        f'Brief: "{style_prompt[:200]}"\n'
+        '{"HARD_FILTER_PEOPLE": true|false, "GEOMETRIC_PRIORITY": "High"|"Normal", '
+        '"LIGHTING_MOOD": "<=3 words"}\n'
+        "JSON:"
+    )
+    base_kwargs: dict = dict(max_tokens=120, temperature=0.1, stop=["\n\n"])
+
+    if not _grammar_broken:
+        grammar = _load_rule_set_grammar()
+        if grammar is not None:
+            try:
+                out = llm(prompt, grammar=grammar, **base_kwargs)
+                return _parse_rule_set_output(out["choices"][0]["text"])
+            except Exception as _e:
+                print(f"[cda] grammar-constrained decoding failed ({_e}) — "
+                      "disabling grammar for this process, retrying unconstrained")
+                _grammar_broken = True
+
     try:
-        prompt = (
-            "Analyze this street-photography style brief and answer with "
-            "compact JSON only, no explanation:\n"
-            f'Brief: "{style_prompt[:200]}"\n'
-            '{"HARD_FILTER_PEOPLE": true|false, "GEOMETRIC_PRIORITY": "High"|"Normal", '
-            '"LIGHTING_MOOD": "<=3 words"}\n'
-            "JSON:"
-        )
-        out = llm(prompt, max_tokens=120, temperature=0.1, stop=["\n\n"])
-        raw = out["choices"][0]["text"]
-        obj = _extract_json_obj(raw)
-        if not obj:
-            return None
-        return {
-            "HARD_FILTER_PEOPLE": bool(obj.get("HARD_FILTER_PEOPLE", False)),
-            "GEOMETRIC_PRIORITY": obj.get("GEOMETRIC_PRIORITY", "Normal") if obj.get("GEOMETRIC_PRIORITY") in ("High", "Normal") else "Normal",
-            "LIGHTING_MOOD": str(obj.get("LIGHTING_MOOD", "neutral"))[:40],
-        }
+        out = llm(prompt, **base_kwargs)
+        return _parse_rule_set_output(out["choices"][0]["text"])
     except Exception as _e:
         print(f"[cda] rule-set GGUF refinement skipped: {_e}")
         return None
+
+
+def _parse_rule_set_output(raw: str) -> Optional[dict]:
+    obj = _extract_json_obj(raw)
+    if not obj:
+        return None
+    return {
+        "HARD_FILTER_PEOPLE": bool(obj.get("HARD_FILTER_PEOPLE", False)),
+        "GEOMETRIC_PRIORITY": obj.get("GEOMETRIC_PRIORITY", "Normal") if obj.get("GEOMETRIC_PRIORITY") in ("High", "Normal") else "Normal",
+        "LIGHTING_MOOD": str(obj.get("LIGHTING_MOOD", "neutral"))[:40],
+    }
 
 
 def generate_rule_set(style_prompt: str) -> dict:
