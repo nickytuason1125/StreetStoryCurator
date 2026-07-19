@@ -15,6 +15,26 @@ import asyncio
 from pathlib import Path
 
 _GGUF_PATH = Path(__file__).resolve().parent.parent / "models" / "qwen2.5-vl-2b-instruct-q4_k_m.gguf"
+_LOCK_PATH = Path(__file__).resolve().parent.parent / "cache" / "grading.lock"
+
+
+def _grade_worker_running() -> bool:
+    """True only if a grade worker is ACTIVELY grading (lock file present AND its
+    PID alive). A stale lock (worker hard-killed) returns False so annotations are
+    never blocked forever. This gates annotation independently of gpu_lock: when a
+    grade's SSE stream disconnects (window closed) gpu_lock is released early while
+    the worker keeps grading, so gpu_lock alone would let the annotation model
+    (Ollama qwen2.5vl:3b, ~3-4 GB) load and OOM the still-running grade."""
+    try:
+        if not _LOCK_PATH.exists():
+            return False
+        _pid = int((_LOCK_PATH.read_text(encoding="utf-8").strip() or "0"))
+        if _pid <= 0:
+            return False
+        import psutil
+        return psutil.pid_exists(_pid)
+    except Exception:
+        return False
 
 
 def _gguf_or_ollama_available() -> bool:
@@ -63,6 +83,14 @@ async def start_async(queue: asyncio.Queue, gpu_lock: asyncio.Lock) -> None:
     while True:
         path = await queue.get()
         try:
+            # Never annotate while a grade worker is actively grading — the
+            # annotation model would collide with the grade's Qwen and OOM it.
+            # (gpu_lock is insufficient: a disconnected grade stream releases it
+            # early while the worker keeps running — see _grade_worker_running.)
+            _spins = 0
+            while _grade_worker_running() and _spins < 1800:   # cap ~30 min
+                await asyncio.sleep(1.0)
+                _spins += 1
             async with gpu_lock:
                 await loop.run_in_executor(None, _annotate_one, path)
         except Exception as _e:

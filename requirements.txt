@@ -19,6 +19,17 @@ accelerate              # device_map + mixed-precision loading
 bitsandbytes            # INT4/INT8 quantisation for grading models
 peft                    # QLoRA rank-4 adapters (online DPO soul-alignment)
 
+# ── Competition Mode (magnum_analyzer.py) ──────────────────────────────────────
+# These were previously installed ad-hoc and missing from this file, so a clean
+# rebuild could not import Competition Mode. Pinned here for reproducibility.
+openai-clip==1.0.1      # provides `import clip` (ViT-B/32). NOTE: 1.0.1 does
+                        #   `from pkg_resources import packaging`, removed in
+                        #   setuptools>=66 (required by Py3.12). src/_clip_compat.py
+                        #   re-attaches `packaging` before clip imports — keep both.
+packaging               # required by _clip_compat shim (also a transitive dep)
+opencv-python           # cv2 — Haar cascades, Sobel/HSV signal extraction
+scikit-learn            # cosine_similarity for narrative sequencing
+
 # ── Object detection ──────────────────────────────────────────────────────────
 ultralytics             # YOLO11s-seg — person detection + routing
 

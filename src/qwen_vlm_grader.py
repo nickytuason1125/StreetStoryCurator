@@ -27,34 +27,73 @@ from typing import Dict, List, Optional
 import numpy as np
 import torch
 
+import os as _os_env
+
 MODEL_ID        = "Qwen/Qwen2.5-VL-3B-Instruct"
-MODEL_CACHE_DIR = Path("models/qwen_vlm")
+# QWEN_VLM_DIR selects the vision grader weights (A/B switch between model
+# generations — e.g. models/qwen3_vl for Qwen3-VL-4B). The model class is
+# chosen at load time from the directory's config.json model_type.
+MODEL_CACHE_DIR = Path(_os_env.environ.get("QWEN_VLM_DIR", "models/qwen_vlm"))
 MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+# Pre-quantised NF4 checkpoint. The grade worker is a fresh subprocess per run,
+# so the in-process singleton never survives a cull — without this cache every
+# run re-reads the FP16 shards and quantises them on the fly (the long
+# stall at ~53%). Loading the saved 4-bit checkpoint takes seconds.
+# Derived per model dir so two model generations never share a cache.
+INT4_CACHE_DIR  = Path(str(MODEL_CACHE_DIR) + "_int4")
+
+
+def _resolve_hf_model_dir(base: Path) -> Path:
+    """Return the directory that actually holds the model weights.
+
+    Handles both a flat layout (weights directly under `base`) and the HuggingFace
+    cache layout (`base/models--*/snapshots/<hash>/`). The loader was pointed at the
+    cache ROOT, so from_pretrained could not find the sharded weights and the whole
+    grader silently fell back to SpecVLM CLIP — the cause of imprecise grades.
+    """
+    try:
+        if any(base.glob("*.safetensors")) or (base / "config.json").exists():
+            return base
+        snaps = [p for p in base.glob("models--*/snapshots/*") if p.is_dir()]
+        for s in sorted(snaps, key=lambda p: p.stat().st_mtime, reverse=True):
+            if (s / "config.json").exists() and (
+                any(s.glob("*.safetensors")) or (s / "model.safetensors.index.json").exists()
+            ):
+                return s
+    except Exception:
+        pass
+    return base
 
 # Short prompt — fewer output tokens = faster generation
-# Educational mentor voice: speaks directly to the photographer, names concepts.
+# Accurate editor voice: states what actually decides the image, no tone words
+# ("blunt"/"harsh" make small VLMs deflate everything to sound tough).
 _REASON_PROMPT = """\
-You are a photography mentor reviewing a student's work. Look at this photograph and \
-write ONE sentence of direct feedback to the photographer: name the strongest \
-photographic principle at work (e.g. decisive moment, chiaroscuro, leading lines, \
-bokeh isolation, Winogrand tilt, negative space) and the single most important thing \
-to work on next. Be specific and honest — avoid generic praise. \
-Speak directly: "Your..." or "The..." \
-(e.g. "The chiaroscuro is doing real compositional work here, but the focus plane \
-landed behind the subject — zone focus at 2 m and shoot again"; \
-or "You caught a decisive gesture but the horizon tilt is reading as accidental \
+You are an experienced photo editor. Look at this photograph and write ONE \
+specific sentence describing what actually decides this image: the strength \
+that carries it or the flaw that limits it, naming the photographic principle \
+involved (e.g. decisive moment, chiaroscuro, leading lines, bokeh isolation, \
+Winogrand tilt, negative space). Be accurate and concrete — no generic praise, \
+no exaggeration in either direction. Speak directly: "Your..." or "The..." \
+(e.g. "The chiaroscuro carries the frame, but the focus plane landed behind \
+the subject — zone focus at 2 m and shoot again"; \
+or "You caught a decisive gesture but the horizon tilt reads as accidental \
 rather than intentional — commit to level or an extreme Dutch angle.").\
 """
 
-# Max image dimension fed to the VLM.  336 px gives ~200-350 vision tokens —
-# Qwen2.5-VL was trained across sizes; 336 retains composition/light/moment
-# readability at ~40% fewer tokens than 480px (~20% faster per-image).
+# Max image dimension for the MAIN scoring pass. Two-tier design (2026-06-11,
+# user target: 1.5-2 s/photo): the main pass is fast triage at 336 px / large
+# batch / short JSON; photos near a grade boundary get the expensive look —
+# 672 px sampled passes in the borderline re-judge. 336's known weakness
+# (night shots reading as mush) is exactly what the re-judge tier corrects.
 _MAX_VLM_PX = 336
 _MAX_NEW_TOKENS = 60   # one sentence is plenty (critique-only reason path)
-# Scoring needs the FULL JSON object: ~6 numeric fields + a critique sentence.
-# 60 tokens truncates it mid-object (no closing brace → unparseable → blank
-# breakdown). 200 comfortably fits 6 niches' worth of axes plus the sentence.
-_MAX_SCORE_TOKENS = 200
+# Scoring JSON: 2 short evidence phrases (strongest_element / main_flaw,
+# written FIRST) + ~6 numeric fields ≈ 90-110 tokens. The critique SENTENCE
+# was dropped from the scoring schema (2026-06-11, 1.5-2 s/photo target) —
+# decode length is the dominant per-photo cost, and the UI critique is
+# synthesised from the evidence phrases (deep critique stays on-demand).
+# Truncation mid-object = unparseable = blank breakdown, so keep headroom.
+_MAX_SCORE_TOKENS = 160
 
 
 def _repair_json(s: str) -> str:
@@ -286,6 +325,12 @@ def _is_monochrome(path: str) -> bool:
 _FAST_SCAN_MODEL = "gemma3:4b"        # bulk scoring — Q4_K_M (3.3 GB, more accurate than Q2_K)
 _DEEP_DIVE_MODEL = "qwen2.5vl:3b"  # on-demand critique — poetic prose
 
+# Session flag: flips True after Ollama's GPU backend throws a CUDA kernel error
+# ("device kernel image is invalid" — driver/Ollama build mismatch). Once set, all
+# subsequent Ollama calls go straight to CPU (num_gpu=0) instead of crashing the
+# llama-server with a 500 on every request.
+_OLLAMA_GPU_BROKEN = False
+
 
 def _get_pulled_models() -> set:
     """Return set of model names currently pulled in Ollama (empty on error)."""
@@ -340,7 +385,7 @@ def warmup_vlm_models() -> None:
                 "http://localhost:11434/api/chat",
                 json={
                     "model": _fast, "stream": False,
-                    "keep_alive": -1,
+                    "keep_alive": "5m",   # warm for the grade, not pinned forever (was -1 → never freed)
                     "options": {"num_predict": 1, "num_gpu": 999},
                     "messages": [{"role": "user", "content": "hi"}],
                 },
@@ -385,20 +430,15 @@ def execute_vlm_culling_sync(
         return None
 
     _is_gemma = fast_scan and "gemma" in model.lower()
-    _is_monochrome = cpu_metrics.get("is_monochrome", False)
-    _topiq         = cpu_metrics.get("topiq_score",   50)
-    _persons       = cpu_metrics.get("yolo_detections", {}).get("persons", 0)
+    _is_mono  = cpu_metrics.get("is_monochrome", False)  # bool; renamed to avoid shadowing module-level fn
+    _topiq    = cpu_metrics.get("topiq_score",   50)
+    _persons  = cpu_metrics.get("yolo_detections", {}).get("persons", 0)
 
     if _is_gemma:
         # Gemma 3: RAG injected via system role using the already-loaded rag_context parameter.
         _rag_phrases = [l.lstrip("- ") for l in (rag_context or "").splitlines() if l.strip()]
         _rag_block   = "\n".join(f"- {p}" for p in _rag_phrases[:5]) if _rag_phrases else "No style reference loaded."
-        system_msg = GEMMA_SYSTEM_TEMPLATE.format(
-            rag_block     = _rag_block,
-            is_monochrome = _is_monochrome,
-            topiq_score   = _topiq,
-            yolo_persons  = _persons,
-        )
+        system_msg = GEMMA_SYSTEM_TEMPLATE.format(rag_block=_rag_block)
         messages    = [
             {"role": "system", "content": system_msg},
             {"role": "user",   "content": GEMMA_USER_PROMPT, "images": []},  # images filled below
@@ -411,7 +451,7 @@ def execute_vlm_culling_sync(
             else ""
         )
         user_prompt = FAST_SCAN_PROMPT_TEMPLATE.format(
-            is_monochrome = _is_monochrome,
+            is_monochrome = _is_mono,
             topiq_score   = _topiq,
             yolo_persons  = _persons,
             rag_block     = rag_block,
@@ -425,7 +465,7 @@ def execute_vlm_culling_sync(
             else COMPETITION_SYSTEM_PROMPT_TEMPLATE
         )
         user_prompt = template.format(
-            is_monochrome   = _is_monochrome,
+            is_monochrome   = _is_mono,
             topiq_score     = _topiq,
             yolo_detections = _json.dumps(cpu_metrics.get("yolo_detections", {})),
             rag_context     = rag_context or "No reference context provided.",
@@ -454,23 +494,36 @@ def execute_vlm_culling_sync(
             _msg["images"] = [b64]
             break
 
+    global _OLLAMA_GPU_BROKEN
     try:
         _temp  = 0.0 if _is_gemma else 0.3   # deterministic bbox localization
         _top_p = 0.1 if _is_gemma else 0.92  # restrict to highest-prob tokens
-        r = _req.post(
-            "http://localhost:11434/api/chat",
-            json={
-                "model":      model,
-                "stream":     False,
-                "keep_alive": -1,
-                "options":    {"temperature": _temp, "top_p": _top_p, "num_predict": num_predict, "num_gpu": 999},
-                "messages":   messages,
-            },
-            timeout=timeout,
-        )
+
+        def _cull_chat(num_gpu: int):
+            return _req.post(
+                "http://localhost:11434/api/chat",
+                json={
+                    "model":      model,
+                    "stream":     False,
+                    "keep_alive": "5m",   # warm across the batch, not pinned forever (was -1 → never freed)
+                    "options":    {"temperature": _temp, "top_p": _top_p, "num_predict": num_predict, "num_gpu": num_gpu},
+                    "messages":   messages,
+                },
+                timeout=timeout,
+            )
+
+        r = _cull_chat(0 if _OLLAMA_GPU_BROKEN else 999)
         if not r.ok:
-            print(f"[vlm_cull] Ollama returned {r.status_code}")
-            return None
+            _body = (r.text or "")[:300]
+            # Ollama GPU backend crash (CUDA kernel mismatch) → retry once on CPU,
+            # then remember for the rest of the session so we don't keep crashing it.
+            if r.status_code == 500 and not _OLLAMA_GPU_BROKEN and "CUDA" in _body:
+                print("[vlm_cull] Ollama GPU backend failed (CUDA) — switching to CPU for this session")
+                _OLLAMA_GPU_BROKEN = True
+                r = _cull_chat(0)
+            if not r.ok:
+                print(f"[vlm_cull] Ollama returned {r.status_code}: {(r.text or '')[:200]}")
+                return None
         raw = r.json().get("message", {}).get("content", "").strip()
     except _req.exceptions.Timeout:
         print(f"[vlm_cull] Timeout ({timeout}s) — Gemma locked on {Path(image_path).name}")
@@ -537,7 +590,7 @@ def execute_vlm_text_deep_dive(
     mode:        str,
     rag_context: Optional[str] = None,
     model:       str = _DEEP_DIVE_MODEL,
-    timeout:     int = 120,
+    timeout:     int = 180,
 ) -> Optional[dict]:
     """
     On-demand deep text critique for a single selected photo.
@@ -584,14 +637,20 @@ def execute_vlm_text_deep_dive(
         print(f"[vlm_deep] Image encode failed {Path(image_path).name}: {_e}")
         return None
 
-    try:
-        r = _req.post(
+    global _OLLAMA_GPU_BROKEN
+
+    def _chat(num_gpu: int):
+        return _req.post(
             "http://localhost:11434/api/chat",
             json={
                 "model":      model,
                 "stream":     False,
-                "keep_alive": 0,
-                "options":    {"temperature": 0.5, "top_p": 0.95, "num_predict": 350, "num_ctx": 2048, "num_gpu": 999},
+                # Keep the VL model warm so it isn't unloaded between the deep
+                # critique and the annotation path (which both use qwen2.5vl:3b) —
+                # the old keep_alive:0 forced a cold reload every call, thrashing
+                # the 6 GB GPU and blowing past the timeout. 30s frees it on idle.
+                "keep_alive": "30s",
+                "options":    {"temperature": 0.5, "top_p": 0.95, "num_predict": 350, "num_ctx": 2048, "num_gpu": num_gpu},
                 "messages":   [{
                     "role":    "user",
                     "content": prompt,
@@ -600,12 +659,37 @@ def execute_vlm_text_deep_dive(
             },
             timeout=timeout,
         )
-        if not r.ok:
-            print(f"[vlm_deep] Ollama returned {r.status_code}")
+
+    # One retry on read-timeout: the first call may be consumed by the cold VRAM
+    # load (~3 GB) under GPU contention; the second usually returns warm.
+    raw = None
+    for _attempt in (1, 2):
+        try:
+            # Skip the GPU attempt entirely once it has failed this session.
+            r = _chat(0 if _OLLAMA_GPU_BROKEN else 999)
+            if not r.ok:
+                _body = (r.text or "")[:300]
+                # Ollama's GPU llama-server crashes with a 500 + CUDA error when its
+                # CUDA build doesn't match the installed driver/GPU. Retry on CPU once.
+                if r.status_code == 500 and not _OLLAMA_GPU_BROKEN and "CUDA" in _body:
+                    print(f"[vlm_deep] Ollama GPU backend failed (CUDA) — switching to CPU for this session")
+                    _OLLAMA_GPU_BROKEN = True
+                    r = _chat(0)
+                if not r.ok:
+                    print(f"[vlm_deep] Ollama returned {r.status_code}: {(r.text or '')[:200]}")
+                    return None
+            raw = r.json().get("message", {}).get("content", "").strip()
+            break
+        except _req.exceptions.ReadTimeout:
+            if _attempt == 1:
+                print(f"[vlm_deep] read-timeout (cold load / GPU contention) — retrying once")
+                continue
+            print(f"[vlm_deep] timed out after retry ({timeout}s)")
             return None
-        raw = r.json().get("message", {}).get("content", "").strip()
-    except Exception as _e:
-        print(f"[vlm_deep] Ollama request failed: {_e}")
+        except Exception as _e:
+            print(f"[vlm_deep] Ollama request failed: {_e}")
+            return None
+    if raw is None:
         return None
 
     raw = _re.sub(r"^```[a-zA-Z]*\s*", "", raw).strip()
@@ -703,6 +787,10 @@ class QwenVLMGrader:
     """
 
     _INT4_VRAM_GB = 2.2
+    # Qwen2.5-VL-3B is ~3.75 B params; FP32 on CPU needs ~15 GB resident plus load
+    # overhead. Require headroom before attempting it — otherwise the caller's
+    # exception handler falls back to lightweight SpecVLM CLIP scoring (no OOM kill).
+    _CPU_FP32_RAM_GB = 16.0
 
     def __init__(self, device: str = "auto", progress=None):
         _p = progress or (lambda f, d: None)
@@ -723,52 +811,179 @@ class QwenVLMGrader:
                 )
                 self.device = "cpu"
 
-        _p(0.52, "Loading Qwen2.5-VL-3B (first run downloads ~6 GB)…")
-        print(f"[qwen_vlm] Loading {MODEL_ID} on {self.device}…")
-
-        try:
-            from transformers import Qwen2_5_VLForConditionalGeneration as _VLCls
-        except ImportError:
-            try:
-                from transformers import Qwen2VLForConditionalGeneration as _VLCls
-            except ImportError:
-                raise ImportError(
-                    "transformers >= 4.45 with Qwen2-VL support required.\n"
-                    "Run:  pip install --upgrade transformers"
-                )
+        _p(0.52, "Loading Vision Engine…")
+        print(f"[qwen_vlm] Loading on {self.device} from {MODEL_CACHE_DIR}…")
 
         from transformers import AutoProcessor
 
+        _model_dir = _resolve_hf_model_dir(MODEL_CACHE_DIR)
+        if _model_dir != MODEL_CACHE_DIR:
+            print(f"[qwen_vlm] Resolved HF-cache snapshot → {_model_dir}")
+
+        # Pick the model class from the checkpoint's own config — lets
+        # QWEN_VLM_DIR point at any Qwen VL generation without code changes.
+        _model_type = ""
+        try:
+            import json as _json_cfg
+            _model_type = _json_cfg.loads(
+                (_model_dir / "config.json").read_text(encoding="utf-8")
+            ).get("model_type", "")
+        except Exception as _e_cfg:
+            print(f"[qwen_vlm] config.json read failed ({_e_cfg}) — assuming qwen2_5_vl")
+
+        self._model_type = _model_type   # drives per-model anchors + calibration
+
+        if _model_type == "qwen3_vl":
+            from transformers import Qwen3VLForConditionalGeneration as _VLCls
+            print("[qwen_vlm] model_type=qwen3_vl → Qwen3VLForConditionalGeneration")
+        elif _model_type in ("qwen2_5_vl", "qwen2_vl", ""):
+            try:
+                from transformers import Qwen2_5_VLForConditionalGeneration as _VLCls
+            except ImportError:
+                try:
+                    from transformers import Qwen2VLForConditionalGeneration as _VLCls
+                except ImportError:
+                    raise ImportError(
+                        "transformers >= 4.45 with Qwen2-VL support required.\n"
+                        "Run:  pip install --upgrade transformers"
+                    )
+        else:
+            # Non-Qwen rivals (internvl, smolvlm, gemma3, …): the generic
+            # image-text-to-text auto class resolves the concrete model from
+            # the checkpoint config — same processor/chat-template contract.
+            from transformers import AutoModelForImageTextToText as _VLCls
+            print(f"[qwen_vlm] model_type={_model_type} → AutoModelForImageTextToText")
         base_kw = dict(
-            pretrained_model_name_or_path=MODEL_ID,
-            cache_dir=str(MODEL_CACHE_DIR),
+            pretrained_model_name_or_path=str(_model_dir),
+            local_files_only=True,
             trust_remote_code=True,
         )
 
-        if self.device == "cuda":
-            _p(0.53, "Quantising Qwen2.5-VL to INT4…")
-            self._model = self._load_int4(_VLCls, base_kw)
-        else:
-            _p(0.53, "Loading on CPU (slow, no GPU)…")
-            self._model = _VLCls.from_pretrained(
-                **base_kw, torch_dtype=torch.float32, device_map="cpu"
-            )
+        # Heartbeat — from_pretrained gives no progress callbacks, so without
+        # this the bar freezes for the whole load and looks crashed.
+        import threading as _thr
+        _hb_stop = _thr.Event()
+        _hb_t0   = time.time()
+
+        def _heartbeat():
+            while not _hb_stop.wait(5.0):
+                _p(0.525, f"Loading Vision Engine… {int(time.time() - _hb_t0)}s elapsed")
+
+        _thr.Thread(target=_heartbeat, daemon=True).start()
+        try:
+            if self.device == "cuda":
+                # RAM preflight for the GPU INT4 load too. Loading the ~2.3 GB
+                # INT4 cache (or re-quantising the FP16 model) materialises
+                # weights in HOST RAM before the GPU transfer; on a RAM-starved
+                # box — especially right after SigLIP consumed memory — this
+                # OOM-kills the worker NATIVELY at the Qwen step (no traceback,
+                # the cull just dies). Raise instead so grade_pipeline_v2's
+                # `except _e_qwen` falls back to SpecVLM CLIP scoring and the
+                # cull still COMPLETES. Tunable via QWEN_MIN_FREE_RAM_GB.
+                try:
+                    import os as _os_q, psutil as _ps_q
+                    _free_gb = _ps_q.virtual_memory().available / 1e9
+                    _need_q  = float(_os_q.environ.get("QWEN_MIN_FREE_RAM_GB", "3.0"))
+                except Exception:
+                    _free_gb = _need_q = None
+                if _free_gb is not None and _free_gb < _need_q:
+                    raise RuntimeError(
+                        f"Insufficient RAM for Qwen load: {_free_gb:.1f} GB free, "
+                        f"need ~{_need_q:.1f} GB — deferring to SpecVLM CLIP scoring."
+                    )
+                self._model = self._load_int4(_VLCls, base_kw, _p)
+            else:
+                # RAM preflight — the CPU path loads FP32 (~15 GB). Without headroom this
+                # silently OOM-kills the grade worker. Bail out so the caller falls back
+                # to SpecVLM CLIP scoring instead of crashing the whole run.
+                try:
+                    import psutil as _psutil
+                    _free_gb = _psutil.virtual_memory().available / 1e9
+                    if _free_gb < self._CPU_FP32_RAM_GB:
+                        raise RuntimeError(
+                            f"Insufficient RAM for Qwen CPU fallback: {_free_gb:.1f} GB free, "
+                            f"need ~{self._CPU_FP32_RAM_GB:.0f} GB for FP32 load — "
+                            f"deferring to SpecVLM CLIP scoring."
+                        )
+                except ImportError:
+                    pass   # psutil absent — proceed and let the OS handle allocation
+                _p(0.525, "Loading on CPU…")
+                self._model = _VLCls.from_pretrained(
+                    **base_kw, torch_dtype=torch.float32, device_map="cpu"
+                )
+        finally:
+            _hb_stop.set()
 
         self._model.eval()
         self._processor = AutoProcessor.from_pretrained(
-            MODEL_ID, cache_dir=str(MODEL_CACHE_DIR), trust_remote_code=True
+            str(_model_dir), local_files_only=True, trust_remote_code=True
         )
+        # Decoder-only generation requires LEFT padding. With the default right
+        # padding, batched VL generation can emit empty/garbled completions (the
+        # cause of "No parseable JSON … ''" → silent default scores). Force left
+        # padding on both the processor and its inner tokenizer.
+        try:
+            self._processor.tokenizer.padding_side = "left"
+            if hasattr(self._processor, "padding_side"):
+                self._processor.padding_side = "left"
+        except Exception as _e_pad:
+            print(f"[qwen_vlm] could not set padding_side=left: {_e_pad}")
 
         # torch.compile is intentionally skipped: BitsAndBytes INT4 + torch.compile
         # causes a hard process crash on Windows at first inference (Triton/inductor
         # tries to JIT-compile CUDA kernels that BnB has already quantised, leading
         # to a fatal CUDA error that kills the entire Python process).
-        _p(0.56, "Qwen2.5-VL ready — generating reasoning…")
+        # 0.53 keeps progress monotonic: grade_images_scored resumes at 0.53.
+        _p(0.53, "Qwen2.5-VL ready…")
         print("[qwen_vlm] Model ready.")
 
     # ------------------------------------------------------------------
-    def _load_int4(self, cls, base_kw: dict):
+    def _load_int4(self, cls, base_kw: dict, progress=None):
         from transformers import BitsAndBytesConfig
+        _p = progress or (lambda f, d: None)
+
+        # ── Opt-in INT8 (set QWEN_QUANT=int8): closer to full-precision
+        # judgment than NF4, ~3.8 GB VRAM, ~1.5× slower. A/B switch, not the
+        # default — falls through to NF4 on insufficient VRAM or load failure.
+        import os as _os
+        if _os.environ.get("QWEN_QUANT", "").lower() == "int8":
+            try:
+                _free8 = torch.cuda.mem_get_info(0)[0] / 1e9
+            except Exception:
+                _free8 = 0.0
+            if _free8 >= 4.2:
+                try:
+                    _p(0.525, "Loading INT8 weights (QWEN_QUANT=int8)…")
+                    model = cls.from_pretrained(
+                        **base_kw,
+                        quantization_config=BitsAndBytesConfig(load_in_8bit=True),
+                        device_map="auto",
+                    )
+                    print("[qwen_vlm] QWEN_QUANT=int8 — INT8 loaded (~3.8 GB VRAM)")
+                    return model
+                except Exception as _e8:
+                    print(f"[qwen_vlm] INT8 load failed ({_e8}) — falling back to NF4")
+            else:
+                print(f"[qwen_vlm] QWEN_QUANT=int8 requested but only "
+                      f"{_free8:.1f} GB free — falling back to NF4")
+
+        # ── Pre-quantised cache hit: skip on-the-fly NF4 quantisation ────────
+        if (INT4_CACHE_DIR / "config.json").exists() and any(INT4_CACHE_DIR.glob("*.safetensors")):
+            try:
+                _p(0.525, "Loading cached INT4 weights…")
+                model = cls.from_pretrained(
+                    pretrained_model_name_or_path=str(INT4_CACHE_DIR),
+                    local_files_only=True,
+                    trust_remote_code=True,
+                    device_map="auto",
+                )
+                print("[qwen_vlm] INT4 cache hit — pre-quantised load (~2.2 GB VRAM)")
+                return model
+            except Exception as e_cache:
+                # Corrupt/partial/incompatible cache — wipe it and re-quantise.
+                print(f"[qwen_vlm] INT4 cache load failed ({e_cache}) — re-quantising")
+                import shutil
+                shutil.rmtree(INT4_CACHE_DIR, ignore_errors=True)
 
         bnb = BitsAndBytesConfig(
             load_in_4bit=True,
@@ -777,6 +992,11 @@ class QwenVLMGrader:
             bnb_4bit_quant_type="nf4",
         )
 
+        # Python 3 deletes `except ... as var` bindings at block exit, so save
+        # each error message before the except block ends.
+        _e1_msg = _e2_msg = ""
+        _p(0.525, "Quantising to INT4 (first run only — cached after)…")
+
         # 1st attempt: INT4 + flash_attn2 (best speed on Ampere+)
         try:
             model = cls.from_pretrained(
@@ -784,8 +1004,10 @@ class QwenVLMGrader:
                 attn_implementation="flash_attention_2",
             )
             print("[qwen_vlm] INT4 + flash_attn2 loaded (~2.2 GB VRAM)")
+            self._save_int4_cache(model)
             return model
         except Exception as e1:
+            _e1_msg = str(e1)
             print(f"[qwen_vlm] flash_attn2 failed ({e1}) — retrying INT4 without it")
 
         # 2nd attempt: INT4 without flash_attn2 (Windows-safe)
@@ -794,8 +1016,10 @@ class QwenVLMGrader:
                 **base_kw, quantization_config=bnb, device_map="auto",
             )
             print("[qwen_vlm] INT4 loaded (~2.2 GB VRAM)")
+            self._save_int4_cache(model)
             return model
         except Exception as e2:
+            _e2_msg = str(e2)
             print(f"[qwen_vlm] INT4 failed ({e2}) — trying INT8 fallback")
 
         # 3rd attempt: INT8 (~3.5 GB VRAM, still fits in 6 GB)
@@ -809,68 +1033,52 @@ class QwenVLMGrader:
             return model
         except Exception as e3:
             raise RuntimeError(
-                f"All GPU load attempts failed.\n  flash_attn2: {e1}\n  INT4: {e2}\n  INT8: {e3}"
+                f"All GPU load attempts failed.\n  flash_attn2: {_e1_msg}\n  INT4: {_e2_msg}\n  INT8: {e3}"
             ) from e3
 
     # ------------------------------------------------------------------
     @staticmethod
-    def _resize(path: str):
-        """Load and resize image to _MAX_VLM_PX on the long edge."""
+    def _save_int4_cache(model) -> None:
+        """Persist the quantised checkpoint so later worker processes skip
+        quantisation. 4-bit serialisation needs bitsandbytes >= 0.41.3 —
+        failure is non-fatal (a partial dir is wiped so the next run never
+        loads a corrupt cache)."""
+        import shutil
+        try:
+            INT4_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            model.save_pretrained(str(INT4_CACHE_DIR), safe_serialization=True)
+            print(f"[qwen_vlm] INT4 weights cached to {INT4_CACHE_DIR} — "
+                  f"future runs skip quantisation")
+        except Exception as e:
+            print(f"[qwen_vlm] INT4 cache save skipped ({e})")
+            shutil.rmtree(INT4_CACHE_DIR, ignore_errors=True)
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _resize(path: str, max_px: int = _MAX_VLM_PX):
+        """Load and resize image to max_px on the long edge.
+
+        RAM lever: draft() lets libjpeg decode a JPEG at a reduced DCT scale
+        (1/2, 1/4, 1/8) directly, so a 38 MP photo materialises at ~0.6 MP
+        instead of ~116 MB before the LANCZOS downscale to max_px. No-op for
+        PNG/already-small images; grading quality is unchanged (the frame ends
+        at max_px either way). With BS+1 concurrent decodes this is the main
+        peak-RAM driver during a cull.
+        """
         from PIL import Image as _PIL
-        img = _PIL.open(path).convert("RGB")
+        img = _PIL.open(path)
+        try:
+            img.draft("RGB", (max_px, max_px))   # JPEG-only DCT downscale
+        except Exception:
+            pass
+        img = img.convert("RGB")
         w, h = img.size
-        if max(w, h) > _MAX_VLM_PX:
-            scale = _MAX_VLM_PX / max(w, h)
+        if max(w, h) > max_px:
+            scale = max_px / max(w, h)
             img = img.resize(
                 (int(w * scale), int(h * scale)), _PIL.Resampling.LANCZOS
             )
         return img
-
-    # ------------------------------------------------------------------
-    def _reason_one(self, path: str) -> str:
-        """Ask the VLM for a one-sentence critique. Returns '' on failure."""
-        try:
-            img = self._resize(path)
-        except Exception as e:
-            print(f"[qwen_vlm] Image load failed {path}: {e}")
-            return ""
-
-        messages = [{
-            "role": "user",
-            "content": [
-                {"type": "image",  "image": img},
-                {"type": "text",   "text":  _REASON_PROMPT},
-            ],
-        }]
-
-        try:
-            text   = self._processor.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
-            inputs = self._processor(
-                text=[text], images=[img], return_tensors="pt", padding=True
-            )
-            if self.device == "cuda":
-                inputs = {k: v.to("cuda") if hasattr(v, "to") else v
-                          for k, v in inputs.items()}
-
-            with torch.no_grad():
-                out = self._model.generate(
-                    **inputs,
-                    max_new_tokens=_MAX_NEW_TOKENS,
-                    do_sample=False,
-                )
-
-            n_in   = inputs["input_ids"].shape[1]
-            result = self._processor.decode(
-                out[0][n_in:], skip_special_tokens=True
-            ).strip()
-            print(f"[qwen_vlm] {Path(path).name}: {result[:80]!r}")
-            return result
-
-        except Exception as e:
-            print(f"[qwen_vlm] Inference failed {path}: {e}")
-            return ""
 
     # ------------------------------------------------------------------
     def grade_images(
@@ -999,6 +1207,7 @@ class QwenVLMGrader:
         rag_phrases: Optional[List[str]]  = None,
         arch_hints:  Optional[Dict[str, str]] = None,
         progress                          = None,
+        on_batch                          = None,
     ) -> List[VLMScoredResult]:
         """
         Full vision scoring — Qwen2.5-VL assigns absolute aspect scores (0-100)
@@ -1015,13 +1224,19 @@ class QwenVLMGrader:
         n       = len(paths)
         phrases = rag_phrases or []
 
+        # Framed as aspirational examples, not a checklist — a checklist reads
+        # as pass/fail and drags scores down for every quality a photo never
+        # aimed at (one strong quality matters more than five absent ones).
         rag_block  = (
-            "\nReference rubric:\n"
+            "\nQualities found in exemplary work (a strong photo shows one or "
+            "two of these — absence of the others is not a flaw):\n"
             + "\n".join(f"  • {p}" for p in phrases[:8])
             + "\n"
         ) if phrases else ""
         from niche_registry import build_niche_prompt as _build_niche_prompt
-        _base_prompt = _build_niche_prompt(mode, rag_block)
+        _base_prompt = _build_niche_prompt(
+            mode, rag_block, model_family=getattr(self, "_model_type", "")
+        )
 
         def _make_prompt(path: str) -> str:
             """Append arch context sentence before the final JSON-only line."""
@@ -1036,7 +1251,40 @@ class QwenVLMGrader:
 
         results: List[VLMScoredResult] = []
         t0 = time.time()
-        _BS = 2  # batch size: 2 images per forward pass → ~1.5× throughput on 6 GB GPU
+
+        # Derive batch size from available VRAM. At 448 px an image is ~530
+        # vision tokens; with a 200-token completion the KV cache + activations
+        # cost ~1.0 GB per slot. 0.5 GB is held back as reserve so WDDM never
+        # spills to shared system memory (which silently runs 10× slower
+        # instead of raising OOM). On a 6 GB card this yields BS=2-3.
+        if self.device == "cuda":
+            try:
+                _free_gb = torch.cuda.mem_get_info(0)[0] / 1e9
+                # 0.65 GB/slot at 336 px (~300 vision tokens + 160 gen tokens).
+                # Floor 1, not 2: under INT8 (QWEN_QUANT=int8) free VRAM is
+                # genuinely tight and forcing BS 2 would spill to shared
+                # memory (silent 10× slowdown). NF4 derives BS 4 on a free
+                # 6 GB card, BS 2-3 with other models resident.
+                #
+                # Lever 1 (speed): NF4 decode is memory-bandwidth bound and the
+                # per-step dequant tax only amortises across a LARGER batch. When
+                # Qwen is the sole resident model (warm worker; SigLIP evicted
+                # before grading) free VRAM is high, so a bigger batch is pure
+                # throughput with no per-image quality change. Reserve/slot/ceil
+                # are env-tunable so the sole-resident batch can be pushed and
+                # benchmarked without risking the documented WDDM shared-memory
+                # spill (which shows up as a 10× s/img regression, not an OOM).
+                _reserve = float(_os_env.environ.get("QWEN_VRAM_RESERVE", "0.5"))
+                _slot    = float(_os_env.environ.get("QWEN_VRAM_SLOT",    "0.65"))
+                _bs_ceil = int(_os_env.environ.get("QWEN_BS_CEIL", "8"))
+                _BS = max(1, min(_bs_ceil, int((_free_gb - _reserve) / _slot)))
+            except Exception:
+                _BS = 2
+        else:
+            _BS = 1
+        print(f"[qwen_vlm] Batch size {_BS} for {n} images "
+              f"({_free_gb:.1f} GB free)" if self.device == "cuda"
+              else f"[qwen_vlm] Batch size {_BS} for {n} images")
 
         with ThreadPoolExecutor(max_workers=_BS + 1) as pool:
             # Pre-load the first batch before the loop starts
@@ -1078,30 +1326,125 @@ class QwenVLMGrader:
                     scored = []
 
                 scored_iter = iter(scored)
+                _batch_new: List[VLMScoredResult] = []
                 for j, path in enumerate(cur_paths):
                     if cur_imgs[j] is not None:
                         score, breakdown, critique = next(scored_iter)
                     else:
                         score, breakdown, critique = 0.5, {}, ""
-                    results.append(VLMScoredResult(
+                    _r = VLMScoredResult(
                         path=path, score=score, breakdown=breakdown, critique=critique,
-                    ))
+                    )
+                    results.append(_r)
+                    _batch_new.append(_r)
+
+                # Resume checkpoint hook: persist each completed batch so a
+                # cull interrupted mid-grade (e.g. window closed) resumes here
+                # instead of re-grading from zero. Best-effort — never block.
+                if on_batch is not None and _batch_new:
+                    try:
+                        on_batch(_batch_new)
+                    except Exception as _ob_e:
+                        print(f"[qwen_vlm] on_batch checkpoint failed: {_ob_e}")
 
                 i       = batch_end
                 done    = i
                 elapsed = time.time() - t0
                 eta_s   = int(elapsed / done * (n - done)) if done < n else 0
+                # 0.53 → 0.65: starts where the loader ended so the bar never
+                # moves backwards (it used to restart at 0.51 after 0.56).
                 _p(
-                    0.51 + (done / n) * 0.14,
+                    0.53 + (done / n) * 0.12,
                     f"Qwen grading: {done}/{n}"
                     + (f" — ~{eta_s // 60}m{eta_s % 60:02d}s left" if eta_s else ""),
                 )
 
+        # ── Borderline re-judging ─────────────────────────────────────────────
+        # Grading mistakes that matter live near the cut lines (Weak<0.41,
+        # Strong≥0.60), not at 0.85 or 0.25. Photos whose first-pass score
+        # lands near a boundary get two extra passes at higher resolution
+        # (672 px) with temperature sampling; axes are averaged across all
+        # passes. Capped so a big cull pays a bounded premium.
+        # Bands and pass count tuned for the 1.5-2 s/photo budget: one extra
+        # 560 px sampled look (the first re-look carries most of the value;
+        # a third judgment moved averages <0.03 in testing, and 672→560 px
+        # cuts the re-look's vision tokens ~30% with no observed grade flips).
+        # Lever 4 (speed): the re-judge is the discretionary half of grade cost
+        # (up to _BL_MAX full second passes). Only photos that could actually
+        # flip a bucket need it — i.e. within ~±0.03 of a cut line (0.41/0.60).
+        # A photo at 0.45 or 0.56 is 0.04-0.05 clear of the nearest cut and a
+        # second look essentially never moved it across, so tightening the bands
+        # from ±0.06 to ±0.03 drops ~half the re-judges with no observed bucket
+        # changes. Bands/cap env-tunable for re-benchmarking.
+        _bl_w     = float(_os_env.environ.get("QWEN_REJUDGE_BAND", "0.03"))
+        _BL_BANDS = ((0.41 - _bl_w, 0.41 + _bl_w), (0.60 - _bl_w, 0.60 + _bl_w))
+        _BL_MAX   = int(_os_env.environ.get("QWEN_REJUDGE_MAX", "12"))
+        _BL_PX    = 560
+
+        def _is_borderline(s: float) -> bool:
+            return any(lo <= s <= hi for lo, hi in _BL_BANDS)
+
+        _bl = [i for i, r in enumerate(results) if r.breakdown and _is_borderline(r.score)]
+        _bl.sort(key=lambda i: min(abs(results[i].score - 0.41),
+                                   abs(results[i].score - 0.60)))
+        _bl = _bl[:_BL_MAX]
+        if _bl and self.device == "cuda":
+            print(f"[qwen_vlm] Borderline re-judge: {len(_bl)} images "
+                  f"(batched greedy @ {_BL_PX}px)")
+            # Greedy + higher resolution = a genuinely independent second look
+            # that is ALSO deterministic (the earlier sampled pass made grades
+            # wobble between runs and forced serial generation; the resolution
+            # change supplies the diversity sampling was providing). Batched
+            # through _score_batch in chunks — ~2× faster than serial.
+            _bl_chunk = 2   # 560 px ≈ 830 vision tokens/slot — 2 fits the budget
+            for cb_start in range(0, len(_bl), _bl_chunk):
+                chunk = _bl[cb_start : cb_start + _bl_chunk]
+                imgs_hi, ok_idx = [], []
+                for i in chunk:
+                    try:
+                        imgs_hi.append(self._resize(results[i].path, max_px=_BL_PX))
+                        ok_idx.append(i)
+                    except Exception as _e_hi:
+                        print(f"[qwen_vlm] re-judge load failed "
+                              f"{Path(results[i].path).name}: {_e_hi}")
+                if not ok_idx:
+                    continue
+                scored_hi = self._score_batch(
+                    imgs_hi,
+                    [results[i].path for i in ok_idx],
+                    [_make_prompt(results[i].path) for i in ok_idx],
+                    mode,
+                )
+                for img in imgs_hi:
+                    del img
+                for i, (s2, bd2, _cr2) in zip(ok_idx, scored_hi):
+                    if not bd2:
+                        continue
+                    r = results[i]
+                    _keys  = set(r.breakdown) | set(bd2)
+                    avg_bd = {k: float(np.mean([bd[k] for bd in (r.breakdown, bd2) if k in bd]))
+                              for k in _keys}
+                    avg_s  = float((r.score + s2) / 2.0)
+                    crit   = r.critique or _cr2
+                    results[i] = VLMScoredResult(
+                        path=r.path, score=avg_s, breakdown=avg_bd, critique=crit,
+                    )
+                    print(f"[qwen_vlm]   {Path(r.path).name}: "
+                          f"{r.score:.2f} → {avg_s:.2f} (2 looks)")
+                _p(0.65, f"Refining borderline images: "
+                         f"{min(cb_start + _bl_chunk, len(_bl))}/{len(_bl)}")
+                if self.device == "cuda":
+                    torch.cuda.empty_cache()
+
         return results
 
     # ------------------------------------------------------------------
-    def _score_one(self, img, path: str, prompt: str, mode: str = "classic_street") -> tuple[float, dict, str]:
-        """Run one scoring inference. Returns (score_0_1, breakdown, critique)."""
+    def _score_one(self, img, path: str, prompt: str, mode: str = "classic_street",
+                   sample: bool = False) -> tuple[float, dict, str]:
+        """Run one scoring inference. Returns (score_0_1, breakdown, critique).
+
+        sample=True enables temperature sampling — used by the borderline
+        re-judge pass, where averaging diverse samples beats one greedy run."""
         messages = [{
             "role": "user",
             "content": [
@@ -1109,7 +1452,7 @@ class QwenVLMGrader:
                 {"type": "text",  "text":  prompt},
             ],
         }]
-        try:
+        def _generate() -> str:
             text   = self._processor.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
             )
@@ -1119,15 +1462,31 @@ class QwenVLMGrader:
             if self.device == "cuda":
                 inputs = {k: v.to("cuda") if hasattr(v, "to") else v
                           for k, v in inputs.items()}
-            with torch.no_grad():
-                out = self._model.generate(
-                    **inputs, max_new_tokens=_MAX_SCORE_TOKENS, do_sample=False,
-                )
-            n_in = inputs["input_ids"].shape[1]
-            raw  = self._processor.decode(
-                out[0][n_in:], skip_special_tokens=True
-            ).strip()
-            del inputs, out  # free CUDA tensors before next image
+            gen_kw: dict = {"max_new_tokens": _MAX_SCORE_TOKENS}
+            if sample:
+                gen_kw.update(do_sample=True, temperature=0.7, top_p=0.9)
+            else:
+                gen_kw["do_sample"] = False
+            out = None
+            try:
+                with torch.no_grad():
+                    out = self._model.generate(**inputs, **gen_kw)
+                n_in = inputs["input_ids"].shape[1]
+                return self._processor.decode(
+                    out[0][n_in:], skip_special_tokens=True
+                ).strip()
+            finally:
+                del inputs, out  # free CUDA tensors before next image
+                if self.device == "cuda":
+                    torch.cuda.empty_cache()
+
+        try:
+            raw = _generate()
+            # Empty completion (usually a padding/decoder hiccup) → retry once
+            # before _parse_score_json silently falls back to a default 0.5 score.
+            if not raw:
+                print(f"[qwen_vlm] empty completion {Path(path).name} — retrying once")
+                raw = _generate()
             return self._parse_score_json(raw, path, mode)
         except Exception as _e:
             print(f"[qwen_vlm] Score inference failed {path}: {_e}")
@@ -1174,22 +1533,69 @@ class QwenVLMGrader:
                 out = self._model.generate(**inputs, max_new_tokens=_MAX_SCORE_TOKENS, do_sample=False)
             # n_in = padded input length; same for every item because of padding=True
             n_in = inputs["input_ids"].shape[1]
+            # Lever 3 (speed): instrument real decode length. Per-row generated
+            # tokens = non-pad tokens after n_in. If the max sits well under
+            # _MAX_SCORE_TOKENS the cap is not binding and lowering it is a no-op
+            # (generation already stops at EOS); if rows hit the cap, JSON is
+            # being truncated (the historical blank-breakdown failure mode).
+            if _os_env.environ.get("QWEN_TOKLOG"):
+                try:
+                    _pad = self._processor.tokenizer.pad_token_id
+                    _gen = out[:, n_in:]
+                    _lens = [int((row != _pad).sum()) for row in _gen]
+                    print(f"[qwen_vlm] gen tokens (cap {_MAX_SCORE_TOKENS}): "
+                          f"max={max(_lens)} mean={sum(_lens)/len(_lens):.0f} "
+                          f"lens={_lens}")
+                except Exception as _tle:
+                    print(f"[qwen_vlm] toklog failed: {_tle}")
             results = []
             for bi, path in enumerate(paths):
                 raw = self._processor.decode(
                     out[bi][n_in:], skip_special_tokens=True
                 ).strip()
-                results.append(self._parse_score_json(raw, path, mode))
+                if not raw:
+                    # Empty batched completion — re-score this one serially (which
+                    # retries) so it never silently defaults to 0.5.
+                    print(f"[qwen_vlm] empty batched completion {Path(path).name} — re-scoring serially")
+                    results.append(self._score_one(imgs[bi], path, prompts[bi], mode))
+                else:
+                    results.append(self._parse_score_json(raw, path, mode))
             return results
         except Exception as _be:
             print(f"[qwen_vlm] Batch-{len(imgs)} failed ({_be}) — serial fallback")
-            return [self._score_one(img, p, prompts[j], mode) for j, (img, p) in enumerate(zip(imgs, paths))]
+            # List comprehension defers VRAM release until after all iterations;
+            # explicit loop + empty_cache() prevents accumulation across serial calls.
+            _serial: list = []
+            for _j, (_img, _p) in enumerate(zip(imgs, paths)):
+                _serial.append(self._score_one(_img, _p, prompts[_j], mode))
+                if self.device == "cuda":
+                    torch.cuda.empty_cache()
+            return _serial
         finally:
             # Always release GPU tensors — critical to prevent VRAM leak on exception path.
             del out, inputs
             if self.device == "cuda":
                 torch.cuda.empty_cache()
             gc.collect()
+
+    # Per-model output calibration: fixed affine maps (absolute — identical for
+    # every batch, never per-batch normalisation) that translate a model's
+    # native score distribution onto the scale the downstream system was built
+    # around (thresholds 0.41/0.60, fusion gates, anchor floors). Constants are
+    # fitted offline on a calibration set graded by both models; missing entry
+    # = identity. calibrated = clip(gain * x + offset).
+    _OUTPUT_CALIBRATION: dict = {
+        # "qwen3_vl": {"gain": ..., "offset": ...},   # fitted by _ab_fit_calibration
+    }
+
+    def _apply_output_calibration(self, score: float, breakdown: dict) -> tuple[float, dict]:
+        cal = self._OUTPUT_CALIBRATION.get(getattr(self, "_model_type", ""))
+        if not cal:
+            return score, breakdown
+        g, o = float(cal["gain"]), float(cal["offset"])
+        _m = lambda v: float(np.clip(g * float(v) + o, 0.0, 1.0))
+        return _m(score), {k: (_m(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else v)
+                           for k, v in breakdown.items()}
 
     # ------------------------------------------------------------------
     def _parse_score_json(self, raw: str, path: str, mode: str = "classic_street") -> tuple[float, dict, str]:
@@ -1215,6 +1621,7 @@ class QwenVLMGrader:
         score, breakdown, critique = _parse_niche(data, mode)
         if not breakdown:
             print(f"[qwen_vlm] Empty breakdown {Path(path).name} (keys={list(data)[:8]}): {raw[:120]!r}")
+        score, breakdown = self._apply_output_calibration(score, breakdown)
         print(f"[qwen_vlm] {Path(path).name}: score={score:.2f}  {critique[:60]!r}")
         return score, breakdown, critique
 

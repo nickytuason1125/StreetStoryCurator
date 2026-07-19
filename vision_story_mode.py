@@ -290,16 +290,28 @@ def clip_stage(
 ) -> tuple[list[str], list[list[float]], dict[str, list[float]]]:
     """
     Encode all images (224x224 L -> RGB) and all slot query strings with CLIP.
-    The CLIP model is unloaded immediately after encoding.
+
+    Image and slot-query embeddings are cached in LanceDB (clip_vec_store) under
+    source "story_img"/"story_text", keyed by path/query. On a warm run every
+    vector is served from cache and the CLIP model is NEVER loaded onto the GPU
+    -- the zero-VRAM warm path. The model is unloaded immediately after any
+    encoding it does perform. The cache is an optimization: if it is unavailable
+    this degrades to the original "encode everything every run" behavior.
 
     Returns:
-        valid_paths : list of image paths that were successfully encoded
+        valid_paths : list of image paths that were successfully encoded/cached
         img_embs    : parallel list of 512-d float image embeddings
         text_embs   : dict mapping slot_name -> 512-d float text embedding
     """
-    import torch
-    from PIL import Image
-    from transformers import CLIPModel, CLIPProcessor
+    # Cache is optional -- mirror the from-src/bare import fallback used elsewhere
+    # in this module, and degrade to no-cache if the store cannot be imported.
+    try:
+        from src.clip_vec_store import get_embeddings as _cv_get, upsert as _cv_upsert
+    except Exception:
+        try:
+            from clip_vec_store import get_embeddings as _cv_get, upsert as _cv_upsert
+        except Exception:
+            _cv_get = _cv_upsert = None  # type: ignore[assignment]
 
     image_dir_path = Path(image_dir).resolve()
     if not image_dir_path.exists():
@@ -312,55 +324,97 @@ def clip_stage(
     if not raw_paths:
         raise ValueError(f"No images found in {image_dir_path}")
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"[clip] Loading {_CLIP_MODEL} on {device} ...")
-    model     = CLIPModel.from_pretrained(_CLIP_MODEL, use_safetensors=True).to(device)
-    processor = CLIPProcessor.from_pretrained(_CLIP_MODEL)
-    model.eval()
-
-    # -- Encode all images (224x224 grayscale then RGB for CLIP's 3-channel input)
-    img_embs:    list[list[float]] = []
-    valid_paths: list[str]         = []
-    print(f"[clip] Embedding {len(raw_paths)} image(s) in batches of {_CLIP_BATCH} ...")
-
-    with torch.no_grad():
-        for i in range(0, len(raw_paths), _CLIP_BATCH):
-            batch_paths = raw_paths[i : i + _CLIP_BATCH]
-            pil_batch   = []
-            ok_batch    = []
-            for p in batch_paths:
-                try:
-                    with open(p, "rb") as fh:
-                        stream = io.BytesIO(fh.read())
-                    img = Image.open(stream).resize((224, 224)).convert("L").convert("RGB")
-                    del stream
-                    pil_batch.append(img)
-                    ok_batch.append(p)
-                except Exception as exc:
-                    print(f"[clip]   skip {Path(p).name}: {exc}")
-            if not pil_batch:
-                continue
-            inp  = processor(images=pil_batch, return_tensors="pt").to(device)
-            del pil_batch
-            feat = model.get_image_features(**inp).float()
-            feat = feat / feat.norm(dim=-1, keepdim=True)
-            img_embs.extend(feat.cpu().tolist())
-            valid_paths.extend(ok_batch[: feat.shape[0]])
-            del feat, inp
-
-    # -- Encode all slot queries at once
+    # -- Cache lookup: images + the static slot-query text embeddings ----------
     slot_queries = [_SLOT_CLIP_QUERIES[s] for s in _SLOT_NAMES]
-    with torch.no_grad():
-        txt_inp   = processor(text=slot_queries, return_tensors="pt", padding=True).to(device)
-        txt_feat  = model.get_text_features(**txt_inp).float()
-        txt_feat  = txt_feat / txt_feat.norm(dim=-1, keepdim=True)
-        txt_list  = txt_feat.cpu().tolist()
-    text_embs = {_SLOT_NAMES[i]: txt_list[i] for i in range(len(_SLOT_NAMES))}
+    cached_imgs  = _cv_get(raw_paths, source="story_img")    if _cv_get else {}
+    cached_texts = _cv_get(slot_queries, source="story_text") if _cv_get else {}
+    missing_imgs  = [p for p in raw_paths    if p not in cached_imgs]
+    missing_texts = [q for q in slot_queries if q not in cached_texts]
+    print(f"[clip] {len(cached_imgs)}/{len(raw_paths)} image vectors cached; "
+          f"{len(missing_imgs)} to encode")
 
-    del model, processor, txt_feat, txt_inp
-    _purge_vram()
+    # -- Encode only what is missing; skip the model load entirely on full hit -
+    if missing_imgs or missing_texts:
+        import torch
+        from PIL import Image
+        from transformers import CLIPModel, CLIPProcessor
 
-    print(f"[clip] Done: {len(valid_paths)} images + {len(_SLOT_NAMES)} slot queries encoded")
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"[clip] Loading {_CLIP_MODEL} on {device} "
+              f"({len(missing_imgs)} imgs, {len(missing_texts)} queries) ...")
+        model     = CLIPModel.from_pretrained(_CLIP_MODEL, use_safetensors=True).to(device)
+        processor = CLIPProcessor.from_pretrained(_CLIP_MODEL)
+        model.eval()
+
+        with torch.no_grad():
+            # Images (224x224 grayscale then RGB for CLIP's 3-channel input)
+            for i in range(0, len(missing_imgs), _CLIP_BATCH):
+                batch_paths = missing_imgs[i : i + _CLIP_BATCH]
+                pil_batch   = []
+                ok_batch    = []
+                for p in batch_paths:
+                    try:
+                        with open(p, "rb") as fh:
+                            stream = io.BytesIO(fh.read())
+                        img = Image.open(stream).resize((224, 224)).convert("L").convert("RGB")
+                        del stream
+                        pil_batch.append(img)
+                        ok_batch.append(p)
+                    except Exception as exc:
+                        print(f"[clip]   skip {Path(p).name}: {exc}")
+                if not pil_batch:
+                    continue
+                inp  = processor(images=pil_batch, return_tensors="pt").to(device)
+                del pil_batch
+                feat = model.get_image_features(**inp).float()
+                feat = feat / feat.norm(dim=-1, keepdim=True)
+                vecs = feat.cpu().tolist()
+                del feat, inp
+                for p, v in zip(ok_batch, vecs):
+                    cached_imgs[p] = np.asarray(v, dtype=np.float32)
+                if _cv_upsert:
+                    _cv_upsert(
+                        [{"path": p, "embedding": cached_imgs[p].tolist()} for p in ok_batch],
+                        source="story_img",
+                    )
+
+            # Slot queries (encode the missing ones in one shot)
+            if missing_texts:
+                txt_inp  = processor(text=missing_texts, return_tensors="pt", padding=True).to(device)
+                txt_feat = model.get_text_features(**txt_inp).float()
+                txt_feat = txt_feat / txt_feat.norm(dim=-1, keepdim=True)
+                txt_list = txt_feat.cpu().tolist()
+                del txt_feat, txt_inp
+                for q, v in zip(missing_texts, txt_list):
+                    cached_texts[q] = np.asarray(v, dtype=np.float32)
+                if _cv_upsert:
+                    _cv_upsert(
+                        [{"path": q, "embedding": cached_texts[q].tolist()} for q in missing_texts],
+                        source="story_text",
+                    )
+
+        del model, processor
+        _purge_vram()
+    else:
+        print("[clip] All image + slot-query vectors served from cache -- CLIP model not loaded")
+
+    # -- Reassemble outputs in original path order -----------------------------
+    valid_paths: list[str]         = []
+    img_embs:    list[list[float]] = []
+    for p in raw_paths:
+        emb = cached_imgs.get(p)
+        if emb is None:
+            continue   # unreadable image -- dropped, same as before
+        valid_paths.append(p)
+        img_embs.append(emb.tolist() if hasattr(emb, "tolist") else list(emb))
+
+    text_embs = {
+        s: (cached_texts[q].tolist() if hasattr(cached_texts[q], "tolist") else list(cached_texts[q]))
+        for s, q in zip(_SLOT_NAMES, slot_queries)
+        if q in cached_texts
+    }
+
+    print(f"[clip] Done: {len(valid_paths)} images + {len(text_embs)} slot queries ready")
     return valid_paths, img_embs, text_embs
 
 

@@ -2,6 +2,18 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Accessibility: honour the OS "reduce motion" setting (WCAG 2.3.3). The app is
+   animation-heavy (fades, spinners, sweeps, width transitions); collapse them all
+   to near-instant for users who opt out of motion. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 @layer utilities {
   .scrollbar-hide::-webkit-scrollbar { display: none; }
   .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }

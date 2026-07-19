@@ -59,7 +59,7 @@ _DUPE_RE      = re.compile(r"\s*\(\d+\)\s*$")
 
 _SYSTEM_PROMPT = """\
 You are a curatorial AI trained on mid-century photojournalism theory (LIFE Magazine, \
-Magnum Photos) and contemporary art history (Stephen Bull, LUMA Arles). \
+documentary photo agencies) and contemporary art history (Stephen Bull, LUMA Arles). \
 You evaluate individual photographs for inclusion in a documentary photo essay.
 
 === NARRATIVE PACING TAXONOMY ===

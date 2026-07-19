@@ -1,10 +1,10 @@
 """
-Context-aware composition analysis: Depth Anything V2, YOLO11s-seg, DINOv2 chiaroscuro.
+Context-aware composition analysis heads.
 
-DepthHead          — relative depth maps (0=near, 255=far) via HuggingFace transformers
-SegCompositionAnalyzer — YOLO11s-seg person masks + depth-layer categorization
+DepthHead              — relative depth maps (0=near, 255=far)
+SegCompositionAnalyzer — person masks + depth-layer categorization;
                          over-the-shoulder portrait → comp_score override 0.85
-ChiaroscuroHead    — DINOv2 ViT-S/14 luminance bimodality; deactivates low-lum penalties
+ChiaroscuroHead        — structural encoder + luminance bimodality; deactivates low-lum penalties
 """
 from __future__ import annotations
 
@@ -122,27 +122,31 @@ class DepthHead:
                 except Exception:
                     return None
 
-            with _TPE(max_workers=min(8, len(paths))) as pool:
-                imgs = list(pool.map(_load_and_cap, paths))
-
-            valid_imgs  = [img for img in imgs if img is not None]
-            valid_paths = [p for p, img in zip(paths, imgs) if img is not None]
-
-            if not valid_imgs:
-                return {p: None for p in paths}
-
             result: dict[str, Optional[np.ndarray]] = {p: None for p in paths}
 
-            for batch_start in range(0, len(valid_imgs), self._DEPTH_BATCH_SIZE):
-                b_imgs  = valid_imgs[batch_start : batch_start + self._DEPTH_BATCH_SIZE]
-                b_paths = valid_paths[batch_start : batch_start + self._DEPTH_BATCH_SIZE]
-                with torch.inference_mode():
-                    outs = self._pipe(b_imgs)
-                for p, out in zip(b_paths, outs):
-                    depth = np.array(out["depth"])
-                    d_min, d_max = float(depth.min()), float(depth.max())
-                    span  = max(d_max - d_min, 1e-6)
-                    result[p] = np.clip(((depth - d_min) / span) * 255, 0, 255).astype(np.uint8)
+            # Stream one batch at a time — only _DEPTH_BATCH_SIZE images in RAM
+            # at once instead of the full N-image list.
+            n_workers = min(self._DEPTH_BATCH_SIZE, 4)
+            with _TPE(max_workers=n_workers) as pool:
+                for batch_start in range(0, len(paths), self._DEPTH_BATCH_SIZE):
+                    b_paths_all = paths[batch_start : batch_start + self._DEPTH_BATCH_SIZE]
+                    b_imgs_raw  = list(pool.map(_load_and_cap, b_paths_all))
+                    b_valid = [
+                        (p, img) for p, img in zip(b_paths_all, b_imgs_raw)
+                        if img is not None
+                    ]
+                    del b_imgs_raw
+                    if not b_valid:
+                        continue
+                    b_paths_v, b_imgs_v = zip(*b_valid)
+                    with torch.inference_mode():
+                        outs = self._pipe(list(b_imgs_v))
+                    del b_imgs_v
+                    for p, out in zip(b_paths_v, outs):
+                        depth = np.array(out["depth"])
+                        d_min, d_max = float(depth.min()), float(depth.max())
+                        span  = max(d_max - d_min, 1e-6)
+                        result[p] = np.clip(((depth - d_min) / span) * 255, 0, 255).astype(np.uint8)
 
             return result
 
@@ -404,7 +408,10 @@ class SegCompositionAnalyzer:
         self._model = None
         self._ready = False
         try:
-            gc.collect()
+            import torch, gc as _gc
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+            _gc.collect()
         except Exception:
             pass
 
@@ -413,13 +420,13 @@ class SegCompositionAnalyzer:
 # ChiaroscuroHead
 # ---------------------------------------------------------------------------
 
-_DINO_REPO         = "facebook/dinov2-vits14"
+_STRUCT_HEAD_PATH  = str(Path("models/vision_probe"))
 _CHIAROSCURO_LUM   = 45.0   # scene mean luminance below this → candidate
 _BIMODAL_STD_MIN   = 28.0   # luminance std above this confirms bimodal shadow/highlight
 
 class ChiaroscuroHead:
     """
-    DINOv2 ViT-S/14 + luminance bimodality to detect intentional chiaroscuro lighting.
+    Structural vision encoder + luminance bimodality to detect intentional chiaroscuro lighting.
     When active, deactivates low-luminance penalties for the image.
     """
 
@@ -433,11 +440,11 @@ class ChiaroscuroHead:
             import torch
             from transformers import AutoImageProcessor, AutoModel
             device = "cuda" if torch.cuda.is_available() else "cpu"
-            self._processor = AutoImageProcessor.from_pretrained(_DINO_REPO)
-            self._model     = AutoModel.from_pretrained(_DINO_REPO).to(device).eval()
+            self._processor = AutoImageProcessor.from_pretrained(_STRUCT_HEAD_PATH, local_files_only=True)
+            self._model     = AutoModel.from_pretrained(_STRUCT_HEAD_PATH, local_files_only=True).to(device).eval()
             self._device    = device
             self._ready     = True
-            print(f"[ChiaroscuroHead] Loaded DINOv2 ViT-S/14 on {device}")
+            print(f"[ChiaroscuroHead] Structural encoder loaded on {device}")
             return True
         except Exception as e:
             print(f"[ChiaroscuroHead] Load failed: {e}")
@@ -447,18 +454,18 @@ class ChiaroscuroHead:
         """
         Return True when image shows intentional chiaroscuro:
           - Dark scene (mean_lum < 45) with high contrast (std > 28)
-          - DINOv2 CLS token structural embedding confirms strong edge energy
+          - Structural encoder patch variance confirms strong edge energy
         """
         if not self._ready:
             return False
 
-        # Fast luminance gate — skip DINOv2 if clearly not dark
+        # Fast luminance gate
         if mean_lum >= _CHIAROSCURO_LUM:
             return False
         if std_lum < _BIMODAL_STD_MIN:
             return False
 
-        # DINOv2 edge energy: high spatial variance in patch tokens = strong edges
+        # Edge energy: high spatial variance in patch tokens = strong edges
         try:
             import torch
             from PIL import Image
@@ -466,14 +473,11 @@ class ChiaroscuroHead:
             inputs = self._processor(images=img, return_tensors="pt").to(self._device)
             with torch.inference_mode():
                 out = self._model(**inputs)
-            # patch_tokens: (1, num_patches, 384)
             patch_tokens = out.last_hidden_state[:, 1:, :]   # drop CLS
-            # Spatial variance of patch activations = proxy for edge energy
             patch_var = float(patch_tokens.var(dim=1).mean().cpu())
-            # Threshold tuned empirically: chiaroscuro scenes score > 0.15
             return patch_var > 0.15
         except Exception as e:
-            print(f"[ChiaroscuroHead] DINOv2 inference failed for {Path(path).name}: {e}")
+            print(f"[ChiaroscuroHead] Encoder inference failed for {Path(path).name}: {e}")
             # Fall back to luminance+std heuristic only
             return mean_lum < 35.0 and std_lum > 35.0
 

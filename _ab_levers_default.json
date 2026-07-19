@@ -1,0 +1,283 @@
+{
+  "model_dir": "models\\qwen_vlm",
+  "t_load": 14.1,
+  "t_grade": 156.1,
+  "s_per_img": 6.24,
+  "results": {
+    "TPE26-1.jpg": {
+      "score": 0.472,
+      "breakdown": {
+        "Composition": 0.5,
+        "Lighting": 0.7,
+        "Moment": 0.3,
+        "Human": 0.0,
+        "Technical": 0.6
+      },
+      "critique": "Strongest: the single element that genuinely works best in this image — main flaw: the biggest weakness in this image"
+    },
+    "TPE26-10.jpg": {
+      "score": 0.216,
+      "breakdown": {
+        "Composition": 0.3,
+        "Lighting": 0.2,
+        "Moment": 0.1,
+        "Human": 0.0,
+        "Technical": 0.2
+      },
+      "critique": "Strongest: the single element that genuinely works best in this image — main flaw: the biggest weakness in this image"
+    },
+    "TPE26-102.jpg": {
+      "score": 0.42,
+      "breakdown": {
+        "Human": 0.2,
+        "Technical": 0.4,
+        "Lighting": 0.6,
+        "Moment": 0.3,
+        "Composition": 0.5
+      },
+      "critique": "Strongest: the single element that genuinely works best in this image — main flaw: the single biggest weakness in this image"
+    },
+    "TPE26-104.jpg": {
+      "score": 0.5,
+      "breakdown": {
+        "Composition": 0.5,
+        "Lighting": 0.6,
+        "Moment": 0.3,
+        "Human": 0.7,
+        "Technical": 0.4
+      },
+      "critique": "Strongest: the single element that genuinely works best in this image — main flaw: the biggest weakness in this image"
+    },
+    "TPE26-11.jpg": {
+      "score": 0.514,
+      "breakdown": {
+        "Human": 0.25,
+        "Technical": 0.45,
+        "Lighting": 0.65,
+        "Moment": 0.55,
+        "Composition": 0.55
+      },
+      "critique": "Strongest: the single element that genuinely works best in this image — main flaw: the biggest weakness in this image"
+    },
+    "TPE26-115.jpg": {
+      "score": 0.738,
+      "breakdown": {
+        "Composition": 0.6,
+        "Lighting": 0.7,
+        "Moment": 0.8,
+        "Human": 0.9,
+        "Technical": 0.65
+      },
+      "critique": "Strongest: the single element that genuinely works best in this image — main flaw: the biggest weakness in this image"
+    },
+    "TPE26-120.jpg": {
+      "score": 0.44,
+      "breakdown": {
+        "Composition": 0.5,
+        "Lighting": 0.6,
+        "Moment": 0.3,
+        "Human": 0.2,
+        "Technical": 0.4
+      },
+      "critique": "Strongest: the single element that genuinely works best in this image — main flaw: the single biggest weakness in this image"
+    },
+    "TPE26-126.jpg": {
+      "score": 0.5,
+      "breakdown": {
+        "Composition": 0.6,
+        "Lighting": 0.7,
+        "Moment": 0.5,
+        "Human": 0.3,
+        "Technical": 0.4
+      },
+      "critique": "Strongest: the geometric patterns created by the escalator steps and the ceiling lights — main flaw: the image is slightly out of focus, mak"
+    },
+    "TPE26-131.jpg": {
+      "score": 0.21,
+      "breakdown": {
+        "Composition": 0.3,
+        "Lighting": 0.25,
+        "Moment": 0.2,
+        "Human": 0.0,
+        "Technical": 0.3
+      },
+      "critique": "Strongest: The dimly lit corridor with empty chairs and tables creates a sense of quiet and abandonment. — main flaw: The image is slightly "
+    },
+    "TPE26-15.jpg": {
+      "score": 0.7,
+      "breakdown": {
+        "Composition": 0.6,
+        "Lighting": 0.7,
+        "Moment": 0.8,
+        "Human": 0.9,
+        "Technical": 0.5
+      },
+      "critique": "Strongest: the single element that genuinely works best in this image — main flaw: the biggest weakness in this image"
+    },
+    "TPE26-20.jpg": {
+      "score": 0.556,
+      "breakdown": {
+        "Composition": 0.6,
+        "Lighting": 0.55,
+        "Moment": 0.5,
+        "Human": 0.7,
+        "Technical": 0.45
+      },
+      "critique": "Strongest: The vibrant interior of a restaurant with colorful decorations and people engaged in conversation. — main flaw: The image is slig"
+    },
+    "TPE26-26.jpg": {
+      "score": 0.638,
+      "breakdown": {
+        "Composition": 0.6,
+        "Lighting": 0.55,
+        "Moment": 0.7,
+        "Human": 0.8,
+        "Technical": 0.5
+      },
+      "critique": "Strongest: The vibrant street scene with its bustling activity and colorful decorations — main flaw: The image is slightly underexposed, mak"
+    },
+    "TPE26-31.jpg": {
+      "score": 0.712,
+      "breakdown": {
+        "Composition": 0.6,
+        "Lighting": 0.7,
+        "Moment": 0.8,
+        "Human": 0.9,
+        "Technical": 0.6
+      },
+      "critique": "Strongest: The vibrant street scene with dynamic lighting and detailed signage — main flaw: The image is slightly tilted, affecting the over"
+    },
+    "TPE26-37.jpg": {
+      "score": 0.39,
+      "breakdown": {
+        "Human": 0.1,
+        "Technical": 0.4,
+        "Lighting": 0.6,
+        "Moment": 0.3,
+        "Composition": 0.5
+      },
+      "critique": "Strongest: the single element that genuinely works best in this image — main flaw: the biggest weakness in this image"
+    },
+    "TPE26-42.jpg": {
+      "score": 0.404,
+      "breakdown": {
+        "Human": 0.2,
+        "Technical": 0.4,
+        "Lighting": 0.55,
+        "Moment": 0.3,
+        "Composition": 0.5
+      },
+      "critique": "Strongest: the single element that genuinely works best in this image — main flaw: the single biggest weakness in this image"
+    },
+    "TPE26-48.jpg": {
+      "score": 0.658,
+      "breakdown": {
+        "Composition": 0.7,
+        "Lighting": 0.8,
+        "Moment": 0.75,
+        "Human": 0.3,
+        "Technical": 0.6
+      },
+      "critique": "Strongest: the single element that genuinely works best in this image — main flaw: the biggest weakness in this image"
+    },
+    "TPE26-53.jpg": {
+      "score": 0.629,
+      "breakdown": {
+        "Human": 0.4,
+        "Technical": 0.575,
+        "Lighting": 0.7,
+        "Moment": 0.8,
+        "Composition": 0.6
+      },
+      "critique": "Strongest: the single element that genuinely works best in this image — main flaw: the biggest weakness in this image"
+    },
+    "TPE26-59.jpg": {
+      "score": 0.476,
+      "breakdown": {
+        "Composition": 0.5,
+        "Lighting": 0.6,
+        "Moment": 0.3,
+        "Human": 0.4,
+        "Technical": 0.5
+      },
+      "critique": "Strongest: the single element that genuinely works best in this image — main flaw: the biggest weakness in this image"
+    },
+    "TPE26-64.jpg": {
+      "score": 0.38,
+      "breakdown": {
+        "Human": 0.2,
+        "Technical": 0.4,
+        "Lighting": 0.5,
+        "Moment": 0.3,
+        "Composition": 0.5
+      },
+      "critique": "Strongest: the single element that genuinely works best in this image — specific and concrete, no generic praise — main flaw: the biggest we"
+    },
+    "TPE26-7.jpg": {
+      "score": 0.44,
+      "breakdown": {
+        "Composition": 0.5,
+        "Lighting": 0.6,
+        "Moment": 0.3,
+        "Human": 0.2,
+        "Technical": 0.4
+      },
+      "critique": "Strongest: the single element that genuinely works best in this image — main flaw: the biggest weakness in this image"
+    },
+    "TPE26-75.jpg": {
+      "score": 0.592,
+      "breakdown": {
+        "Human": 0.15,
+        "Technical": 0.7,
+        "Lighting": 0.8,
+        "Moment": 0.55,
+        "Composition": 0.65
+      },
+      "critique": "Strongest: The vibrant neon lights create a visually striking and dynamic scene. — main flaw: The image is cluttered with numerous small obj"
+    },
+    "TPE26-80.jpg": {
+      "score": 0.52,
+      "breakdown": {
+        "Composition": 0.5,
+        "Lighting": 0.6,
+        "Moment": 0.7,
+        "Human": 0.3,
+        "Technical": 0.4
+      },
+      "critique": "Strongest: the single element that genuinely works best in this image — main flaw: the biggest weakness in this image"
+    },
+    "TPE26-86.jpg": {
+      "score": 0.696,
+      "breakdown": {
+        "Composition": 0.8,
+        "Lighting": 0.75,
+        "Moment": 0.7,
+        "Human": 0.3,
+        "Technical": 0.75
+      },
+      "critique": "Strongest: The warm, inviting interior of a traditional Chinese temple, with vibrant red lanterns and intricate wooden carvings. — main flaw"
+    },
+    "TPE26-91.jpg": {
+      "score": 0.506,
+      "breakdown": {
+        "Human": 0.3,
+        "Technical": 0.3,
+        "Lighting": 0.45,
+        "Moment": 0.25,
+        "Composition": 0.5
+      },
+      "critique": "Strongest: the single element that genuinely works best in this image — main flaw: the biggest weakness in this image"
+    },
+    "TPE26-97.jpg": {
+      "score": 0.65,
+      "breakdown": {
+        "Composition": 0.6,
+        "Lighting": 0.7,
+        "Moment": 0.5,
+        "Human": 0.8,
+        "Technical": 0.65
+      },
+      "critique": "Strongest: the single element that genuinely works best in this image — main flaw: the biggest weakness in this image"
+    }
+  }
+}

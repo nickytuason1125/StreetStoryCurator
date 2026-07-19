@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Magnum Engine — Onboarding & Launch Wizard
+FrameGrade — Onboarding & Launch Wizard
 
 Sequence
 ────────
@@ -471,7 +471,7 @@ def print_success_banner() -> None:
     url_pad = f"{SERVER_URL:<43}"
     print(f"""
   {BD}{G}+======================================================+
-  |   Magnum Engine is running!                          |
+  |   FrameGrade is running!                             |
   |                                                      |
   |   Open:  {url_pad}|
   |                                                      |

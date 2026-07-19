@@ -3,8 +3,14 @@
 
 
 
+
+inst
+
+
+
+
 """
-FrameGrade — native desktop launcher.
+Street Story Curator — native desktop launcher.
 Starts FastAPI, then opens Microsoft Edge in --app mode (no address bar, no tabs).
 Errors are written to crash.log in the project root.
 """
@@ -28,11 +34,8 @@ sys.stderr = _log_fh
 os.chdir(_ROOT)
 sys.path.insert(0, str(_ROOT))
 sys.path.insert(0, str(_ROOT / "src"))
-_DEV_MODE = "--dev" in sys.argv
-
 _log(f"--- Launch {time.strftime('%Y-%m-%d %H:%M:%S')} ---")
 _log(f"Python: {sys.executable}")
-_log(f"Dev mode: {_DEV_MODE}")
 
 
 def _find_free_port(preferred=8000):
@@ -110,23 +113,16 @@ def _find_browser():
 def main():
     url = ""
     try:
-        if _DEV_MODE:
-            # Dev mode: Vite dev server owns the frontend; skip the dist build.
-            # The launcher still starts FastAPI so /api calls resolve.
-            # Vite's proxy config forwards /api → 127.0.0.1:8000 automatically.
-            _log("Dev mode — skipping frontend dist build")
-        else:
-            _build_frontend_if_needed()
+        # Build frontend if missing
+        _build_frontend_if_needed()
 
-        # In dev mode pin to 8000 so Vite's hardcoded proxy target always matches.
-        port = 8000 if _DEV_MODE else _find_free_port()
-        api_url     = f"http://127.0.0.1:{port}"
-        url         = "http://localhost:5173" if _DEV_MODE else api_url
-        _log(f"Port: {port}  frontend_url: {url}")
+        port = _find_free_port()
+        url  = f"http://127.0.0.1:{port}"
+        _log(f"Port: {port}")
 
-        # Start FastAPI server (always — even in dev mode the frontend needs the API)
+        # Start server
         threading.Thread(target=_run_server, args=(port,), daemon=False).start()
-        if not _wait_for_server(api_url):
+        if not _wait_for_server(url):
             raise RuntimeError("Server did not become available in time.")
 
         # Try pywebview first (no external browser dependency)
@@ -144,7 +140,7 @@ def main():
                     return None
 
             kwargs = dict(
-                title="FrameGrade",
+                title="Street Story Curator",
                 url=url,
                 width=1400, height=900,
                 min_size=(960, 640),
@@ -239,7 +235,7 @@ def main():
                     return None
 
             webview.create_window(
-                title="FrameGrade",
+                title="Street Story Curator",
                 url=url,
                 width=1400, height=900,
                 min_size=(960, 640),

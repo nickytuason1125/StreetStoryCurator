@@ -1,0 +1,283 @@
+{
+  "model_dir": "models\\qwen3_vl_2b",
+  "t_load": 56.7,
+  "t_grade": 157.4,
+  "s_per_img": 6.3,
+  "results": {
+    "TPE26-1.jpg": {
+      "score": 0.605,
+      "breakdown": {
+        "Human": 0.1,
+        "Composition": 0.825,
+        "Moment": 0.65,
+        "Lighting": 0.7,
+        "Technical": 0.75
+      },
+      "critique": "Strongest: The glowing sign with its warm, inviting light creates a strong focal point and establishes the mood of the scene. — main flaw: T"
+    },
+    "TPE26-10.jpg": {
+      "score": 0.63,
+      "breakdown": {
+        "Human": 0.6,
+        "Composition": 0.7,
+        "Moment": 0.6,
+        "Lighting": 0.6,
+        "Technical": 0.65
+      },
+      "critique": "Strongest: The storefront's bold, colorful sign is a strong focal point, drawing the eye with its vibrant text and clear typography. — main "
+    },
+    "TPE26-102.jpg": {
+      "score": 0.75,
+      "breakdown": {
+        "Composition": 0.85,
+        "Lighting": 0.7,
+        "Moment": 0.8,
+        "Human": 0.7,
+        "Technical": 0.7
+      },
+      "critique": "Strongest: The compelling street scene with a person in the background, creating a sense of depth and narrative. — main flaw: The image is u"
+    },
+    "TPE26-104.jpg": {
+      "score": 0.74,
+      "breakdown": {
+        "Composition": 0.7,
+        "Lighting": 0.8,
+        "Moment": 0.8,
+        "Human": 0.8,
+        "Technical": 0.6
+      },
+      "critique": "Strongest: The child's focused expression and dynamic pose create a compelling moment. — main flaw: The image is cluttered with objects and "
+    },
+    "TPE26-11.jpg": {
+      "score": 0.56,
+      "breakdown": {
+        "Human": 0.1,
+        "Composition": 0.75,
+        "Moment": 0.6,
+        "Lighting": 0.65,
+        "Technical": 0.7
+      },
+      "critique": "Strongest: The vibrant, illuminated aquarium as a focal point in the composition — main flaw: The image is dominated by an artificial blue l"
+    },
+    "TPE26-115.jpg": {
+      "score": 0.74,
+      "breakdown": {
+        "Composition": 0.7,
+        "Lighting": 0.8,
+        "Moment": 0.8,
+        "Human": 0.8,
+        "Technical": 0.6
+      },
+      "critique": "Strongest: The compelling human element — the vendor’s focused, slightly awkward posture and the vibrant, layered striped shirt create a str"
+    },
+    "TPE26-120.jpg": {
+      "score": 0.625,
+      "breakdown": {
+        "Human": 0.175,
+        "Composition": 0.8,
+        "Moment": 0.65,
+        "Lighting": 0.75,
+        "Technical": 0.75
+      },
+      "critique": "Strongest: The compelling composition of the alleyway with its strong leading lines and perspective, creating a sense of depth and movement."
+    },
+    "TPE26-126.jpg": {
+      "score": 0.53,
+      "breakdown": {
+        "Composition": 0.8,
+        "Lighting": 0.7,
+        "Moment": 0.4,
+        "Human": 0.05,
+        "Technical": 0.7
+      },
+      "critique": "Strongest: the strong, symmetrical composition of the escalators and the repeating geometric ceiling pattern — main flaw: the image is domin"
+    },
+    "TPE26-131.jpg": {
+      "score": 0.635,
+      "breakdown": {
+        "Human": 0.125,
+        "Composition": 0.825,
+        "Moment": 0.7,
+        "Lighting": 0.75,
+        "Technical": 0.775
+      },
+      "critique": "Strongest: The strong, cool-toned color cast gives the image a distinct, almost surreal quality that is both visually striking and atmospher"
+    },
+    "TPE26-15.jpg": {
+      "score": 0.77,
+      "breakdown": {
+        "Composition": 0.85,
+        "Lighting": 0.7,
+        "Moment": 0.8,
+        "Human": 0.8,
+        "Technical": 0.7
+      },
+      "critique": "Strongest: The compelling human moment: a vendor focused on grilling, with a customer's hand reaching for a hot dog, creating a dynamic inte"
+    },
+    "TPE26-20.jpg": {
+      "score": 0.75,
+      "breakdown": {
+        "Composition": 0.85,
+        "Lighting": 0.8,
+        "Moment": 0.6,
+        "Human": 0.7,
+        "Technical": 0.8
+      },
+      "critique": "Strongest: The strong, dynamic composition of the red tables and chairs creates a visually compelling and rhythmic space. — main flaw: The i"
+    },
+    "TPE26-26.jpg": {
+      "score": 0.74,
+      "breakdown": {
+        "Composition": 0.8,
+        "Lighting": 0.8,
+        "Moment": 0.7,
+        "Human": 0.7,
+        "Technical": 0.7
+      },
+      "critique": "Strongest: a dynamic street scene with a rider on a scooter — main flaw: overexposed and cluttered background with poor composition"
+    },
+    "TPE26-31.jpg": {
+      "score": 0.8,
+      "breakdown": {
+        "Composition": 0.85,
+        "Lighting": 0.8,
+        "Moment": 0.8,
+        "Human": 0.8,
+        "Technical": 0.75
+      },
+      "critique": "Strongest: The compelling human element — the focused, expressive faces of the vendor and customer, captured with natural lighting and a can"
+    },
+    "TPE26-37.jpg": {
+      "score": 0.66,
+      "breakdown": {
+        "Human": 0.025,
+        "Composition": 0.85,
+        "Moment": 0.775,
+        "Lighting": 0.85,
+        "Technical": 0.8
+      },
+      "critique": "Strongest: The illuminated display of musical instruments creates a compelling focal point, drawing the viewer into the scene with a sense o"
+    },
+    "TPE26-42.jpg": {
+      "score": 0.66,
+      "breakdown": {
+        "Composition": 0.8,
+        "Lighting": 0.7,
+        "Moment": 0.6,
+        "Human": 0.2,
+        "Technical": 0.7
+      },
+      "critique": "Strongest: The compelling composition of the shop interior with a strong focal point on the statue and a dynamic perspective. — main flaw: T"
+    },
+    "TPE26-48.jpg": {
+      "score": 0.79,
+      "breakdown": {
+        "Composition": 0.85,
+        "Lighting": 0.8,
+        "Moment": 0.8,
+        "Human": 0.7,
+        "Technical": 0.8
+      },
+      "critique": "Strongest: The warm, inviting glow of the shop's interior creates a strong focal point and a sense of community. — main flaw: The image is d"
+    },
+    "TPE26-53.jpg": {
+      "score": 0.76,
+      "breakdown": {
+        "Composition": 0.9,
+        "Lighting": 0.8,
+        "Moment": 0.7,
+        "Human": 0.6,
+        "Technical": 0.8
+      },
+      "critique": "Strongest: The compelling composition of the alleyway with its strong leading lines and perspective, creating a sense of depth and movement."
+    },
+    "TPE26-59.jpg": {
+      "score": 0.77,
+      "breakdown": {
+        "Composition": 0.85,
+        "Lighting": 0.7,
+        "Moment": 0.8,
+        "Human": 0.8,
+        "Technical": 0.7
+      },
+      "critique": "Strongest: The compelling human element and the dynamic composition of the market scene — main flaw: The image is underexposed, particularly"
+    },
+    "TPE26-64.jpg": {
+      "score": 0.72,
+      "breakdown": {
+        "Composition": 0.7,
+        "Lighting": 0.8,
+        "Moment": 0.8,
+        "Human": 0.7,
+        "Technical": 0.6
+      },
+      "critique": "Strongest: The candid moment of a person in a shop, with a blurred background creating a sense of motion and time. — main flaw: The image is"
+    },
+    "TPE26-7.jpg": {
+      "score": 0.71,
+      "breakdown": {
+        "Composition": 0.85,
+        "Lighting": 0.7,
+        "Moment": 0.7,
+        "Human": 0.6,
+        "Technical": 0.7
+      },
+      "critique": "Strongest: The compelling street-level composition with a strong vertical line of signs creating a sense of depth and rhythm. — main flaw: T"
+    },
+    "TPE26-75.jpg": {
+      "score": 0.64,
+      "breakdown": {
+        "Human": 0.0,
+        "Composition": 0.875,
+        "Moment": 0.7,
+        "Lighting": 0.8,
+        "Technical": 0.825
+      },
+      "critique": "Strongest: vibrant neon-lit vending machine display — main flaw: overexposed and saturated colors that lack tonal depth and create a visuall"
+    },
+    "TPE26-80.jpg": {
+      "score": 0.68,
+      "breakdown": {
+        "Composition": 0.7,
+        "Lighting": 0.6,
+        "Moment": 0.7,
+        "Human": 0.8,
+        "Technical": 0.6
+      },
+      "critique": "Strongest: The compelling human element — a person in a quiet, focused moment, viewed from behind, with a strong sense of narrative and soli"
+    },
+    "TPE26-86.jpg": {
+      "score": 0.68,
+      "breakdown": {
+        "Human": 0.175,
+        "Composition": 0.875,
+        "Moment": 0.725,
+        "Lighting": 0.8,
+        "Technical": 0.825
+      },
+      "critique": "Strongest: The vibrant, warm color palette and the striking contrast between the glowing red lanterns and the dark, shadowy temple interior "
+    },
+    "TPE26-91.jpg": {
+      "score": 0.64,
+      "breakdown": {
+        "Human": 0.55,
+        "Composition": 0.75,
+        "Moment": 0.65,
+        "Lighting": 0.65,
+        "Technical": 0.6
+      },
+      "critique": "Strongest: the vibrant, colorful display of fresh produce illuminated by warm lights — main flaw: the image is too dark and lacks a clear fo"
+    },
+    "TPE26-97.jpg": {
+      "score": 0.66,
+      "breakdown": {
+        "Composition": 0.7,
+        "Lighting": 0.7,
+        "Moment": 0.6,
+        "Human": 0.7,
+        "Technical": 0.6
+      },
+      "critique": "Strongest: The compelling human element in the bustling market scene, with people engaged in natural interaction. — main flaw: The image is "
+    }
+  }
+}

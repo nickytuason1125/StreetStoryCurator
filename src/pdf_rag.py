@@ -102,13 +102,19 @@ def _extract_text(pdf_path: str | Path, max_chars: int = 24_000) -> tuple[str, i
 _CONCEPT_PROMPT = """\
 You are a photography critic and educator.
 Read the following text from a photography book or reference document.
-Extract 15–25 specific, concrete phrases that describe:
+Extract 15–25 specific, concrete phrases that describe WHAT A STRONG PHOTOGRAPH
+LOOKS LIKE — qualities visible in the image itself:
   • what makes a photograph aesthetically strong
   • lighting qualities and how light should behave
   • compositional rules, geometry, and framing principles
   • narrative moment, gesture, decisive moment
   • human presence, emotion, and cultural storytelling
   • technical craft standards (focus, exposure, clarity)
+
+Every phrase must be checkable by looking at a single photograph.
+Do NOT include career advice, work habits, biography, or instructions to the
+photographer (no "work hard", "study the masters", "travel more").
+If the text contains no visual criteria, output fewer phrases — never pad.
 
 Write ONLY the phrases, one per line.
 Each phrase should be 5–15 words, descriptive enough to match against a photograph.
@@ -150,51 +156,78 @@ def _extract_concepts_gguf(text: str) -> list[str]:
     )
     raw = out["choices"][0]["text"].strip()
     del llm
+    return _parse_phrases(raw)
 
-    # Parse lines
+
+def _parse_phrases(raw: str) -> list[str]:
+    """Parse LLM output into clean concept phrases.
+
+    Strips <think>…</think> reasoning blocks (DeepSeek-R1 emits them before
+    the answer; without stripping, thinking sentences pass the word-count
+    filter and pollute the rubric)."""
+    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL)
+    raw = raw.split("<think>")[0] if "<think>" in raw else raw
+    _META = re.compile(
+        r"^(here (are|is)\b|these (are|phrases)\b|the following\b|i (have|will)\b"
+        r"|based on (the|this)\b|phrases? (extracted|describing)\b|sure[,!]|okay[,!])",
+        re.IGNORECASE,
+    )
     phrases = []
     for line in raw.split("\n"):
         line = line.strip()
         line = re.sub(r"^[\-•\*\d\.\)]+\s*", "", line)
+        if _META.match(line) or line.endswith(":"):
+            continue   # LLM preamble/header, not a rubric phrase
         if 4 <= len(line.split()) <= 20 and len(line) > 10:
             phrases.append(line)
     return phrases[:25]
 
 
+# Preference order — first model that exists on the local Ollama wins.
+# gemma3:4b: fast on GPU, clean instruction-following, no <think> preamble.
+_OLLAMA_EXTRACT_MODELS = ("gemma3:4b", "qwen2.5:7b", "llama3.2:latest")
+
+
 def _extract_concepts_ollama(text: str) -> list[str]:
-    """Fallback: use Ollama if a local server is running."""
+    """Use Ollama if a local server is running. Tries models in preference order."""
     import requests as _req
     prompt = _CONCEPT_PROMPT.format(text=text[:8000])
     try:
-        r = _req.post(
-            "http://127.0.0.1:11434/api/generate",
-            json={"model": "qwen2.5:7b", "prompt": prompt, "stream": False, "options": {"temperature": 0.2}},
-            timeout=60,
-        )
-        if r.status_code == 200:
-            raw = r.json().get("response", "")
-            phrases = []
-            for line in raw.split("\n"):
-                line = line.strip()
-                line = re.sub(r"^[\-•\*\d\.\)]+\s*", "", line)
-                if 4 <= len(line.split()) <= 20 and len(line) > 10:
-                    phrases.append(line)
-            return phrases[:25]
+        tags = _req.get("http://127.0.0.1:11434/api/tags", timeout=3).json()
+        installed = {m.get("name", "") for m in tags.get("models", [])}
     except Exception:
-        pass
+        return []
+    for model in _OLLAMA_EXTRACT_MODELS:
+        if model not in installed and f"{model}:latest" not in installed:
+            continue
+        try:
+            r = _req.post(
+                "http://127.0.0.1:11434/api/generate",
+                json={"model": model, "prompt": prompt, "stream": False,
+                      "options": {"temperature": 0.2}},
+                timeout=180,
+            )
+            if r.status_code == 200:
+                phrases = _parse_phrases(r.json().get("response", ""))
+                if len(phrases) >= 5:
+                    print(f"[pdf_rag] Ollama/{model}: {len(phrases)} phrases")
+                    return phrases
+        except Exception as _e:
+            print(f"[pdf_rag] Ollama/{model} failed: {_e}")
     return []
 
 
 def _extract_concepts(text: str) -> list[str]:
-    """Try GGUF first, fall back to Ollama."""
-    try:
-        return _extract_concepts_gguf(text)
-    except Exception as e:
-        print(f"[pdf_rag] GGUF extraction failed ({e}), trying Ollama…")
-        phrases = _extract_concepts_ollama(text)
-        if phrases:
-            return phrases
-        raise RuntimeError(f"Concept extraction failed: {e}")
+    """Try Ollama first (GPU, fast, clean output), fall back to GGUF CPU.
+
+    Order swapped 2026-06: the GGUF here is DeepSeek-R1-8B on CPU — minutes
+    per PDF and its <think> preamble eats the token budget. Same lesson as
+    story mode (R1 too slow on this machine; gemma3:4b preferred)."""
+    phrases = _extract_concepts_ollama(text)
+    if phrases:
+        return phrases
+    print("[pdf_rag] Ollama unavailable/empty — trying GGUF (CPU, slow)…")
+    return _extract_concepts_gguf(text)
 
 
 # ── Public ingest ─────────────────────────────────────────────────────────────

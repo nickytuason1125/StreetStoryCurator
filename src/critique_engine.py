@@ -180,19 +180,49 @@ def _region_from_bbox(bbox: Optional[dict]) -> str:
 
 # ── Ollama helper ─────────────────────────────────────────────────────────────
 
+# Ollama generation is slow on a 6 GB GPU — a vision model can take tens of
+# seconds, and the first (cold) call must also load ~3 GB of weights into VRAM.
+# A flat 5 s timeout aborted almost every real call. Use a short *connect*
+# timeout so we still fail fast when Ollama is down, but a generous *read*
+# timeout so legitimate slow generation completes. keep_alive keeps the model
+# resident between annotations, and one retry covers the cold-start case where
+# the first attempt is consumed by the model load.
+_OLLAMA_CONNECT_TIMEOUT = 5      # s — is Ollama reachable?
+_OLLAMA_READ_TIMEOUT    = 90     # s — allow slow VL generation + cold VRAM load
+# Keep the ~3 GB VL model resident only briefly: long enough to stay warm while
+# you browse photo-to-photo, but short enough that it frees the RAM/VRAM soon
+# after you stop (was "5m", which held 3 GB idle for 5 minutes).
+_OLLAMA_KEEP_ALIVE      = "30s"
+
+
 def _ollama(prompt: str, model: str, max_tokens: int = 400) -> Optional[str]:
-    try:
-        import requests
-        r = requests.post(
-            "http://localhost:11434/api/generate",
-            json={"model": model, "prompt": prompt, "stream": False,
-                  "options": {"temperature": 0.1, "num_predict": max_tokens}},
-            timeout=5,
-        )
-        if r.ok:
-            return r.json().get("response", "").strip() or None
-    except Exception as _e:
-        print(f"[ce] Ollama/{model} failed: {_e}")
+    import requests
+    payload = {
+        "model": model, "prompt": prompt, "stream": False,
+        "keep_alive": _OLLAMA_KEEP_ALIVE,
+        "options": {"temperature": 0.1, "num_predict": max_tokens},
+    }
+    for attempt in (1, 2):
+        try:
+            r = requests.post(
+                "http://localhost:11434/api/generate",
+                json=payload,
+                timeout=(_OLLAMA_CONNECT_TIMEOUT, _OLLAMA_READ_TIMEOUT),
+            )
+            if r.ok:
+                return r.json().get("response", "").strip() or None
+            print(f"[ce] Ollama/{model} HTTP {r.status_code}")
+            return None
+        except requests.exceptions.ReadTimeout:
+            # Cold load likely consumed the budget; the model is resident now, so
+            # a second attempt usually returns quickly. Give up after the retry.
+            if attempt == 1:
+                print(f"[ce] Ollama/{model} read-timeout (cold load?) — retrying once")
+                continue
+            print(f"[ce] Ollama/{model} timed out after retry ({_OLLAMA_READ_TIMEOUT}s)")
+        except Exception as _e:
+            print(f"[ce] Ollama/{model} failed: {_e}")
+            break
     return None
 
 
@@ -221,8 +251,11 @@ def run_jury_critique(image_hash: str) -> dict:
                   or record.get("reasoning_log", ""))[:80]
 
     prompt_text = (
-        "You are a brutally honest Magnum photo editor. "
+        "You are a world-class street photo editor. "
         "Write exactly 3 short paragraphs: 1) Strengths  2) Weaknesses  3) Verdict. "
+        "Be accurate: only list strengths and weaknesses that are actually visible "
+        "in the image — if a paragraph has nothing real to say, say so in one line. "
+        "The Verdict is a clear keep/cut call with the deciding reason. "
         f"Score: {score:.2f}. Archetype: {archetype}. "
         + (f"Profile: {profile}. " if profile else "")
         + "Be specific — reference exactly what you see. Under 180 words total. "

@@ -806,6 +806,41 @@ def get_niche(preset: str) -> dict | None:
     return None
 
 
+# Niches whose genre intrinsically centres on a human subject. For every other
+# niche (architecture, travel/cultural, landscape, minimalist, liminal, abstract,
+# macro, night, urban, etc.) a peopleless frame is legitimate and must NOT be
+# penalised by human-centric scoring signals.
+_HUMAN_CENTRIC_KEYS: set[str] = {
+    "classic_street", "documentary", "photojournalism",
+    "portrait", "fashion_editorial", "sports_action", "wedding",
+}
+
+# UI display label (lowercased) → registry key, for callers passing the label.
+_LABEL_TO_KEY: dict[str, str] = {v["label"].lower(): k for k, v in REGISTRY.items()}
+
+
+def resolve_key(preset: str) -> str | None:
+    """Resolve a preset string (key, legacy name, or UI label) to a registry key."""
+    key = preset.lower().strip()
+    if key in REGISTRY:
+        return key
+    if key in LEGACY_MAP:
+        return LEGACY_MAP[key]
+    return _LABEL_TO_KEY.get(key)
+
+
+def is_human_centric(preset: str) -> bool:
+    """True when the niche intrinsically requires a human subject.
+
+    Unknown presets default to True (street-style behaviour) to stay conservative.
+    Travel/Cultural is deliberately treated as NOT human-centric — a strong
+    architectural or environmental travel frame should not be punished for lacking
+    a person.
+    """
+    k = resolve_key(preset)
+    return True if k is None else (k in _HUMAN_CENTRIC_KEYS)
+
+
 def niche_clip_probes(preset: str) -> tuple[list[str], list[str]]:
     """
     Return (pos_probes, neg_probes) for SigLIP-2 CLIP pre-filter.
@@ -815,9 +850,31 @@ def niche_clip_probes(preset: str) -> tuple[list[str], list[str]]:
     return niche["pos_probes"], niche["neg_probes"]
 
 
-def build_niche_prompt(preset: str, rag_block: str = "") -> str:
+# Scale anchors are MODEL-SPECIFIC: each VLM generation maps language to
+# numbers differently. Qwen3-VL-2B graded the same batch 0.53-0.80 (mean 0.69)
+# where Qwen2.5-VL-3B gave 0.21-0.74 (mean 0.52) under identical anchors —
+# the 2B needs explicit low-end anchoring and an anti-clustering instruction.
+_SCALE_ANCHORS = {
+    "default": (
+        "Scale anchors: a tack-sharp decisive moment with layered composition "
+        "scores around 85; a competent but static, unremarkable frame around 55; "
+        "a technically flawed image with no clear subject around 25. "
+    ),
+    "qwen3_vl": (
+        "Scale anchors: most ordinary frames belong between 30 and 60. "
+        "A competent but static, unremarkable frame scores around 45; "
+        "a technically flawed image with no clear subject around 20; "
+        "reserve 70+ for genuinely exceptional work — a tack-sharp decisive "
+        "moment with layered composition scores around 85. Use the full 0-100 "
+        "range and do not cluster your scores above 60. "
+    ),
+}
+
+
+def build_niche_prompt(preset: str, rag_block: str = "", model_family: str = "") -> str:
     """
-    Build a Qwen2.5-VL scoring prompt for the given niche.
+    Build a VLM scoring prompt for the given niche.
+    model_family selects the per-model scale anchors (e.g. "qwen3_vl").
     Returns the full prompt string ready to pass to the VLM.
     """
     import json as _json
@@ -827,21 +884,45 @@ def build_niche_prompt(preset: str, rag_block: str = "") -> str:
     calibration = niche["calibration"]
     axes        = niche["axes"]
 
-    json_keys: dict = {"score": 0}
+    # Placeholders, NOT example values: literal zeros here anchored the 3B
+    # model's outputs low (observed 2026-06-11: near-constant comp=20/light=25/
+    # score=35 across a whole batch with greedy decoding).
+    # Field ORDER is deliberate (generation is sequential): the model must
+    # write what it actually sees (strongest_element / main_flaw) BEFORE any
+    # number, then the per-axis values, then the holistic score LAST —
+    # evidence-first scoring for small VLMs.
+    # No critique sentence in the scoring schema — decode length is the
+    # dominant per-photo cost, and the UI critique is synthesised from the
+    # evidence phrases by parse_niche_breakdown (deep critique is on-demand).
+    json_keys: dict = {
+        "strongest_element": "<short phrase: what genuinely works>",
+        "main_flaw":         "<short phrase: the biggest weakness>",
+    }
     for key, _ in axes:
-        json_keys[key] = 0
-    json_keys["critique"] = "one sentence"
-    json_schema = _json.dumps(json_keys).replace('"one sentence"', '"one sentence"')
+        json_keys[key] = "<0-100>"
+    json_keys["score"] = "<0-100>"
+    json_schema = _json.dumps(json_keys)
 
     axes_desc = "\n".join(f"  {key:<18} {desc}" for key, desc in axes)
 
+    # NOTE: keep tone words ("blunt", "harsh", "brutal") OUT of this prompt
+    # entirely — they make the 3B model deflate every numeric axis to 10-30 to
+    # sound tough (observed 2026-06: a whole batch collapsed to Weak). The goal
+    # is accuracy: scores anchored to the calibration text and the RAG rubric.
     return (
-        f"You are a photography editor evaluating a photograph for a {mode_label} edit.\n\n"
-        f"Rate this image honestly. Output ONLY valid JSON — no prose, no markdown fences:\n"
+        f"You are an experienced photo editor evaluating a photograph for a {mode_label} edit.\n\n"
+        f"Rate this image accurately. Output ONLY valid JSON — no prose, no markdown fences:\n"
         f"{json_schema}\n\n"
-        f"All values are integers 0–100. {calibration}\n"
+        f"Fill strongest_element and main_flaw FIRST — describe what you actually see "
+        f"before writing any number.\n"
+        f"All numeric values are integers 0–100 and are calibrated measurements: {calibration} "
+        f"{_SCALE_ANCHORS.get(model_family, _SCALE_ANCHORS['default'])}"
+        f"Score exactly what you see — do not deflate numbers to seem strict, do not "
+        f"inflate them to be kind.\n"
+        f"  strongest_element  the single element that genuinely works best in this image — "
+        f"specific and concrete, no generic praise\n"
+        f"  main_flaw          the single biggest weakness in this image — specific and concrete\n"
         f"{axes_desc}\n"
-        f"  critique           one specific sentence naming the strongest element and biggest weakness\n"
         f"{rag_block}"
         f"JSON only:"
     )
@@ -852,6 +933,85 @@ def _norm_key(k: str) -> str:
 
     Lets 'Human/Culture', 'human_culture', 'Human Culture' all match 'human'."""
     return "".join(ch for ch in str(k).lower() if ch.isalnum())
+
+
+# ── Axis → canonical fusion role ─────────────────────────────────────────────
+# Mirror of frontend ASPECT_DIM (App.tsx). The fusion step in grade_pipeline_v2
+# needs Composition/Lighting/Human/Narrative signals, but Qwen emits niche-
+# specific axis names — without this mapping every non-street niche fused on
+# 0.5 placeholder defaults. Keys are the Title-Case display names that
+# parse_niche_breakdown produces.
+_ASPECT_ROLE: dict[str, str] = {
+    # canonical 5
+    "Technical": "tech", "Composition": "comp", "Lighting": "light",
+    "Narrative": "auth", "Human/Culture": "human",
+    # tech
+    "Detail": "tech", "Execution": "tech", "Depth Of Field": "tech",
+    "Detail Retention": "tech", "Cleanliness": "tech", "News Sharpness": "tech",
+    "Sharpness & Detail": "tech",
+    # comp (geometry / framing / spatial)
+    "Geometry": "comp", "Compositional Urgency": "comp", "City Texture": "comp",
+    "Landscape Comp": "comp", "Depth Scale": "comp", "Negative Space": "comp",
+    "Graphic Simplicity": "comp", "Visual Abstraction": "comp",
+    "Pattern Texture": "comp", "Graphic Impact": "comp", "Framing": "comp",
+    "Geometry & Balance": "comp", "Framing Instinct": "comp", "Layered Depth": "comp",
+    # light (lighting / mood / colour / atmosphere)
+    "Light Atmosphere": "light", "Light Quality": "light", "Light Mood": "light",
+    "Nocturnal Mood": "light", "Color Palette": "light", "Light Painting": "light",
+    "Color Form": "light", "Tonal Balance": "light", "Atmosphere": "light",
+    "Weather Drama": "light", "Mood": "light", "Natural Light": "light",
+    "Mood & Tone": "light", "Tonal Purity": "light", "Contrast Purity": "light",
+    "Available Light": "light", "Natural Light Quality": "light",
+    # human (subject / figure / expression / emotion)
+    "Human": "human", "Expression": "human", "Model Expression": "human",
+    "Subject Behavior": "human", "Subject Detail": "human", "Emotion": "human",
+    "Emotional Moment": "human", "Styling Aesthetic": "human",
+    "Sense Of Place": "human", "Subject Isolation": "human", "Human Impact": "human",
+    "Character Presence": "human", "Emotional Resonance": "human",
+    "Scale Element": "human", "Presence": "human", "Scale & Life": "human",
+    # auth (moment / narrative / concept / authenticity)
+    "Moment": "auth", "Narrative Impact": "auth", "Authenticity": "auth",
+    "Context": "auth", "News Impact": "auth", "Cultural Authenticity": "auth",
+    "Urban Energy": "auth", "Motion Quality": "auth", "Temporal Effect": "auth",
+    "Artistic Vision": "auth", "Visual Poetry": "auth",
+    "Environmental Context": "auth", "Habitat Context": "auth",
+    "Editorial Mood": "auth", "Peak Action": "auth", "Story Telling": "auth",
+    "Conceptual Strength": "auth", "Visual Innovation": "auth",
+    "Intent Clarity": "auth", "Decisive Moment": "auth", "Cultural Depth": "auth",
+    "Journalistic Integrity": "auth", "Narrative Suggestion": "auth",
+    "Conceptual Weight": "auth", "Reduction": "auth", "Immediacy": "auth",
+    "Environmental Truth": "auth",
+}
+_ASPECT_ROLE_NORM = {_norm_key(k): v for k, v in _ASPECT_ROLE.items()}
+
+_ROLE_KEYWORDS: list[tuple[str, str]] = [
+    # ordered — first hit wins (mirrors frontend keyword fallback priorities)
+    ("light",  "light"), ("tonal", "light"), ("tone", "light"), ("color", "light"),
+    ("mood",   "light"), ("atmosphere", "light"), ("weather", "light"),
+    ("comp",   "comp"), ("geometr", "comp"), ("fram", "comp"), ("graphic", "comp"),
+    ("pattern", "comp"), ("space", "comp"), ("layer", "comp"),
+    ("human",  "human"), ("subject", "human"), ("expression", "human"),
+    ("emotion", "human"), ("gesture", "human"), ("people", "human"),
+    ("moment", "auth"), ("narrative", "auth"), ("story", "auth"),
+    ("authentic", "auth"), ("cultural", "auth"), ("concept", "auth"),
+    ("sharp",  "tech"), ("detail", "tech"), ("technical", "tech"),
+    ("focus",  "tech"), ("noise", "tech"),
+]
+
+
+def aspect_role(axis_key: str) -> str:
+    """Map an axis key onto a fusion role: 'tech'|'comp'|'light'|'human'|'auth'|''.
+
+    Exact (normalised) table lookup first, keyword fallback for unseen axes,
+    '' for non-aspect keys (private fields, counters, etc.)."""
+    nk = _norm_key(axis_key)
+    hit = _ASPECT_ROLE_NORM.get(nk)
+    if hit:
+        return hit
+    for kw, role in _ROLE_KEYWORDS:
+        if kw in nk:
+            return role
+    return ""
 
 
 def _coerce_score(v) -> int | None:
@@ -913,10 +1073,15 @@ def parse_niche_breakdown(data: dict, preset: str) -> tuple[float, dict, str]:
         display_breakdown[display_key] = s / 100.0
         aspect_vals.append(s / 100.0)
 
-    # Overall score: prefer the model's own, else fall back to the aspect mean
-    # so a valid-but-unlabelled response never collapses to a flat MID 50.
+    # Overall score: blend the model's holistic number with the aspect mean.
+    # Small VLMs anchor the single "score" field far harder than the per-axis
+    # judgments (observed: score=35 constant while axes varied) — weighting
+    # the axis mean higher lets the per-dimension reasoning drive the result.
     overall = _coerce_score(norm_lookup.get("score") or norm_lookup.get("overall"))
-    if overall is not None:
+    if overall is not None and aspect_vals:
+        axis_mean = sum(aspect_vals) / len(aspect_vals)
+        score = 0.40 * (overall / 100.0) + 0.60 * axis_mean
+    elif overall is not None:
         score = overall / 100.0
     elif aspect_vals:
         score = sum(aspect_vals) / len(aspect_vals)
@@ -929,5 +1094,17 @@ def parse_niche_breakdown(data: dict, preset: str) -> tuple[float, dict, str]:
         if isinstance(cv, str) and cv.strip():
             critique = cv.strip()[:140]
             break
+    if not critique:
+        # Evidence-first fields land before the critique in generation order,
+        # so they survive truncation — synthesise from them instead of
+        # returning a blank.
+        _se = norm_lookup.get(_norm_key("strongest_element"))
+        _mf = norm_lookup.get(_norm_key("main_flaw"))
+        _parts = []
+        if isinstance(_se, str) and _se.strip():
+            _parts.append(f"Strongest: {_se.strip()}")
+        if isinstance(_mf, str) and _mf.strip():
+            _parts.append(f"main flaw: {_mf.strip()}")
+        critique = " — ".join(_parts)[:140]
 
     return score, display_breakdown, critique

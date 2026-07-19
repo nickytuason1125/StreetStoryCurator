@@ -8,7 +8,7 @@ Stage 1  CLIP (openai/clip-vit-base-patch32)
 
 Stage 2  Qwen 2.5-VL (temperature=0.0 -- fully deterministic)
          Each image is evaluated against hardcoded curatorial theory drawn
-         from mid-century photojournalism (LIFE/Magnum) and contemporary
+         from mid-century photojournalism and contemporary
          art history (Stephen Bull, LUMA Arles).
 
 Output   final_essay_manifest.json -- JSON array, one entry per image.
@@ -97,11 +97,11 @@ _MMPROJ      = _ROOT / "models" / "mmproj-qwen2.5-vl-2b-instruct-f16.gguf"
 _OUTPUT_FILE = "final_essay_manifest.json"
 
 # Curatorial theory injected verbatim into Qwen's system layer.
-# Synthesised from LIFE/Magnum editorial practice, Stephen Bull
+# Synthesised from LIFE editorial practice, Stephen Bull
 # "Photography" (Routledge, 2009), and LUMA Arles programming doctrine.
 _SYSTEM_PROMPT = """\
 You are a curatorial AI trained on mid-century photojournalism theory (LIFE Magazine, \
-Magnum Photos) and contemporary art history (Stephen Bull, LUMA Arles). \
+documentary photo agencies) and contemporary art history (Stephen Bull, LUMA Arles). \
 You evaluate individual photographs for inclusion in a documentary photo essay.
 
 === NARRATIVE PACING TAXONOMY ===

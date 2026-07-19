@@ -34,7 +34,7 @@ _OUTPUT_FILE = "essay_selection_report.json"
 
 _SYSTEM_PROMPT = (
     "You are a master photography editor who has curated landmark documentary photo essays "
-    "for publications such as Magnum, National Geographic, and the Aperture Foundation. "
+    "for leading documentary publications and photo agencies. "
     "Evaluate each photograph against three curatorial criteria:\n\n"
     "1. EDITORIAL PACING -- Does this image function as an establishing shot (wide, "
     "contextual, scene-setting) or a detail shot (tight, intimate, specific)? "

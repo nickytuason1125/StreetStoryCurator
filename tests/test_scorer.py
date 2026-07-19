@@ -110,13 +110,13 @@ def run_all():
         # ── preset switching ─────────────────────────────────────────────────
         print("\nPreset switching:")
         normal_path = os.path.join(tmpdir, "00_normal.jpg")
-        r_magnum = scorer._analyze(normal_path, preset="Magnum Editor")
-        r_lspf   = scorer._analyze(normal_path, preset="LSPF (London Street)")
-        r_spi    = scorer._analyze(normal_path, preset="SPI (International)")
+        r_editorial = scorer._analyze(normal_path, preset="Street Editorial")
+        r_london = scorer._analyze(normal_path, preset="London Street")
+        r_intl   = scorer._analyze(normal_path, preset="International Street")
         r_bad    = scorer._analyze(normal_path, preset="Nonexistent Preset")
-        check("Magnum returns valid score",   0.0 <= r_magnum["score"] <= 1.0)
-        check("LSPF returns valid score",     0.0 <= r_lspf["score"]   <= 1.0)
-        check("SPI returns valid score",      0.0 <= r_spi["score"]    <= 1.0)
+        check("Editorial returns valid score", 0.0 <= r_editorial["score"] <= 1.0)
+        check("London returns valid score",   0.0 <= r_london["score"] <= 1.0)
+        check("International returns valid score", 0.0 <= r_intl["score"] <= 1.0)
         check("Unknown preset falls back OK", 0.0 <= r_bad["score"]    <= 1.0)
 
         # ── caching ──────────────────────────────────────────────────────────

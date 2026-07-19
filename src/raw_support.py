@@ -76,6 +76,30 @@ def open_image(path: str, mode: str = "RGB", half_size: bool = False):
     return img
 
 
+def extract_embedded_preview(path: str, mode: str = "RGB"):
+    """Return the camera's EMBEDDED preview (JPEG/bitmap) as a PIL Image WITHOUT
+    demosaicing the sensor data — memory-safe for RAW. Returns None if the file
+    has no embedded preview or cannot be read.
+
+    Uses rawpy.extract_thumb(), which reads only the embedded thumbnail and never
+    calls unpack()/postprocess() on the full Bayer array (the OOM-prone step), so
+    it costs ~the embedded JPEG size in RAM, not the full uncompressed sensor."""
+    try:
+        import rawpy, io
+        from PIL import Image
+        with rawpy.imread(str(path)) as raw:
+            thumb = raw.extract_thumb()
+        if thumb.format == rawpy.ThumbFormat.JPEG:
+            img = Image.open(io.BytesIO(thumb.data))
+        else:  # ThumbFormat.BITMAP
+            img = Image.fromarray(thumb.data)
+        if mode and img.mode != mode:
+            img = img.convert(mode)
+        return img
+    except Exception:
+        return None
+
+
 def imread_bgr(path: str, half_size: bool = False) -> Optional[np.ndarray]:
     """
     cv2.imread() replacement that handles RAW files.

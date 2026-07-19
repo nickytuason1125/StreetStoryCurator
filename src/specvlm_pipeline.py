@@ -215,7 +215,43 @@ def _detect_genre(aspect_scores: Dict[str, float]) -> str:
     # Captures low-light, available-light, vintage-lens, atmospheric shots.
     if light > 0.50 and narr > 0.45:
         return "FineArt"
+    # Catch-all for strongly peopleless frames that just miss the thresholds above
+    # (e.g. comp 0.50, light 0.48). They must NOT be graded with the human-centric
+    # Street weights (Narrative 0.44 / Human 0.05), which crush empty architectural
+    # and liminal shots for lacking a subject. Route to a structure/atmosphere genre
+    # whose Human/Culture weight is 0.
+    if human < 0.40:
+        return "Architectural" if comp >= light else "Liminal"
     return "Street"
+
+
+# User-selected niche → SpecVLM genre. When the user explicitly picks a peopleless
+# niche we honour it instead of per-image auto-detection, so a subject-less
+# architectural/liminal frame gets genre weights with Human/Culture≈0 and is not
+# penalised for lacking a human subject (auto-detect can mis-file it as "Street").
+_PRESET_GENRE: Dict[str, str] = {
+    "architectural": "Architectural",
+    "urban_city":    "Architectural",
+    "liminal":       "Liminal",
+    "minimalist":    "Liminal",
+    "abstract":      "Liminal",
+    "macro":         "Liminal",
+    "fine_art":      "FineArt",
+    "night":         "FineArt",
+    "landscape":     "FineArt",
+}
+
+
+def _preset_genre(preset: str) -> Optional[str]:
+    """Map a user-selected niche (key/label/legacy) to a SpecVLM genre, or None."""
+    if not preset:
+        return None
+    try:
+        from niche_registry import resolve_key as _rk
+        key = _rk(preset) or preset.lower().strip()
+    except Exception:
+        key = preset.lower().strip()
+    return _PRESET_GENRE.get(key)
 
 
 def build_visual_metadata(
@@ -508,6 +544,7 @@ class SpecVLMPipeline:
         image_paths: List[str],
         progress=None,
         scan_mode: bool = False,
+        preset: str = "",
         embeddings: Optional[np.ndarray] = None,
         pos_text_embs: Optional[np.ndarray] = None,
         neg_text_embs: Optional[np.ndarray] = None,
@@ -577,7 +614,7 @@ class SpecVLMPipeline:
             # Technical weight kept very low for Street/Liminal — intentional grain,
             # soft lens, and low-light are valid artistic choices, not failures.
             "Street":       {"Narrative": 0.44, "Composition": 0.30, "Lighting": 0.18, "Technical": 0.03, "Human/Culture": 0.05},
-            "Liminal":      {"Narrative": 0.38, "Lighting": 0.42,   "Composition": 0.14, "Technical": 0.03, "Human/Culture": 0.00},
+            "Liminal":      {"Narrative": 0.36, "Lighting": 0.30,   "Composition": 0.29, "Technical": 0.05, "Human/Culture": 0.00},
             # Architectural keeps higher Technical — buildings should be sharp.
             "Architectural":{"Composition": 0.44, "Lighting": 0.26, "Technical": 0.18, "Narrative": 0.12, "Human/Culture": 0.00},
             # FineArt: atmospheric mood and narrative intent are everything.
@@ -586,6 +623,10 @@ class SpecVLMPipeline:
             # Lighting is the dominant dimension (low-key, available light, cinematic dark).
             "FineArt":      {"Lighting": 0.42, "Narrative": 0.33, "Composition": 0.18, "Technical": 0.04, "Human/Culture": 0.03},
         }
+
+        _forced_genre = _preset_genre(preset)
+        if _forced_genre:
+            print(f"[specvlm] niche '{preset}' → forcing genre '{_forced_genre}' (Human/Culture not penalised)")
 
         for i, path in enumerate(image_paths):
             is_verified = False
@@ -601,11 +642,22 @@ class SpecVLMPipeline:
             # Genre-aware weighted score: weights aspects by what matters for each genre.
             # Blended 60/40 with the overall CLIP discriminant so holistic aesthetic
             # quality (pos vs neg prompts) still contributes alongside genre logic.
-            genre = _detect_genre(aspect_scores) if aspect_scores else "Street"
+            # Honour the user-selected niche when it maps to a peopleless genre;
+            # otherwise fall back to per-image auto-detection.
+            genre = _forced_genre or (_detect_genre(aspect_scores) if aspect_scores else "Street")
             w = _GENRE_W.get(genre, _GENRE_W["Street"])
             genre_score = sum(aspect_scores.get(k, 0.5) * v for k, v in w.items())
             overall_clip = float(cal_overall[i])
-            draft_score  = float(np.clip(0.60 * genre_score + 0.40 * overall_clip, 0.15, 0.85))
+            # Peopleless genres are unfairly dragged by the holistic CLIP discriminant
+            # whose NEG prompts ("no clear subject", "flat uninteresting", "boring …
+            # no reason to look twice") match empty/atmospheric scenes BY DESIGN. For
+            # those genres lean on the genre-weighted score, halve the holistic weight,
+            # and lift the floor so a strong empty frame isn't dumped into deep-Weak
+            # for simply lacking a conventional subject.
+            if genre in ("Liminal", "Architectural", "FineArt"):
+                draft_score = float(np.clip(0.80 * genre_score + 0.20 * overall_clip, 0.30, 0.88))
+            else:
+                draft_score = float(np.clip(0.60 * genre_score + 0.40 * overall_clip, 0.15, 0.85))
 
             confidence  = min(1.0, abs(draft_score - 0.5) * 2.0)
 

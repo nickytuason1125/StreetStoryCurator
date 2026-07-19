@@ -127,12 +127,16 @@ def update(
     t1  = torch.tensor(emb1, dtype=torch.float32).unsqueeze(0)
     t2  = torch.tensor(emb2, dtype=torch.float32).unsqueeze(0)
     criterion = nn.MarginRankingLoss(margin=_MARGIN)
+    # forward() squeezes to shape (1,), so the target must be (1,) too —
+    # a (1,1) target raises "All input tensors should have same dimension"
+    # and (because the frontend swallows the 500) silently no-ops training.
+    _y = torch.tensor([y], dtype=torch.float32)
 
     last_loss = 0.0
     for _ in range(_STEPS):
         opt.zero_grad()
         s1, s2 = head(t1), head(t2)
-        loss   = criterion(s1, s2, torch.tensor([[y]]))
+        loss   = criterion(s1, s2, _y)
         loss.backward()
         opt.step()
         last_loss = float(loss.item())
@@ -150,6 +154,61 @@ def update_batch(pairs: list[dict]) -> float:
     for p in pairs:
         total += update(p["emb1"], p["grade1"], p["emb2"], p["grade2"])
     return total / max(len(pairs), 1)
+
+
+def fit(samples: list[tuple], epochs: int = 3, pairs_per_combo: int = 120) -> dict:
+    """
+    Full retrain from scratch on the entire labelled baseline.
+
+    samples: [(embedding(np.ndarray), grade_str), ...] for every rated photo.
+    Resets the head and trains on balanced ranking pairs across grade tiers, so
+    the fit reflects the WHOLE baseline rather than the drift of incremental
+    per-rating updates. Use this when the baseline grows (e.g. every N new
+    ratings) — far more stable than update() at 100s of ratings.
+
+    Returns {"n": rated, "pairs": npairs, "loss": last, "tiers": {...}}.
+    """
+    global _head, _opt
+    import random
+
+    by: dict[str, list] = {"Strong ✅": [], "Mid ⚠️": [], "Weak ❌": []}
+    for emb, gr in samples:
+        if gr in by:
+            by[gr].append(np.asarray(emb, dtype=np.float32))
+    n = sum(len(v) for v in by.values())
+    if n == 0:
+        return {"n": 0, "pairs": 0, "loss": 0.0, "tiers": {}}
+
+    dim = int(np.asarray(samples[0][0]).flatten().shape[0])
+    _head = PersonalHead(embed_dim=dim)
+    _opt  = torch.optim.Adam(_head.parameters(), lr=_LR)
+    crit  = nn.MarginRankingLoss(margin=_MARGIN)
+
+    pairs = []
+    for hi, lo in (("Strong ✅", "Weak ❌"), ("Strong ✅", "Mid ⚠️"), ("Mid ⚠️", "Weak ❌")):
+        if by[hi] and by[lo]:
+            for _ in range(pairs_per_combo):
+                pairs.append((random.choice(by[hi]), random.choice(by[lo])))
+    if not pairs:
+        return {"n": n, "pairs": 0, "loss": 0.0,
+                "tiers": {k: len(v) for k, v in by.items()}}
+
+    _head.train()
+    y = torch.tensor([1.0])
+    last = 0.0
+    for _ in range(max(1, epochs)):
+        random.shuffle(pairs)
+        for a, b in pairs:
+            _opt.zero_grad()
+            sa = _head(torch.tensor(a).unsqueeze(0))
+            sb = _head(torch.tensor(b).unsqueeze(0))
+            loss = crit(sa, sb, y)
+            loss.backward()
+            _opt.step()
+            last = float(loss.item())
+    _save()
+    return {"n": n, "pairs": len(pairs), "loss": round(last, 5),
+            "tiers": {k: len(v) for k, v in by.items()}}
 
 
 def _save() -> None:

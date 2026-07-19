@@ -1,0 +1,41 @@
+model dir: models\smolvlm2
+[qwen_vlm] Loading on cuda from models\smolvlm2…
+WARNING:torchao.kernel.intmm:Warning: Detected no triton, on systems without Triton certain kernels will not work
+[qwen_vlm] model_type=smolvlm → AutoModelForImageTextToText
+[qwen_vlm] INT4 cache hit — pre-quantised load (~2.2 GB VRAM)
+[qwen_vlm] Model ready.
+load: 11.4s
+[qwen_vlm] Batch size 4 for 25 images
+[qwen_vlm] Batch-4 failed (The number of images in the text [1, 1, 1, 1] and images [4] should be the same.) — serial fallback
+[qwen_vlm] TPE26-1.jpg: score=0.85  'Strongest: composition — main flaw: technical'
+[qwen_vlm] TPE26-10.jpg: score=0.85  'Strongest: composition — main flaw: technical'
+[qwen_vlm] TPE26-102.jpg: score=0.86  ''
+[qwen_vlm] TPE26-104.jpg: score=0.85  ''
+[qwen_vlm] Batch-4 failed (The number of images in the text [1, 1, 1, 1] and images [4] should be the same.) — serial fallback
+[qwen_vlm] TPE26-11.jpg: score=0.85  ''
+[qwen_vlm] TPE26-115.jpg: score=0.85  ''
+[qwen_vlm] TPE26-120.jpg: score=0.85  ''
+[qwen_vlm] TPE26-126.jpg: score=0.85  'Strongest: composition — main flaw: technical'
+[qwen_vlm] Batch-4 failed (The number of images in the text [1, 1, 1, 1] and images [4] should be the same.) — serial fallback
+[qwen_vlm] TPE26-131.jpg: score=0.85  ''
+[qwen_vlm] TPE26-15.jpg: score=0.85  'Strongest: composition — main flaw: technical'
+[qwen_vlm] TPE26-20.jpg: score=0.85  ''
+[qwen_vlm] TPE26-26.jpg: score=0.86  ''
+[qwen_vlm] Batch-4 failed (The number of images in the text [1, 1, 1, 1] and images [4] should be the same.) — serial fallback
+[qwen_vlm] TPE26-31.jpg: score=0.85  'Strongest: composition — main flaw: technical'
+[qwen_vlm] TPE26-37.jpg: score=0.85  ''
+[qwen_vlm] TPE26-42.jpg: score=0.85  ''
+[qwen_vlm] TPE26-48.jpg: score=0.85  'Strongest: composition — main flaw: technical'
+[qwen_vlm] Batch-4 failed (The number of images in the text [1, 1, 1, 1] and images [4] should be the same.) — serial fallback
+[qwen_vlm] TPE26-53.jpg: score=0.86  ''
+[qwen_vlm] TPE26-59.jpg: score=0.86  ''
+[qwen_vlm] TPE26-64.jpg: score=0.86  ''
+[qwen_vlm] TPE26-7.jpg: score=0.86  ''
+[qwen_vlm] Batch-4 failed (The number of images in the text [1, 1, 1, 1] and images [4] should be the same.) — serial fallback
+[qwen_vlm] TPE26-75.jpg: score=0.85  'Strongest: composition — main flaw: technical'
+[qwen_vlm] TPE26-80.jpg: score=0.86  ''
+[qwen_vlm] TPE26-86.jpg: score=0.85  'Strongest: composition — main flaw: technical'
+[qwen_vlm] TPE26-91.jpg: score=0.85  ''
+[qwen_vlm] TPE26-97.jpg: score=0.86  ''
+[qwen_vlm] Unloaded.
+done: 25 graded, 0 blank breakdowns, 4.47s/img -> _ab_smolvlm2_22b.json

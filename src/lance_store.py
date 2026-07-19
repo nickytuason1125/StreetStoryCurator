@@ -27,7 +27,13 @@ from typing import Optional
 # Absolute path anchored to this file — never affected by CWD changes in server threads.
 _DB_DIR    = str(Path(__file__).resolve().parent.parent / "cache" / "lance.db")
 _TBL_NAME  = "photos"
-_EMBED_DIM = 1536   # SigLIP-2 ViT-g/14 NaFlex
+# Embedding dim follows the active SIGLIP_TIER (Phase 2). Read from the env
+# directly (not by importing the heavy encoder module) to keep lance_store light.
+# The table auto-migrates (purge + rebuild) below when the stored dim differs, so
+# switching tiers safely re-encodes everything. high=1536 mid=1024 low=768.
+import os as _os_dim
+_EMBED_DIM = {"high": 1536, "mid": 1024, "low": 768}.get(
+    _os_dim.environ.get("SIGLIP_TIER", "high").strip().lower(), 1536)
 
 print(f"[lance_store] DB path: {_DB_DIR}")
 
@@ -65,12 +71,53 @@ def _open_table():
         try:
             _tbl = _connect_or_create()
         except Exception as _e_conn:
-            # DB corrupt — delete directory and create fresh.
-            import shutil as _sh
-            print(f"[lance] DB error ({_e_conn}) — deleting and recreating at {_DB_DIR}")
-            _sh.rmtree(_DB_DIR, ignore_errors=True)
+            # ONLY genuine on-disk corruption justifies destroying the store.
+            # Environmental failures — missing lancedb/pyarrow dependency, a
+            # locked file, OOM, permissions — must NEVER wipe the user's data.
+            # Re-raise those so the real error surfaces and the DB survives.
+            if not _is_corruption_error(_e_conn):
+                raise
+            # Genuine corruption: move the bad DB aside (recoverable) rather
+            # than rmtree it, then recreate fresh.
+            _quarantine_db(_e_conn)
             _tbl = _connect_or_create()
         return _tbl
+
+
+def _is_corruption_error(exc: Exception) -> bool:
+    """True only when the on-disk DB looks genuinely corrupt — never for
+    environmental failures (missing deps, file locks, permissions, OOM)."""
+    # A missing/broken dependency is an environment problem, not corruption.
+    if isinstance(exc, (ImportError, ModuleNotFoundError)):
+        return False
+    # If the core deps don't even import, we cannot be looking at DB corruption.
+    try:
+        import lancedb   # noqa: F401
+        import pyarrow   # noqa: F401
+    except Exception:
+        return False
+    # Nothing on disk yet => the failure isn't corruption of existing data.
+    return Path(_DB_DIR).exists()
+
+
+def _quarantine_db(exc: Exception) -> None:
+    """Move a corrupt DB aside instead of deleting it, so the original data is
+    still recoverable for inspection. Keeps only the most recent quarantine."""
+    import shutil as _sh
+    src = Path(_DB_DIR)
+    dst = src.with_name(src.name + ".corrupt")
+    try:
+        if dst.exists():
+            _sh.rmtree(dst, ignore_errors=True)   # replace any stale quarantine
+        if src.exists():
+            _sh.move(str(src), str(dst))
+            print(f"[lance] DB appears corrupt ({exc}) — moved aside to {dst}, "
+                  f"recreating fresh. Original preserved for recovery.")
+    except Exception as _e_q:
+        # Last resort: if the move itself fails, fall back to delete so the app
+        # can still come up. (Reaching here means the dir is already unusable.)
+        print(f"[lance] quarantine failed ({_e_q}); recreating fresh at {src}")
+        _sh.rmtree(src, ignore_errors=True)
 
 
 def _connect_or_create():
@@ -90,7 +137,8 @@ def _connect_or_create():
                     existing_dim = getattr(field.type, "list_size", None)
                     break
             if existing_dim is not None and existing_dim != _EMBED_DIM:
-                print("LEGACY 1152-D DATABASE DETECTED. PURGING AND RE-GRADING WITH 1536-D NAFLEX...")
+                print(f"[lance] Embedding dim changed ({existing_dim}-d -> {_EMBED_DIM}-d, "
+                      f"tier switch) — PURGING table, photos will re-encode.")
                 db.drop_table(_TBL_NAME)
                 _tbl = db.create_table(_TBL_NAME, schema=schema)
             else:
@@ -227,6 +275,42 @@ def query_all(min_score: float = 0.0) -> list[dict]:
         else:
             rows = tbl.to_pandas().to_dict("records")
     return [_row_to_dict(r) for r in rows]
+
+
+def query_embeddings_by_paths(paths: list[str]) -> dict[str, np.ndarray]:
+    """
+    Return {path: embedding (float32, shape 1536)} for every path that already
+    exists in LanceDB.  Paths not found are absent from the result dict.
+
+    Used by grade_pipeline_v2 to skip SigLIP-2 re-encoding for images whose
+    embeddings were computed in a previous session.
+    """
+    if not paths:
+        return {}
+    tbl = _open_table()
+    # Build an IN-clause; escape single quotes in paths.
+    escaped = [p.replace("'", "''") for p in paths]
+    in_list = ", ".join(f"'{e}'" for e in escaped)
+    try:
+        with _lock:
+            rows = (
+                tbl.search()
+                   .where(f"path IN ({in_list})", prefilter=True)
+                   .select(["path", "embedding"])
+                   .to_list()
+            )
+        result: dict[str, np.ndarray] = {}
+        for r in rows:
+            emb = r.get("embedding")
+            if emb is None:
+                continue
+            arr = np.array(emb, dtype=np.float32)
+            if arr.shape == (_EMBED_DIM,):
+                result[r["path"]] = arr
+        return result
+    except Exception as _e:
+        print(f"[lance_store] query_embeddings_by_paths failed: {_e}")
+        return {}
 
 
 def vector_search(query_emb: np.ndarray, top_k: int = 20, min_score: float = 0.0) -> list[dict]:

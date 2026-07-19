@@ -4,7 +4,7 @@ Model Loader - Updated for SpecVLM Pipeline
 Removed legacy models:
 - NIMA (replaced by Q-Align in SpecVLM)
 - MobileViT (replaced by SigLIP-2)
-- DINOv2-small (replaced by SigLIP-2)
+- Legacy composition ONNX (replaced by SigLIP-2)
 
 New models:
 - SigLIP-2 ViT-g/14 NaFlex (FP8)
@@ -31,6 +31,7 @@ _DOWNLOAD_STATUS: dict = {
     "deepseek_verify": "pending",
     "topiq_nr": "pending",
     "qwen_vlm": "pending",
+    "vis_probe": "pending",
 }
 _DOWNLOAD_LOCK = threading.Lock()
 
@@ -103,7 +104,7 @@ def _download_qwen_if_needed() -> bool:
                 try:
                     total = sum(
                         f.stat().st_size
-                        for f in qwen_dir.rglob("*")
+                        for f in qwen_dir.glob("*")
                         if f.is_file()
                     )
                     pct = min(99, int(total / _QWEN_EXPECTED_BYTES * 100))
@@ -136,6 +137,38 @@ def _download_qwen_if_needed() -> bool:
         return False
 
 
+# ── Structural vision probe prefetch (ChiaroscuroHead) ───────────────────────
+
+_VIS_PROBE_DIR = Path("models/vision_probe")
+
+
+def _download_vis_probe_if_needed() -> bool:
+    """
+    Pre-download structural encoder weights into models/vision_probe/ so
+    ChiaroscuroHead can load fully offline with local_files_only=True.
+    Returns True if weights are ready, False on error.
+    """
+    if _VIS_PROBE_DIR.exists() and any(_VIS_PROBE_DIR.rglob("*.safetensors")):
+        print("[model_loader] Vision probe already cached — skipping download")
+        return True
+
+    try:
+        from huggingface_hub import snapshot_download
+        _VIS_PROBE_DIR.mkdir(parents=True, exist_ok=True)
+        print(f"[model_loader] Fetching vision probe to {_VIS_PROBE_DIR} …")
+        snapshot_download(
+            repo_id="facebook/dinov2-vits14",
+            local_dir=str(_VIS_PROBE_DIR),
+            local_dir_use_symlinks=False,
+            ignore_patterns=["*.msgpack", "*.h5", "flax_model*", "tf_model*", "rust_model*"],
+        )
+        print("[model_loader] Vision probe fetch complete")
+        return True
+    except Exception as exc:
+        print(f"[model_loader] Vision probe fetch failed: {exc}")
+        return False
+
+
 # ── Central download orchestration ────────────────────────────────────────────
 
 
@@ -156,23 +189,24 @@ def ensure_all_models_downloaded(progress_cb=None) -> dict:
     """
     global _DOWNLOAD_STATUS
 
-    # Sentinel is only valid if Qwen weights are also present — older sentinels
-    # were written before Qwen was added to the task list.
-    _qwen_cached = any(Path("models/qwen_vlm").rglob("*.safetensors"))
-    if _SENTINEL.exists() and _qwen_cached:
+    def _all_cached() -> bool:
+        qwen_ok  = any(Path("models/qwen_vlm").rglob("*.safetensors"))
+        dino_ok  = any(_VIS_PROBE_DIR.rglob("*.safetensors"))
+        return qwen_ok and dino_ok
+
+    if _SENTINEL.exists() and _all_cached():
         ready = {k: "ready" for k in _DOWNLOAD_STATUS}
         _DOWNLOAD_STATUS.update(ready)
         return ready
 
     with _DOWNLOAD_LOCK:
-        _qwen_cached = any(Path("models/qwen_vlm").rglob("*.safetensors"))
-        if _SENTINEL.exists() and _qwen_cached:
+        if _SENTINEL.exists() and _all_cached():
             ready = {k: "ready" for k in _DOWNLOAD_STATUS}
             _DOWNLOAD_STATUS.update(ready)
             return ready
 
-        # Invalidate stale sentinel (written before Qwen was in the task list).
-        if _SENTINEL.exists() and not _qwen_cached:
+        # Invalidate stale sentinel written before all models were in the task list.
+        if _SENTINEL.exists() and not _all_cached():
             try:
                 _SENTINEL.unlink()
             except OSError:
@@ -198,6 +232,7 @@ def ensure_all_models_downloaded(progress_cb=None) -> dict:
             )),
             ("topiq_nr", _download_topiq_nr_if_needed),
             ("qwen_vlm",  _download_qwen_if_needed),
+            ("vis_probe", _download_vis_probe_if_needed),
         ]
 
         for key, fn in _model_tasks:
@@ -336,24 +371,13 @@ def get_priority_gate():
 
 def get_nsga3_sequencer():
     """
-    Get NSGA-III sequencer for photo optimization.
-    
-    Returns:
-        NSGA3Sequencer instance
-    """
-    from nsga3_sequencer import NSGA3Sequencer
-    return NSGA3Sequencer()
+    Get the NSGA-III sequencer entry point for story-sequence optimisation.
 
-
-def get_lance_migration():
-    """
-    Get LanceDB migration utilities.
-    
     Returns:
-        Module with migration functions
+        Callable: run_creative_story_sequencer(candidates, target, brief)
     """
-    import lance_migration
-    return lance_migration
+    from nsga3_sequencer import run_creative_story_sequencer
+    return run_creative_story_sequencer
 
 
 # ── Legacy Model Loading (Deprecated) ──────────────────────────────────────────
@@ -364,7 +388,7 @@ def get_legacy_sessions():
     Get legacy ONNX model sessions (DEPRECATED).
     
     These models are replaced by SpecVLM pipeline:
-    - DINOv2-small → SigLIP-2 ViT-g/14
+    - Legacy composition ONNX → SigLIP-2 ViT-g/14
     - MobileViT → SigLIP-2 ViT-g/14
     - NIMA → Q-Align (in SpecVLM)
     

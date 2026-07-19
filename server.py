@@ -30,7 +30,7 @@ for _s in (sys.stdout, sys.stderr):
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form, Request
-from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.concurrency import run_in_threadpool
@@ -177,8 +177,55 @@ GLOBAL_CLUSTER_CACHE: dict = {}          # {"folder": str, "labels": ndarray, "p
 _BG_EXECUTOR    = ThreadPoolExecutor(max_workers=1)
 # Two separate executors so on-demand thumbnail requests (serve_thumb) are
 # never queued behind background pre-warm jobs.
-_THUMB_ONDEMAND = ThreadPoolExecutor(max_workers=8)   # high-priority, browser-facing
-_THUMB_PREWARM  = ThreadPoolExecutor(max_workers=2)   # low-priority background warm-up
+def _thumb_pool_sizes() -> tuple[int, int]:
+    """Size the thumbnail worker pools by total RAM so concurrent RAW decodes
+    don't spike memory on small machines. Returns (on_demand, prewarm)."""
+    try:
+        import psutil as _ps
+        gb = _ps.virtual_memory().total / 1e9
+        ondemand = 8 if gb >= 24 else 6 if gb >= 12 else 4 if gb >= 8 else 2
+        prewarm  = 2 if gb >= 16 else 1
+        return ondemand, prewarm
+    except Exception:
+        return 6, 2
+
+_THUMB_OD_WORKERS, _THUMB_PW_WORKERS = _thumb_pool_sizes()
+_THUMB_ONDEMAND = ThreadPoolExecutor(max_workers=_THUMB_OD_WORKERS)  # high-priority, browser-facing
+_THUMB_PREWARM  = ThreadPoolExecutor(max_workers=_THUMB_PW_WORKERS)  # low-priority background warm-up
+
+# Set while a grade is streaming. Background thumbnail PREWARM (bulk RAW decodes)
+# is skipped while this is set so it doesn't spike RAM next to the SigLIP-2 / Qwen
+# load; on-demand thumbnails (what the user is actually looking at) still run.
+_grading_active = threading.Event()
+
+
+def _evict_ollama_models() -> None:
+    """Unload any Ollama-resident models (the annotation/critique qwen2.5vl:3b,
+    ~3-4 GB, held in llama-server) so they don't compete with the grade's SigLIP-2
+    load on RAM-tight machines. Called at grade start. Best-effort; annotations
+    reload the model on demand after the grade. Annotations are gpu_lock-serialised
+    with grades, so nothing is actively using it during a cull."""
+    try:
+        import requests as _rq
+        _ps = _rq.get("http://localhost:11434/api/ps", timeout=2).json()
+        for _m in _ps.get("models", []):
+            _name = _m.get("name") or _m.get("model")
+            if not _name:
+                continue
+            try:
+                _rq.post("http://localhost:11434/api/generate",
+                         json={"model": _name, "keep_alive": 0}, timeout=5)
+                print(f"[grade] evicted Ollama model {_name} to free RAM for grading")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+# Hard floor of free system RAM (GB) below which a grade is refused (503). The
+# grader-status endpoint reports this so the UI can warn BEFORE the user starts.
+# 1.8: the HF SigLIP loader commits only ~1 GB, so culls run at low free RAM;
+# Qwen has its own preflight that degrades to CLIP scoring when RAM is tight.
+_GRADE_MIN_RAM_GB = float(os.environ.get("FRAMEGRADE_MIN_RAM_GB", "1.8"))
 
 # ── Frontier 2026: legacy V1 analyzer replaced by _FrontierStub ───────────────
 # lightweight_analyzer.py was renamed to *.legacy_backup — it cannot be imported.
@@ -239,25 +286,103 @@ def _bg_model_prefetch():
         print(f"⚠️  Pipeline warmup error: {exc}")
 
 
+def _auto_tune_hardware() -> None:
+    """Silently adapt the model knobs to the machine's RAM/VRAM headroom.
+
+    Invisible + safe: each value uses os.environ.setdefault (an explicit user env
+    always wins) and is wrapped in try/except. On an ample machine the picks equal
+    today's defaults, so behaviour is unchanged. MUST run before the grade worker
+    is spawned so the worker (and its SigLIP subprocess) inherit the env."""
+    ram_total = ram_free = None
+    try:
+        import psutil as _ps
+        _vm = _ps.virtual_memory()
+        ram_total, ram_free = _vm.total / 1e9, _vm.available / 1e9
+    except Exception:
+        pass
+    vram_total = None
+    try:
+        import torch as _t
+        if _t.cuda.is_available():
+            vram_total = _t.cuda.get_device_properties(0).total_memory / 1e9
+    except Exception:
+        pass
+
+    # Qwen VRAM reserve + batch ceiling — more conservative on small GPUs so the
+    # auto-derived batch (qwen_vlm_grader) leaves headroom and avoids VRAM OOM.
+    if vram_total is not None:
+        if vram_total <= 6.5:
+            os.environ.setdefault("QWEN_VRAM_RESERVE", "0.8")
+            os.environ.setdefault("QWEN_BS_CEIL", "4")
+        elif vram_total <= 8.5:
+            os.environ.setdefault("QWEN_VRAM_RESERVE", "0.6")
+            os.environ.setdefault("QWEN_BS_CEIL", "6")
+        else:
+            os.environ.setdefault("QWEN_VRAM_RESERVE", "0.5")
+            os.environ.setdefault("QWEN_BS_CEIL", "8")
+
+    # SigLIP clean-fail floor — a LAST-RESORT guard against a genuine OOM, NOT a
+    # capacity gate. (Earlier this session it was set to 5.0 to match a measured
+    # ~4.5 GB encode "spike", but that number was inflated by reclaimable cache +
+    # the profiler's own torch — the encode actually runs fine at ~4 GB free, as it
+    # always did. A 5.0 floor REGRESSED working grades, refusing them at 4.2 GB.)
+    # Keep it just above the grade-stream gate (1.8) so it only trips when RAM is
+    # truly critical; real OOM protection now comes from the leaner baseline
+    # (Ollama evict, niche release, prewarm pause) + the port-kill respawn fix.
+    _tier = os.environ.get("SIGLIP_TIER", "high").strip().lower()
+    os.environ.setdefault(
+        "SIGLIP_MIN_FREE_RAM_GB",
+        {"high": "2.0", "mid": "1.8", "low": "1.5"}.get(_tier, "2.0"),
+    )
+
+    def _r(x):
+        return round(x, 1) if isinstance(x, (int, float)) else x
+    print(f"[autotune] RAM {_r(ram_total)}/{_r(ram_free)} GB free, VRAM {_r(vram_total)} GB "
+          f"→ QWEN_BS_CEIL={os.environ.get('QWEN_BS_CEIL')} "
+          f"QWEN_VRAM_RESERVE={os.environ.get('QWEN_VRAM_RESERVE')} "
+          f"SIGLIP_MIN_FREE_RAM_GB={os.environ.get('SIGLIP_MIN_FREE_RAM_GB')} "
+          f"THUMB_POOLS={_THUMB_OD_WORKERS}/{_THUMB_PW_WORKERS}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global gpu_lock, annotation_queue
+    # Hardware auto-tune FIRST — sets env defaults the grade worker inherits.
+    _auto_tune_hardware()
     # Initialise VRAM mutex and annotation queue now that the event loop is running.
     gpu_lock         = asyncio.Lock()
     annotation_queue = asyncio.Queue()
 
-    # Delete any stale catalog.json from a prior session so the frontend cannot
-    # serve outdated scores before a new grading run has completed.
+    # Allow CuDNN to auto-tune conv kernels on first batch — faster on fixed-size inputs.
     try:
-        _stale = _DATA_DIR / "cache" / "catalog.json"
-        if _stale.exists():
-            _stale.unlink()
-            print("[server] Startup: cleared stale catalog.json")
-    except OSError as _e_cat_boot:
-        print(f"[server] Startup catalog clear skipped: {_e_cat_boot}")
+        import torch
+        if torch.cuda.is_available():
+            torch.backends.cudnn.benchmark = True
+            print("[server] cudnn.benchmark enabled")
+    except Exception:
+        pass
+
+    # KEEP catalog.json across restarts so a finished-but-unviewed or
+    # interrupted session survives an app relaunch (e.g. after a window OOM-kill):
+    # the frontend's "Resume last session?" banner recovers it, and the user can
+    # Discard for a clean slate. (Previously this was deleted on startup, which
+    # made post-crash Resume impossible — the whole point of the durability work.)
+    try:
+        _cat = _DATA_DIR / "cache" / "catalog.json"
+        if _cat.exists():
+            print("[server] Startup: catalog.json present — Resume available")
+    except OSError:
+        pass
     # Storage housekeeping — runs once on startup, non-blocking.
     threading.Thread(target=_evict_preview_cache, daemon=True, name="preview-evict").start()
     threading.Thread(target=_cleanup_old_zips,    daemon=True, name="zip-cleanup").start()
+
+    # NOTE: the niche detector's CLIP model is loaded LAZILY (on the first
+    # /api/recommend-niche call, i.e. when a folder is selected) rather than at
+    # startup — keeping ~0.7 GB out of the baseline footprint on memory-tight
+    # machines. It is also released at the start of each grade (see the grade
+    # stream) so it never competes with SigLIP-2 / Qwen for RAM. First detect
+    # pays a ~3 s load; the spinner already covers it.
     # Background model prefetch is intentionally DISABLED.
     # On Windows, BitsAndBytes INT4 + pyiqa loaded from a daemon thread before
     # CUDA is initialised by the main grading path causes a fatal C-level crash
@@ -274,21 +399,29 @@ async def lifespan(app: FastAPI):
     # puts the DLL in the OS loader cache before any grade thread needs it.
     # Also pre-opens the LanceDB table so the grade thread finds _tbl != None
     # and skips lancedb.connect() entirely.
-    try:
-        import shutil as _shutil_ldb
-        import lance_store as _ls_boot
-        import lancedb as _ldb_boot          # load Rust DLL now, not in daemon thread
-        import pyarrow as _pa_boot           # load Arrow C++ DLL now as well
-        print(f"[server] lancedb {getattr(_ldb_boot, '__version__', '?')} pre-loaded on server thread")
+    # Pre-open the LanceDB table.
+    # IMPORTANT: lancedb imports pyarrow which loads native Arrow C++ DLLs.
+    # On Windows, loading these DLLs from inside an asyncio coroutine (the IOCP
+    # event loop thread) causes a fatal access violation.  Running it in a thread
+    # pool executor avoids the DLL loader conflict.
+    def _preopen_lancedb():
         try:
-            _ls_boot._open_table()           # cache _tbl so grade thread skips connect()
-            print("[server] LanceDB table pre-opened OK")
-        except Exception as _e_open:
-            # DB is corrupt — delete it so lancedb recreates it fresh on first grade.
-            _shutil_ldb.rmtree(_ls_boot._DB_DIR, ignore_errors=True)
-            print(f"[server] LanceDB corrupt ({_e_open}) — deleted for fresh start")
+            import shutil as _shutil_ldb
+            import lance_store as _ls
+            try:
+                _ls._open_table()
+                print("[server] LanceDB table pre-opened OK")
+            except Exception as _e_open:
+                _shutil_ldb.rmtree(_ls._DB_DIR, ignore_errors=True)
+                print(f"[server] LanceDB corrupt ({_e_open}) — deleted for fresh start")
+        except Exception as _e_ldb:
+            print(f"[server] LanceDB pre-load warning: {_e_ldb}")
+
+    try:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _preopen_lancedb)
     except Exception as _e_ldb_boot:
-        print(f"[server] LanceDB pre-load warning: {_e_ldb_boot}")
+        print(f"[server] LanceDB executor launch failed: {_e_ldb_boot}")
 
     # Start event-driven async annotation daemon (replaces 30-second polling).
     try:
@@ -324,12 +457,48 @@ class _LazyAnalyzer:
 
 analyzer = _LazyAnalyzer()
 
+_APP_PORT = int(os.environ.get("CURATOR_PORT", "8000"))
+# Scoped CORS — the packaged app is SAME-ORIGIN with its API (pywebview loads the
+# SPA from this server), so it needs no CORS at all; the extra entries are only for
+# the Vite dev server. allow_origins=["*"] previously let ANY website the user
+# visited read local-photo responses cross-origin — removed.
+_CORS_ORIGINS = [
+    f"http://127.0.0.1:{_APP_PORT}", f"http://localhost:{_APP_PORT}",
+    "http://127.0.0.1:5173", "http://localhost:5173",   # Vite dev
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── Security: isolate the local API from other origins ───────────────────────
+# This server binds 127.0.0.1, but every website the user visits can still reach
+# it. Without this guard a malicious page could read local photos (/api/photo?
+# path=…), enumerate folders (/api/browse-folder) and CSRF the state-changing
+# endpoints. Defense = Fetch-Metadata Resource Isolation + Host pinning:
+#   1. Host header must be localhost — blocks DNS-rebinding (a hostile domain
+#      re-resolving to 127.0.0.1 to look same-origin).
+#   2. Reject /api/* when Sec-Fetch-Site is cross-site/cross-origin. WebView2 is
+#      Chromium and always sends Sec-Fetch-Site; it is a forbidden header, so page
+#      JS cannot forge it. Same-origin (the app) and same-site (Vite dev, different
+#      port) are allowed; a request with no such header (non-browser) is allowed
+#      through the Host check only — browsers are the only cross-origin threat.
+_ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+@app.middleware("http")
+async def _security_isolation(request: Request, call_next):
+    if request.url.path.startswith("/api/"):
+        host = (request.headers.get("host") or "").rsplit(":", 1)[0].strip("[]")
+        if host and host not in _ALLOWED_HOSTS:
+            return JSONResponse(status_code=403, content={"error": "Forbidden host"})
+        if (request.headers.get("sec-fetch-site") or "") in ("cross-site", "cross-origin"):
+            return JSONResponse(
+                status_code=403,
+                content={"error": "Cross-origin access to the local API is blocked."},
+            )
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -487,6 +656,28 @@ async def get_config():
     return JSONResponse({"force_frontier": ff})
 
 
+@app.get("/api/system/ram")
+async def system_ram():
+    """Live system-memory snapshot for the UI's RAM readiness indicator.
+
+    Deliberately tiny (psutil only — no torch / model imports) so the frontend can
+    poll it every couple of seconds and reflect Task Manager in real time.
+    `percent` is memory in use (== Task Manager's headline %); `free` is the
+    'Available' figure. `min_gb` is the hard cull gate (below it grading is 503)."""
+    try:
+        import psutil as _ps
+        _vm = _ps.virtual_memory()
+        return JSONResponse({
+            "ram_free_gb":  round(_vm.available / 1e9, 1),
+            "ram_total_gb": round(_vm.total / 1e9, 1),
+            "ram_percent":  round(_vm.percent, 1),
+            "ram_min_gb":   _GRADE_MIN_RAM_GB,
+        })
+    except Exception:
+        return JSONResponse({"ram_free_gb": None, "ram_total_gb": None,
+                             "ram_percent": None, "ram_min_gb": _GRADE_MIN_RAM_GB})
+
+
 @app.get("/api/models/status")
 async def model_status():
     """Return current grader mode and model availability for the frontend indicator."""
@@ -495,6 +686,10 @@ async def model_status():
     # Qwen2.5-VL-3B is the primary grader — HuggingFace nests safetensors in subdirs
     qwen_dir  = _P("models/qwen_vlm")
     draft_ok  = any(qwen_dir.rglob("*.safetensors")) if qwen_dir.exists() else False
+    # Pre-quantised INT4 checkpoint — when absent, the first cull pauses ~2-5 min
+    # at ~52% to quantise once (the frontend shows a disclaimer for this).
+    int4_dir   = _P("models/qwen_vlm_int4")
+    int4_cached = (int4_dir / "config.json").exists() and any(int4_dir.glob("*.safetensors"))
     # SpecVLM CLIP weights (fallback grader)
     spec_dir  = _P("models/specvlm")
     verify_ok = any(spec_dir.glob("*.safetensors")) if spec_dir.exists() else False
@@ -536,20 +731,30 @@ async def model_status():
     except Exception:
         pass
 
-    # GPU / VRAM telemetry
+    # GPU / VRAM telemetry — via nvidia-smi, NOT torch.cuda. This endpoint is polled
+    # by the frontend; torch.cuda.get_device_properties/memory_reserved would give
+    # this long-lived SERVER process a CUDA context, which can race the grade worker's
+    # isolated GPU subprocesses. nvidia-smi is a separate process — zero CUDA state
+    # here — and memory.free reports true free VRAM across all processes.
     vram_free_gb  = None
     vram_total_gb = None
     gpu_name      = last.get("gpu_name")
     compute_device = "unknown"
     try:
-        import torch as _t
-        if _t.cuda.is_available():
-            _props = _t.cuda.get_device_properties(0)
-            vram_total_gb = round(_props.total_memory / 1e9, 1)
-            vram_free_gb  = round((_props.total_memory - _t.cuda.memory_reserved(0)) / 1e9, 1)
+        import subprocess as _sp, shutil as _sh
+        _smi = _sh.which("nvidia-smi") or r"C:\Windows\System32\nvidia-smi.exe"
+        _out = _sp.run(
+            [_smi, "--query-gpu=memory.total,memory.free,name",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=4,
+            creationflags=0x08000000 if os.name == "nt" else 0,
+        )
+        if _out.returncode == 0 and _out.stdout.strip():
+            _tot, _free, _nm = [x.strip() for x in _out.stdout.strip().splitlines()[0].split(",")]
+            vram_total_gb = round(float(_tot) / 1024.0, 1)   # MiB -> GB
+            vram_free_gb  = round(float(_free) / 1024.0, 1)
             if not gpu_name:
-                gpu_name = _t.cuda.get_device_name(0)
-            # Derive dominant compute device from last run's recorded devices
+                gpu_name = _nm
             _sd = last.get("siglip_device", "unknown")
             _qd = last.get("qwen_device",   "unknown")
             if _qd == "gpu" or _sd == "gpu":
@@ -557,9 +762,22 @@ async def model_status():
             elif _qd == "cpu" or _sd == "cpu":
                 compute_device = "cpu"
             else:
-                compute_device = "gpu"   # CUDA available, assume GPU until proven otherwise
+                compute_device = "gpu"   # GPU present, assume GPU until proven otherwise
         else:
             compute_device = "cpu"
+    except Exception:
+        pass
+
+    # System RAM telemetry — lets the UI tell the user whether it's clear to grade
+    # BEFORE they start. _GRADE_MIN_RAM_GB mirrors the hard cull gate in
+    # /api/grade/v2/stream (below that the grade returns 503).
+    ram_free_gb  = None
+    ram_total_gb = None
+    try:
+        import psutil as _ps_ram
+        _vm = _ps_ram.virtual_memory()
+        ram_free_gb  = round(_vm.available / 1e9, 1)
+        ram_total_gb = round(_vm.total / 1e9, 1)
     except Exception:
         pass
 
@@ -573,6 +791,7 @@ async def model_status():
         "last_error":         last["error"],
         "qwen_warm":          qwen_warm,
         "qwen_loading":       qwen_loading,
+        "qwen_int4_cached":   int4_cached,
         "qwen_download_pct":  qwen_dl_pct,
         "warmup_done":        warmup_done,
         "warmup_running":     warmup_running,
@@ -580,6 +799,9 @@ async def model_status():
         "vram_free_gb":       vram_free_gb,
         "vram_total_gb":      vram_total_gb,
         "gpu_name":           gpu_name,
+        "ram_free_gb":        ram_free_gb,
+        "ram_total_gb":       ram_total_gb,
+        "ram_min_gb":         _GRADE_MIN_RAM_GB,
     })
 
 
@@ -620,34 +842,38 @@ async def model_download_status():
 
 @app.get("/api/thumb")
 async def serve_thumb(path: str = Query(...)):
-    """Create or return a thumbnail (WEBP) for grid display. Fast path optimized."""
+    """Create or return a thumbnail (WEBP) for grid display.
+
+    Generation runs in the dedicated _THUMB_ONDEMAND pool (off the asyncio event
+    loop, so it never stalls SSE grade progress / health / annotation requests)
+    and uses the SAME cache filename as the background prewarm (_gen_one_thumb) —
+    so a prewarmed thumbnail is served instantly and is never regenerated.
+    """
     import hashlib
-    try:
-        p = _safe_image_path(path)
-    except HTTPException as e:
-        raise
+    p = _safe_image_path(path)
     src = Path(p).resolve()
-    path_hash = hashlib.md5(str(src).encode()).hexdigest()[:10]
-    safe_name = f"{src.stem.replace(' ', '_')}_{path_hash}.webp"
+    safe_name = hashlib.md5(str(src).encode()).hexdigest()[:10] + ".webp"
     thumb_path = THUMB_DIR / safe_name
-    if not thumb_path.exists():
-        try:
-            from PIL import Image as _PILImg
-            THUMB_SIZE = (200, 200)
-            with _PILImg.open(str(src)) as img:
-                img = img.convert("RGB")
-                img.thumbnail(THUMB_SIZE, _PILImg.Resampling.BILINEAR)  # faster
-                img.save(str(thumb_path), "WEBP", quality=60, method=3)  # skip optimize
-        except Exception:
-            # fallback to preview for RAW/HEIC
-            if src.suffix.lower() in (_RAW_EXTS | _HEIC_EXTS):
-                import asyncio
-                preview = await asyncio.get_running_loop().run_in_executor(None, _gen_preview, str(src))
-                if preview:
-                    return FileResponse(str(preview), media_type="image/jpeg")
-            # otherwise return 404
-            raise HTTPException(404, "Thumbnail could not be created")
-    return FileResponse(str(thumb_path))
+    if thumb_path.exists():
+        return FileResponse(str(thumb_path))
+    # RAM guard: while a cull is running, do NOT decode a fresh thumbnail on demand.
+    # Fresh RAW decodes (rawpy) + the full-preview fallback below spike RAM and
+    # compete with the grade's SigLIP encode (~3.5 GB) on a memory-tight machine.
+    # Cached thumbs still serve instantly (above); uncached ones return 204 so the
+    # grid shows a placeholder and they fill in once grading finishes.
+    if _grading_active.is_set():
+        return Response(status_code=204)
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(_THUMB_ONDEMAND, _gen_one_thumb, str(src))
+    if thumb_path.exists():
+        return FileResponse(str(thumb_path))
+    # RAW/HEIC that produced no thumbnail (e.g. no embedded preview) → render a
+    # full preview as a last resort.
+    if src.suffix.lower() in (_RAW_EXTS | _HEIC_EXTS):
+        preview = await loop.run_in_executor(None, _gen_preview, str(src))
+        if preview:
+            return FileResponse(str(preview), media_type="image/jpeg")
+    raise HTTPException(404, "Thumbnail could not be created")
 
 
 @app.get("/api/photo")
@@ -841,8 +1067,19 @@ def _read_exif(path: str) -> dict:
 
 _RAW_EXTS = {".arw", ".cr2", ".cr3", ".nef", ".orf", ".rw2", ".raf", ".dng", ".pef", ".srw"}
 
-def _gen_one_thumb(path: str) -> None:
-    """Generate a single thumbnail into the cache directory (thread-safe). Optimized for speed."""
+def _gen_one_thumb(path: str, low_priority: bool = False) -> None:
+    """Generate a single thumbnail into the cache directory (thread-safe). Optimized for speed.
+
+    Shared by the background prewarm AND the on-demand /api/thumb handler, which
+    now use the SAME cache filename — so writes go to a per-thread temp file and
+    are atomically os.replace()'d into place, preventing a half-written WEBP from
+    being served or two concurrent writers corrupting the same file.
+
+    low_priority=True marks background prewarm jobs; these are skipped while a
+    grade is running so their RAW decodes don't spike RAM next to the grader.
+    """
+    if low_priority and _grading_active.is_set():
+        return
     try:
         from PIL import Image as _PILImg
         import hashlib as _hl
@@ -853,30 +1090,39 @@ def _gen_one_thumb(path: str) -> None:
         dest = THUMB_DIR / safe
         if dest.exists():
             return
-        
+
         # Smaller target size for faster processing (grid display only)
         THUMB_SIZE = (200, 200)
-        
-        if src.suffix.lower() in _RAW_EXTS:
+
+        def _save(img) -> None:
+            """Atomically write `img` to `dest` via a unique temp file."""
+            tmp = dest.with_name(f"{dest.stem}.{os.getpid()}_{threading.get_ident()}.tmp.webp")
             try:
-                import rawpy, io, numpy as np
+                img.save(str(tmp), "WEBP", quality=60, method=3)  # skip optimize for speed
+                os.replace(str(tmp), str(dest))
+            finally:
+                try:
+                    if tmp.exists():
+                        tmp.unlink()
+                except Exception:
+                    pass
+
+        if src.suffix.lower() in _RAW_EXTS:
+            # Embedded preview ONLY — never demosaic the full sensor array (memory-safe).
+            # If a RAW has no embedded preview, skip it cleanly rather than postprocess.
+            try:
+                import rawpy, io
                 with rawpy.imread(str(src)) as raw:
-                    try:
-                        # Fast path: embedded thumbnail is instant
-                        thumb = raw.extract_thumb()
-                        if thumb.format == rawpy.ThumbFormat.JPEG:
-                            img = _PILImg.open(io.BytesIO(thumb.data))
-                        else:
-                            img = _PILImg.fromarray(thumb.data)
-                    except rawpy.LibRawNoThumbnailError:
-                        # Fallback: half-size postprocess is faster than full
-                        rgb = raw.postprocess(use_camera_wb=True, half_size=True, no_auto_bright=False)
-                        img = _PILImg.fromarray(rgb)
+                    thumb = raw.extract_thumb()
+                if thumb.format == rawpy.ThumbFormat.JPEG:
+                    img = _PILImg.open(io.BytesIO(thumb.data))
+                else:
+                    img = _PILImg.fromarray(thumb.data)
                 img = img.convert("RGB")
                 img.thumbnail(THUMB_SIZE, _PILImg.Resampling.BILINEAR)  # faster than LANCZOS
-                img.save(str(dest), "WEBP", quality=60, method=3)  # skip optimize for speed
-            except Exception:
-                # Couldn't load RAW—skip it
+                _save(img)
+            except Exception as _e_raw_thumb:
+                print(f"[thumb] RAW read error, skipping {src.name}: {_e_raw_thumb}")
                 return
         elif src.suffix.lower() in _HEIC_EXTS:
             try:
@@ -887,7 +1133,7 @@ def _gen_one_thumb(path: str) -> None:
             with _PILImg.open(src) as img:
                 img = img.convert("RGB")
                 img.thumbnail(THUMB_SIZE, _PILImg.Resampling.BILINEAR)
-                img.save(str(dest), "WEBP", quality=60, method=3)
+                _save(img)
         else:
             # JPEG fast path: try embedded EXIF thumbnail first (<1 ms vs ~100 ms)
             if src.suffix.lower() in {".jpg", ".jpeg"}:
@@ -899,7 +1145,7 @@ def _gen_one_thumb(path: str) -> None:
                         with _PILImg.open(_io.BytesIO(_tb)) as img:
                             img = img.convert("RGB")
                             img.thumbnail(THUMB_SIZE, _PILImg.Resampling.BILINEAR)
-                            img.save(str(dest), "WEBP", quality=60, method=3)
+                            _save(img)
                         return
                 except Exception:
                     pass
@@ -909,7 +1155,7 @@ def _gen_one_thumb(path: str) -> None:
                 img.draft("RGB", THUMB_SIZE)
                 img = img.convert("RGB")
                 img.thumbnail(THUMB_SIZE, _PILImg.Resampling.BILINEAR)
-                img.save(str(dest), "WEBP", quality=60, method=3)
+                _save(img)
     except Exception:
         pass
 
@@ -935,7 +1181,7 @@ async def list_folder(body: dict):
     # The low-priority executor (2 workers) processes them without blocking
     # on-demand requests from the browser.
     for p in paths:
-        _THUMB_PREWARM.submit(_gen_one_thumb, p)
+        _THUMB_PREWARM.submit(_gen_one_thumb, p, True)   # low_priority — paused during grades
 
     # Return empty EXIF — frontend loads it lazily via /api/exif when needed.
     photos = [{"path": p, "exif": {}} for p in paths]
@@ -961,8 +1207,11 @@ class GradeRequest(BaseModel):
     folder_paths: list[str] = []   # multi-folder support; takes priority when non-empty
     preset: str = "Classic Street"
     deep_review: bool = False
+    deep_grade: bool = False       # Deep Grade: use Qwen VLM for scoring (default OFF = SigLIP zero-shot)
     force_rescan: bool = False
     scan_mode: bool = False        # Low-Latency Scan: top 20% only get 7B verification
+    mogco_target: int = 5          # story sequence length (1–10)
+    sample_limit: int = 0          # >0 caps niche-detection scan to a sample (0 = use default)
 
     @field_validator("folder_path")
     @classmethod
@@ -1129,15 +1378,19 @@ async def grade_photos_v2_stream(req: GradeRequest):
     import json as _json
     from fastapi.responses import StreamingResponse
 
-    # ── System RAM gate — fail fast if < 3 GB free to avoid silent OOM crash ────
+    # ── System RAM gate ─────────────────────────────────────────────────────
+    # Lowered 3.0 → 1.8 GB: the HF SigLIP loader commits only ~1 GB (was ~9.5 GB
+    # under open_clip), so culls run at far lower free RAM now. Qwen grading has
+    # its own preflight that falls back to CLIP scoring if RAM is tight, so a low
+    # but non-zero RAM cull still completes (in degraded mode) rather than 503.
     try:
         import psutil as _psutil
         _free_gb = _psutil.virtual_memory().available / 1e9
-        if _free_gb < 3.0:
+        if _free_gb < _GRADE_MIN_RAM_GB:
             return JSONResponse(
                 status_code=503,
-                content={"error": f"Not enough RAM to grade safely — only {_free_gb:.1f} GB free, need at least 3 GB. "
-                         "Close Chrome tabs or other apps and retry."},
+                content={"error": f"Not enough RAM to grade safely — only {_free_gb:.1f} GB free, need at least ~2 GB. "
+                         "Close a couple of apps and retry."},
             )
     except Exception:
         pass
@@ -1175,70 +1428,146 @@ async def grade_photos_v2_stream(req: GradeRequest):
         _gl = gpu_lock
         if _gl is not None:
             await _gl.acquire()
+        # Free RAM held by background work before the grade's heavy model loads:
+        #   - the niche detector's CLIP (~0.7 GB), reloads on the next folder-select
+        #   - pause the background thumbnail prewarm (RAW decodes spike RAM)
         try:
-            import queue as _std_queue
+            import fast_niche_detector as _fnd_rel
+            _fnd_rel.release()
+        except Exception:
+            pass
+        _evict_ollama_models()   # free the ~3-4 GB annotation model from llama-server
+        _grading_active.set()
+        try:
+            import tempfile as _tf, subprocess as _sp
 
-            # Get (or spawn) the persistent worker — O(1) if already alive
-            req_q, resp_q = await asyncio.get_running_loop().run_in_executor(
-                None, _ensure_worker
+            # ── Run the grade as a CLEAN subprocess (grade_runner.py) ───────────
+            # NOT a multiprocessing spawn child. A plain process running the pipeline
+            # completes reliably where the multiprocessing worker died 0xC0000005 at
+            # GPU-process boundaries (a GPU child exiting faulted the mp-spawn parent).
+            # If this process crashes it is a separate OS process — the server and
+            # window are unaffected; the catalog checkpoint + Resume recover the work.
+            # SigLIP and IQA each still run in their OWN sub-subprocesses; this runner
+            # does no direct GPU work.
+            _fd, _req_path = _tf.mkstemp(suffix=".gradereq.json"); os.close(_fd)
+            _prog_path = _req_path + ".progress.jsonl"
+            open(_prog_path, "w", encoding="utf-8").close()
+            with open(_req_path, "w", encoding="utf-8") as _rf:
+                _json.dump({
+                    "folders":      all_folders,
+                    "preset":       req.preset,
+                    "force_rescan": req.force_rescan,
+                    "scan_mode":    req.scan_mode,
+                    "deep_grade":   req.deep_grade,
+                    "catalog_path": str(_CATALOG_PATH),
+                    "data_dir":     str(_DATA_DIR),
+                    "mogco_target": 0,   # cull only; Story sequencing is its own endpoint
+                }, _rf)
+
+            _runner = os.path.join(os.path.dirname(os.path.abspath(__file__)), "grade_runner.py")
+            _flags = 0x08000000 if os.name == "nt" else 0   # CREATE_NO_WINDOW
+            _renv = dict(os.environ); _renv["PYTHONIOENCODING"] = "utf-8"
+            # Route the runner's [v2] progress prints to crash.log (utf-8) for
+            # debuggability — its result stream goes via the progress file above.
+            _rlog = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "crash.log"),
+                         "a", encoding="utf-8", errors="replace")
+            _proc = _sp.Popen(
+                [sys.executable, _runner, _req_path, _prog_path],
+                cwd=os.path.dirname(os.path.abspath(__file__)),
+                creationflags=_flags, close_fds=True,
+                stdin=_sp.DEVNULL, stdout=_rlog, stderr=_rlog, env=_renv,
             )
-            req_q.put({
-                "folders":      all_folders,
-                "preset":       req.preset,
-                "force_rescan": req.force_rescan,
-                "scan_mode":    req.scan_mode,
-                "catalog_path": str(_CATALOG_PATH),
-                "data_dir":     str(_DATA_DIR),
-            })
+            try: _rlog.close()   # child keeps its inherited fd
+            except Exception: pass
+            print(f"[server] Grade runner subprocess pid={_proc.pid}", flush=True)
 
-            _running_loop = asyncio.get_running_loop()
+            _loop = asyncio.get_running_loop()
+            _pos = 0
+            _done = False
 
-            def _try_get():
+            def _read_new():
+                # Binary read from the last byte offset; only consume up to the last
+                # complete newline so a half-written progress line is never mis-parsed.
+                nonlocal _pos
                 try:
-                    return resp_q.get(timeout=1.0)
-                except _std_queue.Empty:
+                    with open(_prog_path, "rb") as _pf:
+                        _pf.seek(_pos)
+                        _data = _pf.read()
+                    _cut = _data.rfind(b"\n")
+                    if _cut < 0:
+                        return ""
+                    _pos += _cut + 1
+                    return _data[:_cut + 1].decode("utf-8", "replace")
+                except Exception:
+                    return ""
+
+            def _emit(_line):
+                nonlocal _done
+                _line = _line.strip()
+                if not _line:
                     return None
+                try:
+                    _msg = _json.loads(_line)
+                except Exception:
+                    return None
+                if _msg.get("done") and annotation_queue is not None:
+                    for _g in _msg.get("data", []):
+                        _gpath = _g.get("path", "")
+                        if _gpath and float(_g.get("score", 0.0)) > 0.0 and not _g.get("has_annotations"):
+                            annotation_queue.put_nowait(_gpath)
+                if _msg.get("done") or _msg.get("error"):
+                    _done = True
+                return _line
 
             while True:
-                try:
-                    msg = await asyncio.wait_for(
-                        _running_loop.run_in_executor(None, _try_get),
-                        timeout=20.0,
-                    )
-                except asyncio.TimeoutError:
-                    msg = None
-
-                if msg is None:
-                    # Check whether the worker is still alive
-                    if _worker_proc is None or not _worker_proc.is_alive():
-                        # Drain any remaining messages
-                        while True:
-                            try:
-                                _tail = resp_q.get_nowait()
-                                yield f"data: {_json.dumps(_tail, default=lambda o: o.item() if hasattr(o, 'item') else str(o))}\n\n"
-                                if _tail.get("done") or _tail.get("error"):
-                                    if _tail.get("done") and annotation_queue is not None:
-                                        for _g in _tail.get("data", []):
-                                            _gpath = _g.get("path", "")
-                                            if _gpath and float(_g.get("score", 0.0)) > 0.0 and not _g.get("has_annotations"):
-                                                annotation_queue.put_nowait(_gpath)
-                                    return
-                            except Exception:
-                                break
-                        yield f"data: {_json.dumps({'error': 'Grade worker process died unexpectedly — check crash.log'})}\n\n"
-                        return
-                    yield ": heartbeat\n\n"
-                    continue
-
-                yield f"data: {_json.dumps(msg, default=lambda o: o.item() if hasattr(o, 'item') else str(o))}\n\n"
-                if msg.get("done") or msg.get("error"):
-                    if msg.get("done") and annotation_queue is not None:
-                        for _g in msg.get("data", []):
-                            _gpath = _g.get("path", "")
-                            if _gpath and float(_g.get("score", 0.0)) > 0.0 and not _g.get("has_annotations"):
-                                annotation_queue.put_nowait(_gpath)
+                _chunk = await _loop.run_in_executor(None, _read_new)
+                for _ln in _chunk.splitlines():
+                    _out = _emit(_ln)
+                    if _out is not None:
+                        yield f"data: {_out}\n\n"
+                if _done:
                     break
+                if _proc.poll() is not None:
+                    # Runner exited — drain any final lines, then if we never saw a
+                    # done/error result it crashed: surface the recoverable checkpoint.
+                    _tailchunk = await _loop.run_in_executor(None, _read_new)
+                    for _ln in _tailchunk.splitlines():
+                        _out = _emit(_ln)
+                        if _out is not None:
+                            yield f"data: {_out}\n\n"
+                    if not _done:
+                        print(f"[server] Grade runner exited without result: code={_proc.returncode}", flush=True)
+                        _recovered = 0
+                        try:
+                            if _CATALOG_PATH.exists():
+                                _recovered = len(_json.loads(_CATALOG_PATH.read_text(encoding="utf-8")).get("photos", []))
+                        except Exception:
+                            pass
+                        yield f"data: {_json.dumps({'error': f'Grade process exited unexpectedly (code {_proc.returncode}) — {_recovered} grades were checkpointed and can be recovered. Check crash.log', 'recovered': _recovered})}\n\n"
+                    break
+                yield ": heartbeat\n\n"
+                await asyncio.sleep(0.4)
+
         finally:
+            # This finally runs on normal completion AND on client disconnect
+            # (GeneratorExit at a yield). Previously the subprocess kept running
+            # after a disconnect while gpu_lock was released here — so a second
+            # grade could start concurrently and bust the VRAM ceiling. Terminate
+            # the runner if it's still alive, and always clean the temp files.
+            try:
+                if _proc.poll() is None:
+                    _proc.terminate()
+                    try:
+                        _proc.wait(timeout=5)
+                    except Exception:
+                        _proc.kill()
+                    print(f"[server] Grade runner pid={_proc.pid} terminated on stream close", flush=True)
+            except Exception:
+                pass
+            for _tmp in (_req_path, _prog_path):
+                try: os.unlink(_tmp)
+                except Exception: pass
+            _grading_active.clear()   # resume background thumbnail prewarm
             if _gl is not None:
                 _gl.release()
 
@@ -1337,6 +1666,15 @@ async def personal_star(payload: dict):
         if not path or stars == 0:
             return JSONResponse({"ok": True, "skipped": True})
 
+        # Persist to the durable ratings store FIRST — this is the taste
+        # baseline and must survive re-culls/catalog rebuilds even if the
+        # PersonalHead training below fails.
+        try:
+            import ratings_store as _rs
+            _rs.set_rating(path, stars)
+        except Exception as _e_rs:
+            print(f"[star] durable ratings_store write failed: {_e_rs}")
+
         star_grade = "Strong ✅" if stars >= 4 else ("Mid ⚠️" if stars == 3 else "Weak ❌")
         _RANK = {"Strong ✅": 2, "Mid ⚠️": 1, "Weak ❌": 0}
         star_rank = _RANK[star_grade]
@@ -1380,9 +1718,75 @@ async def personal_star(payload: dict):
                     {r["path"]: float(s) for r, s in zip(all_rows, new_pers)}
                 )
 
-        return JSONResponse({"ok": True, "star_grade": star_grade, "loss": round(loss, 5)})
+        # Auto-retrain the whole baseline every _RETRAIN_EVERY new ratings —
+        # incremental pair-updates drift toward recent ratings; a periodic full
+        # fit on the durable store keeps the head representative as the baseline
+        # grows toward hundreds. Fire-and-forget so it never blocks the rating.
+        retrained = None
+        try:
+            global _ratings_since_retrain
+            _ratings_since_retrain += 1
+            if _ratings_since_retrain >= _RETRAIN_EVERY:
+                _ratings_since_retrain = 0
+                import asyncio as _aio
+                _aio.create_task(run_in_threadpool(_retrain_personal_baseline))
+                retrained = "scheduled"
+        except Exception as _e_rt:
+            print(f"[star] auto-retrain schedule skipped: {_e_rt}")
+
+        return JSONResponse({"ok": True, "star_grade": star_grade,
+                             "loss": round(loss, 5), "retrain": retrained})
     except Exception as e:
         raise HTTPException(500, str(e))
+
+
+# Full-baseline retrain plumbing — gathers every durable rating + its embedding
+# and fits the PersonalHead from scratch (stable for 100s of ratings).
+_RETRAIN_EVERY = 25
+_ratings_since_retrain = 0
+
+
+def _gather_rating_samples() -> list:
+    import numpy as np
+    import ratings_store as _rs, lance_store as _ls
+    ratings = _rs.load()
+    if not ratings:
+        return []
+    rows = {r["path"]: r for r in _ls.query_all(min_score=0.0)}
+    _g = lambda s: "Strong ✅" if s >= 4 else ("Mid ⚠️" if s == 3 else "Weak ❌")
+    out = []
+    for p, s in ratings.items():
+        r = rows.get(p)
+        if r is not None and r.get("embedding") is not None:
+            out.append((np.asarray(r["embedding"], dtype=np.float32), _g(int(s))))
+    return out
+
+
+def _retrain_personal_baseline() -> dict:
+    import numpy as np
+    import personal_head as ph
+    samples = _gather_rating_samples()
+    if not samples:
+        return {"n": 0}
+    stats = ph.fit(samples)
+    try:
+        import lance_store as _ls
+        rows = _ls.query_all()
+        if rows:
+            embs = np.stack([r["embedding"] for r in rows])
+            pers = ph.score(embs)
+            _ls.update_personal_scores({r["path"]: float(s) for r, s in zip(rows, pers)})
+    except Exception:
+        pass
+    print(f"[personal] baseline retrained: {stats}")
+    return stats
+
+
+@app.post("/api/personal/retrain")
+async def personal_retrain(payload: dict = None):
+    """Manually retrain the PersonalHead on the full durable rating baseline."""
+    stats = await run_in_threadpool(_retrain_personal_baseline)
+    return JSONResponse({"ok": True, **stats})
 
 
 @app.post("/api/update_preference")
@@ -2687,7 +3091,7 @@ async def analyze_niche(payload: dict):
         0.15 * clamp(1.0 - strong_frac * 1.5)
     ) - clamp((t - 0.60) * 2.0) * 0.35    # penalise if actually technically sharp
 
-    # STREET - MAGNUM: balanced auth + comp + human, all above floor
+    # STREET - EDITORIAL: balanced auth + comp + human, all above floor
     # Use min-of-three so any below-threshold dimension suppresses the score without
     # collapsing to near-zero when two dimensions are just above threshold.
     street_balance = min(clamp(a - 0.30), clamp(c - 0.30), clamp(h - 0.30))
@@ -2813,8 +3217,8 @@ async def analyze_niche(payload: dict):
     # ── Per-niche actionable guidance ──────────────────────────────────────────
     GUIDANCE = {
         "Classic Street": {
-            "submit":  ["World Street Photography Awards", "LSPF Annual Open", "Burn Magazine", "Magnum Photos Open Call", "6 Mois"],
-            "market":  "Editorial agencies (Magnum, Panos, VII), documentary publishers, photobook imprints, festival circuits (Visa Pour l'Image).",
+            "submit":  ["World Street Photography Awards", "Burn Magazine", "6 Mois"],
+            "market":  "Editorial agencies (Panos, VII), documentary publishers, photobook imprints, festival circuits (Visa Pour l'Image).",
             "study":   ["Vivian Maier", "Alex Webb", "Daido Moriyama"],
         },
         "Travel Editor": {
@@ -2843,7 +3247,7 @@ async def analyze_niche(payload: dict):
             "study":   ["Fan Ho", "Michael Kenna", "Hiroshi Sugimoto"],
         },
         "London Street": {
-            "submit":  ["LSPF Annual Exhibition", "Street Foto San Francisco", "Sony World Photography (Street)", "Street Photo Prize"],
+            "submit":  ["Street Foto San Francisco", "Sony World Photography (Street)", "Street Photo Prize"],
             "market":  "UK cultural institutions, editorial press, documentary photobooks, urban lifestyle brands.",
             "study":   ["Nick Turpin", "Matt Stuart", "Jesse Marlow"],
         },
@@ -2901,6 +3305,131 @@ async def analyze_niche(payload: dict):
         "weakest":    weakest,
         "strongest":  strongest,
     }
+
+
+# ---------------------------------------------------------------------------
+# Pre-grade niche detection
+# ---------------------------------------------------------------------------
+# Lets the pre-grade picker auto-select the ideal niche BEFORE the full cull.
+# Runs a fast scan_mode pass (CLIP composition scores — no IQA, no Ollama) over
+# the folder through the persistent worker, then scores niches with the same
+# engine as /api/recommend. Non-streaming and gpu_lock-serialised, so it never
+# races a real grade for the GPU or the shared response queue, and never touches
+# gallery state.
+#
+# The recommender works in a 10-archetype space; the picker speaks the 20-niche
+# registry (src/niche_registry.py). This lossy map projects the archetype onto
+# the closest registry slug so setPreset() actually matches a dropdown option.
+# Images to scan for detection — a representative sample, capped so the pass
+# finishes in ~seconds on a warm worker no matter how large the folder is.
+_DETECT_SAMPLE = 24
+
+_ARCHETYPE_TO_NICHE = {
+    "Classic Street":             "classic_street",
+    "Snapshot / Point-and-Shoot": "classic_street",
+    "Photojournalism":            "photojournalism",
+    "Travel Editor":              "travel_cultural",
+    "Humanist/Everyday":          "documentary",
+    "Cinematic/Editorial":        "liminal",
+    "Landscape with Elements":    "landscape",
+    "Minimalist/Urbex":           "minimalist",
+    "Fine Art/Contemporary":      "fine_art",
+    "London Street":              "urban_city",
+}
+
+
+async def _scan_folder_for_data(all_folders: list, preset: str, sample_limit: int) -> list:
+    """Fast scan_mode pass through the persistent worker; returns the graded
+    photo dicts (with breakdowns) for niche scoring, or [] if the worker dies /
+    produces nothing. force_rescan=False so an already-graded folder resolves
+    instantly on re-open."""
+    import queue as _std_queue
+    _gl = gpu_lock
+    if _gl is not None:
+        await _gl.acquire()
+    try:
+        loop = asyncio.get_running_loop()
+        req_q, resp_q = await loop.run_in_executor(None, _ensure_worker)
+        req_q.put({
+            "folders":      all_folders,
+            "preset":       preset or "Classic Street",
+            "force_rescan": False,
+            "scan_mode":    True,     # fast CLIP pass — no IQA, no Ollama gate
+            "catalog_path": str(_CATALOG_PATH),
+            "data_dir":     str(_DATA_DIR),
+            "mogco_target": 0,
+            "sample_limit": sample_limit,     # cap to a representative subset → ~seconds
+            "detect_only":  True,             # never clears/writes catalog.json
+        })
+
+        def _try_get():
+            try:
+                return resp_q.get(timeout=1.0)
+            except _std_queue.Empty:
+                return None
+
+        while True:
+            try:
+                msg = await asyncio.wait_for(loop.run_in_executor(None, _try_get), timeout=20.0)
+            except asyncio.TimeoutError:
+                msg = None
+            if msg is None:
+                if _worker_proc is None or not _worker_proc.is_alive():
+                    return []                      # worker died — caller falls back
+                continue
+            if msg.get("error"):
+                return []
+            if msg.get("done"):
+                return msg.get("data", []) or []
+    finally:
+        if _gl is not None:
+            _gl.release()
+
+
+@app.post("/api/recommend-niche")
+async def recommend_niche(req: GradeRequest):
+    """Instant pre-grade niche recommendation for the picker.
+
+    Uses the warm CPU CLIP ViT-B/32 detector (src/fast_niche_detector.py) over a
+    small, size-adaptive sample of the folder — no GPU, no grading pipeline, and
+    no gpu_lock, so it can never stall previews or crash a grade, and returns in
+    well under 3 s. Returns a registry slug the dropdown can select directly;
+    falls back to classic_street so the picker is never blocked."""
+    all_folders = [str(Path(fp).resolve()) for fp in req.folder_paths if os.path.isdir(fp)]
+    if not all_folders and req.folder_path and os.path.isdir(req.folder_path):
+        all_folders = [str(Path(req.folder_path).resolve())]
+    if not all_folders:
+        return {"preset": "classic_street", "confidence": 0, "detected": False,
+                "reason": "No valid folder to scan."}
+
+    # Gather candidate images (non-recursive, same rule as /api/browse-folder).
+    img_paths: list[str] = []
+    for d in all_folders:
+        try:
+            for p in Path(d).iterdir():
+                if p.is_file() and p.suffix.lower() in _IMAGE_EXTS:
+                    img_paths.append(str(p))
+        except (PermissionError, OSError):
+            continue
+    if not img_paths:
+        return {"preset": "classic_street", "confidence": 0, "detected": False,
+                "reason": "No images found to scan."}
+    img_paths.sort()
+
+    try:
+        from fast_niche_detector import detect as _detect_niche
+        loop = asyncio.get_running_loop()
+        rec = await loop.run_in_executor(
+            None, lambda: _detect_niche(img_paths, req.sample_limit)
+        )
+    except Exception as e:
+        return {"preset": "classic_street", "confidence": 0, "detected": False,
+                "reason": f"Detection failed: {e}"}
+    if not rec:
+        return {"preset": "classic_street", "confidence": 0, "detected": False,
+                "reason": "Could not read images — pick a niche manually."}
+    rec["detected"] = True
+    return rec
 
 
 # ---------------------------------------------------------------------------
@@ -3539,7 +4068,19 @@ async def upload_image(file: UploadFile = File(...)):
     """
     import hashlib as _hl
 
-    data      = await file.read()
+    # Bounded read — cap memory so an oversized upload can't OOM the process on a
+    # RAM-tight machine (was an unbounded await file.read()).
+    _MAX_IMG_BYTES = 64 * 1024 * 1024   # 64 MB
+    _chunks, _size = [], 0
+    while True:
+        _c = await file.read(1024 * 1024)
+        if not _c:
+            break
+        _size += len(_c)
+        if _size > _MAX_IMG_BYTES:
+            raise HTTPException(413, "Image too large (max 64 MB).")
+        _chunks.append(_c)
+    data      = b"".join(_chunks)
     file_hash = _hl.md5(data).hexdigest()
 
     queue_dir = _DATA_DIR / "data" / "ingestion_queue"
@@ -3912,10 +4453,21 @@ async def rag_upload(file: UploadFile = File(...)):
         if not (file.filename or "").lower().endswith(".pdf"):
             raise HTTPException(400, "Only PDF files are supported")
 
-        # Save upload to a temp file then hand off to pdf_rag.ingest_pdf
+        # Save upload to a temp file (bounded) then hand off to pdf_rag.ingest_pdf.
+        # Cap at 200 MB so an oversized upload can't fill the disk / OOM the parser.
         suffix = ".pdf"
+        _MAX_PDF_BYTES = 200 * 1024 * 1024
         with _tmp.NamedTemporaryFile(delete=False, suffix=suffix) as tf:
-            _sh.copyfileobj(file.file, tf)
+            _written = 0
+            while True:
+                _c = await file.read(1024 * 1024)
+                if not _c:
+                    break
+                _written += len(_c)
+                if _written > _MAX_PDF_BYTES:
+                    tf.close(); Path(tf.name).unlink(missing_ok=True)
+                    raise HTTPException(413, "PDF too large (max 200 MB).")
+                tf.write(_c)
             tmp_path = tf.name
 
         from pdf_rag import ingest_pdf as _ingest
@@ -4029,8 +4581,18 @@ async def reasoning_overlay(req: Request):
 
 @app.get("/{full_path:path}")
 async def serve_spa(full_path: str):
-    candidate = DIST / full_path
-    if candidate.exists() and candidate.is_file():
+    # Path-traversal guard: `%2e%2e/…` in the :path param would otherwise let
+    # DIST / full_path escape the web root and serve arbitrary files on disk
+    # (confirmed: GET /%2e%2e/%2e%2e/README.md returned the repo file). Resolve
+    # and require the result to stay inside DIST; anything else falls through to
+    # the SPA index.
+    _dist_root = DIST.resolve()
+    try:
+        candidate = (DIST / full_path).resolve()
+        candidate.relative_to(_dist_root)
+    except (ValueError, OSError):
+        candidate = None
+    if candidate is not None and candidate.exists() and candidate.is_file():
         # Hashed assets (JS/CSS with content-hash filenames) are safe to cache forever.
         # index.html must never be cached — always revalidate so a new build is picked up instantly.
         suffix = candidate.suffix.lower()

@@ -30,6 +30,7 @@ import torch
 import torchvision.transforms.functional as TF
 
 _uniqa_singleton: Optional["UniQAHead"] = None
+_yolo_singleton = None   # ultralytics YOLO instance — loaded once, reused across runs
 
 
 def release_iqa_models() -> None:
@@ -46,7 +47,11 @@ def release_iqa_models() -> None:
 
 def _purge_vram() -> None:
     gc.collect()
-    if torch.cuda.is_available():
+    # Guard on is_initialized() (NOT is_available()): empty_cache/ipc_collect will
+    # INITIALIZE a CUDA context if one doesn't exist yet. This module now runs inside
+    # the isolated iqa_worker subprocess (where CUDA is legitimately initialized), so
+    # this must never create a context in a CUDA-free caller. See vram_manager.
+    if torch.cuda.is_available() and torch.cuda.is_initialized():
         torch.cuda.empty_cache()
         try:
             torch.cuda.ipc_collect()
@@ -54,30 +59,50 @@ def _purge_vram() -> None:
             pass
 
 
-def _batch_normalize(scores: np.ndarray) -> np.ndarray:
-    """Pass-through: return raw UniQA scores clipped to [0.10, 1.0].
+# TOPIQ NR operating point on this install: across two audited sessions
+# (135 + 25 photos, 2026-06) raw outputs sat in 0.31-0.46 for everything from
+# sharp daylight frames to motion-blurred night shots — centered far below the
+# 0.5-neutral the fusion gates assume (low_tech_clutter < 0.42, tech ceilings
+# < 0.50), so "technical" was a near-constant penalty with little discrimination.
+# Fixed affine recalibration (same constants every run — absolute, NOT batch-
+# relative): centre the observed operating point (0.40) at 0.5 and widen the
+# spread 2.5×. Retune _TOPIQ_CENTER if the camera/lens profile changes.
+_TOPIQ_CENTER = 0.40
+_TOPIQ_GAIN   = 2.5
 
-    Min-max batch stretching removed — it inflated weak batches and deflated
-    strong ones, producing relative rather than absolute technical scores.
-    UniQA outputs a calibrated absolute scale; use it directly.
+
+def _batch_normalize(scores: np.ndarray) -> np.ndarray:
+    """Fixed affine recalibration of raw TOPIQ NR scores (see constants above).
+
+    Min-max batch stretching was removed earlier — it produced relative rather
+    than absolute technical scores. This is NOT that: the mapping is identical
+    for every batch, it only re-centres TOPIQ's compressed output range.
     """
-    return np.clip(scores.astype(np.float32), 0.10, 1.0)
+    s = scores.astype(np.float32)
+    return np.clip(0.50 + (s - _TOPIQ_CENTER) * _TOPIQ_GAIN, 0.05, 0.95)
 
 
 def _load_images_parallel(
     image_paths: List[str],
     n_workers: int = 8,
     max_size: int = 512,
+    pin: bool = False,
 ) -> List[Optional[torch.Tensor]]:
     """
     Decode images in parallel via TurboJPEG (JPEG) / PIL (other formats).
-    Returns (C, H, W) float32 pin_memory tensors capped at max_size on the long edge.
+    Returns (C, H, W) float32 tensors capped at max_size on the long edge.
+
+    pin=False by default: pinned (page-locked) memory cannot be paged out, so a
+    wide list of pinned decodes is the worst thing to hold under RAM pressure.
+    The streamed IQA path holds only one chunk at a time, so the tiny H2D-copy
+    speedup pinning buys is not worth the non-swappable footprint. Callers that
+    genuinely need pinned tensors can opt back in.
     """
     from fast_ingestion import decode_one
     from concurrent.futures import ThreadPoolExecutor as _TPE
 
     def _load_one(p: str) -> Optional[torch.Tensor]:
-        t = decode_one(p, target_hw=None, pin=True)
+        t = decode_one(p, target_hw=None, pin=pin)
         if t is None:
             return None
         _, h, w = t.shape
@@ -90,12 +115,43 @@ def _load_images_parallel(
         return list(pool.map(_load_one, image_paths))
 
 
+def _iqa_chunk_size(n: int) -> int:
+    """
+    RAM-bounded chunk size for the streamed IQA decode. Peak decode memory is
+    O(chunk), NOT O(N) — so a 10 000-image import uses the same working set as a
+    200-image one, and photographers can drop 5-10k frames without an OOM.
+
+    Override with FRAMEGRADE_IQA_CHUNK=<int>. Otherwise the window is sized to a
+    fraction of *currently free* RAM (a 512px float32 decode is ~5 MB), clamped to
+    [64, 512]. Sizing off free RAM makes it self-tuning: a starved machine shrinks
+    the window instead of crashing; a roomy one runs bigger chunks for throughput.
+    """
+    import os as _os
+    _env = _os.environ.get("FRAMEGRADE_IQA_CHUNK")
+    if _env:
+        try:
+            return max(16, min(int(_env), max(n, 1)))
+        except ValueError:
+            pass
+    try:
+        import psutil as _ps
+        free_gb = _ps.virtual_memory().available / 1e9
+    except Exception:
+        free_gb = 2.0
+    _MB_PER_IMG = 5.0                       # ~512px long-edge float32 decode
+    budget_gb   = max(0.4, free_gb) * 0.35  # keep the decode buffer well under free RAM
+    est         = int(budget_gb * 1000.0 / _MB_PER_IMG)
+    return max(64, min(512, est, max(n, 1)))
+
+
 def _run_yolo_seg(
     image_paths: List[str],
-    tensors: List[Optional[torch.Tensor]],
 ) -> tuple:
     """
     Run YOLO11s-seg (person class only) on all images.
+
+    Passes paths directly to YOLO — no pre-decoded tensors needed, so the
+    caller can delay the full tensor load until UniQA actually needs it.
 
     YOLO model search order: yolo11s-seg.engine → yolo11s-seg.pt → yolo11n-seg.pt.
     Falls back gracefully to person_detected=True for all images when unavailable.
@@ -107,34 +163,39 @@ def _run_yolo_seg(
     person_detected: dict = {}
     subject_bboxes:  dict = {}
 
-    candidates = [
-        Path("models") / "yolo11s-seg.engine",
-        Path("models") / "yolo11s-seg.pt",
-        Path("models") / "yolo11n-seg.pt",
-    ]
-    yolo = None
-    for c in candidates:
-        if c.exists():
-            try:
-                from ultralytics import YOLO
-                yolo = YOLO(str(c))
-                print(f"[uniqa_head] YOLO loaded: {c.name}")
-                break
-            except Exception as e:
-                print(f"[uniqa_head] YOLO {c.name} failed: {e}")
+    global _yolo_singleton
+    if _yolo_singleton is None:
+        candidates = [
+            Path("models") / "yolo11s-seg.engine",
+            Path("models") / "yolo11s-seg.pt",
+            Path("models") / "yolo11n-seg.pt",
+        ]
+        for c in candidates:
+            if c.exists():
+                try:
+                    from ultralytics import YOLO
+                    _yolo_singleton = YOLO(str(c))
+                    print(f"[uniqa_head] YOLO loaded: {c.name}")
+                    break
+                except Exception as e:
+                    print(f"[uniqa_head] YOLO {c.name} failed: {e}")
+    else:
+        print("[uniqa_head] YOLO singleton reused — no reload")
 
+    yolo = _yolo_singleton
     if yolo is None:
         print("[uniqa_head] YOLO unavailable — all images route to standard UniQA")
         for p in image_paths:
             person_detected[p] = True   # safe default: treat as person present
         return person_detected, subject_bboxes
 
-    def _parse_yolo_result(path: str, t: "torch.Tensor", result) -> None:
+    def _parse_yolo_result(path: str, result) -> None:
         boxes = result.boxes if result else None
         if boxes is None or len(boxes) == 0:
             person_detected[path] = False
             return
-        _, H, W = t.shape
+        # orig_shape is (H, W) — set by YOLO from the source image dimensions
+        H, W = result.orig_shape[:2]
         xyxy_arr = boxes.xyxy.cpu().numpy()
         conf_arr = boxes.conf.cpu().numpy()
         bboxes_norm: list = []
@@ -154,33 +215,23 @@ def _run_yolo_seg(
         else:
             person_detected[path] = False
 
-    # Batch YOLO: one forward pass per group — ~8x fewer Python/GPU round-trips than
-    # the previous per-image loop. Falls back to per-image on any batch error.
+    # Batch YOLO: pass paths directly — YOLO loads images internally.
+    # ~8x fewer Python/GPU round-trips vs per-image loop; no tensor RAM needed.
     _YOLO_BATCH = 16
-    valid_pairs = [(path, t) for path, t in zip(image_paths, tensors) if t is not None]
-    for path, t in zip(image_paths, tensors):
-        if t is None:
-            person_detected[path] = False
-
-    for b_start in range(0, max(len(valid_pairs), 1), _YOLO_BATCH):
-        batch = valid_pairs[b_start : b_start + _YOLO_BATCH]
-        if not batch:
+    for b_start in range(0, max(len(image_paths), 1), _YOLO_BATCH):
+        batch_paths = image_paths[b_start : b_start + _YOLO_BATCH]
+        if not batch_paths:
             break
-        b_imgs = [
-            (t.permute(1, 2, 0).cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
-            for _, t in batch
-        ]
         try:
-            b_results = yolo(b_imgs, verbose=False, classes=[0])
-            for (path, t), result in zip(batch, b_results):
-                _parse_yolo_result(path, t, result)
+            b_results = yolo(batch_paths, verbose=False, classes=[0])
+            for path, result in zip(batch_paths, b_results):
+                _parse_yolo_result(path, result)
         except Exception as e:
             print(f"[uniqa_head] YOLO batch failed ({e}) — per-image fallback")
-            for path, t in batch:
+            for path in batch_paths:
                 try:
-                    img_np = (t.permute(1, 2, 0).cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
-                    res = yolo(img_np, verbose=False, classes=[0])
-                    _parse_yolo_result(path, t, res[0])
+                    res = yolo(path, verbose=False, classes=[0])
+                    _parse_yolo_result(path, res[0])
                 except Exception as e2:
                     print(f"[uniqa_head] YOLO fallback failed for {Path(path).name}: {e2}")
                     person_detected[path] = True
@@ -325,7 +376,21 @@ class UniQAHead:
 
     @staticmethod
     def _timed_create(metric_name: str, device: str, timeout: int = 120):
-        import pyiqa, threading
+        import os as _os, pyiqa
+        # In the isolated iqa_worker subprocess, load in the MAIN thread. Creating a
+        # CUDA model in a background thread and then running inference from the main
+        # thread faults with 0xC0000005 in a fresh process (CUDA primary-context
+        # thread affinity). The subprocess has its own outer timeout (subprocess.run),
+        # so the threaded load-watchdog is unnecessary there. In-process callers keep
+        # the watchdog (no env var set).
+        if _os.environ.get("IQA_MAIN_THREAD_LOAD") == "1":
+            try:
+                return pyiqa.create_metric(metric_name, device=device)
+            except Exception as e:
+                print(f"[uniqa_head] {metric_name} error: {e} — skip")
+                return None
+
+        import threading
         _result: list = [None]
         _err:    list = [None]
 
@@ -349,13 +414,37 @@ class UniQAHead:
     def load(self) -> None:
         self._model = self._timed_create(self._METRIC_NAME, self._device)
         if self._model is not None:
+            # torch.compile uses the inductor backend, which REQUIRES Triton.
+            # Triton has no Windows wheels, and torch.compile is lazy — it compiles
+            # on the first forward pass, so a missing-Triton failure escapes a
+            # try/except placed here and instead raises on EVERY image at inference
+            # time (BackendCompilerFailed), collapsing all IQA scores to 0.5 and
+            # stalling the grade. Only compile when Triton is importable; otherwise
+            # run eager (fully functional, just not graph-optimised).
+            import importlib.util as _ilu
+            _has_triton = _ilu.find_spec("triton") is not None
+            if self._device == "cuda" and _has_triton:
+                try:
+                    self._model = torch.compile(self._model, mode="reduce-overhead")
+                    print(f"[uniqa_head] {self._METRIC_NAME} compiled (reduce-overhead)")
+                except Exception as _ce:
+                    print(f"[uniqa_head] torch.compile skipped: {_ce}")
+            else:
+                # Global safety net: if anything else triggers dynamo, fall back to
+                # eager instead of hard-failing.
+                try:
+                    import torch._dynamo as _td
+                    _td.config.suppress_errors = True
+                except Exception:
+                    pass
+                if self._device == "cuda":
+                    print(f"[uniqa_head] torch.compile skipped — Triton unavailable; running eager")
             print(f"[uniqa_head] {self._METRIC_NAME} loaded on {self._device}")
         else:
             print(f"[uniqa_head] {self._METRIC_NAME} unavailable")
 
     def score_all(
         self,
-        tensors:                 List[Optional[torch.Tensor]],
         image_paths:             List[str],
         vlm_breakdowns:          Optional[List[dict]] = None,
         progress=None,
@@ -366,11 +455,18 @@ class UniQAHead:
         framing_obstruction_in:  Optional[dict] = None,
     ) -> tuple:
         """
-        Score images via YOLO routing + UniQA.
+        Score images via YOLO routing + UniQA, decoding in RAM-bounded chunks.
 
         Route 1 images (empty scene) use SpecVLM aspect scores — no model inference.
         Route 2 images (layered frame) run UniQA on the YOLO subject crop.
         Standard images run UniQA on the full resized image (batched on GPU).
+
+        Memory: images are decoded one chunk at a time (see _iqa_chunk_size) and
+        the chunk's tensors are freed before the next window, so peak RAM is
+        O(chunk) — a 10 000-image import uses the same working set as 200. The
+        old path materialised ALL decodes up front (O(N)) and OOM'd on large
+        imports. Scores are identical: _batch_normalize is a fixed affine, so a
+        photo's score does not depend on which images share its chunk.
 
         person_detected_in / subject_bboxes_in: pre-computed YOLO results from
         run_vision_heads(); when provided, the internal _run_yolo_seg() call is
@@ -382,7 +478,7 @@ class UniQAHead:
             subject_bboxes   dict  path → list[bbox]
         """
         _p = progress or (lambda f, d: None)
-        n  = len(tensors)
+        n  = len(image_paths)
         device = torch.device(self._device)
         S      = self._INPUT_SIZE
 
@@ -391,118 +487,167 @@ class UniQAHead:
         if self._model is None:
             raise RuntimeError("TOPIQ NR (topiq_nr) unavailable — run model prefetch or check pyiqa install")
 
-        # ── YOLO routing ─────────────────────────────────────────────────────
+        # ── YOLO routing detections (paths only — never materialise all tensors) ─
         if person_detected_in is not None and subject_bboxes_in is not None:
             person_detected = person_detected_in
             subject_bboxes  = subject_bboxes_in
             print(f"[uniqa_head] YOLO skipped — pre-computed detections reused ({n} images)")
         else:
             _p(progress_start, f"YOLO routing — {n} images…")
-            person_detected, subject_bboxes = _run_yolo_seg(image_paths, tensors)
+            person_detected, subject_bboxes = _run_yolo_seg(image_paths)
 
-        _fo_map = framing_obstruction_in or {}
-        routes: List[int] = []   # 0=standard, 1=empty-scene, 2=layered-frame/FO
-        for path, t in zip(image_paths, tensors):
-            has_person = person_detected.get(path, True)
-            bboxes     = subject_bboxes.get(path, [])
-            is_fo      = bool(_fo_map.get(path, False))
-            if not has_person:
-                routes.append(1)
-            elif is_fo or (bboxes and t is not None and _is_layered_frame(t, bboxes)):
-                routes.append(2)
-            else:
-                routes.append(0)
-
-        n_r1  = routes.count(1)
-        n_r2  = routes.count(2)
-        n_std = routes.count(0)
-        print(f"[uniqa_head] Routes: {n_r1} empty-scene, {n_r2} layered-frame, {n_std} standard")
-
+        _fo_map     = framing_obstruction_in or {}
         quality_raw = [0.5] * n
+        routes      = [0] * n   # 0=standard, 1=empty-scene, 2=layered-frame/FO
+        n_failed    = 0
 
-        # ── Route 1: geometric blend from VLM aspect scores (no GPU inference) ─
-        for i, route in enumerate(routes):
-            if route != 1:
-                continue
-            bd    = vlm_breakdowns[i] if vlm_breakdowns else {}
-            comp  = float(bd.get("Composition", 0.5))
-            light = float(bd.get("Lighting",    0.5))
-            quality_raw[i] = float(np.sqrt(max(comp, 0.01) * max(light, 0.01)))
+        # ── Streamed decode: process images in RAM-bounded windows so peak
+        #    memory is O(chunk), not O(N). Route 1 (no GPU inference), Route 0
+        #    (full-frame TOPIQ) and Route 2 (subject-crop TOPIQ) all run within
+        #    the chunk on the same GPU mini-batch size, then the chunk's decoded
+        #    tensors are freed before the next window. ────────────────────────
+        chunk = _iqa_chunk_size(n)
+        print(f"[uniqa_head] Streamed IQA: {n} images, chunk={chunk} "
+              f"(peak decode RAM bounded, not O(N))")
+        done = 0
+        for c0 in range(0, n, chunk):
+            c_idx     = list(range(c0, min(c0 + chunk, n)))
+            c_paths   = [image_paths[i] for i in c_idx]
+            c_tensors = _load_images_parallel(c_paths, pin=False)
 
-        # ── Route 0 (standard): batch UniQA on full images ────────────────────
-        std_indices = [i for i, r in enumerate(routes) if r == 0 and tensors[i] is not None]
-        n_std_valid  = len(std_indices)
-        n_std_batches = max(1, (n_std_valid + self._BATCH_SIZE - 1) // self._BATCH_SIZE) if n_std_valid else 1
+            # Routing + Route-1 fill for this chunk.
+            for pos, i in enumerate(c_idx):
+                t = c_tensors[pos]
+                if t is None:
+                    n_failed += 1
+                path       = image_paths[i]
+                has_person = person_detected.get(path, True)
+                bboxes     = subject_bboxes.get(path, [])
+                is_fo      = bool(_fo_map.get(path, False))
+                if not has_person:
+                    routes[i] = 1
+                    bd    = vlm_breakdowns[i] if vlm_breakdowns else {}
+                    comp  = float(bd.get("Composition", 0.5))
+                    light = float(bd.get("Lighting",    0.5))
+                    quality_raw[i] = float(np.sqrt(max(comp, 0.01) * max(light, 0.01)))
+                elif is_fo or (bboxes and t is not None and _is_layered_frame(t, bboxes)):
+                    routes[i] = 2
+                else:
+                    routes[i] = 0
 
-        for b_idx, batch_start in enumerate(range(0, max(n_std_valid, 1), self._BATCH_SIZE)):
-            batch_i = std_indices[batch_start : batch_start + self._BATCH_SIZE]
-            if not batch_i:
-                break
-            resized = [TF.resize(tensors[i], [S, S], antialias=True) for i in batch_i]
-            batch_t = torch.stack(resized).to(device, non_blocking=True)
-            try:
-                with torch.inference_mode():
-                    out = self._model(batch_t)
-                out = out.squeeze(-1) if out.dim() > 1 else out
-                for j, gl_i in enumerate(batch_i):
-                    quality_raw[gl_i] = float(out[j].item())
-                del batch_t
-            except Exception as e:
-                print(f"[uniqa_head] Batch {b_idx} failed ({e}) — per-image fallback")
-                del batch_t
-                for gl_i in batch_i:
-                    if tensors[gl_i] is None:
-                        continue
-                    try:
-                        inp = TF.resize(tensors[gl_i], [S, S], antialias=True).unsqueeze(0).to(device)
-                        with torch.inference_mode():
-                            s = self._model(inp)
-                        quality_raw[gl_i] = float(s.item() if hasattr(s, "item") else float(s))
-                    except Exception:
-                        import traceback as _tb_pimg
-                        print(f"[uniqa_head] Per-image fallback FULL TRACEBACK (gl_i={gl_i}):")
-                        _tb_pimg.print_exc()
-                        quality_raw[gl_i] = 0.5
+            # ── Route 0 (standard): batch UniQA on full images ────────────────
+            std_pos = [pos for pos, i in enumerate(c_idx)
+                       if routes[i] == 0 and c_tensors[pos] is not None]
+            for bstart in range(0, len(std_pos), self._BATCH_SIZE):
+                b_pos = std_pos[bstart : bstart + self._BATCH_SIZE]
+                if not b_pos:
+                    break
+                resized = [TF.resize(c_tensors[pos], [S, S], antialias=True) for pos in b_pos]
+                batch_t = torch.stack(resized).to(device, non_blocking=True)
+                try:
+                    with torch.inference_mode():
+                        out = self._model(batch_t)
+                    out = out.squeeze(-1) if out.dim() > 1 else out
+                    for j, pos in enumerate(b_pos):
+                        quality_raw[c_idx[pos]] = float(out[j].item())
+                    del batch_t
+                except Exception as e:
+                    print(f"[uniqa_head] Std batch failed ({e}) — per-image fallback")
+                    del batch_t
+                    for pos in b_pos:
+                        try:
+                            inp = TF.resize(c_tensors[pos], [S, S], antialias=True).unsqueeze(0).to(device)
+                            with torch.inference_mode():
+                                s = self._model(inp)
+                            quality_raw[c_idx[pos]] = float(s.item() if hasattr(s, "item") else float(s))
+                        except Exception:
+                            import traceback as _tb_pimg
+                            print(f"[uniqa_head] Per-image fallback FULL TRACEBACK (i={c_idx[pos]}):")
+                            _tb_pimg.print_exc()
+                            quality_raw[c_idx[pos]] = 0.5
 
-            done_so_far = min(batch_start + self._BATCH_SIZE, n_std_valid)
-            _p(
-                progress_start + (progress_end - progress_start) * 0.70 * (b_idx + 1) / n_std_batches,
-                f"UniQA {done_so_far}/{n_std_valid} standard images…",
-            )
+            # ── Route 2 (layered frame): batched UniQA on subject crops ──────
+            # Crops resize to the same S×S as the standard route, so they batch
+            # identically. Crop geometry (2026-06-11): tight person crops upscaled
+            # to S×S read as mush and TOPIQ floored them; pad the subject box 15%
+            # with context and blend 50/50 with the full-frame score so a sharp
+            # frame with a small subject is not technically slandered by its crop.
+            r2_pos = [pos for pos, i in enumerate(c_idx)
+                      if routes[i] == 2 and c_tensors[pos] is not None]
+            r2_crops: list = []
+            r2_full:  list = []
+            for pos in r2_pos:
+                t      = c_tensors[pos]
+                bboxes = subject_bboxes[image_paths[c_idx[pos]]]
+                _, H, W = t.shape
+                x1 = min(b[0] for b in bboxes); y1 = min(b[1] for b in bboxes)
+                x2 = max(b[2] for b in bboxes); y2 = max(b[3] for b in bboxes)
+                _pad_x = 0.15 * (x2 - x1); _pad_y = 0.15 * (y2 - y1)
+                x1 = max(0, int((x1 - _pad_x) * W)); y1 = max(0, int((y1 - _pad_y) * H))
+                x2 = min(W, int((x2 + _pad_x) * W)); y2 = min(H, int((y2 + _pad_y) * H))
+                crop = t[:, y1:y2, x1:x2] if (y2 - y1) >= 32 and (x2 - x1) >= 32 else t
+                r2_crops.append(TF.resize(crop, [S, S], antialias=True))
+                r2_full.append(TF.resize(t,    [S, S], antialias=True))
 
-        # ── Route 2 (layered frame): per-image UniQA on subject crop ──────────
-        r2_indices = [i for i, r in enumerate(routes) if r == 2]
-        for r2_cnt, i in enumerate(r2_indices):
-            t      = tensors[i]
-            path   = image_paths[i]
-            bboxes = subject_bboxes[path]
-            _, H, W = t.shape
-            x1 = max(0, int(min(b[0] for b in bboxes) * W))
-            y1 = max(0, int(min(b[1] for b in bboxes) * H))
-            x2 = min(W, int(max(b[2] for b in bboxes) * W))
-            y2 = min(H, int(max(b[3] for b in bboxes) * H))
-            crop = t[:, y1:y2, x1:x2] if (y2 - y1) >= 32 and (x2 - x1) >= 32 else t
-            inp  = TF.resize(crop, [S, S], antialias=True).unsqueeze(0).to(device)
-            try:
-                with torch.inference_mode():
-                    s = self._model(inp)
-                quality_raw[i] = float(s.item() if hasattr(s, "item") else float(s))
-            except Exception as e:
-                import traceback as _tb_r2
-                print(f"[uniqa_head] Route2 crop FULL TRACEBACK for {Path(path).name}:")
-                _tb_r2.print_exc()
-                quality_raw[i] = 0.5
-            _p(
-                progress_start + (progress_end - progress_start) * (
-                    0.70 + 0.30 * (r2_cnt + 1) / max(len(r2_indices), 1)
-                ),
-                f"UniQA crop {r2_cnt + 1}/{len(r2_indices)} layered-frame…",
-            )
+            for rb in range(0, len(r2_pos), self._BATCH_SIZE):
+                cpos   = r2_pos[rb : rb + self._BATCH_SIZE]
+                ccrops = r2_crops[rb : rb + self._BATCH_SIZE]
+                cfull  = r2_full[rb : rb + self._BATCH_SIZE]
+                if not cpos:
+                    break
+                batch_t = torch.stack(ccrops + cfull).to(device, non_blocking=True)
+                try:
+                    with torch.inference_mode():
+                        out = self._model(batch_t)
+                    out = out.squeeze(-1) if out.dim() > 1 else out
+                    _nc = len(cpos)
+                    for j, pos in enumerate(cpos):
+                        # 50/50 subject-crop × full-frame blend (see comment above)
+                        quality_raw[c_idx[pos]] = 0.5 * float(out[j].item()) + 0.5 * float(out[_nc + j].item())
+                except Exception as e:
+                    print(f"[uniqa_head] Route2 batch failed ({e}) — per-crop fallback")
+                    for j, pos in enumerate(cpos):
+                        try:
+                            with torch.inference_mode():
+                                s_c = self._model(ccrops[j].unsqueeze(0).to(device))
+                                s_f = self._model(cfull[j].unsqueeze(0).to(device))
+                            quality_raw[c_idx[pos]] = 0.5 * float(s_c.item()) + 0.5 * float(s_f.item())
+                        except Exception:
+                            import traceback as _tb_r2
+                            print(f"[uniqa_head] Route2 crop FULL TRACEBACK "
+                                  f"({Path(image_paths[c_idx[pos]]).name}):")
+                            _tb_r2.print_exc()
+                            quality_raw[c_idx[pos]] = 0.5
+                finally:
+                    del batch_t
 
-        quality_norm = _batch_normalize(np.array(quality_raw, dtype=np.float32))
+            # Free this chunk's decoded tensors before the next window — this is
+            # what keeps peak RAM flat regardless of total image count.
+            done += len(c_idx)
+            del c_tensors, r2_crops, r2_full
+            gc.collect()
+            if torch.cuda.is_available() and torch.cuda.is_initialized():
+                torch.cuda.empty_cache()
+            _p(progress_start + (progress_end - progress_start) * done / max(n, 1),
+               f"UniQA {done}/{n} images…")
+
+        n_r1 = routes.count(1); n_r2 = routes.count(2); n_std = routes.count(0)
+        print(f"[uniqa_head] Routes: {n_r1} empty-scene, {n_r2} layered-frame, {n_std} standard")
+        if n_failed:
+            print(f"[uniqa_head] {n_failed}/{n} images failed to decode — 0.5 fallback")
+
+        # Recalibrate ONLY genuine TOPIQ outputs (routes 0/2). Route-1 values
+        # are VLM aspect blends already on the 0-1 grading scale, and exact-0.5
+        # entries are failure fallbacks — both must stay untouched (a real
+        # TOPIQ score of exactly 0.500000 is practically impossible).
+        quality_arr  = np.array(quality_raw, dtype=np.float32)
+        _topiq_mask  = np.array([r != 1 for r in routes], dtype=bool) & (quality_arr != 0.5)
+        quality_norm = quality_arr.copy()
+        quality_norm[_topiq_mask] = _batch_normalize(quality_arr[_topiq_mask])
         print(
             f"[uniqa_head] UniQA: min={quality_norm.min():.3f}  "
-            f"max={quality_norm.max():.3f}  mean={quality_norm.mean():.3f}"
+            f"max={quality_norm.max():.3f}  mean={quality_norm.mean():.3f}  "
+            f"(TOPIQ-calibrated: {int(_topiq_mask.sum())}/{n})"
         )
         return quality_norm, person_detected, subject_bboxes
 
@@ -567,18 +712,13 @@ def run_vision_heads(
     dark_paths   = [image_paths[i] for i in dark_indices]
     dark_lum     = [comp_lum[i]    for i in dark_indices]
 
-    # ── Load images early — shared by YOLO pass and UniQA ────────────────────
-    _p(0.55, f"Loading {n} images for IQA…")
-    tensors  = _load_images_parallel(image_paths)
-    n_failed = sum(1 for t in tensors if t is None)
-    if n_failed:
-        print(f"[vision_heads] {n_failed}/{n} images failed to load — using 0.5 fallback")
-
-    # ── Single YOLO pass — for OTS detection AND UniQA routing ───────────────
+    # ── Single YOLO pass — paths only, no tensors in memory yet ─────────────
     # Eliminates the duplicate YOLO call that used to happen inside
     # SegCompositionAnalyzer.analyze_batch() AND inside UniQAHead.score_all().
-    _p(0.57, f"YOLO person detection — {n} images…")
-    person_detected_dict, subject_bboxes_dict = _run_yolo_seg(image_paths, tensors)
+    # IQA fractions live in 0.66 → 0.83: vision grading (Qwen) ends at 0.65,
+    # so anything lower makes the bar jump backwards and look stuck.
+    _p(0.66, f"YOLO person detection — {n} images…")
+    person_detected_dict, subject_bboxes_dict = _run_yolo_seg(image_paths)
 
     _comp_eligible = comp_eligible_paths or set(image_paths)
     _ots_paths     = [p for p in image_paths if p in _comp_eligible]
@@ -606,7 +746,7 @@ def run_vision_heads(
 
     # ── ChiaroscuroHead (dark images only; DepthHead + SegComp removed) ───────
     if dark_paths:
-        _p(0.59, f"Chiaroscuro detection — {len(dark_paths)}/{n} dark images…")
+        _p(0.68, f"Chiaroscuro detection — {len(dark_paths)}/{n} dark images…")
         try:
             from vision_composition_heads import ChiaroscuroHead as _ChHead
             _elig_dark_pairs = [
@@ -621,33 +761,47 @@ def run_vision_heads(
                     _flags = _ch.score_batch(list(_elig_dp), list(_elig_dl))
                     for p, flag in zip(_elig_dp, _flags):
                         chiaroscuro_flags[p] = flag
+                else:
+                    # Probe model absent (models/vision_probe has no
+                    # preprocessor_config.json on this install) — fall back to
+                    # a luminance heuristic so dark intentional work is not
+                    # left unprotected: chiaroscuro = deep shadows (low mean)
+                    # WITH strong tonal separation (high std). A muddy
+                    # underexposure is dark but flat and stays unflagged.
+                    for p, (_lm, _ls) in zip(_elig_dp, _elig_dl):
+                        chiaroscuro_flags[p] = (_lm < 55.0) and (_ls > 48.0)
+                    _n_h = sum(1 for v in chiaroscuro_flags.values() if v)
+                    print(f"[vision_heads] ChiaroscuroHead unavailable — luminance "
+                          f"heuristic flagged {_n_h}/{len(_elig_dp)} dark images")
                 _ch.unload()
                 _n_ch = sum(1 for v in chiaroscuro_flags.values() if v)
                 print(f"[vision_heads] Chiaroscuro: {_n_ch}/{len(dark_paths)} dark images flagged")
         except Exception as e:
             print(f"[vision_heads] ChiaroscuroHead failed ({e}) — skipping")
     else:
-        _p(0.59, f"Chiaroscuro skipped — all {n} images well-lit")
+        _p(0.68, f"Chiaroscuro skipped — all {n} images well-lit")
         print(f"[vision_heads] Chiaroscuro skipped — all {n} images well-lit")
 
     # ── UniQA Head (pre-computed YOLO passed in — no second YOLO pass) ────────
+    # Images are NOT pre-loaded here: score_all decodes in RAM-bounded chunks
+    # (peak memory O(chunk), not O(N)), so a 5-10k-image import no longer OOMs
+    # on the up-front full-batch decode that used to hold every frame at once.
     global _uniqa_singleton
     if _uniqa_singleton is None or _uniqa_singleton._model is None:
-        _p(0.60, "Loading UniQA…")
+        _p(0.70, "Loading UniQA…")
         _uniqa_singleton = UniQAHead()
         _uniqa_singleton.load()
         print("[vision_heads] UniQAHead loaded — cached as singleton")
     else:
-        _p(0.60, "UniQA cached — scoring directly…")
+        _p(0.70, "UniQA cached — scoring directly…")
         print("[vision_heads] UniQAHead singleton reused — no reload")
 
     try:
         quality_scores, _, _ = _uniqa_singleton.score_all(
-            tensors                 = tensors,
             image_paths             = image_paths,
             vlm_breakdowns          = vlm_breakdowns,
             progress                = _p,
-            progress_start          = 0.60,
+            progress_start          = 0.70,
             progress_end            = 0.83,
             person_detected_in      = person_detected_dict,
             subject_bboxes_in       = subject_bboxes_dict,
@@ -663,8 +817,13 @@ def run_vision_heads(
         _tb_uniqa.print_exc()
         raise
 
-    del tensors
     gc.collect()
+    if torch.cuda.is_available() and torch.cuda.is_initialized():
+        torch.cuda.empty_cache()
+        try:
+            torch.cuda.ipc_collect()
+        except Exception:
+            pass
 
     breakdowns = [
         {"Technical": round(float(quality_scores[i]), 3)}

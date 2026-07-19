@@ -26,8 +26,19 @@ class VRAMManager:
     
     @staticmethod
     def purge_vram() -> None:
-        """Full VRAM purge — call between every major inference step."""
-        if torch.cuda.is_available():
+        """Full VRAM purge — call between every major inference step.
+
+        CRITICAL (2026-07-02): guard on torch.cuda.is_initialized(), NOT
+        is_available(). torch.cuda.ipc_collect() (and empty_cache on some builds)
+        will *initialize* a CUDA context in THIS process if one doesn't exist yet.
+        In the grade worker the SigLIP encode runs in an ISOLATED SUBPROCESS on the
+        same 6 GB GPU; if this (parent) process has initialized its own CUDA context
+        before/around that encode, the child's CUDA-context teardown on exit faults
+        the parent with a C-level 0xC0000005 ACCESS_VIOLATION — the "grade worker
+        died unexpectedly" crash. When CUDA is NOT already initialized there is
+        nothing in VRAM to purge, so we skip the CUDA calls entirely (gc only) and
+        keep the parent CUDA-free until it genuinely loads a GPU model itself."""
+        if torch.cuda.is_available() and torch.cuda.is_initialized():
             torch.cuda.empty_cache()
             try:
                 torch.cuda.ipc_collect()

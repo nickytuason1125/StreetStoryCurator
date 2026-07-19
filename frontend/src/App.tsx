@@ -34,6 +34,46 @@ const API = import.meta.env.VITE_API_URL || (isTauri() ? "http://127.0.0.1:8000"
 const thumbUrl = (p: string) => `${API}/api/thumb?path=${encodeURIComponent(p)}`;
 const photoUrl = (p: string) => `${API}/api/photo?path=${encodeURIComponent(p)}`;
 
+/** Classify free system RAM into a readiness level for grading. `min` is the
+ *  server's hard gate (below it a grade is refused); a +1.2 GB margin above that
+ *  is treated as "tight" (grades, but may drop to lighter CLIP scoring). */
+function ramReadiness(gs: any): {
+  level: 'clear' | 'tight' | 'critical' | 'unknown';
+  free: number | null; total: number | null; percent: number | null; readout: string; tip: string;
+} {
+  const free    = gs?.ram_free_gb ?? null;
+  const total   = gs?.ram_total_gb ?? null;
+  const percent = gs?.ram_percent ?? null;
+  const min     = gs?.ram_min_gb ?? 1.8;
+  if (free == null) return { level: 'unknown', free, total, percent, readout: '', tip: 'System memory unknown' };
+  // Compact readout that mirrors Task Manager: % in use + GB available.
+  const readout = percent != null
+    ? `${percent.toFixed(0)}% · ${free.toFixed(1)} GB free`
+    : `${free.toFixed(1)}${total != null ? ` / ${total.toFixed(1)}` : ''} GB`;
+  const usedTip = percent != null ? ` (${percent.toFixed(0)}% in use — matches Task Manager)` : '';
+  // "clear" requires at least 5 GB free: the SigLIP encode subprocess needs
+  // ~2 GB RAM during model load plus the grade worker's baseline ~1 GB, leaving
+  // 2 GB breathing room on a 5 GB machine. Below 5 GB is genuinely risky.
+  const clearThresh = Math.max(min + 1.2, 5.0);
+  if (free < min)           return { level: 'critical', free, total, percent, readout, tip: `Only ${free.toFixed(1)} GB free${usedTip} — grading needs ~${min} GB. Close some apps before grading.` };
+  if (free < clearThresh)   return { level: 'tight',    free, total, percent, readout, tip: `${free.toFixed(1)} GB free${usedTip} — enough to grade, but close Chrome or other heavy apps first for a stable cull.` };
+  return { level: 'clear', free, total, percent, readout, tip: `${free.toFixed(1)} GB free${usedTip} — clear to grade.` };
+}
+
+/** A setInterval that runs `fn` immediately, skips ticks while the tab is hidden,
+ *  and refreshes once when the tab becomes visible again. Keeps background polling
+ *  from running (and flooding the server log) when the app isn't on screen. */
+function useGuardedInterval(fn: () => void, ms: number, deps: any[]) {
+  useEffect(() => {
+    fn();
+    const id = setInterval(() => { if (!document.hidden) fn(); }, ms);
+    const onVis = () => { if (!document.hidden) fn(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVis); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
+}
+
 /** Strip traversal sequences and normalise separators before sending paths to the API. */
 const sanitizePath = (raw: string): string =>
   raw.trim()
@@ -71,6 +111,27 @@ function gc(g: string) {
   if (g?.includes('Weak'))   return C.weak;
   return C.text3;
 }
+
+/* ── Vision-critique region guide ───────────────────────────────────────────
+ * One teacher vocabulary shared by every overlay (heatmap glow, box callouts,
+ * Analysis panel). Maps each Qwen spatial label → a quality tier, a plain-English
+ * title, and a one-line coaching tip a photographer can act on.
+ */
+type RegionTier = 'strong' | 'refine' | 'fix';
+const REGION_GUIDE: Record<string, { tier: RegionTier; title: string; tip: string }> = {
+  anchor_subject:     { tier:'strong', title:'Strong anchor',      tip:'The eye lands here first — a clear subject grounds the frame.' },
+  composition_anchor: { tier:'strong', title:'Composition anchor', tip:'This element structures the shot — placement is working.' },
+  focal_point_miss:   { tier:'refine', title:'Focal point drifts',  tip:'Attention wanders here — simplify or re-frame to hold the eye.' },
+  blown_highlight:    { tier:'fix',    title:'Highlights clipped',  tip:'Detail lost in the brights — lower exposure or recover in post.' },
+  crushed_shadow:     { tier:'fix',    title:'Shadows crushed',     tip:'Detail lost in the darks — lift shadows to keep texture.' },
+  motion_blur:        { tier:'fix',    title:'Motion blur',         tip:'Subject isn’t sharp — raise shutter speed to freeze motion.' },
+};
+const regionGuide = (label: string) =>
+  REGION_GUIDE[label] ?? { tier: 'refine' as RegionTier, title: (label || 'region').replace(/_/g, ' '), tip: '' };
+const tierColor = (t: RegionTier) => t === 'strong' ? C.strong : t === 'fix' ? C.weak : C.mid;
+const tierIcon  = (t: RegionTier) => t === 'strong' ? '✓' : t === 'fix' ? '!' : '◐';
+// Vivid thermal palette for the soft-glow heatmap (kept distinct from theme tokens).
+const tierHeat  = (t: RegionTier) => t === 'strong' ? '#3fb950' : t === 'fix' ? '#f85149' : '#d8a657';
 function gLow(g: string) {
   if (g?.includes('Strong')) return C.sLow;
   if (g?.includes('Mid'))    return C.mLow;
@@ -825,15 +886,18 @@ export default function App() {
   const [toast,      setToast]      = useState<{msg: string; type: "success"|"error"|"info"} | null>(null);
   const [selId,      setSelId]      = useState<string | null>(null);
   const [nicheRec,   setNicheRec]   = useState<any>(null);
+  const [nicheDetecting, setNicheDetecting] = useState(false);
   const [infoTab,    setInfoTab]    = useState<"exif"|"breakdown"|"analysis">("breakdown");
   const [scanMode,   setScanMode]   = useState(false);
+  const [deepGrade,  setDeepGrade]  = useState(false);   // OFF = fast SigLIP zero-shot; ON = Qwen VLM (slower, GPU)
+  const [graderUsed, setGraderUsed] = useState<'fast'|'deep'|'scan'|null>(null);  // which grader actually ran (transparency badge)
   const [mainTab,    setMainTab]    = useState<"gallery"|"duplicates"|"creative">("gallery");
   const [seqMode,    setSeqMode]    = useState<'auto'|'director'|'story'|'competition'>('story');
   const [directorPrompt,  setDirectorPrompt]  = useState('');
   const [directorResult,  setDirectorResult]  = useState<any>(null);
   const [directorLoading, setDirectorLoading] = useState(false);
   const [directorPool,    setDirectorPool]    = useState<any[]>([]);
-  const [mogcoTarget,     setMogcoTarget]     = useState(5);
+  const [mogcoTarget]     = useState(5);   // default story length; story building lives in the Story tab, not culling
   const [mogcoMinScore,   setMogcoMinScore]   = useState(0.45);
   const [uploadLoading,   setUploadLoading]   = useState(false);
   const [uploadDragOver,  setUploadDragOver]  = useState(false);
@@ -871,8 +935,34 @@ export default function App() {
   const [dragOver,    setDragOver]      = useState(false);
   const [backendReady,   setBackendReady]   = useState(false);
   const [backendError,   setBackendError]   = useState(false);
-  const [graderStatus,   setGraderStatus]   = useState<{last_mode:string,draft_available:boolean,verify_available:boolean,last_error:string|null,qwen_warm:boolean,qwen_loading:boolean,qwen_download_pct:number|null,warmup_done:boolean,warmup_running:boolean,compute_device?:string,vram_free_gb?:number|null,vram_total_gb?:number|null,gpu_name?:string|null}|null>(null);
+  const [graderStatus,   setGraderStatus]   = useState<{last_mode:string,draft_available:boolean,verify_available:boolean,last_error:string|null,qwen_warm:boolean,qwen_loading:boolean,qwen_download_pct:number|null,warmup_done:boolean,warmup_running:boolean,compute_device?:string,vram_free_gb?:number|null,vram_total_gb?:number|null,gpu_name?:string|null,ram_free_gb?:number|null,ram_total_gb?:number|null,ram_min_gb?:number}|null>(null);
+  // Live system-memory snapshot, polled every 2 s (see /api/system/ram) so the RAM
+  // readiness indicator tracks Task Manager in real time rather than refreshing
+  // only on modal open.
+  const [sysRam, setSysRam] = useState<{ram_free_gb:number|null,ram_total_gb:number|null,ram_percent:number|null,ram_min_gb:number}|null>(null);
   const [preGradeModal,  setPreGradeModal]  = useState<{photoCount:number}|null>(null);
+  const preGradeDialogRef = useRef<HTMLDivElement>(null);
+  // Modal accessibility: Escape closes, Tab is trapped inside the dialog, and
+  // focus is restored to the trigger on close (WCAG 2.1.2 / 2.4.3).
+  useEffect(() => {
+    if (!preGradeModal) return;
+    const prevFocus = document.activeElement as HTMLElement | null;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { setPreGradeModal(null); return; }
+      if (e.key !== 'Tab') return;
+      const root = preGradeDialogRef.current;
+      if (!root) return;
+      const nodes = root.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      );
+      if (!nodes.length) return;
+      const first = nodes[0], last = nodes[nodes.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('keydown', onKey); prevFocus?.focus?.(); };
+  }, [preGradeModal]);
   const [rescanAll,      setRescanAll]      = useState(true);
   const [heatmapB64,     setHeatmapB64]     = useState<string | null>(null);
   const [heatmapPath,    setHeatmapPath]    = useState<string | null>(null);
@@ -1000,11 +1090,7 @@ export default function App() {
     }
   }, []);
 
-  useEffect(() => {
-    fetchEngineHealth();
-    const id = setInterval(fetchEngineHealth, 10_000);
-    return () => clearInterval(id);
-  }, [fetchEngineHealth]);
+  useGuardedInterval(fetchEngineHealth, 10_000, [fetchEngineHealth]);
 
   const fetchOllamaPs = useCallback(async () => {
     try {
@@ -1020,11 +1106,16 @@ export default function App() {
     }
   }, []);
 
-  useEffect(() => {
-    fetchOllamaPs();
-    const id = setInterval(fetchOllamaPs, 15_000);
-    return () => clearInterval(id);
-  }, [fetchOllamaPs]);
+  useGuardedInterval(fetchOllamaPs, 15_000, [fetchOllamaPs]);
+
+  // Live RAM poll — cheap psutil-only endpoint, every 2 s, paused while hidden.
+  const fetchSysRam = useCallback(async () => {
+    try {
+      const r = await fetch(`${API}/api/system/ram`);
+      if (r.ok) setSysRam(await r.json());
+    } catch { /* leave last reading */ }
+  }, []);
+  useGuardedInterval(fetchSysRam, 2_000, [fetchSysRam]);
 
   const fetchRagStatus = useCallback(async () => {
     try {
@@ -1111,16 +1202,12 @@ export default function App() {
       .then(r => r.ok ? r.json() : null)
       .then(d => { if (d) setGraderStatus(d); })
       .catch(() => {});
-  }, [backendReady, isDoneForStatus]);
+  }, [backendReady, isDoneForStatus, preGradeModal]);
 
-  /* Poll status every 3 s while the pre-grade modal is open and anything is still loading */
+  /* Poll status every 3 s while the pre-grade modal is open — keeps the RAM /
+     engine readiness live so the user sees an up-to-date "clear to grade" state. */
   useEffect(() => {
-    const _active = preGradeModal && (
-      graderStatus?.qwen_loading ||
-      graderStatus?.qwen_download_pct != null ||
-      graderStatus?.warmup_running
-    );
-    if (!_active) return;
+    if (!preGradeModal) return;
     const id = setInterval(() => {
       fetch(`${API}/api/models/status`)
         .then(r => r.ok ? r.json() : null)
@@ -1128,7 +1215,7 @@ export default function App() {
         .catch(() => {});
     }, 3000);
     return () => clearInterval(id);
-  }, [preGradeModal, graderStatus?.qwen_loading, graderStatus?.qwen_download_pct, graderStatus?.warmup_running]);
+  }, [preGradeModal]);
 
   /* fetch excluded-photo count from the server */
   useEffect(() => {
@@ -1213,6 +1300,20 @@ export default function App() {
   useEffect(() => {
     if (!folder.trim()) return;
     if (skipFolderLoadRef.current) { skipFolderLoadRef.current = false; return; }
+    // Instant pre-grade niche recommendation — fire-and-forget in parallel with
+    // the photo listing. Warm CPU CLIP on the server returns in <3 s; the picker
+    // auto-selects the result and labels it "(Recommended)". Falls back silently
+    // so a slow/failed detect never blocks folder loading.
+    const safeFolder = sanitizePath(folder);
+    setNicheRec(null);
+    setNicheDetecting(true);
+    axios.post(`${API}/api/recommend-niche`, { folder_path: safeFolder, folder_paths: [safeFolder] })
+      .then(r => {
+        if (r.data?.detected && r.data?.preset) { setNicheRec(r.data); setPreset(r.data.preset); }
+      })
+      .catch(() => {})
+      .finally(() => setNicheDetecting(false));
+
     const load = async () => {
       setListLoading(true);
       try {
@@ -1281,7 +1382,7 @@ export default function App() {
     if (!sel || (sel.has_annotations && sel.eye_overlay_url !== undefined)) return;
     let cancelled = false;
     const check = async () => {
-      if (cancelled) return;
+      if (cancelled || document.hidden) return;
       try {
         const stem = sel.path.split(/[\\/]/).pop()?.replace(/\.[^.]+$/, '') ?? '';
         const r = await fetch(`${API}/api/annotations/${encodeURIComponent(stem)}`);
@@ -1306,8 +1407,10 @@ export default function App() {
       } catch { /* silent */ }
     };
     const id = setInterval(check, 8000);
+    const onVis = () => { if (!document.hidden) check(); };
+    document.addEventListener('visibilitychange', onVis);
     check();
-    return () => { cancelled = true; clearInterval(id); };
+    return () => { cancelled = true; clearInterval(id); document.removeEventListener('visibilitychange', onVis); };
   }, [selId, sel?.has_annotations]);
 
   const toggleHeatmap = useCallback(async () => {
@@ -1476,31 +1579,39 @@ export default function App() {
   const openBrowser    = useCallback(() => { setBrowserMode('open'); setShowBrowser(true); loadBrowser(bPath); }, [bPath, loadBrowser]);
   const openAddFolder  = useCallback(() => { setBrowserMode('add');  setShowBrowser(true); loadBrowser(bPath); }, [bPath, loadBrowser]);
 
+  // Populate the gallery from a /api/catalog payload (graded-photo checkpoint).
+  // Shared by Resume and by grade-failure recovery. Returns the photo count.
+  const applyCatalog = useCallback((data: any): number => {
+    if (!data?.exists || !data?.photos?.length) return 0;
+    const ps = data.photos.map((p: any, i: number) => ({ ...p, id: `p-${i}` }));
+    // Apply same auto-redact logic as grading so duplicates are hidden in the gallery
+    const autoRedacted = new Set<string>(
+      ps.filter((p: any) => p.cluster_id >= 0 && !(p.sim_flag || '').startsWith('★'))
+        .map((p: any) => p.path)
+    );
+    const firstVisible =
+      ps.find((p: any) => !autoRedacted.has(p.path) && !((p.grade as string)?.includes('Weak'))) ??
+      ps.find((p: any) => !autoRedacted.has(p.path));
+    setPhotos(ps);
+    setRedacted(autoRedacted);
+    setSelId(firstVisible?.id ?? ps[0]?.id ?? null);
+    return ps.length;
+  }, []);
+
   const handleResume = useCallback(async () => {
     try {
       const r = await axios.get(`${API}/api/catalog?t=` + Date.now());
       if (!r.data.exists || !r.data.photos?.length) return;
-      const ps = r.data.photos.map((p: any, i: number) => ({ ...p, id: `p-${i}` }));
       const savedFolders: string[] = r.data.folders || [];
-      // Apply same auto-redact logic as grading so duplicates are hidden in the gallery
-      const autoRedacted = new Set<string>(
-        ps.filter((p: any) => p.cluster_id >= 0 && !(p.sim_flag || '').startsWith('★'))
-          .map((p: any) => p.path)
-      );
-      const firstVisible =
-        ps.find((p: any) => !autoRedacted.has(p.path) && !((p.grade as string)?.includes('Weak'))) ??
-        ps.find((p: any) => !autoRedacted.has(p.path));
       skipFolderLoadRef.current = true;
       setFolder(savedFolders[0] || '');
       setFolders(savedFolders);
-      setPhotos(ps);
-      setRedacted(autoRedacted);
-      setSelId(firstVisible?.id ?? ps[0]?.id ?? null);
+      const n = applyCatalog(r.data);
       setLoupeMode('grid');
       setCatalogBanner(false);
-      notify(`✅ Resumed — ${ps.length} photos from ${savedFolders.length} folder${savedFolders.length !== 1 ? 's' : ''}`, 'success');
+      notify(`✅ Resumed — ${n} photos from ${savedFolders.length} folder${savedFolders.length !== 1 ? 's' : ''}`, 'success');
     } catch { notify('Failed to resume session', 'error'); }
-  }, [notify]);
+  }, [notify, applyCatalog]);
 
   const handleAddFolder = useCallback(async (newFolder: string) => {
     setListLoading(true);
@@ -1551,6 +1662,12 @@ export default function App() {
       if (!graderStatus?.qwen_warm && !graderStatus?.qwen_loading) {
         axios.post(`${API}/api/models/preload`).catch(() => {});
       }
+      // NOTE: pre-grade niche auto-detection via a scan pass is disabled — the
+      // scan runs the full scoring pipeline (seconds-per-image) under gpu_lock,
+      // which could not meet the <3s target and blocked previews. If nicheRec is
+      // already known (from a prior grade), the picker still pre-selects + labels
+      // it; otherwise the user picks manually. See _scan_folder_for_data / the
+      // /api/recommend-niche endpoint for the (currently unused) scan path.
       return;
     }
     setLoading(true);
@@ -1563,7 +1680,7 @@ export default function App() {
       const resp = await fetch(`${API}/api/grade/v2/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ folder_path: allFolderPaths[0], folder_paths: allFolderPaths, preset, scan_mode: scanMode, force_rescan: forceRescan }),
+        body: JSON.stringify({ folder_path: allFolderPaths[0], folder_paths: allFolderPaths, preset, scan_mode: scanMode, deep_grade: deepGrade, force_rescan: forceRescan, mogco_target: mogcoTarget }),
       });
       if (!resp.ok) {
         try { const d = await resp.json(); throw new Error(d.error ?? `Server error ${resp.status}`); }
@@ -1625,6 +1742,15 @@ export default function App() {
               ? ` · Sequence: ${msg.mogco_error}`
               : '';
             if (msg.mogco_error) notify(`⚠️ ${msg.mogco_error}`, 'error');
+            // Transparency: report which grader actually ran, and warn (don't hide)
+            // when Deep Grade was requested but silently fell back to Fast (SigLIP)
+            // because there wasn't enough free RAM to load the vision model.
+            const _graders = new Set<string>(ps.map((p: any) => p?.breakdown?._grader).filter(Boolean));
+            const _usedDeep = _graders.has('qwen');
+            setGraderUsed(scanMode ? 'scan' : _usedDeep ? 'deep' : 'fast');
+            if (deepGrade && !scanMode && !_usedDeep) {
+              notify('⚠️ Deep Grade fell back to Fast (SigLIP) — not enough free RAM to load the vision model. Close some apps and re-grade for full accuracy.', 'error');
+            }
             notify(`✅ Graded ${msg.total} images${mogcoNote}${mogcoErr}`, 'success');
             axios.post(`${API}/api/recommend`, { photos: msg.data })
               .then(rec => setNicheRec(rec.data))
@@ -1633,10 +1759,31 @@ export default function App() {
           }
         }
       }
-    } catch (err: any) { notify(`❌ ${err.message || 'Failed'}`, 'error'); }
+    } catch (err: any) {
+      // The grade stream failed — either the worker died (server emits an
+      // explicit error) or the client read timed out (grader stalled). The
+      // worker checkpoints completed grades to catalog.json before any crash,
+      // so try to recover graded-so-far instead of dropping the user on a blank
+      // gallery with a bare error.
+      const msg = err?.message || 'Failed';
+      const isStall = /No response from server/i.test(msg);
+      try {
+        const r = await axios.get(`${API}/api/catalog?t=` + Date.now());
+        const n = applyCatalog(r.data);
+        if (n > 0) {
+          setMainTab('gallery');
+          setLoupeMode('grid');
+          notify(`⚠️ Grading stopped early — recovered ${n} graded photo${n !== 1 ? 's' : ''} from the last checkpoint.`, 'error');
+        } else {
+          notify(isStall ? '❌ No response from the grader — it may be stalled. Check the server log and retry.' : `❌ ${msg}`, 'error');
+        }
+      } catch {
+        notify(`❌ ${msg}`, 'error');
+      }
+    }
     setLoading(false);
     setGradeProgress(0);
-  }, [folder, folders, preset, notify]);
+  }, [folder, folders, preset, notify, applyCatalog]);
 
   /* generate sequence */
   const handleGenerate = useCallback(async () => {
@@ -1935,13 +2082,13 @@ export default function App() {
       human: 'human presence',
     };
     const nicheCtx: Record<string,string> = {
-      'Classic Street':       'The sequence carries the Magnum hallmarks: authentic gesture, layered framing, and a sense of life caught mid-breath.',
+      'Classic Street':       'The sequence carries documentary hallmarks: authentic gesture, layered framing, and a sense of life caught mid-breath.',
       'Travel Editor':         'The sequence reads like a dispatched edit — cultural immersion, sense of place, and subjects genuinely encountered rather than posed.',
       'Photojournalism':       'The sequence holds documentary weight: technically grounded, contextually honest, anchored in authentic human stakes.',
       'Cinematic/Editorial':   'Light is the connective tissue. The sequence moves through moods rather than subjects — each frame builds atmosphere for the next.',
       'Fine Art/Contemporary': 'The sequence operates conceptually — compositional logic over candid impulse, tonal control over spontaneous capture.',
       'Minimalist/Urbex':      'Structure drives the sequence. Negative space and geometric restraint create rhythm without relying on human narrative.',
-      'LSPF (London Street)':  'The sequence has the quality of a slow walk through a city at dusk — atmospheric, human, unhurried.',
+      'London Street':         'The sequence has the quality of a slow walk through a city at dusk — atmospheric, human, unhurried.',
       'Humanist/Everyday':     'The sequence is rooted in people. Dignity, proximity, and warmth thread through each frame.',
       'Landscape with Elements':'Light and environment carry the weight. The sequence breathes through its landscapes — foreground, depth, and tonal gradation.',
       'Snapshot / Point-and-Shoot': 'The sequence has the energy of unfiltered presence — raw, immediate, unconcerned with perfection.',
@@ -2150,10 +2297,12 @@ export default function App() {
       {/* Pre-grade info modal */}
       {preGradeModal && (
         <div style={{ position:'fixed', inset:0, zIndex:400, background:'rgba(0,0,0,1)', display:'flex', alignItems:'center', justifyContent:'center' }}
+          role="presentation"
           onClick={() => setPreGradeModal(null)}>
-          <div style={{ background:C.surf1, border:`1px solid ${C.bdr2}`, borderRadius:12, padding:'28px 32px', maxWidth:420, width:'90%', display:'flex', flexDirection:'column', gap:16 }}
+          <div ref={preGradeDialogRef} style={{ background:C.surf1, border:`1px solid ${C.bdr2}`, borderRadius:12, padding:'28px 32px', maxWidth:420, width:'90%', display:'flex', flexDirection:'column', gap:16 }}
+            role="dialog" aria-modal="true" aria-labelledby="pregrade-title"
             onClick={e => e.stopPropagation()}>
-            <div style={{ fontSize:16, fontWeight:700, color:C.text }}>Before you start</div>
+            <div id="pregrade-title" style={{ fontSize:16, fontWeight:700, color:C.text }}>Before you start</div>
 
             {/* Vision Engine status */}
             <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
@@ -2202,6 +2351,38 @@ export default function App() {
                 </div>
               )}
 
+              {/* System-RAM readiness — is it clear to grade? (live, polled every 2 s) */}
+              {(sysRam || graderStatus) && (() => {
+                const r = ramReadiness(sysRam ?? graderStatus);
+                if (r.level === 'unknown') return null;
+                const card = {
+                  clear:    { bg:'oklch(20% .09 145 / .3)', border:'oklch(46% .14 145 / .4)', color:'oklch(72% .16 145)', title:`✓ System memory: clear to grade`,    body:`${r.free?.toFixed(1)} GB free — plenty of headroom for a full cull.` },
+                  tight:    { bg:'oklch(22% .12 55 / .25)',  border:'oklch(52% .18 55 / .4)',  color:'oklch(80% .14 55)',  title:`System memory: tight but OK`,       body:`${r.free?.toFixed(1)} GB free. Grading will run, but may drop to lighter CLIP scoring. Closing a few apps gives the best results.` },
+                  critical: { bg:'oklch(24% .12 25 / .3)',   border:'oklch(52% .20 25 / .5)',  color:'oklch(80% .16 25)',  title:`Low system memory`,                body:`Only ${r.free?.toFixed(1)} GB free — below the ~${(sysRam?.ram_min_gb ?? graderStatus?.ram_min_gb ?? 1.8)} GB needed. Close some apps before grading or the cull may be refused.` },
+                }[r.level]!;
+                return (
+                  <div style={{ padding:'10px 14px', borderRadius:8, background:card.bg, border:`1px solid ${card.border}` }}>
+                    <div style={{ fontSize:13, fontWeight:700, color:card.color, marginBottom:4 }}>{card.title}</div>
+                    <div style={{ fontSize:12, color:C.text2, lineHeight:1.5 }}>{card.body}</div>
+                  </div>
+                );
+              })()}
+
+              {/* One-time INT4 quantisation disclaimer — only until the
+                  pre-quantised cache exists on disk */}
+              {graderStatus?.draft_available && !graderStatus?.qwen_int4_cached && !graderStatus?.qwen_warm && (
+                <div style={{ padding:'10px 14px', borderRadius:8, background:'oklch(22% .12 55 / .25)', border:'1px solid oklch(52% .18 55 / .4)' }}>
+                  <div style={{ fontSize:13, fontWeight:700, color:'oklch(80% .14 55)', marginBottom:4 }}>
+                    First cull: one-time engine optimisation
+                  </div>
+                  <div style={{ fontSize:12, color:C.text2, lineHeight:1.5 }}>
+                    The Vision Engine will be compressed for your GPU on this run — expect a
+                    pause of <strong>a few minutes around 52%</strong>. The result is saved,
+                    so every cull after this one skips it and starts in seconds.
+                  </div>
+                </div>
+              )}
+
               {/* Pipeline calibration warmup status */}
               {graderStatus?.warmup_running && (
                 <div style={{ padding:'10px 14px', borderRadius:8, background:'oklch(20% .08 270 / .3)', border:'1px solid oklch(52% .14 270 / .35)' }}>
@@ -2244,11 +2425,23 @@ export default function App() {
 
               {/* Niche picker */}
               <div style={{ display:'flex', flexDirection:'column', gap:5 }}>
-                <div style={{ fontSize:11, fontWeight:600, color:C.text3, letterSpacing:'.06em', textTransform:'uppercase' }}>
+                <div style={{ display:'flex', alignItems:'center', gap:7, fontSize:11, fontWeight:600, color:C.text3, letterSpacing:'.06em', textTransform:'uppercase' }}>
                   Photography Niche
+                  {nicheDetecting && (
+                    <span style={{ display:'flex', alignItems:'center', gap:5, textTransform:'none', letterSpacing:0, fontWeight:500, color:C.text3 }}>
+                      <div style={{ width:9, height:9, borderRadius:'50%', border:'2px solid currentColor', borderTopColor:'transparent', animation:'spin .8s linear infinite' }}/>
+                      Detecting ideal niche…
+                    </span>
+                  )}
+                  {!nicheDetecting && nicheRec?.detected && nicheRec?.preset === preset && (
+                    <span style={{ textTransform:'none', letterSpacing:0, fontWeight:600, color:C.accent }}>
+                      ✓ auto-selected
+                    </span>
+                  )}
                 </div>
                 <select
                   value={preset}
+                  aria-label="Grading niche / preset"
                   onChange={e => setPreset(e.target.value)}
                   style={{ width:'100%', padding:'7px 10px', borderRadius:7, fontSize:13,
                     background:C.surf2, border:`1px solid ${C.bdr2}`, color:C.text,
@@ -2256,7 +2449,9 @@ export default function App() {
                   {NICHE_GROUPS.map(g => (
                     <optgroup key={g.category} label={g.category}>
                       {g.niches.map(n => (
-                        <option key={n.key} value={n.key}>{n.label}</option>
+                        <option key={n.key} value={n.key}>
+                          {n.label}{nicheRec?.preset === n.key ? '  (Recommended)' : ''}
+                        </option>
                       ))}
                     </optgroup>
                   ))}
@@ -2271,6 +2466,20 @@ export default function App() {
               )}
             </div>
 
+            {/* Deep Grade toggle — default OFF = fast SigLIP zero-shot; ON = Qwen VLM */}
+            <label style={{ display:'flex', alignItems:'flex-start', gap:10, cursor:'pointer',
+              padding:'10px 12px', borderRadius:8, background:C.surf2, border:`1px solid ${C.bdr2}`, marginTop:4 }}>
+              <input type="checkbox" checked={deepGrade} onChange={e => setDeepGrade(e.target.checked)}
+                style={{ marginTop:2, cursor:'pointer', accentColor:C.accent }} />
+              <div>
+                <div style={{ fontSize:13, fontWeight:600, color:C.text }}>Deep Grade (Qwen VLM)</div>
+                <div style={{ fontSize:11, color:C.text3, marginTop:2, lineHeight:1.4 }}>
+                  Off: fast SigLIP zero-shot grading — light on GPU/RAM, recommended.
+                  On: a vision-language model reads each photo (more nuanced, slower, heavier GPU use).
+                </div>
+              </div>
+            </label>
+
             {/* Actions */}
             {(() => {
               const _notReady = graderStatus?.qwen_loading || graderStatus?.qwen_download_pct != null || graderStatus?.warmup_running;
@@ -2283,6 +2492,7 @@ export default function App() {
                   </button>
                   <button
                     disabled={!!_notReady}
+                    autoFocus
                     onClick={() => { setPreGradeModal(null); handleGrade(rescanAll, true); }}
                     style={{ padding:'7px 20px', borderRadius:7, fontSize:13, fontWeight:700,
                       cursor: _notReady ? 'not-allowed' : 'pointer',
@@ -2394,6 +2604,24 @@ export default function App() {
           );
         })()}
 
+        {/* System RAM chip — live (polled every 2 s), tells the user whether it's clear to grade */}
+        {(sysRam || graderStatus) && (() => {
+          const r = ramReadiness(sysRam ?? graderStatus);
+          if (r.level === 'unknown') return null;
+          const palette = {
+            clear:    { bg:'oklch(18% .10 145 / .5)', border:'oklch(46% .16 145 / .5)', color:'oklch(74% .18 145)', dot:'#22c55e' },
+            tight:    { bg:'oklch(25% .10 55 / .5)',  border:'oklch(52% .18 55 / .4)',  color:'oklch(80% .16 55)',  dot:'#f59e0b' },
+            critical: { bg:'oklch(25% .12 25 / .5)',  border:'oklch(52% .20 25 / .5)',  color:'oklch(78% .18 25)',  dot:'#ef4444' },
+          }[r.level]!;
+          return (
+            <div title={r.tip} style={{ display:'flex', alignItems:'center', gap:5, flexShrink:0, padding:'0 9px', height:26, borderRadius:5, fontSize:12, fontWeight:700, border:`1px solid ${palette.border}`, color:palette.color, background:palette.bg }}>
+              <div style={{ width:6, height:6, borderRadius:'50%', background:palette.dot, flexShrink:0 }}/>
+              RAM
+              <span style={{ fontWeight:400, opacity:.75, fontSize:11 }}>{r.readout}</span>
+            </div>
+          );
+        })()}
+
         {/* Grade filter pills — only after grading */}
         {isDone && (
           <div style={{ display:'flex', alignItems:'center', gap:3, flexShrink:0, animation:'fadeIn .32s cubic-bezier(.2,0,0,1)' }}>
@@ -2414,6 +2642,22 @@ export default function App() {
                 </button>
               );
             })}
+          </div>
+        )}
+
+        {isDone && graderUsed && (
+          <div
+            title={graderUsed === 'deep'
+              ? 'Deep Grade: the Qwen vision model read each photo (highest accuracy).'
+              : graderUsed === 'scan'
+              ? 'Scan pass: SigLIP zero-shot only, technical scoring skipped (fastest).'
+              : 'Fast grade: SigLIP zero-shot + TOPIQ. Enable Deep Grade (and free RAM) for the vision model.'}
+            aria-label={`Graded in ${graderUsed === 'deep' ? 'Deep' : graderUsed === 'scan' ? 'Scan' : 'Fast'} mode`}
+            style={{ display:'flex', alignItems:'center', gap:5, padding:'0 9px', height:26, borderRadius:5,
+              fontSize:11.5, fontWeight:700, flexShrink:0, cursor:'default',
+              color: graderUsed === 'deep' ? C.accent : C.text3,
+              boxShadow: `0 0 0 1px ${graderUsed === 'deep' ? `${C.accent}66` : C.bdr2}` }}>
+            {graderUsed === 'deep' ? '◆ Deep' : graderUsed === 'scan' ? '⚡ Scan' : '⚡ Fast'}
           </div>
         )}
 
@@ -2564,7 +2808,13 @@ export default function App() {
       </header>
 
       {/* Progress bar + slogan */}
-      <div style={{ flexShrink:0 }}>
+      <div style={{ flexShrink:0 }}
+        role={isGrading ? "progressbar" : undefined}
+        aria-label={isGrading ? "Grading progress" : undefined}
+        aria-valuenow={isGrading ? Math.round(gradeProgress * 100) : undefined}
+        aria-valuemin={isGrading ? 0 : undefined}
+        aria-valuemax={isGrading ? 100 : undefined}
+        aria-valuetext={isGrading && gradeDesc ? gradeDesc : undefined}>
         <div style={{ height:2, background:C.border, overflow:'hidden', position:'relative' }}>
           {listLoading && (
             <div style={{ position:'absolute', top:0, height:'100%', background:`linear-gradient(90deg,transparent,${C.accent},transparent)`, animation:'sweep 1.2s ease-in-out infinite' }}/>
@@ -2576,11 +2826,36 @@ export default function App() {
             <div style={{ height:'100%', width:'100%', background:`linear-gradient(90deg,${C.accent},oklch(70% .19 205))` }}/>
           )}
         </div>
-        {isGrading && gradeDesc && (
-          <div key={toSlogan(gradeDesc)} style={{ padding:'3px 14px 4px', fontSize:10.5, color:C.text3, fontStyle:'italic', borderBottom:`1px solid ${C.border}`, animation:'fadeIn .4s cubic-bezier(.2,0,0,1)' }}>
-            {toSlogan(gradeDesc)}
-          </div>
-        )}
+        {isGrading && gradeDesc && (() => {
+          // Surface the live photo counter (e.g. "44/100") that the backend
+          // sends in gradeDesc — toSlogan() rewrites the message into a slogan
+          // and would otherwise drop it. Keyed by slogan so the slogan fades in
+          // on change while the counter updates in place per photo.
+          const _count = (gradeDesc.match(/\d+\s*\/\s*\d+/) || [])[0] || '';
+          return (
+            <div key={toSlogan(gradeDesc)} style={{ padding:'3px 14px 4px', fontSize:10.5, color:C.text3, fontStyle:'italic', borderBottom:`1px solid ${C.border}`, animation:'fadeIn .4s cubic-bezier(.2,0,0,1)', display:'flex', gap:8, alignItems:'baseline', justifyContent:'space-between' }}>
+              <span>{toSlogan(gradeDesc)}</span>
+              {_count && <span style={{ fontStyle:'normal', fontVariantNumeric:'tabular-nums', color:C.text2, fontWeight:700, flexShrink:0 }}>{_count}</span>}
+            </div>
+          );
+        })()}
+        {/* Warm-up transparency — ambient status while background work initialises
+            (thumbnail prewarm, model load, niche detect). Hidden during grading,
+            which has its own slogan above. */}
+        {!isGrading && (() => {
+          const warmMsg =
+            listLoading ? 'Generating fast-scroll thumbnails…' :
+            (graderStatus?.qwen_loading || graderStatus?.warmup_running) ? 'Waking up models…' :
+            nicheDetecting ? 'Detecting ideal niche…' :
+            null;
+          if (!warmMsg) return null;
+          return (
+            <div style={{ padding:'3px 14px 4px', fontSize:10.5, color:C.text3, borderBottom:`1px solid ${C.border}`, display:'flex', gap:7, alignItems:'center', animation:'fadeIn .4s cubic-bezier(.2,0,0,1)' }}>
+              <div style={{ width:9, height:9, borderRadius:'50%', border:'2px solid currentColor', borderTopColor:'transparent', animation:'spin .8s linear infinite' }}/>
+              <span>{warmMsg}</span>
+            </div>
+          );
+        })()}
       </div>
 
       {/* ── Star filter bar ────────────────────────────────────── */}
@@ -2648,7 +2923,7 @@ export default function App() {
           {/* Middle row: grid view OR loupe (preview + right panel) */}
           <div style={{ flex:1, display:'flex', minHeight:0, overflow:'hidden' }}>
 
-            {loupeMode === 'grid' && (
+            {loupeMode === 'grid' && photos.length > 0 && (
               <GridView
                 photos={filteredPhotos}
                 selId={selId}
@@ -2663,7 +2938,7 @@ export default function App() {
               />
             )}
 
-            {loupeMode === 'loupe' && (<>
+            {(loupeMode === 'loupe' || photos.length === 0) && (<>
 
             {/* Center preview */}
             <div style={{ flex:1, background:'#060609', display:'flex', alignItems:'center', justifyContent:'center', overflow:'hidden', position:'relative', minHeight:0, minWidth:0 }}>
@@ -2679,7 +2954,10 @@ export default function App() {
                     }}>
                     <FolderOpen size={48} strokeWidth={1.25} style={{ color: dragOver ? '#3b82f6' : C.text3, transition:'color .28s ease' }}/>
                     <span style={{ fontSize:20, fontWeight:500, color: dragOver ? '#3b82f6' : C.text2, transition:'color .28s ease' }}>
-                      Select a folder or drag a folder here
+                      Drop a folder of street photos here to start
+                    </span>
+                    <span style={{ fontSize:13, fontWeight:400, color: C.text3 }}>
+                      50–100 photos recommended for your first run
                     </span>
                   </button>
                   {catalogBanner && (
@@ -2847,25 +3125,53 @@ export default function App() {
                           );
                         })()}
 
-                        {/* ── Spatial bboxes from pipeline ─────────────────── */}
+                        {/* ── Spatial bboxes from pipeline — teacher callouts ─── */}
                         {_bboxes.map((b, bi) => {
                           if (!b.bbox_2d?.length) return null;
+                          // Subject-less fallback: render a rule-of-thirds grid (lines)
+                          // instead of a centered box + chip, which read as a black blob.
+                          if (b.label === 'compositional_center') {
+                            const gc = C.mid;
+                            const dash = `${sw*3} ${sw*2}`;
+                            return (
+                              <g key={bi} style={{ animation:`fadeIn .4s ${bi*0.08}s both` }}>
+                                {[1,2].map(k => (
+                                  <line key={'v'+k} x1={W*k/3} y1={0} x2={W*k/3} y2={H}
+                                    stroke={gc} strokeWidth={sw*0.7} strokeDasharray={dash} opacity={0.7}/>
+                                ))}
+                                {[1,2].map(k => (
+                                  <line key={'h'+k} x1={0} y1={H*k/3} x2={W} y2={H*k/3}
+                                    stroke={gc} strokeWidth={sw*0.7} strokeDasharray={dash} opacity={0.7}/>
+                                ))}
+                                {[1,2].flatMap(cx => [1,2].map(cy => (
+                                  <circle key={`p${cx}${cy}`} cx={W*cx/3} cy={H*cy/3} r={sw*1.8}
+                                    fill="none" stroke={gc} strokeWidth={sw*0.9} opacity={0.9}/>
+                                )))}
+                              </g>
+                            );
+                          }
                           const [x1, y1, x2, y2] = b.bbox_2d;
                           const bw  = Math.max(x2-x1, sw*4), bh = Math.max(y2-y1, sw*4);
-                          const isNeg = ['focal_point_miss','blown_highlight','motion_blur'].includes(b.label);
-                          const col   = isNeg ? C.weak : C.strong;
-                          const lbl   = b.label.replace(/_/g,' ').toUpperCase();
-                          const lblFs = Math.max(14, W * 0.014);
-                          const lblPad = sw * 2.5;
-                          const lblW  = lbl.length * lblFs * 0.60 + lblPad * 2;
-                          const lblH  = lblFs * 1.5 + lblPad;
-                          const lblY  = y1 >= lblH + sw*3 ? y1 - lblH - sw : y2 + sw;
-                          const lblX  = Math.min(Math.max(x1, sw), W - lblW - sw);
+                          const guide = regionGuide(b.label);
+                          const col   = tierColor(guide.tier);
+                          const title = `${tierIcon(guide.tier)}  ${guide.title.toUpperCase()}`;
+                          const tip   = guide.tip;
+                          // Two-line chip: bold title + smaller coaching tip
+                          const titleFs = Math.max(15, W * 0.0145);
+                          const tipFs   = Math.max(12, W * 0.0118);
+                          const pad     = sw * 2.6;
+                          const titleW  = _tw(title, titleFs);
+                          const tipW    = tip ? _tw(tip, tipFs) : 0;
+                          const chipW   = Math.max(titleW, tipW) + pad * 2;
+                          const chipH   = tip ? titleFs*1.35 + tipFs*1.45 + pad*1.4
+                                              : titleFs*1.35 + pad*1.2;
+                          const chipY   = y1 >= chipH + sw*3 ? y1 - chipH - sw : y2 + sw;
+                          const chipX   = Math.min(Math.max(x1, sw), W - chipW - sw);
                           return (
-                            <g key={bi} style={{ animation:`fadeIn .3s ${bi*0.07}s both` }}>
+                            <g key={bi} style={{ animation:`fadeIn .35s ${bi*0.08}s both` }}>
                               {/* Region fill */}
                               <rect x={x1} y={y1} width={bw} height={bh}
-                                fill={col+'0e'} stroke={col} strokeWidth={sw*0.8}
+                                fill={col+'10'} stroke={col} strokeWidth={sw*0.8}
                                 strokeDasharray={`${sw*4} ${sw*2}`} rx={sw*1.5}/>
                               {/* Corner marks */}
                               <path d={`M${x1+sw} ${y1+sw*5} L${x1+sw} ${y1+sw} L${x1+sw*5} ${y1+sw}`}
@@ -2876,16 +3182,151 @@ export default function App() {
                                 fill="none" stroke={col} strokeWidth={sw*1.3} strokeLinecap="round"/>
                               <path d={`M${x2-sw*5} ${y2-sw} L${x2-sw} ${y2-sw} L${x2-sw} ${y2-sw*5}`}
                                 fill="none" stroke={col} strokeWidth={sw*1.3} strokeLinecap="round"/>
-                              {/* Label */}
-                              <rect x={lblX} y={lblY} width={lblW} height={lblH}
-                                fill="rgba(4,4,9,0.82)" stroke={col} strokeWidth={sw*0.4} rx={sw}/>
-                              <text x={lblX+lblPad} y={lblY+lblFs+lblPad*0.5}
-                                fill={col} fontSize={lblFs} fontWeight="700"
-                                fontFamily="'SF Mono',ui-monospace,monospace">{lbl}</text>
+                              {/* Teacher chip */}
+                              <rect x={chipX} y={chipY} width={chipW} height={chipH}
+                                fill="rgba(4,4,9,0.86)" stroke={col} strokeWidth={sw*0.5} rx={sw*1.4}/>
+                              {/* Accent bar */}
+                              <rect x={chipX} y={chipY} width={sw*1.2} height={chipH}
+                                fill={col} rx={sw*0.6}/>
+                              <text x={chipX+pad} y={chipY+pad*0.6+titleFs}
+                                fill={col} fontSize={titleFs} fontWeight="800"
+                                fontFamily="'SF Mono',ui-monospace,monospace">{title}</text>
+                              {tip && (
+                                <text x={chipX+pad} y={chipY+pad*0.6+titleFs+tipFs*1.4}
+                                  fill="rgba(255,255,255,0.88)" fontSize={tipFs} fontWeight="500"
+                                  fontFamily="ui-sans-serif,system-ui,sans-serif">{tip}</text>
+                              )}
                             </g>
                           );
                         })}
                       </svg>
+                    );
+                  })()}
+                  {/* ── Critique heatmap — part of Vision Critique (same toggle) ── */}
+                  {isAuditModeActive && isGraded && photoNatDims && (() => {
+                    const _bd     = sel?.breakdown as any;
+                    const _bboxes = (_bd?.vlm_bboxes as Array<{label:string;bbox_2d:number[]}>) ?? [];
+                    if (!_bboxes.length) return null;
+                    const W = photoNatDims.w, H = photoNatDims.h;
+                    const _tierFromVal = (v: number): RegionTier =>
+                      v >= 0.6 ? 'strong' : v < 0.4 ? 'fix' : 'refine';
+                    const _gradeTier = (g: string): RegionTier =>
+                      g?.includes('Strong') ? 'strong' : g?.includes('Weak') ? 'fix' : 'refine';
+
+                    // Heat points. When the only region is the subject-less fallback,
+                    // derive one point per graded aspect (placed around the frame,
+                    // coloured by that aspect's strength) so even a weak photo shows a
+                    // spread of weak/mid/strong points instead of one flat blob.
+                    type HeatPt = { cx:number; cy:number; rx:number; ry:number; tier:RegionTier };
+                    const _isFallback = _bboxes.length === 1 && _bboxes[0].label === 'compositional_center';
+                    let _points: HeatPt[] = [];
+                    if (_isFallback) {
+                      const POS: Record<string,[number,number]> = {
+                        composition:[0.50,0.50], lighting:[0.50,0.24], narrative:[0.28,0.54],
+                        technical:[0.74,0.74], 'human/culture':[0.74,0.40], human:[0.74,0.40],
+                        geometry:[0.28,0.28], detail:[0.74,0.26], atmosphere:[0.50,0.76],
+                        moment:[0.40,0.42], light_quality:[0.50,0.24],
+                      };
+                      const FALLBACK: [number,number][] = [[0.5,0.5],[0.3,0.3],[0.7,0.3],[0.3,0.72],[0.7,0.72],[0.5,0.24],[0.5,0.78]];
+                      let fi = 0;
+                      _points = Object.entries(_bd || {})
+                        .filter(([k,v]) => typeof v === 'number' && !k.startsWith('_')
+                          && !['Aesthetic','Personal','aesthetic','personal','overall_score','score','gemma_score'].includes(k))
+                        .map(([k,v]) => {
+                          const pos = POS[k.toLowerCase()] ?? FALLBACK[fi++ % FALLBACK.length];
+                          return { cx: pos[0]*W, cy: pos[1]*H, rx: W*0.155, ry: H*0.155, tier: _tierFromVal(v as number) };
+                        });
+                      if (!_points.length) _points = [{ cx:W/2, cy:H/2, rx:W*0.30, ry:H*0.30, tier:_gradeTier(sel?.grade || '') }];
+                    } else {
+                      _points = _bboxes.filter(b => b.bbox_2d?.length).map(b => {
+                        const [x1,y1,x2,y2] = b.bbox_2d;
+                        return { cx:(x1+x2)/2, cy:(y1+y2)/2,
+                          rx:Math.max((x2-x1)/2*1.45, W*0.06), ry:Math.max((y2-y1)/2*1.45, H*0.06),
+                          tier: regionGuide(b.label).tier };
+                      });
+                    }
+                    return (
+                      <svg
+                        style={{ position:'absolute', inset:0, width:'100%', height:'100%',
+                          pointerEvents:'none', zIndex:4,
+                          animation:'fadeIn .3s cubic-bezier(.2,0,0,1)' }}
+                        viewBox={`0 0 ${W} ${H}`}
+                        preserveAspectRatio="xMidYMid meet"
+                      >
+                        <defs>
+                          {_points.map((p, i) => {
+                            const c = tierHeat(p.tier);
+                            return (
+                              <radialGradient key={i} id={`crit-heat-${i}`} cx="50%" cy="50%" r="50%">
+                                <stop offset="0%"   stopColor={c} stopOpacity="0.92"/>
+                                <stop offset="35%"  stopColor={c} stopOpacity="0.62"/>
+                                <stop offset="70%"  stopColor={c} stopOpacity="0.28"/>
+                                <stop offset="100%" stopColor={c} stopOpacity="0"/>
+                              </radialGradient>
+                            );
+                          })}
+                        </defs>
+                        {/* soft heat field */}
+                        {_points.map((p, i) => (
+                          <ellipse key={`g${i}`} cx={p.cx} cy={p.cy} rx={p.rx} ry={p.ry} fill={`url(#crit-heat-${i})`}/>
+                        ))}
+                        {/* crisp tier core + halo so each point reads clearly on any image */}
+                        {_points.map((p, i) => {
+                          const c = tierHeat(p.tier);
+                          const r = Math.max(p.rx, p.ry) * 0.16;
+                          return (
+                            <g key={`c${i}`}>
+                              <circle cx={p.cx} cy={p.cy} r={r * 1.9} fill="none"
+                                stroke={c} strokeWidth={r * 0.32} opacity={0.55}/>
+                              <circle cx={p.cx} cy={p.cy} r={r} fill={c} opacity={0.95}
+                                stroke="rgba(0,0,0,0.45)" strokeWidth={r * 0.18}/>
+                            </g>
+                          );
+                        })}
+                      </svg>
+                    );
+                  })()}
+                  {/* Heatmap legend — shows only the tiers actually present, with counts */}
+                  {isAuditModeActive && isGraded && ((sel?.breakdown as any)?.vlm_bboxes?.length > 0) && (() => {
+                    const _bdL    = sel?.breakdown as any;
+                    const _b = (_bdL?.vlm_bboxes as Array<{label:string}>) ?? [];
+                    const _tierFromVal = (v: number): RegionTier =>
+                      v >= 0.6 ? 'strong' : v < 0.4 ? 'fix' : 'refine';
+                    const _counts: Record<RegionTier, number> = { strong:0, refine:0, fix:0 };
+                    const _isFallbackL = _b.length === 1 && _b[0].label === 'compositional_center';
+                    if (_isFallbackL) {
+                      // Mirror the aspect-point heatmap: count one tier per graded aspect.
+                      Object.entries(_bdL || {})
+                        .filter(([k,v]) => typeof v === 'number' && !k.startsWith('_')
+                          && !['Aesthetic','Personal','aesthetic','personal','overall_score','score','gemma_score'].includes(k))
+                        .forEach(([,v]) => { _counts[_tierFromVal(v as number)]++; });
+                    } else {
+                      _b.forEach(x => { _counts[regionGuide(x.label).tier]++; });
+                    }
+                    const _rows: Array<[RegionTier, string]> = [
+                      ['strong','Strong'], ['refine','Could be stronger'], ['fix','Needs work'],
+                    ];
+                    const _present = _rows.filter(([t]) => _counts[t] > 0);
+                    if (!_present.length) return null;
+                    return (
+                      <div style={{ position:'absolute', bottom:16, right:16, zIndex:20,
+                        display:'flex', flexDirection:'column', gap:5, padding:'9px 12px',
+                        background:'rgba(8,8,12,.78)', border:'1px solid rgba(255,255,255,.12)',
+                        borderRadius:9, backdropFilter:'blur(10px)', pointerEvents:'none' }}>
+                        <div style={{ fontSize:10, fontWeight:700, letterSpacing:'.06em', color:'rgba(255,255,255,.55)', textTransform:'uppercase', marginBottom:1 }}>Critique map</div>
+                        {_present.map(([t, l]) => {
+                          const c = tierHeat(t);
+                          return (
+                            <div key={t} style={{ display:'flex', alignItems:'center', gap:7 }}>
+                              <span style={{ width:11, height:11, borderRadius:'50%', flexShrink:0,
+                                background:`radial-gradient(circle, ${c} 0%, ${c}55 70%, transparent 100%)`,
+                                boxShadow:`0 0 6px ${c}` }}/>
+                              <span style={{ fontSize:11, color:'rgba(255,255,255,.85)' }}>{l}</span>
+                              <span style={{ fontSize:10, fontWeight:700, color:'rgba(255,255,255,.45)', marginLeft:'auto', paddingLeft:8 }}>{_counts[t]}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
                     );
                   })()}
                   <button onClick={() => hasPrev && setSelId(filteredPhotos[selIdx-1].id)} disabled={!hasPrev}
@@ -3141,7 +3582,7 @@ export default function App() {
                                     )}
                                     {vpct !== null && (
                                       <span style={{ fontSize:10, fontWeight:600, letterSpacing:'.05em', textTransform:'uppercase',
-                                        color:bc }}>{vpct >= 60 ? 'Strong' : vpct >= 41 ? 'Good' : 'Weak'}</span>
+                                        color:bc }}>{vpct >= 60 ? 'Strong' : vpct >= 41 ? 'Mid' : 'Weak'}</span>
                                     )}
                                   </div>
                                   {v !== null && (
@@ -3204,8 +3645,9 @@ export default function App() {
                                 <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
                                   <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:'.08em', color:C.text3 }}>SPATIAL ANCHORS</span>
                                   {_vbboxes.map((b, bi) => {
-                                    const isPositive = b.label === 'anchor_subject' || b.label === 'composition_anchor';
-                                    const dotCol = isPositive ? C.strong : C.mid;
+                                    const guide  = regionGuide(b.label);
+                                    const dotCol = tierColor(guide.tier);
+                                    const coach  = b.justification || guide.tip;
                                     return (
                                       <div key={bi} style={{ display:'flex', gap:8, alignItems:'flex-start',
                                         padding:'6px 10px', background:C.surf2, borderRadius:6,
@@ -3214,10 +3656,10 @@ export default function App() {
                                           background:dotCol, flexShrink:0, marginTop:4 }}/>
                                         <div style={{ flex:1, minWidth:0 }}>
                                           <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:'.06em',
-                                            color:dotCol }}>{b.label.replace(/_/g,' ').toUpperCase()}</span>
-                                          {b.justification && (
+                                            color:dotCol }}>{`${tierIcon(guide.tier)} ${guide.title}`.toUpperCase()}</span>
+                                          {coach && (
                                             <p style={{ fontSize:11, color:C.text2, lineHeight:1.6, margin:'2px 0 0' }}>
-                                              {b.justification}
+                                              {coach}
                                             </p>
                                           )}
                                         </div>

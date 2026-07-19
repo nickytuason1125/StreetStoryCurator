@@ -25,9 +25,17 @@ if sys.platform == "win32":
         pass
 
 
-# Kill any stale port-8000 process BEFORE opening crash.log.
-# The previous uvicorn instance is the most common holder of a locked crash.log.
-if sys.platform == "win32":
+# Kill any stale port-8000 process BEFORE opening crash.log — ONLY in the
+# detached SERVER process ("--server-only"). The DECOUPLED backend server now
+# outlives the window (see main): the window process must NEVER kill a healthy
+# running server, or closing the window would abort an in-flight grade. So the
+# port-clear runs only when we are (re)starting the server itself, where an
+# unresponsive stale holder genuinely needs clearing before we bind.
+#
+# CRITICAL GUARD — `__name__ == "__main__"`: on Windows, multiprocessing 'spawn'
+# RE-IMPORTS this module inside every grade-worker child. Spawned children import
+# this file as "__mp_main__", so this runs ONLY in a real launcher/server process.
+if __name__ == "__main__" and "--server-only" in sys.argv and sys.platform == "win32":
     try:
         import subprocess as _sp_early
         _early_out = _sp_early.check_output(
@@ -117,6 +125,47 @@ def _find_free_port(preferred=8000):
     import time as _t
     _t.sleep(0.3)  # give the OS time to release the port
     return preferred
+
+
+def _patch_webview_gpu():
+    """Force WebView2 into SOFTWARE rendering (no GPU) — critical on a 6 GB card.
+
+    Chromium (WebView2) holds a D3D/GPU context on the same GPU the ML models use.
+    On a strict 6 GB VRAM budget that shared context intermittently faults the
+    grade worker's CUDA operations (0xC0000005 — the "grade worker died" crash at
+    Qwen load/inference). pywebview HARDCODES CoreWebView2 AdditionalBrowserArguments
+    in its edgechromium platform module and ignores the WEBVIEW2_ADDITIONAL_BROWSER_
+    ARGUMENTS env var, so we inject the disable-gpu switches into that source line
+    BEFORE importing webview. Idempotent + re-applied every launch, so it self-heals
+    after a pywebview upgrade/reinstall. find_spec locates the file WITHOUT importing
+    webview, so the edit is picked up on the very next import in this same process."""
+    try:
+        import importlib.util
+        _spec = importlib.util.find_spec("webview")
+        if not _spec or not _spec.origin:
+            return
+        _ec = Path(_spec.origin).parent / "platforms" / "edgechromium.py"
+        if not _ec.exists():
+            return
+        _src = _ec.read_text(encoding="utf-8")
+        _marker = "'--disable-features=ElasticOverscroll'"
+        if _marker in _src and "--disable-gpu" not in _src:
+            _flags = (" --disable-gpu --disable-gpu-compositing "
+                      "--disable-gpu-rasterization --disable-accelerated-2d-canvas "
+                      "--disable-webgl")
+            _src = _src.replace(
+                _marker, "'--disable-features=ElasticOverscroll" + _flags + "'", 1)
+            _ec.write_text(_src, encoding="utf-8")
+            try:
+                import py_compile
+                py_compile.compile(str(_ec), doraise=False)
+            except Exception:
+                pass
+            _log("WebView2 GPU acceleration DISABLED (software rendering) — 6GB-VRAM safety")
+        else:
+            _log("WebView2 GPU already software-rendering (patch present)")
+    except Exception as exc:
+        _log(f"_patch_webview_gpu skipped (non-fatal): {exc}")
 
 
 def _clear_webview2_cache():
@@ -291,20 +340,76 @@ def _icon_watcher(icon_path: str) -> None:
         time.sleep(0.5)
 
 
-def main():
-    url = ""
+def _server_healthy(url: str) -> bool:
+    """True if a backend is already serving on `url` (decoupled reuse check)."""
     try:
+        urllib.request.urlopen(url + "/api/config", timeout=2)
+        return True
+    except Exception:
+        return False
+
+
+def _spawn_detached_server(port: int) -> None:
+    """Launch the backend (uvicorn + prestarted grade worker) as a DETACHED
+    process that OUTLIVES this window process.
+
+    DECOUPLING: previously uvicorn ran in a daemon thread of THIS launcher and the
+    grade worker was its multiprocessing child, so when the WebView2 window died
+    (webview.start returns → main exits) the server AND the in-flight grade died
+    with it. Running the server as its own detached process means a window death —
+    for ANY reason, including the OS killing WebView2 under memory pressure — never
+    aborts a cull. DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP breaks the child off
+    this process so it is not torn down when the window exits."""
+    import subprocess as _sp
+    _flags = 0
+    if sys.platform == "win32":
+        _flags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    # DEVNULL for all stdio: the detached server redirects its own fd 1/2 to
+    # crash.log at module load, so it must not inherit this window process's
+    # handles (which vanish when the window exits).
+    _sp.Popen(
+        [sys.executable, str(Path(__file__).resolve()), "--server-only"],
+        cwd=str(_ROOT), creationflags=_flags, close_fds=True,
+        stdin=_sp.DEVNULL, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+    )
+    _log("Spawned DETACHED backend server (survives window death)")
+
+
+def _run_server_only(port: int) -> None:
+    """Entry for the detached backend process: build the frontend, then run
+    uvicorn in the FOREGROUND of this (server) process forever."""
+    _log(f"--- Backend server process (--server-only) on port {port} ---")
+    _build_frontend_if_needed()
+    _start_frontend_watch()
+    _run_server(port)   # blocks in uvicorn.run for the life of the server
+
+
+def main():
+    port = 8000
+    url = f"http://127.0.0.1:{port}"
+
+    # DETACHED SERVER MODE — this process IS the backend (no window).
+    if "--server-only" in sys.argv:
+        try:
+            _run_server_only(port)
+        except Exception:
+            _log("SERVER-ONLY FATAL:\n" + traceback.format_exc())
+            raise
+        return
+
+    # WINDOW MODE.
+    try:
+        _patch_webview_gpu()        # force WebView2 software rendering (6GB-VRAM safety)
         _clear_webview2_cache()
-        _build_frontend_if_needed()
-        _start_frontend_watch()
 
-        port = _find_free_port()
-        url = f"http://127.0.0.1:{port}"
-        _log(f"Port: {port}")
-
-        threading.Thread(target=_run_server, args=(port,), daemon=True).start()
-        if not _wait_for_server(url):
-            raise RuntimeError("Server did not become available in time.")
+        # Reuse a healthy already-running backend (it may still be finishing a cull
+        # from a previous window that was closed); otherwise spawn a detached one.
+        if _server_healthy(url):
+            _log("Reusing running decoupled backend server")
+        else:
+            _spawn_detached_server(port)
+            if not _wait_for_server(url):
+                raise RuntimeError("Backend server did not become available in time.")
 
         import webview
         webview.settings['REMOTE_DEBUGGING_PORT'] = 9222
@@ -364,7 +469,13 @@ def main():
             threading.Thread(target=_diag, daemon=True).start()
 
         webview.start(icon=_icon, func=_post_start)
-        _log("pywebview window closed — exiting")
+
+        # DECOUPLED: the backend is its own detached process, so the window can
+        # exit immediately — uvicorn and any in-flight grade keep running in the
+        # background. The user relaunches to reattach and hits "Resume" (or the
+        # gallery is already populated if the cull finished). No keep-alive wait
+        # and no server teardown here — that is the whole point of the decoupling.
+        _log("Window closed — decoupled backend left running; relaunch to reattach")
 
     except Exception:
         _log("FATAL:\n" + traceback.format_exc())

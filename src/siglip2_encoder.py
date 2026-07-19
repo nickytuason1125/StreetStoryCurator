@@ -1,17 +1,14 @@
 """
-SigLIP-2 ViT-g/14 NaFlex Encoder with Auto-Download
+SigLIP-2 ViT-g/16 @384 Encoder (1536-d embeddings) — open_clip loader.
 
-Replaces SigLIP-So400M with:
-- FP8 quantization for faster inference
-- Native aspect ratio preservation (fixes compositional "squishing")
-- Larger model capacity (1536-d embeddings)
+NOTE (2026-06-15): an HF-transformers loader was prototyped (loads the SAME
+weights in ~3.8 GB vs ~9.5 GB, image-emb cosine 0.989 / text 0.9997). It worked
+perfectly STANDALONE but destabilised the spawned multiprocessing grade-worker
+(native crashes + server executor shutdown). Reverted to this stable open_clip
+path. The HF checkpoint is kept at models/siglip2_hf_fp16 for a future retry once
+the worker/multiprocessing interaction is understood.
 
-VRAM Protocol:
-    1. SigLIP2Encoder() → model loads into VRAM
-    2. encode_images() → all embeddings computed
-    3. unload() → GPU cleared for next step
-
-Auto-download: Model is downloaded on first run if not present locally.
+VRAM Protocol: SigLIP2Encoder() loads → encode_images() → unload().
 """
 
 from __future__ import annotations
@@ -19,63 +16,77 @@ from __future__ import annotations
 import os
 import gc
 from pathlib import Path
-from typing import Optional, List, Tuple
+from typing import Optional, List
 
 import torch
 import numpy as np
 
-
-def _free_system_ram_gb() -> float:
-    """Return available system RAM in GB (cross-platform, no psutil required)."""
-    try:
-        import ctypes
-        class _MEMSTATUS(ctypes.Structure):
-            _fields_ = [
-                ("dwLength",                ctypes.c_ulong),
-                ("dwMemoryLoad",            ctypes.c_ulong),
-                ("ullTotalPhys",            ctypes.c_ulonglong),
-                ("ullAvailPhys",            ctypes.c_ulonglong),
-                ("ullTotalPageFile",        ctypes.c_ulonglong),
-                ("ullAvailPageFile",        ctypes.c_ulonglong),
-                ("ullTotalVirtual",         ctypes.c_ulonglong),
-                ("ullAvailVirtual",         ctypes.c_ulonglong),
-                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
-            ]
-        stat = _MEMSTATUS()
-        stat.dwLength = ctypes.sizeof(stat)
-        ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
-        return stat.ullAvailPhys / 1e9
-    except Exception:
-        pass
-    try:
-        import resource
-        pages = os.sysconf("SC_AVPHYS_PAGES")
-        page_size = os.sysconf("SC_PAGE_SIZE")
-        return pages * page_size / 1e9
-    except Exception:
-        return 8.0  # assume enough if we can't check
-
-
-# Model configuration — largest 1536-d SigLIP-2 variant available in open_clip_torch
-_MODEL_TAG = "ViT-gopt-16-SigLIP2-384"
 _PRETRAINED = "webli"
-EMBED_DIM = 1536  # SigLIP-2 ViT-gopt/16 @ 384px
 
-# Model cache directory
-MODEL_CACHE_DIR = Path("models/siglip2")
+# ── Tiered model selection (Phase 1) ─────────────────────────────────────────
+# SIGLIP_TIER picks the embedding model so the SAME codebase ships to capable
+# and weak machines. All use the stable open_clip loader (no HF-worker risk).
+#   high → ViT-g  (1536-d, ~7 GB RAM, ~4 GB VRAM)  — default, your machine
+#   mid  → ViT-L  (1024-d, ~6 GB RAM, ~1.8 GB VRAM)
+#   low  → ViT-B  ( 768-d, ~4 GB RAM, ~0.8 GB VRAM)  — laptops / weak GPU
+# NOTE: tiers other than "high" need the Phase-2 dim-flexible LanceDB schema to
+# be fully wired; the encoder itself is dim-agnostic and works today.
+_TIERS = {
+    "high": ("ViT-gopt-16-SigLIP2-384", 1536, "models/siglip2",   7.0),
+    "mid":  ("ViT-L-16-SigLIP2-384",    1024, "models/siglip2_L", 6.0),
+    "low":  ("ViT-B-16-SigLIP2-384",     768, "models/siglip2_B", 4.0),
+}
+_TIER = os.environ.get("SIGLIP_TIER", "high").strip().lower()
+if _TIER not in _TIERS:
+    _TIER = "high"
+_MODEL_TAG, EMBED_DIM, _CACHE_DIR_STR, _DEFAULT_MIN_RAM = _TIERS[_TIER]
+
+MODEL_CACHE_DIR = Path(_CACHE_DIR_STR)
 MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
+# Source tag includes the tier so grade_pipeline's source-change guard re-encodes
+# only when the actual model changes.
+ENCODER_SOURCE = f"openclip-{_TIER}-{_MODEL_TAG}"
 
-def _find_siglip2_safetensors() -> Optional[Path]:
-    """Return path to the cached .safetensors weights file, or None."""
-    for p in MODEL_CACHE_DIR.rglob("*.safetensors"):
-        if p.is_file() and not p.name.endswith(".incomplete"):
-            return p
-    return None
+
+def _auto_enc_batch() -> int:
+    """Pick a SigLIP encode batch from free RAM for stability.
+
+    Smaller batch on a memory-tight machine lowers both the GPU forward-pass VRAM
+    and the transient decode RAM. CUDA is NOT queried here — the grade worker must
+    never touch the CUDA driver before the encode subprocess starts. The subprocess
+    (encode_worker.py) reads VRAM directly and can adjust if needed.
+    Batch 8 is a safe ceiling for a 6 GB GPU; RAM gates further below."""
+    try:
+        import psutil as _ps
+        avail = _ps.virtual_memory().available / 1e9
+        return max(1, 8 if avail >= 5 else 4 if avail >= 3 else 2)
+    except Exception:
+        return 4  # safe default for 6 GB GPU
+
+
+def _enforce_ram_floor() -> None:
+    """Raise MemoryError if free RAM is below SIGLIP_MIN_FREE_RAM_GB. Called before
+    EVERY encode (not just at construction) so a doomed model load fails cleanly
+    instead of OOM-killing the grade worker — even when the encoder singleton is
+    reused across runs and __init__ doesn't run again. No-op if the env var is
+    unset or psutil is unavailable."""
+    _floor = os.environ.get("SIGLIP_MIN_FREE_RAM_GB")
+    if not _floor:
+        return
+    try:
+        import psutil as _ps
+        _avail = _ps.virtual_memory().available / 1e9
+    except Exception:
+        return
+    if _avail < float(_floor):
+        raise MemoryError(
+            f"Not enough free RAM for the vision model: only {_avail:.1f} GB free, "
+            f"need ~{float(_floor):.1f} GB. Close a couple of apps and retry."
+        )
 
 
 def _siglip2_cache_exists() -> bool:
-    """Return True if SigLIP-2 weights are already in MODEL_CACHE_DIR (any depth)."""
     if not MODEL_CACHE_DIR.exists():
         return False
     weight_exts = {".pt", ".bin", ".safetensors"}
@@ -87,465 +98,137 @@ def _siglip2_cache_exists() -> bool:
 
 
 def _download_siglip2_if_needed() -> bool:
-    """
-    Pre-download SigLIP-2 ViT-g/14 NaFlex weights into MODEL_CACHE_DIR if absent.
-
-    open_clip auto-downloads on first use; calling this before the first
-    SigLIP2Encoder() instantiation avoids a silent first-request delay.
-
-    Returns:
-        True if model is ready, False on error.
-    """
     if _siglip2_cache_exists():
         return True
-
-    print(f"📦 Downloading SigLIP-2 ViT-g/14 NaFlex to {MODEL_CACHE_DIR}...")
-    print("   This may take several minutes depending on your connection.")
-
     try:
         import open_clip
-
-        # create_model_and_transforms downloads weights to cache_dir on first call.
         model, _, _ = open_clip.create_model_and_transforms(
-            _MODEL_TAG,
-            pretrained=_PRETRAINED,
-            precision="fp16",
+            _MODEL_TAG, pretrained=_PRETRAINED, precision="fp16",
             cache_dir=str(MODEL_CACHE_DIR),
         )
-        # Release immediately — we only needed the download side-effect.
         del model
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-
-        print(f"✓ SigLIP-2 download complete: {MODEL_CACHE_DIR}")
         return True
-
-    except ImportError:
-        print("⚠️  open_clip_torch not installed. Run: pip install open_clip_torch")
-        return False
     except Exception as e:
         print(f"⚠️  SigLIP-2 download failed: {e}")
         return False
 
 
 class SigLIP2Encoder:
+    """SigLIP-2 image+text encoder — runs the model in an ISOLATED SUBPROCESS.
+
+    The model never loads inside this (grade-worker) process. Each encode spawns
+    src/encode_worker.py, which loads the model in a clean process (the efficient
+    HF FP16 loader for the high tier — ~4 GB, vs ~9.5 GB in-process — that
+    native-crashes inside the multiprocessing worker but is fine standalone),
+    encodes, writes a .npy, and EXITS (freeing all RAM/VRAM). If the model OOMs,
+    only the subprocess dies — this process reads the non-zero exit code and
+    raises a clean error, so the worker never wedges.
     """
-    SigLIP-2 ViT-g/14 NaFlex image encoder with FP8 quantization.
 
-    Key features:
-    - Native aspect ratio preservation (no forced square cropping)
-    - FP8 quantization for faster inference
-    - 1536-d embeddings (vs 1152-d for So400M)
-    """
+    _WORKER = Path(__file__).resolve().parent / "encode_worker.py"
 
-    # Disk file is FP32 (7.1 GB), but loaded as FP16 → ~3.5 GB VRAM.
-    # INT8 quantization halves that to ~1.8 GB when torchao is available.
-    _QUANTIZED_VRAM_GB = 1.8
-    _FP16_VRAM_GB      = 3.5
-
-    def __init__(self, device: str = "auto", quantize: bool = True, progress=None):
-        import open_clip
-
+    def __init__(self, device: str = "auto", quantize: bool = False, progress=None):
         _p = progress or (lambda f, d: None)
+        # Device selection is handled entirely inside encode_worker.py.
+        # NOTE: encode_worker.py uses os._exit(0) to bypass PyTorch's CUDA atexit,
+        # which was crashing this (grade-worker) process via NVIDIA driver callbacks
+        # when the subprocess exited. No CUDA init is needed here — the grade worker
+        # defers all CUDA work to the encode subprocess (for SigLIP) and then to
+        # Qwen/TOPIQ later. encode_worker.py handles device selection itself.
+        self.device = device   # informational only; subprocess picks the real device
+        _enforce_ram_floor()   # bail cleanly if RAM can't fit the model
+        _p(0.07, "SigLIP-2 ready (isolated encoder)…")
 
-        if device == "auto":
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        else:
-            self.device = torch.device(device)
-
-        if self.device.type == "cuda":
-            free_gb = (
-                torch.cuda.get_device_properties(0).total_memory
-                - torch.cuda.memory_reserved(0)
-            ) / 1e9
-            # The model skeleton is allocated as FP16 before quantisation, so
-            # the floor is _FP16_VRAM_GB (3.5 GB) regardless of the quantize flag.
-            needed_gb = self._FP16_VRAM_GB
-            if free_gb < needed_gb:
-                print(
-                    f"[siglip2] WARNING: only {free_gb:.1f} GB VRAM free, "
-                    f"need ~{needed_gb:.1f} GB for FP16 skeleton — falling back to CPU"
-                )
-                self.device = torch.device("cpu")
-
-        # Download weights if not cached (first run only — 7.1 GB)
-        if not _siglip2_cache_exists():
-            _p(0.03, "Downloading SigLIP-2 (7.1 GB) — first run, may take 10+ min…")
-            _download_siglip2_if_needed()
-        else:
-            _p(0.03, "SigLIP-2 weights cached — loading to GPU…")
-
-        if self.device.type == "cuda":
-            # ── GPU path: stream weights disk→FP16→VRAM, ~0 system RAM ──────────
-            # Each tensor is: mmap FP32 → half() CPU → copy to CUDA → del CPU copy.
-            # Peak system RAM = size of the largest single weight tensor (~300 MB).
-            safetensors_path = _find_siglip2_safetensors()
-            if safetensors_path is None:
-                raise RuntimeError(
-                    "SigLIP-2 safetensors file not found in cache. "
-                    "Delete models/siglip2/ and restart to re-download."
-                )
-
-            _p(0.035, "Allocating SigLIP-2 model skeleton on GPU…")
-            # Create architecture + preprocessor with random FP16 weights on GPU.
-            # pretrained=None skips all weight loading — we load them ourselves below.
-            self._model, _, self._prep = open_clip.create_model_and_transforms(
-                _MODEL_TAG,
-                pretrained=None,
-                precision="fp16",
-                device=str(self.device),
-                cache_dir=str(MODEL_CACHE_DIR),
-            )
-
-            _p(0.04, "Streaming SigLIP-2 weights to GPU (no RAM staging)…")
-            print("[siglip2] step: streaming weights →", safetensors_path.name)
-            self._stream_weights_to_device(safetensors_path, self.device)
-            print("[siglip2] step: weights streamed OK")
-            if self.device.type == "cuda":
-                torch.cuda.synchronize()
-                print("[siglip2] step: CUDA sync after streaming OK")
-
-            self._tok = open_clip.get_tokenizer(_MODEL_TAG)
-            print("[siglip2] step: tokeniser loaded")
-
-            if quantize:
-                _p(0.05, "Quantising SigLIP-2 to INT8…")
-                print("[siglip2] step: starting INT8 quantisation")
-                self._model = self._quantize_model(self._model)
-                print("[siglip2] step: quantisation complete")
-
-            self._model.eval()
-            gc.collect()
-            print("[siglip2] step: model.eval() done")
-
-            # ── TensorRT engine: load if pre-compiled engine exists ───────────
-            # Compile once with: python -c "from siglip2_encoder import compile_trt_engine; compile_trt_engine()"
-            _trt_model_loaded = False
-            _engine_path = MODEL_CACHE_DIR / "siglip2.engine"
-            if _engine_path.exists():
-                try:
-                    import tensorrt as trt
-                    import torch_tensorrt  # noqa: F401
-                    self._model = torch_tensorrt.load(_engine_path).eval()
-                    _trt_model_loaded = True
-                    print("[siglip2] TensorRT engine loaded — fast inference active")
-                except Exception as _trt_e:
-                    print(f"[siglip2] TensorRT load failed ({_trt_e}) — using standard model")
-
-            # torch.compile fuses ViT-g attention layers (~20-40% faster).
-            # Disabled on Windows: torch.compile uses Triton which can segfault
-            # in the Windows CUDA driver, killing the process with no traceback.
-            import platform as _platform
-            _on_windows = _platform.system() == "Windows"
-            if not _trt_model_loaded and not _on_windows:
-                try:
-                    self._model = torch.compile(
-                        self._model,
-                        mode="reduce-overhead",
-                        fullgraph=False,
-                    )
-                    print("[siglip2] torch.compile active — first batch warms up JIT")
-                except Exception as _ce:
-                    print(f"[siglip2] torch.compile skipped ({_ce})")
-            elif _on_windows:
-                print("[siglip2] torch.compile disabled on Windows — using standard inference")
-
-            _p(0.07, "SigLIP-2 ready — encoding images…")
-
-        else:
-            # ── CPU fallback: needs ~3.7 GB system RAM ────────────────────────
-            _free_ram_gb = _free_system_ram_gb()
-            if _free_ram_gb < 4.0:
-                raise RuntimeError(
-                    f"Insufficient RAM to load SigLIP-2 on CPU: "
-                    f"{_free_ram_gb:.1f} GB free, need ~4 GB. "
-                    "Close other applications to free memory, then try again."
-                )
-
-            _p(0.04, "Loading SigLIP-2 to CPU (needs ~3.7 GB RAM)…")
-            self._model, _, self._prep = open_clip.create_model_and_transforms(
-                _MODEL_TAG,
-                pretrained=_PRETRAINED,
-                precision="fp16",
-                cache_dir=str(MODEL_CACHE_DIR),
-            )
-            self._tok = open_clip.get_tokenizer(_MODEL_TAG)
-            self._model = self._model.to(self.device).eval()
-            gc.collect()
-            _p(0.07, "SigLIP-2 ready — encoding images…")
-    
-    def _stream_weights_to_device(self, safetensors_path: Path, device: torch.device) -> None:
-        """
-        Stream safetensors weights directly to `device` without full CPU staging.
-
-        For each tensor in the file:
-          1. Read FP32 slice via mmap (uses OS page cache, not heap RAM)
-          2. .half() → FP16 CPU tensor (real alloc, one tensor at a time)
-          3. .to(device, non_blocking=True) → CUDA FP16
-          4. del CPU tensor immediately
-
-        Peak system RAM: size of the single largest weight matrix (~300 MB).
-        """
-        from safetensors.torch import safe_open
-
-        params  = dict(self._model.named_parameters())
-        buffers = dict(self._model.named_buffers())
-        loaded = skipped = 0
-
-        with safe_open(str(safetensors_path), framework="pt", device="cpu") as f:
-            keys = list(f.keys())
-            for key in keys:
-                fp32_cpu = f.get_tensor(key)          # mmap view — ~0 heap RAM
-                fp16_cpu = fp32_cpu.half()             # one FP16 tensor on CPU
-                del fp32_cpu                           # release mmap reference
-
-                target = params.get(key)
-                if target is None:
-                    target = buffers.get(key)
-                if target is not None:
-                    with torch.no_grad():
-                        target.data.copy_(fp16_cpu.to(device, non_blocking=True))
-                    loaded += 1
-                else:
-                    skipped += 1
-
-                del fp16_cpu                           # free CPU FP16 immediately
-
-        if skipped:
-            print(f"[siglip2] streaming: {loaded} loaded, {skipped} keys skipped")
-        else:
-            print(f"[siglip2] streaming: {loaded} tensors loaded directly to VRAM")
-
-        if device.type == "cuda":
-            torch.cuda.synchronize()
-        gc.collect()
-
-    def _quantize_model(self, model) -> torch.nn.Module:
-        """
-        Tries torchao INT8 weight-only quantization; falls back gracefully to FP16 on GPU.
-        FP16 (~3.5 GB) fits in a 6 GB card without quantization.
-        """
+    # ── Subprocess bridge ────────────────────────────────────────────────────
+    def _run(self, mode: str, items: list) -> np.ndarray:
+        import sys, json, tempfile, subprocess
+        if not items:
+            return np.zeros((0, EMBED_DIM), dtype=np.float32)
+        fd, in_path = tempfile.mkstemp(suffix=".json"); os.close(fd)
+        out_path = in_path + ".npy"
+        # Write encode subprocess stdout/stderr directly to crash.log instead of
+        # capturing them in a pipe. Critical: if Windows OOM-kills the grade worker
+        # process, its pipe handles are closed → encode_worker gets SIGPIPE/broken
+        # pipe and dies silently too (nothing visible). Writing to the log file means
+        # the encode subprocess has its OWN handle to crash.log (inherited from
+        # CreateProcess), so it keeps writing even after the grade worker is gone —
+        # and next time we open crash.log we can read exactly what went wrong.
+        _crash_log = Path(__file__).resolve().parent.parent / "crash.log"
         try:
-            from torchao.quantization import quantize_, int8_weight_only
-            quantize_(model, int8_weight_only())
-            print("[siglip2] Quantization: INT8 weight-only via torchao (~1.8 GB VRAM)")
-            return model
-        except Exception as e_torchao:
-            print(f"[siglip2] torchao INT8 unavailable ({e_torchao}) — using FP16 on GPU (~3.5 GB)")
-            return model
-    
-    def _safe_encode_batch(self, cpu_batch: "torch.Tensor", model_dtype) -> "np.ndarray":
-        """Forward pass with automatic sub-batch halving on CUDA OOM. Returns float32 numpy."""
-        n = cpu_batch.shape[0]
-        sub_size = n
-        while sub_size >= 1:
-            try:
-                parts = []
-                for i in range(0, n, sub_size):
-                    sub = cpu_batch[i:i+sub_size].to(device=self.device, dtype=model_dtype, non_blocking=True)
-                    with torch.inference_mode():
-                        e = self._model.encode_image(sub)
-                        e = e / (e.norm(dim=-1, keepdim=True) + 1e-9)
-                    parts.append(e.cpu().float().numpy())
-                    del sub, e
-                return np.concatenate(parts, axis=0) if len(parts) > 1 else parts[0]
-            except torch.cuda.OutOfMemoryError:
-                torch.cuda.empty_cache()
-                sub_size = max(1, sub_size // 2)
-                print(f"[siglip2] CUDA OOM — sub-batch size halved to {sub_size}")
-        raise RuntimeError("[siglip2] CUDA OOM even at sub_batch_size=1")
+            with open(in_path, "w", encoding="utf-8") as f:
+                json.dump(list(items), f)
+            env = dict(os.environ)
+            env["SIGLIP_TIER"] = _TIER
+            env.setdefault("PYTHONIOENCODING", "utf-8")
+            if mode == "images":
+                env.setdefault("SIGLIP_ENC_BATCH", str(_auto_enc_batch()))
+            print(f"[siglip2] encode_worker start: mode={mode} n={len(items)}", flush=True)
+            with open(_crash_log, "a", encoding="utf-8", errors="replace") as _lf:
+                r = subprocess.run(
+                    [sys.executable, str(self._WORKER), mode, in_path, out_path],
+                    env=env, cwd=str(Path(__file__).resolve().parent.parent),
+                    stdout=_lf, stderr=_lf,
+                    timeout=3600,
+                )
+            print(f"[siglip2] encode_worker done: rc={r.returncode} npy={os.path.exists(out_path)}", flush=True)
+            if r.returncode != 0 or not os.path.exists(out_path):
+                raise RuntimeError(
+                    f"Vision encoder subprocess failed (exit {r.returncode}) — see crash.log"
+                )
+            return np.load(out_path)
+        finally:
+            for _f in (in_path, out_path):
+                try: os.unlink(_f)
+                except Exception: pass
 
-    def encode_images(
-        self,
-        paths: List[str],
-        batch_size: int = 0,  # 0 = auto: 8 on GPU, 4 on CPU
-        progress=None,
-    ) -> np.ndarray:
-        """
-        Return normalised (N, 1536) float32 embeddings for a list of image paths.
+    def encode_images(self, paths: List[str], batch_size: int = 0, progress=None) -> np.ndarray:
+        """Return normalised (N, EMBED_DIM) float32 embeddings for image paths.
 
-        Uses parallel CPU prefetch: the next batch is loaded/preprocessed in a
-        background thread while the GPU runs inference on the current batch.
-        Bad paths yield a zero vector.
-        """
-        from PIL import Image as _PIL
-        from concurrent.futures import ThreadPoolExecutor
-
-        if batch_size == 0:
-            batch_size = 16 if self.device.type == "cuda" else 4
-
-        _model_dtype = next(iter(self._model.parameters())).dtype
-        prep         = self._prep   # local ref avoids attribute lookup in hot loop
-        zero         = torch.zeros(3, 384, 384)
-
-        # TurboJPEG singleton for 2-4x faster JPEG decode vs PIL
-        _tj = None
-        try:
-            from fast_ingestion import _get_tj as _tj_getter
-            _tj = _tj_getter()
-        except Exception:
-            pass
-
-        _JPEG_EXTS  = {".jpg", ".jpeg"}
-        # Pre-downsample cap before open_clip prep: 6000px→512 is 150× fewer pixels
-        # for prep's BICUBIC resize vs working at native sensor resolution.
-        _DECODE_CAP = 512
-
-        def _load(p: str) -> torch.Tensor:
-            try:
-                if Path(p).suffix.lower() in _JPEG_EXTS and _tj is not None:
-                    with open(p, "rb") as fh:
-                        raw = fh.read()
-                    bgr    = _tj.decode(raw)
-                    pil_img = _PIL.fromarray(bgr[:, :, ::-1].copy())
-                else:
-                    pil_img = _PIL.open(p).convert("RGB")
-                if max(pil_img.size) > _DECODE_CAP:
-                    pil_img.thumbnail((_DECODE_CAP, _DECODE_CAP), _PIL.Resampling.BILINEAR)
-                return prep(pil_img)
-            except Exception:
-                return zero
-
-        all_embs: List[np.ndarray] = []
+        SINGLE-SUBPROCESS encode (2026-07-02): one encode_worker.py process loads
+        the SigLIP model ONCE and encodes ALL images, batching internally (only
+        SIGLIP_ENC_BATCH images decoded in RAM at a time). This replaces the old
+        per-150-chunk design, which respawned a fresh subprocess PER CHUNK and
+        therefore RELOADED the whole ~3.5 GB model at every chunk boundary. On a
+        16 GB machine each reload spike (landing on an already-tight system with
+        the app + frontend running) drove free RAM to near-zero and killed the
+        grade worker with a C-level 0xC0000005 access violation. One load = one
+        transient, taken when RAM is freshest; sustained peak is just model +
+        one batch. SIGLIP_ENC_CHUNK can still force chunking if ever needed."""
+        _enforce_ram_floor()   # per-encode guard (covers the reused-singleton path)
         n = len(paths)
-
-        # Pre-allocate one pinned buffer for the entire run — eliminates
-        # repeated CUDA page-lock allocations (~10-50 ms each) that would
-        # otherwise happen on every batch iteration.
-        # Safe to reuse: emb.cpu() in each iteration is a blocking CUDA sync,
-        # guaranteeing the GPU is done reading the buffer before the next
-        # batch writes into it.
-        _pinned = (
-            torch.empty(batch_size, 3, 384, 384).pin_memory()
-            if self.device.type == "cuda" else None
-        )
-
-        with ThreadPoolExecutor(max_workers=min(batch_size, 8)) as pool:
-            # Pre-load the first batch so there's no wait on the first iteration
-            next_futures = [pool.submit(_load, p) for p in paths[:batch_size]]
-
-            for start in range(0, n, batch_size):
-                futures        = next_futures
-                next_start     = start + batch_size
-                # Kick off the next batch load while GPU runs on the current one
-                next_futures   = (
-                    [pool.submit(_load, p) for p in paths[next_start : next_start + batch_size]]
-                    if next_start < n else []
-                )
-
-                tensors = [f.result() for f in futures]
-                b = len(tensors)
-                if _pinned is not None:
-                    # Write directly into pre-pinned memory — no malloc, no copy.
-                    cpu_batch = _pinned[:b]
-                    torch.stack(tensors, out=cpu_batch)
-                else:
-                    cpu_batch = torch.stack(tensors)
-                all_embs.append(self._safe_encode_batch(cpu_batch, _model_dtype))
-                del cpu_batch
-
+        # Default: no chunking (one subprocess, one model load). A very large
+        # cap keeps the override available without splitting realistic folders.
+        _CHUNK = int(os.environ.get("SIGLIP_ENC_CHUNK", "100000"))
+        if n <= _CHUNK:
+            embs = self._run("images", list(paths))
+        else:
+            parts = []
+            for k in range(0, n, _CHUNK):
+                chunk = paths[k:k + _CHUNK]
                 if progress:
-                    done = min(start + batch_size, n)
-                    progress(done / n * 0.47, f"SigLIP-2: {done}/{n}")
+                    progress(
+                        0.20 + 0.25 * k / n,
+                        f"Encoding images {k + 1}–{min(k + _CHUNK, n)} / {n}…",
+                    )
+                parts.append(self._run("images", chunk))
+            embs = np.concatenate(parts, axis=0)
+        if progress and n:
+            progress(0.47, f"SigLIP-2: {n}/{n}")
+        return embs
 
-        result = np.concatenate(all_embs, axis=0)
-        # Full GC sweep — free all intermediate tensors before next pipeline stage
-        gc.collect()
-        if self.device.type == "cuda":
-            torch.cuda.empty_cache()
-            try:
-                torch.cuda.ipc_collect()
-            except Exception:
-                pass
-        return result
-    
     def encode_text(self, queries: List[str]) -> np.ndarray:
-        """Return normalised (N, 1536) float32 embeddings for text queries."""
-        tokens = self._tok(queries).to(self.device)
-        with torch.inference_mode():
-            emb = self._model.encode_text(tokens)
-            emb = emb / (emb.norm(dim=-1, keepdim=True) + 1e-9)
-        return emb.cpu().float().numpy()
-    
+        """Return normalised (N, EMBED_DIM) float32 embeddings for text queries."""
+        return self._run("text", list(queries))
+
     def unload(self) -> None:
-        """Move model to CPU and empty GPU cache."""
-        self._model = self._model.cpu()
-        if self.device.type == "cuda":
-            torch.cuda.empty_cache()
-        gc.collect()
-
-
-class ResizePad:
-    """
-    Resize and pad image to maintain aspect ratio.
-    
-    Used for SigLIP-2 to avoid compositional "squishing".
-    """
-    
-    def __init__(self, size: int = 384, fill: int = 128):
-        self.size = size
-        self.fill = fill
-    
-    def __call__(self, img):
-        """Resize and pad image to square while maintaining aspect ratio."""
-        from PIL import Image, ImageOps
-        
-        # Get original dimensions
-        w, h = img.size
-        
-        # Calculate scale to fit within size
-        scale = min(self.size / w, self.size / h)
-        
-        # Calculate new dimensions
-        new_w = int(w * scale)
-        new_h = int(h * scale)
-        
-        # Resize
-        img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-        
-        # Create padded image
-        padded = Image.new("RGB", (self.size, self.size), (self.fill, self.fill, self.fill))
-        padded.paste(img, ((self.size - new_w) // 2, (self.size - new_h) // 2))
-        
-        return padded
+        # No in-process model to free — the subprocess already exited.
+        pass
 
 
 def get_siglip2_encoder() -> SigLIP2Encoder:
-    """Get or create SigLIP-2 encoder singleton."""
     if not hasattr(get_siglip2_encoder, "_instance"):
         get_siglip2_encoder._instance = SigLIP2Encoder()
     return get_siglip2_encoder._instance
-
-
-def compile_trt_engine(output_path: str = "models/siglip2/siglip2.engine") -> None:
-    """
-    One-time TensorRT compilation of the SigLIP-2 encoder.
-
-    Run manually once:
-        python -c "from siglip2_encoder import compile_trt_engine; compile_trt_engine()"
-
-    The compiled engine is loaded automatically on subsequent runs.
-    Requires: tensorrt, torch-tensorrt (pip install torch-tensorrt tensorrt).
-    """
-    import torch
-    import torch_tensorrt
-
-    print("[siglip2] Compiling TensorRT engine — this takes 2-10 minutes on first run…")
-    enc = SigLIP2Encoder(device="auto", quantize=False)
-    model = enc._model.cuda().eval()
-
-    dummy = torch.randn(1, 3, 384, 384, device="cuda")
-    compiled = torch_tensorrt.compile(
-        model.visual,
-        inputs=[torch_tensorrt.Input(
-            min_shape=(1, 3, 384, 384),
-            opt_shape=(16, 3, 384, 384),
-            max_shape=(32, 3, 384, 384),
-            dtype=torch.float16,
-        )],
-        enabled_precisions={torch.float16},
-    )
-    torch_tensorrt.save(compiled, output_path)
-    print(f"[siglip2] TensorRT engine saved → {output_path}")
-    enc.unload()

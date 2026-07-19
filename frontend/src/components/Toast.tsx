@@ -23,11 +23,17 @@ export function Toast({
 
   return (
     <div
+      role={type === "error" ? "alert" : "status"}
+      aria-live={type === "error" ? "assertive" : "polite"}
       className={`fixed top-4 right-4 px-4 py-3 rounded-lg border shadow-xl z-50 flex items-center gap-3 min-w-[280px] ${colors[type]}`}
     >
       <span className="text-sm font-medium flex-1">{message}</span>
-      <button onClick={onClose} className="opacity-70 hover:opacity-100">
-        <X size={14} />
+      <button
+        onClick={onClose}
+        aria-label="Dismiss notification"
+        className="opacity-70 hover:opacity-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+      >
+        <X size={14} aria-hidden="true" />
       </button>
     </div>
   );

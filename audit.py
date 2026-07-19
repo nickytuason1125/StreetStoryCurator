@@ -18,7 +18,7 @@ def run_audit():
     analyzer = LightweightStreetScorer()
     print("🧪 Running lightweight audit test...")
 
-    results = analyzer.analyze_folder(test_dir, preset="Magnum Editor")
+    results = analyzer.analyze_folder(test_dir, preset="Street Editorial")
     score, paths = 0, []
     for path, data in results:
         score += data["score"]

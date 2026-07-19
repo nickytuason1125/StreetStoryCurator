@@ -45,12 +45,20 @@ When no PDFs are uploaded the prompt runs without the rubric block.
 
 ## Grading Path Decision Tree
 
+Default is **SigLIP zero-shot** (SpecVLM CLIP). Qwen is opt-in via the
+`deep_grade` flag (frontend "Deep Grade" toggle, default OFF). This keeps the
+common path off the GPU-heavy Qwen stage — no Qwen VRAM footprint and none of
+the WebView2 GPU-contention crash surface (0xC0000005 at Qwen load).
+
 ```
-scan_mode=True  → SpecVLM CLIP (always — speed over accuracy)
-scan_mode=False → models/qwen_vlm/*.safetensors present?
-                    yes → Qwen2.5-VL-3B  (direct vision, RAG context)
-                    no  → SpecVLM CLIP   (cosine similarity fallback)
+scan_mode=True             → SpecVLM CLIP, IQA skipped (ultra-fast niche pass)
+deep_grade=True  (opt-in)  → Qwen2.5-VL-3B (direct vision, RAG) + TOPIQ IQA
+deep_grade=False (DEFAULT) → SpecVLM CLIP zero-shot + TOPIQ IQA
 ```
+
+`deep_grade` is threaded server.py `GradeRequest` → grade_worker → `run_v2`.
+When `deep_grade=True` but Qwen weights are missing, it still falls back to
+SpecVLM CLIP. TOPIQ IQA runs for both grade modes; only `scan_mode` skips it.
 
 ## Vector Store
 
@@ -59,15 +67,30 @@ Auto-migrates from legacy 1152-d (SigLIP-So400M) on first run.
 
 ## Grade Buckets
 
-Relative quantile per run (n ≥ 4): top 25% → Strong, bottom 20% → Weak, rest → Mid.
-Absolute floor: Strong requires score ≥ 0.50 (uniformly bad batch gets no Strong).
-Fallback for n < 4: Strong ≥ 0.60, Weak < 0.41.
-- Weak ❌  ≤ 0.40
+Absolute thresholds — the grade reflects the photo itself, not its rank in the batch:
+- Strong ✅  score ≥ 0.60
+- Mid ⚠️    0.41 ≤ score < 0.60
+- Weak ❌   score < 0.41
+
+Quantile/historical-anchor calibration was removed (2026-06): it forced a
+~25% Strong / 20% Weak split on every run regardless of actual quality.
+Also removed: the Step-4e batch score stretch (rescaled clustered batches onto
+[0.18, 0.88]) and the 0.62–0.68 archetype Strong-floors (now 0.50–0.55 Mid-band
+penalty protection only). Do not reintroduce per-batch relative grading or any
+floor ≥ 0.60 — a photo reaches Strong only on actual fused quality.
 
 ## PersonalHead / DPO
 
 Endpoint: `POST /api/personal/update` (path1/grade1/path2/grade2).
-Score blend: `0.80 * grader_score + 0.20 * head_score`.
+Score blend (grade_pipeline_v2 Step 5): **confidence-adaptive** —
+`final = (1-w)*grader + w*head`, where `w = 0.20 + (ceil-0.20)*conf` and
+`conf = |head-0.5|/0.5`. A neutral head (~0.5, i.e. a genre it hasn't learned)
+collapses `w` to the 0.20 floor → identical to the legacy flat 0.80/0.20, so it
+can never regress; a confident head rises toward `ceil` (env
+`FRAMEGRADE_PH_WEIGHT_MAX`, default 0.35, clamped ≤0.60) so taste becomes a
+first-class vote only where it has coverage. Adding a few ratings in a new genre
+raises the head's confidence there → grades shift toward the user's taste
+automatically, with zero effect where it hasn't learned.
 Weights persist to `models/personal_head.pt` via `PersonalHead.save()`.
 
 ## Deprecated Graders

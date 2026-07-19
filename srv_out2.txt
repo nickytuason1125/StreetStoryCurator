@@ -1,0 +1,6 @@
+============================================================
+EXECUTING FROM PHYSICAL PATH: C:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator\src\grade_pipeline_v2.py
+sys.path[0]:                  C:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator\src
+============================================================
+[server] cudnn.benchmark enabled
+[lance_store] DB path: C:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator\cache\lance.db

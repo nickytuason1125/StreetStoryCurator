@@ -23,12 +23,16 @@ def _setup_src_path() -> None:
 
 def grade_worker_main(
     q,
-    all_folders:   list,
-    preset:        str,
-    force_rescan:  bool,
-    scan_mode:     bool,
+    all_folders:      list,
+    preset:           str,
+    force_rescan:     bool,
+    scan_mode:        bool,
     catalog_path_str: str,
-    data_dir_str:  str,
+    data_dir_str:     str,
+    mogco_target:     int = 5,
+    sample_limit:     int = 0,
+    detect_only:      bool = False,
+    deep_grade:       bool = False,
 ) -> None:
     """
     Entry point called in the subprocess.  Progress and results are sent
@@ -42,8 +46,28 @@ def grade_worker_main(
     """
     _setup_src_path()
 
+    # Force unbuffered stdout/stderr — block buffering loses the last prints before
+    # a C-level crash (OOM/segfault), making the crash location impossible to read.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+        sys.stderr.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+
     _CATALOG_PATH = Path(catalog_path_str)
     _DATA_DIR     = Path(data_dir_str)
+
+    # Cross-process "grade in progress" marker. local_launcher checks this after
+    # its window closes and stays alive until the grade finishes, so a window
+    # OOM-kill (or accidental close) can't abort the cull. detect_only sampling
+    # runs are quick and not marked. Removed in the finally below.
+    _LOCK_PATH = _DATA_DIR / "cache" / "grading.lock"
+    if not detect_only:
+        try:
+            _LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+            _LOCK_PATH.write_text(str(os.getpid()), encoding="utf-8")
+        except Exception:
+            pass
 
     def _progress(frac: float, desc: str = "") -> None:
         q.put({"progress": round(frac, 3), "desc": desc})
@@ -53,7 +77,9 @@ def grade_worker_main(
         n = len(all_folders)
         combined_gallery: list = []
 
-        if _CATALOG_PATH.exists():
+        # detect_only (pre-grade niche detection) must NEVER touch the catalog —
+        # it runs on a sample and would otherwise wipe the user's real gallery.
+        if _CATALOG_PATH.exists() and not detect_only:
             try:
                 _CATALOG_PATH.unlink()
                 print("[grade_worker] Cleared stale catalog.json")
@@ -77,6 +103,8 @@ def grade_worker_main(
                 progress     = _fp,
                 mogco_target = 0,
                 scan_mode    = scan_mode,
+                sample_limit = sample_limit,
+                deep_grade   = deep_grade,
             )
             combined_gallery.extend(result.get("gallery", []))
 
@@ -85,94 +113,116 @@ def grade_worker_main(
             for photo in combined_gallery
         ]
 
-        # NSGA-III across all photos
-        _progress(0.97, "Running NSGA-III (strict literal constraints)…")
+        def _write_catalog(tag: str = "") -> None:
+            """Persist gallery_slim to catalog.json (atomic). Safe to call repeatedly.
+            No-op under detect_only so a sampled detection run never overwrites the
+            user's real gallery catalog."""
+            if detect_only:
+                return
+            try:
+                import time as _cat_time
+                _cat_folders = list(dict.fromkeys(
+                    str(Path(g["path"]).parent) for g in gallery_slim
+                ))
+                _CATALOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+                _cat_tmp = _CATALOG_PATH.with_suffix(".json.tmp")
+                _cat_tmp.write_text(
+                    json.dumps(
+                        {"photos": gallery_slim, "folders": _cat_folders,
+                         "saved_at": _cat_time.strftime("%Y-%m-%dT%H:%M:%S")},
+                        ensure_ascii=False, indent=2,
+                        default=lambda o: o.item() if hasattr(o, "item") else str(o),
+                    ),
+                    encoding="utf-8",
+                )
+                _cat_tmp.replace(_CATALOG_PATH)
+                print(f"[grade_worker] catalog.json → {len(gallery_slim)} photos {tag}".rstrip())
+            except Exception as _e_cat:
+                print(f"[grade_worker] catalog.json write failed: {_e_cat}")
+
+        # Safety persist — grades are COMPLETE here. If NSGA-III or rationale
+        # generation crashes the process downstream, the grades survive on disk
+        # and the frontend recovers them on the next load.
+        _write_catalog("(safety)")
+
+        # Story sequencing (NSGA-III + the Judge's Verdict / rationale LLM) is NOT
+        # part of culling. It loads additional models AFTER grading finishes, which
+        # OOM-crashed the grade worker on the 6 GB GPU ("Grade worker died" with no
+        # Python traceback). The Story tab builds sequences via its own endpoint
+        # (/api/creative-direction/stream). The cull path sends mogco_target<=0, so
+        # the entire block is skipped here.
         mogco_sequence: list = []
         mogco_error_msg: str = ""
-        try:
-            import numpy as _np
-            from nsga3_sequencer import run_nsga3_sequence_with_vlm, SequencerConstraintError
+        if mogco_target > 0:
+            # NSGA-III across all photos
+            _progress(0.97, "Running NSGA-III (strict literal constraints)…")
             try:
-                from specvlm_pipeline import _CD_BRIEF as _brief
-            except Exception:
-                _brief = ""
-            seq_candidates = [
-                {
-                    "path":          g["path"],
-                    "score":         g.get("score", 0.5),
-                    "embedding":     _np.array(
-                        combined_gallery[idx].get("embedding", []),
-                        dtype=_np.float32,
-                    ),
-                    "reasoning_log": g.get("reasoning_log", ""),
-                    "breakdown":     g.get("breakdown", {}),
-                }
-                for idx, g in enumerate(gallery_slim)
-                if "Strong" in g.get("grade", "") or "Mid" in g.get("grade", "")
-            ]
-            selected = run_nsga3_sequence_with_vlm(
-                seq_candidates, target=5, brief=_brief
-            )
-            info_by_path = {g["path"]: g for g in gallery_slim}
-            for rank, frame in enumerate(selected):
-                base = dict(info_by_path.get(frame["path"], {"path": frame["path"]}))
-                base.update({
-                    "slot":             frame.get("slot", f"Slot {rank+1}"),
-                    "slot_role":        frame.get("slot_role", ""),
-                    "slot_score":       frame.get("slot_score", 0.0),
-                    "mogco_objectives": frame.get("nsga3_objectives", {}),
-                    "engine":           "nsga3",
-                })
-                mogco_sequence.append(base)
-        except SequencerConstraintError as e:
-            mogco_error_msg = str(e)
-            print(f"[grade_worker] NSGA-III constraint error: {e}")
-        except Exception as e:
-            print(f"[grade_worker] NSGA-III failed: {e}")
+                import numpy as _np
+                # run_nsga3_sequence_with_vlm / SequencerConstraintError no
+                # longer exist — stale import crashed every mogco>0 run.
+                from nsga3_sequencer import run_creative_story_sequencer
+                try:
+                    from specvlm_pipeline import _CD_BRIEF as _brief
+                except Exception:
+                    _brief = ""
+                seq_candidates = [
+                    {
+                        "path":          g["path"],
+                        "score":         g.get("score", 0.5),
+                        "embedding":     _np.array(
+                            combined_gallery[idx].get("embedding", []),
+                            dtype=_np.float32,
+                        ),
+                        "reasoning_log": g.get("reasoning_log", ""),
+                        "breakdown":     g.get("breakdown", {}),
+                    }
+                    for idx, g in enumerate(gallery_slim)
+                    if "Strong" in g.get("grade", "") or "Mid" in g.get("grade", "")
+                ]
+                selected = run_creative_story_sequencer(
+                    seq_candidates, target=mogco_target, brief=_brief
+                )
+                info_by_path = {g["path"]: g for g in gallery_slim}
+                for rank, frame in enumerate(selected):
+                    base = dict(info_by_path.get(frame["path"], {"path": frame["path"]}))
+                    base.update({
+                        "slot":             frame.get("slot", f"Slot {rank+1}"),
+                        "slot_role":        frame.get("slot_role", ""),
+                        "slot_score":       frame.get("slot_score", 0.0),
+                        "mogco_objectives": frame.get("nsga3_objectives", {}),
+                        "engine":           "nsga3",
+                    })
+                    mogco_sequence.append(base)
+            except Exception as e:
+                mogco_error_msg = str(e)
+                print(f"[grade_worker] NSGA-III failed: {e}")
 
-        # Curation rationales
-        _slim_by_path = {g["path"]: g for g in gallery_slim}
-        if mogco_sequence:
-            try:
-                from creative_director_agent import generate_curation_rationales as _gen_rat
-                _rationale_map = _gen_rat(mogco_sequence, _brief)
-                for _r_path, _rat in _rationale_map.items():
-                    if _r_path in _slim_by_path:
-                        _slim_by_path[_r_path]["curation_rationale"] = _rat
-                for _entry in mogco_sequence:
-                    _rat = _rationale_map.get(_entry.get("path", ""), "")
-                    if _rat:
-                        _entry["curation_rationale"] = _rat
-                if _rationale_map:
-                    _progress(0.99, f"Rationales ready for {len(_rationale_map)} images…")
-            except Exception as _e_rat:
-                print(f"[grade_worker] Rationale generation failed: {_e_rat}")
+            # Curation rationales
+            _slim_by_path = {g["path"]: g for g in gallery_slim}
+            if mogco_sequence:
+                try:
+                    from creative_director_agent import generate_curation_rationales as _gen_rat
+                    _rationale_map = _gen_rat(mogco_sequence, _brief)
+                    for _r_path, _rat in _rationale_map.items():
+                        if _r_path in _slim_by_path:
+                            _slim_by_path[_r_path]["curation_rationale"] = _rat
+                    for _entry in mogco_sequence:
+                        _rat = _rationale_map.get(_entry.get("path", ""), "")
+                        if _rat:
+                            _entry["curation_rationale"] = _rat
+                    if _rationale_map:
+                        _progress(0.99, f"Rationales ready for {len(_rationale_map)} images…")
+                except Exception as _e_rat:
+                    print(f"[grade_worker] Rationale generation failed: {_e_rat}")
+        else:
+            print("[grade_worker] Story sequencing skipped (cull mode, mogco_target<=0)")
 
         strong = sum(1 for g in combined_gallery if "Strong" in g.get("grade", ""))
         mid    = sum(1 for g in combined_gallery if "Mid"    in g.get("grade", ""))
         weak   = sum(1 for g in combined_gallery if "Weak"   in g.get("grade", ""))
 
-        # Write final catalog
-        try:
-            import time as _cat_time
-            _cat_folders = list(dict.fromkeys(
-                str(Path(g["path"]).parent) for g in gallery_slim
-            ))
-            _CATALOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-            _cat_tmp = _CATALOG_PATH.with_suffix(".json.tmp")
-            _cat_tmp.write_text(
-                json.dumps(
-                    {"photos": gallery_slim, "folders": _cat_folders,
-                     "saved_at": _cat_time.strftime("%Y-%m-%dT%H:%M:%S")},
-                    ensure_ascii=False, indent=2,
-                    default=lambda o: o.item() if hasattr(o, "item") else str(o),
-                ),
-                encoding="utf-8",
-            )
-            _cat_tmp.replace(_CATALOG_PATH)
-            print(f"[grade_worker] catalog.json → {len(gallery_slim)} photos")
-        except Exception as _e_cat:
-            print(f"[grade_worker] catalog.json write failed: {_e_cat}")
+        # Final catalog write — now enriched with curation rationales.
+        _write_catalog("(final)")
 
         q.put({
             "done":           True,
@@ -199,6 +249,13 @@ def grade_worker_main(
         except Exception:
             pass
         q.put({"error": str(exc), "traceback": _full_tb})
+    finally:
+        # Clear the in-progress marker so local_launcher knows the grade is done
+        # (completed OR failed) and is free to exit.
+        try:
+            _LOCK_PATH.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def grade_worker_loop(req_q, resp_q) -> None:
@@ -234,15 +291,33 @@ def grade_worker_loop(req_q, resp_q) -> None:
             print("[grade_worker] Stop signal — exiting")
             return
 
-        grade_worker_main(
-            resp_q,
-            req["folders"],
-            req["preset"],
-            req["force_rescan"],
-            req["scan_mode"],
-            req["catalog_path"],
-            req["data_dir"],
-        )
+        # Wrap each run so a failure (e.g. insufficient RAM raised by the SigLIP
+        # preflight) NEVER kills the persistent worker. A dead worker triggers a
+        # multiprocessing respawn that fails on Windows with PermissionError
+        # [WinError 5], wedging all future culls. Surviving = the user gets a
+        # clean error, frees RAM, and retries against the SAME live worker.
+        try:
+            grade_worker_main(
+                resp_q,
+                req["folders"],
+                req["preset"],
+                req["force_rescan"],
+                req["scan_mode"],
+                req["catalog_path"],
+                req["data_dir"],
+                mogco_target=req.get("mogco_target", 5),
+                sample_limit=req.get("sample_limit", 0),
+                detect_only=req.get("detect_only", False),
+                deep_grade=req.get("deep_grade", False),
+            )
+        except BaseException as _e_run:   # incl. MemoryError — keep the loop alive
+            import traceback as _tb_run
+            _msg = str(_e_run) or type(_e_run).__name__
+            print(f"[grade_worker] run failed, worker stays alive: {_msg}", flush=True)
+            try:
+                resp_q.put({"error": _msg, "traceback": _tb_run.format_exc()})
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
