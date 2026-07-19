@@ -67,6 +67,10 @@ _MOOD_KW: list[tuple[str, set[str]]] = [
     ("warm/golden",         {"golden", "sunset", "sunrise", "dawn", "warm"}),
     ("neon/night",          {"neon", "twilight", "blue hour"}),
 ]
+_COMPETITION_KW = {
+    "competition", "award", "submit", "submission", "contest", "prize",
+    "jury", "festival", "portfolio review", "standalone", "single image",
+}
 _NICHE_KW: dict[str, set[str]] = {
     "portrait":     {"portrait", "faces", "human", "stranger", "strangers"},
     "architecture": {"architecture", "architectural", "geometry", "geometric", "structure"},
@@ -266,6 +270,25 @@ def generate_director_brief(style_prompt: str) -> DirectorBrief:
     safety net to behave correctly.
     """
     return _keyword_director_brief(style_prompt)
+
+
+# ── classify_mode (MoE auto-mode routing) ─────────────────────────────────
+
+def classify_mode(style_prompt: str) -> str:
+    """
+    Classifies a style brief as "story" or "competition" for the frontend's
+    seqMode="auto" option (frontend/src/App.tsx declares 'auto'|'director'|
+    'story'|'competition' but only ever sends 'story'/'competition' today —
+    this is what lets 'auto' resolve to a real mode). Keyword-first, same
+    rationale as generate_rule_set/generate_director_brief: competition
+    intent is a fairly explicit signal in the brief text ("award", "jury",
+    "submission", ...), so a GGUF call isn't justified for this decision.
+    Defaults to "story" — the more common case — when no signal is found.
+    """
+    text = (style_prompt or "").lower()
+    if any(kw in text for kw in _COMPETITION_KW):
+        return "competition"
+    return "story"
 
 
 # ── select_sequence_from_batch (legacy fallback-of-a-fallback) ───────────

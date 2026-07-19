@@ -1868,6 +1868,13 @@ async def creative_direction_stream(payload: dict):
     n_target        = max(3, min(10, n_target))
     peg_image_hash  = (payload.get("peg_image_hash") or "").strip() or None
     mode            = (payload.get("mode") or "story").strip().lower()
+    if mode == "auto":
+        try:
+            from creative_director_agent import classify_mode
+            mode = classify_mode(style_prompt)
+        except Exception as _e_classify:
+            print(f"[server] mode='auto' classification skipped ({_e_classify}) — defaulting to story")
+            mode = "story"
     if mode not in ("story", "competition"):
         mode = "story"
 

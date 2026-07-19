@@ -1847,7 +1847,7 @@ export default function App() {
           structure_mode:  creativeMode,
           n_target:        creativeCount,
           peg_image_hash:  pegHash ?? null,
-          mode:            seqMode === 'competition' ? 'competition' : 'story',
+          mode:            seqMode === 'auto' || seqMode === 'competition' ? seqMode : 'story',
         }),
       });
       if (!resp.ok) throw new Error(`Server error ${resp.status}`);
@@ -4580,9 +4580,9 @@ export default function App() {
 
               {/* Generate button — pinned to bottom */}
               <div style={{ padding:'14px 18px', borderTop:`1px solid ${C.border}`, flexShrink:0 }}>
-                {/* Mode selector: Story / Competition */}
+                {/* Mode selector: Auto / Story / Competition */}
                 <div style={{ display:'flex', gap:5, marginBottom:10 }}>
-                  {(['story','competition'] as const).map(m => (
+                  {(['auto','story','competition'] as const).map(m => (
                     <button key={m} onClick={()=>setSeqMode(m as any)}
                       style={{ flex:1, height:30, borderRadius:7, fontSize:11, fontWeight:700, cursor:'pointer', transition:'all .15s',
                         background: seqMode===m ? C.accent : C.surf2,
@@ -4603,7 +4603,11 @@ export default function App() {
                     cursor: canGenerate ? 'pointer' : 'not-allowed', opacity:photos.length===0?0.45:1, transition:'all .18s' }}>
                   {creativeLoading
                     ? <><div style={{width:13,height:13,border:'2px solid #888',borderTopColor:'transparent',borderRadius:'50%',animation:'spin .8s linear infinite'}}/> Building sequence…</>
-                    : <><Wand2 size={13}/> {hasResults ? 'Rebuild Sequence' : (seqMode==='competition' ? 'Build Competition Set' : 'Build Story Sequence')}</>}
+                    : <><Wand2 size={13}/> {hasResults ? 'Rebuild Sequence' : (
+                        seqMode==='competition' ? 'Build Competition Set' :
+                        seqMode==='auto'        ? 'Build Sequence (Auto)' :
+                        'Build Story Sequence'
+                      )}</>}
                 </button>
                 {usedCount>0 && (
                   <button onClick={handleClearUsed}
