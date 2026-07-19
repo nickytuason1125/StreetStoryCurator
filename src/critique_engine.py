@@ -128,6 +128,28 @@ def _load_model():
         return None
 
 
+def unload() -> None:
+    """
+    Release the Qwen2.5-VL-2B GGUF singleton. This module normally stays
+    warm across independent per-image annotation requests (run_jury_critique/
+    run_audit_annotation), which is correct for that use case — but Story
+    Mode's batched contact-sheet revision loop (src/contact_sheet.py) needs
+    to tear it down deterministically before the next GPU-relevant phase,
+    so it doesn't stay resident longer than the loop that needed it.
+    """
+    global _llm
+    _llm = None
+    import gc
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available() and torch.cuda.is_initialized():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+    except Exception:
+        pass
+
+
 # ── Coordinate normalisation ──────────────────────────────────────────────────
 
 def _parse_bbox(text: str, img_w: int, img_h: int) -> Optional[dict]:
@@ -302,6 +324,119 @@ def run_jury_critique(image_hash: str) -> dict:
 
     return {"error": "All critique backends unavailable. Install qwen2.5vl:3b via Ollama.",
             "critique": "", "think": "", "bbox_factors": []}
+
+
+def run_contact_sheet_critique(
+    sheet_path: str,
+    slot_summaries: list[dict],
+    style_prompt: str,
+) -> dict:
+    """
+    View a rendered Story Mode contact sheet (a labeled grid of the current
+    sequence — src/contact_sheet.py) and decide whether it should be
+    revised. Returns {"action": "accept"|"swap", "swap_slot": int|None,
+    "reason": str}.
+
+    Reuses the same Qwen2.5-VL-2B GGUF singleton as run_jury_critique/
+    run_audit_annotation (free if either already warmed it this session).
+    Loose JSON parsing (brace-matching, same style as _parse_factor_json) —
+    a later phase upgrades this to grammar-constrained decoding via
+    LlamaGrammar, following vlm_niche_detector.py's pattern.
+
+    Never raises — returns action="accept" on any failure so the caller's
+    revision loop always terminates safely.
+    """
+    if not Path(sheet_path).exists():
+        return {"action": "accept", "swap_slot": None, "reason": "no contact sheet"}
+
+    prompt_text = (
+        "You are a photo editor reviewing a curated street-photo sequence, shown "
+        "as a numbered contact sheet (each cell labeled with its role and slot "
+        f"number). Style brief: '{style_prompt[:150]}'. "
+        f"Per-slot data: {json.dumps(slot_summaries, separators=(',', ':'))[:600]}. "
+        "If every slot fits its role and the sequence flows well, respond ACCEPT. "
+        "If exactly one slot clearly doesn't belong (wrong mood, weak composition, "
+        "breaks pacing), respond SWAP with that slot number (0-indexed). "
+        'Output ONLY JSON: {"action":"accept"|"swap","swap_slot":<int or null>,"reason":"<one sentence>"}'
+    )
+
+    llm = _load_model()
+    if llm is not None:
+        try:
+            b64 = secure_image_for_vram(sheet_path, max_dimension=1280)
+            output = llm.create_chat_completion(  # type: ignore[union-attr]
+                messages=[{"role": "user", "content": [
+                    {"type": "image_url",
+                     "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                    {"type": "text", "text": prompt_text},
+                ]}],
+                temperature=0.1,
+                max_tokens=200,
+            )
+            raw = (output["choices"][0]["message"]["content"] or "").strip()
+            parsed = _parse_swap_json(raw)
+            if parsed:
+                print(f"[ce] contact-sheet critique (qwen-vl gguf): action={parsed['action']}")
+                return parsed
+        except Exception as _e:
+            print(f"[ce] contact-sheet critique error ({_e}) — trying Ollama")
+
+    if _check_ollama_available():
+        raw = _ollama(prompt_text, model="qwen2.5vl:3b", max_tokens=200)
+        if raw:
+            parsed = _parse_swap_json(raw)
+            if parsed:
+                print(f"[ce] contact-sheet critique (ollama): action={parsed['action']}")
+                return parsed
+
+    return {"action": "accept", "swap_slot": None, "reason": "critique backend unavailable"}
+
+
+def _parse_swap_json(raw: str) -> Optional[dict]:
+    """Brace-balanced JSON extraction for the accept/swap verdict, tolerant
+    of <think> preambles and markdown fences — same defensive style as
+    _parse_factor_json below."""
+    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+    m = re.search(r"</think>\s*(.*)", raw, re.DOTALL)
+    if m:
+        raw = m.group(1).strip()
+    raw = re.sub(r"^```[a-zA-Z]*\s*", "", raw).strip()
+    raw = re.sub(r"\s*```\s*$", "", raw).strip()
+
+    start = raw.find("{")
+    if start < 0:
+        return None
+    depth = 0; end = -1; in_str = False; esc = False
+    for ci, ch in enumerate(raw[start:], start):
+        if esc:       esc = False; continue
+        if ch == "\\" and in_str: esc = True; continue
+        if ch == '"': in_str = not in_str; continue
+        if in_str:    continue
+        if   ch == "{": depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0: end = ci + 1; break
+    if end < 0:
+        return None
+
+    try:
+        obj = json.loads(raw[start:end])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(obj, dict) or "action" not in obj:
+        return None
+
+    action = str(obj.get("action", "accept")).lower()
+    if action not in ("accept", "swap"):
+        action = "accept"
+    swap_slot = obj.get("swap_slot")
+    try:
+        swap_slot = int(swap_slot) if swap_slot is not None else None
+    except (TypeError, ValueError):
+        swap_slot = None
+    if action == "swap" and swap_slot is None:
+        action = "accept"
+    return {"action": action, "swap_slot": swap_slot, "reason": str(obj.get("reason", ""))[:200]}
 
 
 def run_audit_annotation(image_hash: str) -> dict:

@@ -1992,6 +1992,14 @@ async def creative_direction_stream(payload: dict):
                 release_grading_models()
             except Exception as _e_rel:
                 print(f"[server] release_grading_models skipped: {_e_rel}")
+                # Belt-and-suspenders: a release failure must never leave
+                # stale GPU tensors resident before Story Mode's own GPU
+                # work (contact-sheet critique GGUF) starts loading.
+                try:
+                    from vram_manager import VRAMManager
+                    VRAMManager.purge_vram()
+                except Exception:
+                    pass
 
             # ── Run pipeline ──────────────────────────────────────────────────
             from creative_director import run_creative_direction

@@ -1306,6 +1306,7 @@ def run_creative_direction(
             "semantic_profile": semantic_profile,
             "reasoning_log":    "",
             "yolo_blocked":     path in yolo_blocked,
+            "_embedding":       filtered_embs[real_i],
         })
 
     # 4b: Ollama Art Director — model choice driven by mode
@@ -1408,9 +1409,32 @@ def run_creative_direction(
 
     seq_paths  = [seq_paths[i]  for i in cin_order]
     seq_scores = [seq_scores[i] for i in cin_order]
+    seq_embs   = [seq_embs[i]   for i in cin_order]
     roles      = [roles[i]      for i in cin_order]
     if seq_aspects:
         seq_aspects = [seq_aspects[i] for i in cin_order]
+
+    # ── Step 5a: Agentic self-revision loop (Story Mode only) ────────────────
+    # Propose -> render contact sheet -> critique -> revise, bounded to a few
+    # iterations. Competition Mode's brief is about independent standout
+    # images, not narrative pacing, so its single-pass flow is untouched.
+    revision_log: list[dict] = []
+    if mode == "story":
+        _p(0.33, "Reviewing sequence (contact-sheet critique)…")
+        try:
+            from contact_sheet import run_revision_loop
+            seq_paths, seq_scores, roles, seq_aspects, seq_embs, revision_log = run_revision_loop(
+                seq_paths, seq_embs, seq_scores, seq_aspects, roles,
+                art_pool=art_pool,
+                style_prompt=style_prompt,
+                output_dir=output_dir,
+                progress=_p,
+            )
+            if revision_log:
+                n_swaps = sum(1 for r in revision_log if r.get("action") == "swap")
+                _p(0.35, f"Revision loop: {len(revision_log)} iteration(s), {n_swaps} swap(s)")
+        except Exception as _e_revise:
+            _p(0.35, f"Revision loop skipped ({_e_revise})")
 
     # ── Step 5b: 8B Judge's Verdict (GPU, loaded AFTER sequence is final) ───────
     # DeepSeek-R1-Distill-Llama-8B (INT4) generates the official competition
@@ -1460,6 +1484,9 @@ def run_creative_direction(
                 f"GEOMETRIC={rule_set['GEOMETRIC_PRIORITY']}  "
                 f"MOOD={rule_set['LIGHTING_MOOD']}\n"
             )
+            if revision_log:
+                n_swaps = sum(1 for r in revision_log if r.get("action") == "swap")
+                rlog += f"\nSelf-revision: {len(revision_log)} pass(es), {n_swaps} swap(s).\n"
             if seq_narrative:
                 rlog += f"\nJudge's Verdict: {seq_narrative}\n"
             rlog += "Engine: purist_original — no pixel modification."
