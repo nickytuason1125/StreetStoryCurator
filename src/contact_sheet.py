@@ -88,13 +88,16 @@ def critique_contact_sheet(
     run_audit_annotation this session). Returns
     {"action": "accept"|"swap", "swap_slot": int|None, "reason": str}.
 
-    Phase 2: loose JSON parsing in critique_engine.run_contact_sheet_critique
-    (no grammar yet — a later phase upgrades this to grammar-constrained
-    decoding via LlamaGrammar, following vlm_niche_detector.py's pattern).
-    Never raises — on any failure returns action="accept" so the loop
-    always terminates safely.
+    Grammar-constrained on the local GGUF path (critique_engine._SWAP_GRAMMAR_SRC),
+    loose parsing on the Ollama fallback. A swap whose cited evidence
+    (cited_aspect/cited_value) fails signal_validator.validate_claims()
+    against the real seq_aspects data is downgraded to "accept" — a
+    hallucinated number is rejectable, not correctable. Never raises — on
+    any failure returns action="accept" so the loop always terminates
+    safely.
     """
     import critique_engine as ce
+    from signal_validator import Claim, validate_claims
 
     slot_summaries = [
         {
@@ -109,9 +112,23 @@ def critique_contact_sheet(
         for i, role in enumerate(roles)
     ]
     try:
-        return ce.run_contact_sheet_critique(sheet_path, slot_summaries, style_prompt)
+        result = ce.run_contact_sheet_critique(sheet_path, slot_summaries, style_prompt)
     except Exception as e:
         return {"action": "accept", "swap_slot": None, "reason": f"critique failed: {e}"}
+
+    if result.get("action") == "swap":
+        claim = Claim(
+            text=result.get("reason", ""),
+            cited_aspect=result.get("cited_aspect"),
+            cited_value=result.get("cited_value"),
+            cited_slot=result.get("swap_slot"),
+        )
+        validation = validate_claims([claim], seq_aspects)
+        if not validation.passed:
+            print(f"[contact_sheet] swap request downgraded to accept — {validation.reason}")
+            result = {**result, "action": "accept",
+                      "reason": f"evidence rejected: {validation.reason}"}
+    return result
 
 
 def run_revision_loop(

@@ -1443,7 +1443,7 @@ def run_creative_direction(
     _p(0.36, "Generating Judge's Verdict…")
     seq_narrative: Optional[str] = None
     try:
-        from creative_director_agent import generate_judges_verdict_8b
+        from jury_engine import generate_judges_verdict_8b
         seq_narrative = generate_judges_verdict_8b(
             selected_images=[
                 {"filename": p, **(seq_aspects[i] if seq_aspects else {})}

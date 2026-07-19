@@ -33,9 +33,12 @@ _llm: object = None   # cached Llama instance
 # Ollama's HTTP API has no GBNF grammar support, so that fallback still
 # relies on _parse_swap_json's loose parsing.
 _SWAP_GRAMMAR_SRC = r'''
-root   ::= "{" ws '"action"' ws ":" ws action ws "," ws '"swap_slot"' ws ":" ws slot ws "," ws '"reason"' ws ":" ws string ws "}"
+root   ::= "{" ws '"action"' ws ":" ws action ws "," ws '"swap_slot"' ws ":" ws slot ws "," ws '"cited_aspect"' ws ":" ws aspect ws "," ws '"cited_value"' ws ":" ws value ws "," ws '"reason"' ws ":" ws string ws "}"
 action ::= "\"accept\"" | "\"swap\""
 slot   ::= "null" | [0-9] [0-9]?
+aspect ::= "\"Composition\"" | "\"Lighting\"" | "\"Narrative\"" | "\"Human/Culture\"" | "\"Technical\"" | "\"none\""
+value  ::= "null" | float
+float  ::= "-"? [0-9]+ "." [0-9]+
 string ::= "\"" ([^"\\] | "\\" .)* "\""
 ws     ::= [ \t\r\n]*
 '''
@@ -398,8 +401,12 @@ def run_contact_sheet_critique(
         f"Per-slot data: {json.dumps(slot_summaries, separators=(',', ':'))[:600]}. "
         "If every slot fits its role and the sequence flows well, respond ACCEPT. "
         "If exactly one slot clearly doesn't belong (wrong mood, weak composition, "
-        "breaks pacing), respond SWAP with that slot number (0-indexed). "
-        'Output ONLY JSON: {"action":"accept"|"swap","swap_slot":<int or null>,"reason":"<one sentence>"}'
+        "breaks pacing), respond SWAP with that slot number (0-indexed) and cite the "
+        "specific aspect/value from the per-slot data driving your decision (or "
+        "\"none\"/null if purely qualitative). "
+        'Output ONLY JSON: {"action":"accept"|"swap","swap_slot":<int or null>,'
+        '"cited_aspect":"Composition|Lighting|Narrative|Human/Culture|Technical|none",'
+        '"cited_value":<float or null>,"reason":"<one sentence>"}'
     )
 
     llm = _load_model()
@@ -490,7 +497,22 @@ def _parse_swap_json(raw: str) -> Optional[dict]:
         swap_slot = None
     if action == "swap" and swap_slot is None:
         action = "accept"
-    return {"action": action, "swap_slot": swap_slot, "reason": str(obj.get("reason", ""))[:200]}
+
+    _VALID_ASPECTS = {"Composition", "Lighting", "Narrative", "Human/Culture", "Technical"}
+    cited_aspect = obj.get("cited_aspect")
+    if cited_aspect not in _VALID_ASPECTS:
+        cited_aspect = None
+    cited_value = obj.get("cited_value")
+    try:
+        cited_value = float(cited_value) if cited_value is not None else None
+    except (TypeError, ValueError):
+        cited_value = None
+
+    return {
+        "action": action, "swap_slot": swap_slot,
+        "cited_aspect": cited_aspect, "cited_value": cited_value,
+        "reason": str(obj.get("reason", ""))[:200],
+    }
 
 
 def run_audit_annotation(image_hash: str) -> dict:
