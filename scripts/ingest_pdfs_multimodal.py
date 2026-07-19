@@ -24,7 +24,7 @@ Notes
 - Concept phrases are stored in cache/rag_concepts.json (plain JSON, no ChromaDB).
 - Up to 8 phrases per grade run are injected into the VLM system prompt as a
   rubric block.  More PDFs = richer style guidance for the grader.
-- Requires PyMuPDF (fitz) for text extraction:  pip install pymupdf
+- Requires pypdfium2 for text extraction (via src/pdf_rag.py):  pip install pypdfium2
 - LLM extraction priority: local GGUF → Ollama qwen2.5:7b → error
 """
 from __future__ import annotations

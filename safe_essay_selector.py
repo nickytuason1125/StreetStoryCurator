@@ -131,11 +131,11 @@ class Candidate:
 
 def verify_deps() -> None:
     missing = []
-    for mod in ("torch", "transformers", "PIL", "fitz"):
+    for mod in ("torch", "transformers", "PIL", "pypdfium2"):
         try:
             importlib.import_module(mod)
         except ImportError:
-            pkg = {"PIL": "Pillow", "fitz": "pymupdf"}.get(mod, mod)
+            pkg = {"PIL": "Pillow"}.get(mod, mod)
             missing.append(f"  {mod:<15} pip install {pkg}")
     if missing:
         print("[deps] MISSING:\n" + "\n".join(missing))
@@ -174,66 +174,72 @@ def _extract_downgraded(pdf_path: Path) -> list[tuple[Candidate, "PIL.Image.Imag
     Open the PDF, extract every image/render every page into a volatile
     224x224 grayscale PIL Image. Original raw buffers are deleted immediately.
     Returns list of (Candidate, downgraded_pil) -- caller must del pil after use.
+
+    Uses pypdfium2 (Apache-2.0 -- replaces PyMuPDF, which is AGPL-3.0/
+    commercial-licensed).
     """
-    import fitz
+    import pypdfium2 as pdfium
     from PIL import Image
 
     results: list[tuple[Candidate, Image.Image]] = []
-    doc = fitz.open(str(pdf_path))
-
-    if doc.needs_pass or doc.is_encrypted:
-        doc.close()
+    try:
+        doc = pdfium.PdfDocument(str(pdf_path))
+    except Exception:
+        # Encrypted/password-protected/corrupt -- pypdfium2 raises on open
+        # rather than exposing needs_pass/is_encrypted flags after the fact.
         return []
 
-    for page_no in range(1, doc.page_count + 1):
+    for page_no in range(1, len(doc) + 1):
         try:
-            page = doc.load_page(page_no - 1)
+            page = doc[page_no - 1]
         except Exception:
             continue
-        images = page.get_images(full=True)
 
-        if images:
-            for img_idx, img_info in enumerate(images, start=1):
-                xref = img_info[0]
-                try:
-                    base = doc.extract_image(xref)
-                except Exception:
-                    continue
-
-                raw = base.get("image", b"")
-                if not raw:
-                    continue
-
-                try:
-                    img = Image.open(io.BytesIO(raw))
-                    w, h = img.size
-                    if min(w, h) < _MIN_DIM:
-                        del img
-                        continue
-                    # IMMEDIATE DOWNGRADE -- destroys expressive resolution
-                    small = img.resize((_CLIP_SIZE, _CLIP_SIZE), Image.LANCZOS).convert("L")
-                    del img
-                except Exception:
-                    continue
-
-                cand = Candidate(pdf_path, pdf_path.name, page_no, img_idx)
-                results.append((cand, small))
-
-        else:
-            # No embedded objects -- render page at minimal DPI
+        img_idx = 0
+        found_embedded = False
+        for obj in page.get_objects(filter=(pdfium.raw.FPDF_PAGEOBJ_IMAGE,)):
+            found_embedded = True
+            img_idx += 1
             try:
-                mat = fitz.Matrix(72 / 72, 72 / 72)  # 72 DPI (minimal)
-                pix = page.get_pixmap(matrix=mat, colorspace=fitz.csGRAY)
-                if pix.width < _MIN_DIM or pix.height < _MIN_DIM:
+                bitmap = obj.get_bitmap()
+                img = bitmap.to_pil()
+                bitmap.close()
+                w, h = img.size
+                if min(w, h) < _MIN_DIM:
+                    del img
+                    obj.close()
                     continue
-                img   = Image.frombytes("L", (pix.width, pix.height), pix.samples)
+                # IMMEDIATE DOWNGRADE -- destroys expressive resolution
+                small = img.resize((_CLIP_SIZE, _CLIP_SIZE), Image.LANCZOS).convert("L")
+                del img
+            except Exception:
+                obj.close()
+                continue
+            obj.close()
+
+            cand = Candidate(pdf_path, pdf_path.name, page_no, img_idx)
+            results.append((cand, small))
+
+        if not found_embedded:
+            # No embedded objects -- render page at minimal DPI (scale=1.0 == 72 DPI)
+            try:
+                bitmap = page.render(scale=1.0)
+                img = bitmap.to_pil().convert("L")
+                bitmap.close()
+                if img.width < _MIN_DIM or img.height < _MIN_DIM:
+                    del img
+                    page.close()
+                    continue
                 small = img.resize((_CLIP_SIZE, _CLIP_SIZE), Image.LANCZOS)
                 del img
             except Exception:
+                page.close()
                 continue
 
             cand = Candidate(pdf_path, pdf_path.name, page_no, 0)
             results.append((cand, small))
+
+        page.close()
 
     doc.close()
     return results
@@ -337,24 +343,27 @@ def _render_page_b64(pdf_path: Path, page_no: int) -> str:
     """
     Render a single PDF page at low resolution into grayscale, encode as base64
     JPEG, delete all pixel buffers, and return the base64 string only.
+
+    Uses pypdfium2 (Apache-2.0 -- replaces PyMuPDF, AGPL-3.0/commercial).
     """
-    import fitz
+    import pypdfium2 as pdfium
     from PIL import Image
 
-    doc  = fitz.open(str(pdf_path))
-    page = doc[page_no - 1]
-    mat  = fitz.Matrix(1.5, 1.5)          # ~108 DPI -- enough for composition
-    pix  = page.get_pixmap(matrix=mat, colorspace=fitz.csGRAY)
+    doc    = pdfium.PdfDocument(str(pdf_path))
+    page   = doc[page_no - 1]
+    bitmap = page.render(scale=1.5)       # ~108 DPI -- enough for composition
+    page.close()
     doc.close()
 
-    img  = Image.frombytes("L", (pix.width, pix.height), pix.samples)
+    img  = bitmap.to_pil().convert("L")
+    bitmap.close()
     img  = img.resize((_QWEN_SIZE, _QWEN_SIZE), Image.LANCZOS)
 
     buf  = io.BytesIO()
     img.convert("RGB").save(buf, format="JPEG", quality=72)
     b64  = base64.b64encode(buf.getvalue()).decode()
 
-    del img, buf, pix
+    del img, buf
     gc.collect()
     return b64
 

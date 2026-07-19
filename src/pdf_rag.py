@@ -74,16 +74,20 @@ def list_pdfs() -> list[dict]:
 
 def _extract_text(pdf_path: str | Path, max_chars: int = 24_000) -> tuple[str, int]:
     """
-    Extract plain text from a PDF using PyMuPDF.
+    Extract plain text from a PDF using pypdfium2 (Apache-2.0 — replaces
+    PyMuPDF, which is AGPL-3.0/commercial-licensed).
     Returns (text, page_count).  Truncates at max_chars to fit LLM context.
     """
-    import fitz  # PyMuPDF
-    doc = fitz.open(str(pdf_path))
-    pages = doc.page_count
+    import pypdfium2 as pdfium
+    doc = pdfium.PdfDocument(str(pdf_path))
+    pages = len(doc)
     chunks: list[str] = []
     total = 0
     for page in doc:
-        chunk = page.get_text("text").strip()
+        textpage = page.get_textpage()
+        chunk = textpage.get_text_range().strip()
+        textpage.close()
+        page.close()
         if not chunk:
             continue
         remaining = max_chars - total

@@ -30,9 +30,6 @@ packaging               # required by _clip_compat shim (also a transitive dep)
 opencv-python           # cv2 — Haar cascades, Sobel/HSV signal extraction
 scikit-learn            # cosine_similarity for narrative sequencing
 
-# ── Object detection ──────────────────────────────────────────────────────────
-ultralytics             # YOLO11s-seg — person detection + routing
-
 # ── Image Quality Assessment ──────────────────────────────────────────────────
 pyiqa                   # UniQA unified quality backbone
 
@@ -44,6 +41,8 @@ Pillow
 pillow-heif             # HEIC/HEIF support
 rawpy                   # RAW files: ARW, CR2, NEF, DNG, ORF, RAF
 PyTurboJPEG             # Fast JPEG decode via libjpeg-turbo
+pypdfium2               # PDF text/render (RAG upload, essay selector) — Apache-2.0,
+                        #   replaces PyMuPDF (AGPL-3.0/commercial-licensed)
 
 # ── Metadata ──────────────────────────────────────────────────────────────────
 piexif                  # EXIF timestamp reading

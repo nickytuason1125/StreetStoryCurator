@@ -478,10 +478,10 @@ def _apply_brief_constraints(
 
 def person_kill_switch(paths: list[str], style_prompt: str) -> set[str]:
     """
-    YOLO26-nano Auditor Guardrail — CPU.
+    D-FINE-nano Auditor Guardrail — CPU.
 
     Literal Judge enforcement: if the brief implies an empty/no-people scene,
-    YOLO26-nano scans ALL candidates at conf ≥ 0.35. Any image where
+    D-FINE-nano scans ALL candidates at conf ≥ 0.35. Any image where
     class:person is detected is DISQUALIFIED from the Story Sequence.
     This is an absolute Boolean Constraint — no score adjustment, no clean-up.
     """
@@ -490,57 +490,44 @@ def person_kill_switch(paths: list[str], style_prompt: str) -> set[str]:
 
     blocked: set[str] = set()
     try:
-        import logging
-        logging.getLogger("ultralytics").setLevel(logging.WARNING)
-        from ultralytics import YOLO as _YOLO
+        import dfine_detector
+        from PIL import Image as _PILImg
 
-        # Try YOLO26-nano (NMS-free, better small-object detection, ~40% faster CPU).
-        # Fall back to yolo11n if YOLO26 weights unavailable.
-        yolo = None
-        for _model_name in ("yolo26n.pt", "yolo11n.pt"):
-            try:
-                yolo = _YOLO(_model_name)
-                print(f"[cd] YOLO model: {_model_name}")
-                break
-            except Exception:
-                continue
-        if yolo is None:
-            raise RuntimeError("No YOLO model available")
+        detections = dfine_detector.detect_persons(paths, conf=_YOLO_PERSON_CONF)
 
         for path in paths:
             try:
-                results = yolo(path, device="cpu", verbose=False,
-                               classes=[0], conf=_YOLO_PERSON_CONF)
-                for r in results:
-                    if r.boxes is None or len(r.boxes) == 0:
-                        continue
-                    img_h, img_w = r.orig_shape
-                    canvas_area  = img_h * img_w
-                    area_thresh  = _YOLO_MIN_AREA_FRAC * canvas_area
-                    for box in r.boxes:
-                        x1, y1, x2, y2 = box.xyxy[0].tolist()
-                        box_area = (x2 - x1) * (y2 - y1)
-                        if box_area < area_thresh:
-                            print(
-                                f"[cd] person_kill_switch: IGNORED distant figure in "
-                                f"{Path(path).name} — box_area={box_area:.0f}px "
-                                f"< {area_thresh:.0f}px ({_YOLO_MIN_AREA_FRAC*100:.3f}% canvas)"
-                            )
-                            continue
-                        blocked.add(path)
+                boxes = detections.get(path, [])
+                if not boxes:
+                    continue
+                with _PILImg.open(path) as _im:
+                    img_w, img_h = _im.size
+                canvas_area = img_h * img_w
+                area_thresh = _YOLO_MIN_AREA_FRAC * canvas_area
+                for det in boxes:
+                    x1n, y1n, x2n, y2n = det["bbox"]
+                    box_area = (x2n - x1n) * img_w * (y2n - y1n) * img_h
+                    if box_area < area_thresh:
                         print(
-                            f"[cd] person_kill_switch: DISQUALIFIED {Path(path).name} "
-                            f"— person conf≥{_YOLO_PERSON_CONF}, "
-                            f"box_area={box_area:.0f}px"
+                            f"[cd] person_kill_switch: IGNORED distant figure in "
+                            f"{Path(path).name} — box_area={box_area:.0f}px "
+                            f"< {area_thresh:.0f}px ({_YOLO_MIN_AREA_FRAC*100:.3f}% canvas)"
                         )
-                        break
+                        continue
+                    blocked.add(path)
+                    print(
+                        f"[cd] person_kill_switch: DISQUALIFIED {Path(path).name} "
+                        f"— person conf≥{_YOLO_PERSON_CONF}, "
+                        f"box_area={box_area:.0f}px"
+                    )
+                    break
             except Exception as e_img:
-                print(f"[cd] YOLO inference error {Path(path).name}: {e_img}")
+                print(f"[cd] D-FINE inference error {Path(path).name}: {e_img}")
 
     except ImportError:
-        print("[cd] ultralytics not installed — YOLO gate skipped")
+        print("[cd] dfine_detector unavailable — person gate skipped")
     except Exception as e:
-        print(f"[cd] YOLO gate error: {e}")
+        print(f"[cd] person gate error: {e}")
 
     if blocked:
         print(f"[cd] person_kill_switch: {len(blocked)}/{len(paths)} images disqualified")

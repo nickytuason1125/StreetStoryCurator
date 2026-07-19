@@ -4,7 +4,8 @@ Vision IQA Head — TOPIQ NR quality backbone.
 UniQAHead: pyiqa 'topiq_nr' metric (CLIP-based no-reference IQA).
 'uniqa' does not exist in pyiqa 0.1.x — topiq_nr is the correct replacement.
 
-YOLO11s-seg routing:
+D-FINE-nano routing (src/dfine_detector.py, Apache-2.0 — replaces the former
+ultralytics YOLO11s-seg here, AGPL-3.0):
   Route 1 (empty scene): 0 humans detected → score = sqrt(composition * lighting)
                           from SpecVLM aspect scores. Decouples Human/Culture penalty.
   Route 2 (layered frame): human in midground (bbox center_y 33–67%) + blurred
@@ -16,7 +17,7 @@ Speed design:
   - Images loaded in parallel (TurboJPEG via fast_ingestion.decode_one).
   - TOPIQ NR: GPU batch inference at 512×512, mini-batches of 8.
   - Route 2: per-image crop inference (variable crop size prevents batching).
-  - YOLO: .engine → .pt → n-variant fallback; returns per-image route decisions.
+  - D-FINE: CPU inference, per-image; returns per-image route decisions.
   - VRAM: single model — no sequential load/unload needed.
 """
 
@@ -30,7 +31,6 @@ import torch
 import torchvision.transforms.functional as TF
 
 _uniqa_singleton: Optional["UniQAHead"] = None
-_yolo_singleton = None   # ultralytics YOLO instance — loaded once, reused across runs
 
 
 def release_iqa_models() -> None:
@@ -148,96 +148,45 @@ def _run_yolo_seg(
     image_paths: List[str],
 ) -> tuple:
     """
-    Run YOLO11s-seg (person class only) on all images.
+    Run D-FINE-nano (person class only) on all images — replaces ultralytics
+    YOLO11s-seg (AGPL-3.0) with the Apache-2.0 shared detector in
+    dfine_detector.py. Boxes-only (no masks — this function's name is a
+    holdover; it never consumed segmentation masks, only boxes).
 
-    Passes paths directly to YOLO — no pre-decoded tensors needed, so the
-    caller can delay the full tensor load until UniQA actually needs it.
-
-    YOLO model search order: yolo11s-seg.engine → yolo11s-seg.pt → yolo11n-seg.pt.
-    Falls back gracefully to person_detected=True for all images when unavailable.
+    Falls back gracefully to person_detected=True for all images when the
+    detector is unavailable.
 
     Returns:
         person_detected_dict  path → bool
         subject_bboxes_dict   path → list[[x1n, y1n, x2n, y2n]] (normalised [0,1])
     """
+    import dfine_detector
+
     person_detected: dict = {}
     subject_bboxes:  dict = {}
 
-    global _yolo_singleton
-    if _yolo_singleton is None:
-        candidates = [
-            Path("models") / "yolo11s-seg.engine",
-            Path("models") / "yolo11s-seg.pt",
-            Path("models") / "yolo11n-seg.pt",
-        ]
-        for c in candidates:
-            if c.exists():
-                try:
-                    from ultralytics import YOLO
-                    _yolo_singleton = YOLO(str(c))
-                    print(f"[uniqa_head] YOLO loaded: {c.name}")
-                    break
-                except Exception as e:
-                    print(f"[uniqa_head] YOLO {c.name} failed: {e}")
-    else:
-        print("[uniqa_head] YOLO singleton reused — no reload")
-
-    yolo = _yolo_singleton
-    if yolo is None:
-        print("[uniqa_head] YOLO unavailable — all images route to standard UniQA")
+    if image_paths and not dfine_detector.is_available():
+        print("[uniqa_head] D-FINE unavailable — all images route to standard UniQA")
         for p in image_paths:
             person_detected[p] = True   # safe default: treat as person present
         return person_detected, subject_bboxes
 
-    def _parse_yolo_result(path: str, result) -> None:
-        boxes = result.boxes if result else None
-        if boxes is None or len(boxes) == 0:
-            person_detected[path] = False
-            return
-        # orig_shape is (H, W) — set by YOLO from the source image dimensions
-        H, W = result.orig_shape[:2]
-        xyxy_arr = boxes.xyxy.cpu().numpy()
-        conf_arr = boxes.conf.cpu().numpy()
-        bboxes_norm: list = []
-        for box_coords, conf_val in zip(xyxy_arr, conf_arr):
-            if float(conf_val) < 0.55:
-                continue
-            x1n = float(box_coords[0]) / W
-            y1n = float(box_coords[1]) / H
-            x2n = float(box_coords[2]) / W
-            y2n = float(box_coords[3]) / H
-            if (x2n - x1n) * (y2n - y1n) < 0.005:
-                continue
-            bboxes_norm.append([x1n, y1n, x2n, y2n])
+    detections = dfine_detector.detect_persons(image_paths, conf=0.55)
+
+    for path in image_paths:
+        boxes = detections.get(path, [])
+        bboxes_norm = [
+            det["bbox"] for det in boxes
+            if (det["bbox"][2] - det["bbox"][0]) * (det["bbox"][3] - det["bbox"][1]) >= 0.005
+        ]
         if bboxes_norm:
             person_detected[path] = True
             subject_bboxes[path]  = bboxes_norm
         else:
             person_detected[path] = False
 
-    # Batch YOLO: pass paths directly — YOLO loads images internally.
-    # ~8x fewer Python/GPU round-trips vs per-image loop; no tensor RAM needed.
-    _YOLO_BATCH = 16
-    for b_start in range(0, max(len(image_paths), 1), _YOLO_BATCH):
-        batch_paths = image_paths[b_start : b_start + _YOLO_BATCH]
-        if not batch_paths:
-            break
-        try:
-            b_results = yolo(batch_paths, verbose=False, classes=[0])
-            for path, result in zip(batch_paths, b_results):
-                _parse_yolo_result(path, result)
-        except Exception as e:
-            print(f"[uniqa_head] YOLO batch failed ({e}) — per-image fallback")
-            for path in batch_paths:
-                try:
-                    res = yolo(path, verbose=False, classes=[0])
-                    _parse_yolo_result(path, res[0])
-                except Exception as e2:
-                    print(f"[uniqa_head] YOLO fallback failed for {Path(path).name}: {e2}")
-                    person_detected[path] = True
-
     n_person = sum(1 for v in person_detected.values() if v)
-    print(f"[uniqa_head] YOLO: {n_person}/{len(image_paths)} images with person detected")
+    print(f"[uniqa_head] D-FINE: {n_person}/{len(image_paths)} images with person detected")
     return person_detected, subject_bboxes
 
 

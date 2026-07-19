@@ -176,9 +176,8 @@ _MIDGROUND_DEPTH_MIN   = 60    # 60 ≤ Z ≤ 160 → midground subject layer
 _MIDGROUND_DEPTH_MAX   = 160
 _OTS_PORTRAIT_COMP     = 0.85  # over-the-shoulder composition score override
 
-_SEG_WEIGHTS = ("yolo11s-seg.pt", "yolo11n-seg.pt")
-_PERSON_CLASS = 0
-_SEG_CONF     = 0.35
+_TV_PERSON_LABEL = 1     # torchvision COCO detection label index (0=background, 1=person)
+_SEG_CONF        = 0.35
 
 
 class SegCompositionResult:
@@ -203,40 +202,37 @@ class SegCompositionResult:
 
 
 class SegCompositionAnalyzer:
-    """YOLO11s-seg person segmentation + depth-layer composition logic."""
+    """
+    Mask R-CNN (torchvision, BSD-3) person instance segmentation +
+    depth-layer composition logic — replaces ultralytics YOLO11s-seg
+    (AGPL-3.0). This is the one detection site in the app that needs real
+    instance-segmentation masks (fg/mid depth-layer union for the
+    over-the-shoulder-portrait override), so it can't use the boxes-only
+    D-FINE-nano detector shared by the other sites (src/dfine_detector.py).
+    """
 
     def __init__(self):
-        self._model = None
-        self._ready = False
-
-    _TRT_ENGINE = "yolo11s-seg.engine"   # ultralytics TRT export: yolo.export(format='engine', half=True)
+        self._model  = None
+        self._ready  = False
+        self._device = "cpu"
 
     def load(self) -> bool:
         try:
-            from ultralytics import YOLO
-            # Prefer TRT engine (FP16, native ultralytics TRT support — no extra bindings needed).
-            # Export: YOLO('yolo11s-seg.pt').export(format='engine', half=True, device=0)
-            if Path(self._TRT_ENGINE).exists():
-                try:
-                    self._model = YOLO(self._TRT_ENGINE)
-                    self._ready = True
-                    print(f"[SegComp] TensorRT FP16 engine loaded: {self._TRT_ENGINE}")
-                    return True
-                except Exception as e:
-                    print(f"[SegComp] TRT engine load failed ({e}) — PyTorch fallback")
-
-            for weights in _SEG_WEIGHTS:
-                try:
-                    self._model = YOLO(weights)
-                    self._ready = True
-                    print(f"[SegComp] Loaded {weights}")
-                    return True
-                except Exception:
-                    continue
-            print("[SegComp] No seg weights found — composition analysis disabled")
-            return False
-        except ImportError:
-            print("[SegComp] ultralytics not installed — composition analysis disabled")
+            import torch
+            from torchvision.models.detection import (
+                maskrcnn_resnet50_fpn, MaskRCNN_ResNet50_FPN_Weights,
+            )
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            self._model = maskrcnn_resnet50_fpn(
+                weights=MaskRCNN_ResNet50_FPN_Weights.COCO_V1,
+                box_score_thresh=_SEG_CONF,
+            ).to(device).eval()
+            self._device = device
+            self._ready  = True
+            print(f"[SegComp] Mask R-CNN loaded on {device}")
+            return True
+        except Exception as e:
+            print(f"[SegComp] Load failed: {e}")
             return False
 
     def analyze(self, path: str, depth_map: Optional[np.ndarray]) -> SegCompositionResult:
@@ -245,62 +241,47 @@ class SegCompositionAnalyzer:
             return result
 
         try:
-            res_list = self._model(
-                path,
-                device="cpu",
-                classes=[_PERSON_CLASS],
-                conf=_SEG_CONF,
-                verbose=False,
-                half=False,
-            )
+            import torch
+            from PIL import Image
+            import torchvision.transforms.functional as TF
+
+            img = Image.open(path).convert("RGB")
+            img_w, img_h = img.size
+            canvas_area  = img_h * img_w
+            tensor = TF.to_tensor(img).to(self._device)
+            with torch.inference_mode():
+                out = self._model([tensor])[0]
         except Exception as e:
             print(f"[SegComp] Inference failed for {Path(path).name}: {e}")
             return result
 
-        for r in res_list:
-            if r.masks is None or len(r.masks) == 0:
-                continue
+        keep = (out["labels"] == _TV_PERSON_LABEL) & (out["scores"] >= _SEG_CONF)
+        for mask_data in out["masks"][keep]:
+            # mask_data: (1, H, W) float tensor [0,1], already at source resolution
+            mask_np = mask_data[0].cpu().numpy() > 0.5
 
-            img_h, img_w = r.orig_shape
-            canvas_area  = img_h * img_w
+            mask_area = int(mask_np.sum())
+            if mask_area < int(0.0008 * canvas_area):
+                continue   # ignore tiny distant figures
 
-            for mask_data in r.masks.data:
-                # mask_data: (H_m, W_m) float tensor [0,1]
-                import torch
-                mask_np = mask_data.cpu().numpy()
-                # Resize to original image resolution
-                if mask_np.shape != (img_h, img_w):
-                    from PIL import Image
-                    mask_img = Image.fromarray((mask_np * 255).astype(np.uint8)).resize(
-                        (img_w, img_h), Image.NEAREST
-                    )
-                    mask_np = np.array(mask_img) > 127
-                else:
-                    mask_np = mask_np > 0.5
+            result.has_person = True
+            result.subject_masks.append(mask_np)
 
-                mask_area = int(mask_np.sum())
-                if mask_area < int(0.0008 * canvas_area):
-                    continue   # ignore tiny distant figures
+            if depth_map is not None:
+                dmap_resized = depth_map
+                if depth_map.shape != (img_h, img_w):
+                    dimg = Image.fromarray(depth_map).resize((img_w, img_h), Image.BILINEAR)
+                    dmap_resized = np.array(dimg)
 
-                result.has_person = True
-                result.subject_masks.append(mask_np)
+                person_depths = dmap_resized[mask_np]
+                mean_depth    = float(person_depths.mean()) if len(person_depths) else 128.0
 
-                if depth_map is not None:
-                    dmap_resized = depth_map
-                    if depth_map.shape != (img_h, img_w):
-                        from PIL import Image
-                        dimg = Image.fromarray(depth_map).resize((img_w, img_h), Image.BILINEAR)
-                        dmap_resized = np.array(dimg)
-
-                    person_depths = dmap_resized[mask_np]
-                    mean_depth    = float(person_depths.mean()) if len(person_depths) else 128.0
-
-                    if mean_depth < _FOREGROUND_DEPTH_MAX:
-                        fg = mask_np if result.foreground_mask is None else (result.foreground_mask | mask_np)
-                        result.foreground_mask = fg
-                    elif _MIDGROUND_DEPTH_MIN <= mean_depth <= _MIDGROUND_DEPTH_MAX:
-                        mg = mask_np if result.midground_mask is None else (result.midground_mask | mask_np)
-                        result.midground_mask = mg
+                if mean_depth < _FOREGROUND_DEPTH_MAX:
+                    fg = mask_np if result.foreground_mask is None else (result.foreground_mask | mask_np)
+                    result.foreground_mask = fg
+                elif _MIDGROUND_DEPTH_MIN <= mean_depth <= _MIDGROUND_DEPTH_MAX:
+                    mg = mask_np if result.midground_mask is None else (result.midground_mask | mask_np)
+                    result.midground_mask = mg
 
         # Over-the-shoulder portrait: one midground person, one foreground occlusion
         if (
@@ -320,9 +301,10 @@ class SegCompositionAnalyzer:
         self, paths: list[str], depth_maps: dict[str, Optional[np.ndarray]]
     ) -> dict[str, "SegCompositionResult"]:
         """
-        Single YOLO call on GPU for all paths — eliminates N-1 Python dispatch
-        overheads and enables Tensor Core batching.  Falls back to per-image
-        analyze() on any error.
+        Single Mask R-CNN batched call for all paths — eliminates N-1 Python
+        dispatch overheads (torchvision detection models accept a list of
+        variable-resolution tensors and batch them internally). Falls back
+        to per-image analyze() on any error.
         """
         results: dict[str, SegCompositionResult] = {p: SegCompositionResult() for p in paths}
         if not self._ready or not paths:
@@ -330,42 +312,27 @@ class SegCompositionAnalyzer:
 
         try:
             import torch
-            _cuda   = torch.cuda.is_available()
-            _device = "cuda" if _cuda else "cpu"
-            _half   = _cuda
-            yolo_out = self._model(
-                paths,
-                device=_device,
-                classes=[_PERSON_CLASS],
-                conf=_SEG_CONF,
-                verbose=False,
-                half=_half,
-            )
+            from PIL import Image as _PIL_img
+            import torchvision.transforms.functional as TF
+
+            imgs  = [_PIL_img.open(p).convert("RGB") for p in paths]
+            sizes = [img.size for img in imgs]   # (w, h) per image
+            tensors = [TF.to_tensor(img).to(self._device) for img in imgs]
+            with torch.inference_mode():
+                outs = self._model(tensors)
         except Exception as e:
-            print(f"[SegComp] Batch GPU inference failed ({e}) — per-image CPU fallback")
+            print(f"[SegComp] Batch inference failed ({e}) — per-image fallback")
             for p in paths:
                 results[p] = self.analyze(p, depth_maps.get(p))
             return results
 
-        for path, r in zip(paths, yolo_out):
+        for path, (img_w, img_h), out in zip(paths, sizes, outs):
             result = results[path]
-            if r.masks is None or len(r.masks) == 0:
-                continue
+            canvas_area = img_h * img_w
+            keep = (out["labels"] == _TV_PERSON_LABEL) & (out["scores"] >= _SEG_CONF)
 
-            img_h, img_w = r.orig_shape
-            canvas_area  = img_h * img_w
-
-            for mask_data in r.masks.data:
-                mask_np = mask_data.cpu().numpy()
-                if mask_np.shape != (img_h, img_w):
-                    from PIL import Image as _PIL_img
-                    mask_np = np.array(
-                        _PIL_img.fromarray((mask_np * 255).astype(np.uint8)).resize(
-                            (img_w, img_h), _PIL_img.NEAREST
-                        )
-                    ) > 127
-                else:
-                    mask_np = mask_np > 0.5
+            for mask_data in out["masks"][keep]:
+                mask_np = mask_data[0].cpu().numpy() > 0.5
 
                 if int(mask_np.sum()) < int(0.0008 * canvas_area):
                     continue
@@ -377,9 +344,9 @@ class SegCompositionAnalyzer:
                 if depth_map is not None:
                     dmap_resized = depth_map
                     if depth_map.shape != (img_h, img_w):
-                        from PIL import Image as _PIL_img
+                        from PIL import Image as _PIL_img2
                         dmap_resized = np.array(
-                            _PIL_img.fromarray(depth_map).resize((img_w, img_h), _PIL_img.BILINEAR)
+                            _PIL_img2.fromarray(depth_map).resize((img_w, img_h), _PIL_img2.BILINEAR)
                         )
                     person_depths = dmap_resized[mask_np]
                     mean_depth    = float(person_depths.mean()) if len(person_depths) else 128.0
@@ -592,64 +559,3 @@ def run_composition_analysis(
         "subject_masks":         subject_masks_out,
         "chiaroscuro_flags":     chiaroscuro_flags,
     }
-
-
-def run_yolo_bbox_pass(paths: list[str]) -> dict[str, list[list[float]]]:
-    """
-    Lightweight YOLO11s-seg pass on ALL images — returns normalized bounding box
-    coordinates [[x1n, y1n, x2n, y2n], ...] in [0, 1] range for detected persons.
-
-    No depth estimation, mask processing, or chiaroscuro — purely for:
-      (a) Subject-targeted MUSIQ sharpness: crop to subject bbox, floor tech score
-          to 0.75 when the subject region is crisp despite global background blur.
-      (b) Dynamic Weight Route 1: zero detections → empty-scene geometric routing.
-
-    YOLO is loaded in a single GPU batch, then immediately unloaded.
-    Normalized coords allow TechnicalHead to scale to any tensor resolution.
-    """
-    result: dict[str, list[list[float]]] = {p: [] for p in paths}
-    if not paths:
-        return result
-
-    sca = SegCompositionAnalyzer()
-    if not sca.load():
-        return result
-
-    try:
-        import torch
-        _cuda    = torch.cuda.is_available()
-        _device  = "cuda" if _cuda else "cpu"
-        yolo_out = sca._model(
-            paths,
-            device=_device,
-            classes=[_PERSON_CLASS],
-            conf=_SEG_CONF,
-            verbose=False,
-            half=_cuda,
-        )
-        for path, r in zip(paths, yolo_out):
-            if r.boxes is None or len(r.boxes) == 0:
-                continue
-            img_h, img_w = r.orig_shape
-            canvas_area  = img_h * img_w
-            bboxes_norm: list[list[float]] = []
-            for box_row in r.boxes.xyxy.cpu().tolist():
-                x1, y1, x2, y2 = box_row
-                box_area = (x2 - x1) * (y2 - y1)
-                if box_area < 0.0008 * canvas_area:
-                    continue  # ignore tiny distant figures
-                bboxes_norm.append([
-                    x1 / img_w, y1 / img_h,
-                    x2 / img_w, y2 / img_h,
-                ])
-            if bboxes_norm:
-                result[path] = bboxes_norm
-
-        n_persons = sum(1 for v in result.values() if v)
-        print(f"[yolo_bbox] {n_persons}/{len(paths)} images with person detections")
-    except Exception as _e:
-        print(f"[yolo_bbox] Batch YOLO pass failed ({_e})")
-    finally:
-        sca.unload()
-
-    return result
