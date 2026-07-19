@@ -11,6 +11,10 @@ Schema (1536-d SigLIP-2 embeddings)
     reasoning_log  string          SpecVLM narrative reasoning (empty if fallback)
     breakdown      string          JSON blob
     exif_ts        float64         Unix timestamp from EXIF (0.0 if missing)
+    narrative_role     string      Story Mode: "opener"|"subject"|"closer"|"contrast"|"detail"|""
+    sequence_position  int64       Story Mode: 0-based slot in the last sequence, -1 = never placed
+    revision_history   string      Story Mode: JSON list[dict] of revision-loop iterations
+    folder_key         string      Story Mode: sha1(output_dir)[:16]
 
 Migration: if an existing table has a different embedding dimension (e.g. 1152-d
 from SigLIP-So400M), the table is dropped and recreated automatically — the data
@@ -56,6 +60,10 @@ def _make_schema():
         pa.field("exif_ts",         pa.float64()),
         pa.field("has_annotations", pa.string()),
         pa.field("score_factors",   pa.string()),
+        pa.field("narrative_role",    pa.string()),
+        pa.field("sequence_position", pa.int64()),
+        pa.field("revision_history",  pa.string()),
+        pa.field("folder_key",        pa.string()),
     ])
 
 
@@ -166,20 +174,36 @@ def _ensure_columns(tbl) -> None:
         ("personal_score",  pa.float32(), 0.5),
         ("has_annotations", pa.string(),  ""),
         ("score_factors",   pa.string(),  ""),
+        # Story Mode narrative memory (creative_director.py Step 6) —
+        # additive/informational: avoid_paths already handles "don't repeat
+        # images on a re-run" end-to-end; these columns let a future pass
+        # query what role/position an image last held without duplicating
+        # that mechanism.
+        ("narrative_role",     pa.string(), ""),   # "opener"|"subject"|"closer"|"contrast"|"detail"|""
+        ("sequence_position",  pa.int64(),  -1),   # 0-based slot in the last sequence, -1 = never placed
+        ("revision_history",   pa.string(), ""),   # JSON list[dict], one entry per revision-loop iteration that touched this image
+        ("folder_key",         pa.string(), ""),   # sha1(output_dir)[:16] — same convention as grade_pipeline_v2's checkpoint key
     ]
     try:
         col_names = {f.name for f in tbl.schema}
-        n = None
+        # lancedb 0.30.2's Table.add_columns(transforms) takes a dict of
+        # column_name -> SQL expression (evaluated per row), NOT a dict of
+        # column_name -> pyarrow Array — passing arrays directly raises
+        # "'StringArray' object cannot be converted to 'PyString'".
+        transforms: dict[str, str] = {}
         for col, dtype, default in _REQUIRED:
-            if col not in col_names:
-                if n is None:
-                    n = tbl.count_rows()
-                if dtype == pa.string():
-                    arr = pa.array([default] * n, type=dtype)
-                else:
-                    arr = pa.array([float(default)] * n, type=dtype)
-                tbl.add_columns({col: arr})
-                print(f"[lance] Added missing column '{col}' (default={default!r})")
+            if col in col_names:
+                continue
+            if dtype == pa.string():
+                escaped = str(default).replace("'", "''")
+                transforms[col] = f"'{escaped}'"
+            elif pa.types.is_integer(dtype):
+                transforms[col] = str(int(default))
+            else:
+                transforms[col] = str(float(default))
+        if transforms:
+            tbl.add_columns(transforms)
+            print(f"[lance] Added missing columns: {sorted(transforms)}")
     except Exception as _e:
         print(f"[lance] Column migration warning: {_e}")
 
@@ -350,6 +374,36 @@ def update_annotations(path: str, score_factors: list) -> None:
     print(f"[lance] update_annotations: {Path(path).name}  {len(score_factors)} factors")
 
 
+def update_narrative_metadata(
+    path: str,
+    role: str,
+    seq_pos: int,
+    revision_history: list[dict],
+    folder_key: str,
+) -> None:
+    """Write Story Mode narrative metadata for a single row.
+
+    Safe to call from run_creative_direction's Step 6 output loop — only
+    touches these four columns; never reads or writes score/embedding/grade,
+    same discipline as update_annotations() above. Additive/informational:
+    the existing avoid_paths mechanism already handles "don't repeat images
+    on a re-run" end-to-end, so this doesn't change selection behavior —
+    it just makes the history queryable.
+    """
+    safe = path.replace("'", "''")
+    tbl  = _open_table()
+    with _lock:
+        tbl.update(
+            where=f"path = '{safe}'",
+            values={
+                "narrative_role":    role,
+                "sequence_position": int(seq_pos),
+                "revision_history":  json.dumps(revision_history),
+                "folder_key":        folder_key,
+            },
+        )
+
+
 def update_personal_scores(path_score_map: dict[str, float]) -> None:
     """Bulk-update personal_score for a set of paths."""
     import pyarrow as pa
@@ -433,6 +487,20 @@ def _row_to_dict(r: dict) -> dict:
             pass
         return str(v)
 
+    def _safe_int(v, default: int) -> int:
+        if v is None:
+            return default
+        try:
+            import math
+            if isinstance(v, float) and math.isnan(v):
+                return default
+        except Exception:
+            pass
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return default
+
     return {
         "path":            r.get("path", ""),
         "embedding":       np.array(emb, dtype=np.float32),
@@ -444,4 +512,8 @@ def _row_to_dict(r: dict) -> dict:
         "exif_ts":         float(r.get("exif_ts") or 0.0),
         "has_annotations": _safe_str(r.get("has_annotations")),
         "score_factors":   _safe_str(r.get("score_factors")),
+        "narrative_role":     _safe_str(r.get("narrative_role")),
+        "sequence_position":  _safe_int(r.get("sequence_position"), -1),
+        "revision_history":   _safe_str(r.get("revision_history")),
+        "folder_key":         _safe_str(r.get("folder_key")),
     }

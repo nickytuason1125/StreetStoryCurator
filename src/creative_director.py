@@ -1465,6 +1465,13 @@ def run_creative_direction(
     out_dir = Path(output_dir) / "Final_Portfolio"
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Narrative memory folder key — same sha1 convention as grade_pipeline_v2's
+    # grade-checkpoint key. No preset is threaded into this endpoint (confirmed:
+    # /api/creative-direction/stream takes a raw dict, not a Pydantic model with
+    # a preset field), so this keys on output_dir alone.
+    import hashlib as _hashlib
+    _folder_key = _hashlib.sha1(str(output_dir).encode()).hexdigest()[:16]
+
     outputs: list[dict] = []
     n_ok = 0
 
@@ -1501,6 +1508,15 @@ def run_creative_direction(
             })
             n_ok += 1
             print(f"[cd] copied {Path(path).name} → {out_path.name}")
+
+            try:
+                import lance_store as _ls
+                _revision_entries = [r for r in revision_log if r.get("iteration") is not None]
+                _ls.update_narrative_metadata(
+                    path, role, seq_pos, _revision_entries, _folder_key,
+                )
+            except Exception as _e_persist:
+                print(f"[cd] narrative metadata persist skipped for {Path(path).name}: {_e_persist}")
         except Exception as e:
             print(f"[cd] copy failed {Path(path).name}: {e}")
             outputs.append({
