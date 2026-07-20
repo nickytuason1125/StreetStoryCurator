@@ -13,6 +13,14 @@ Benchmarked against the YOLO11s-seg reference on 100 real images: 134ms/img
 CPU (faster than YOLO's own 155ms/img), 0 missed persons, 100% recall on
 subjects occupying <5% of canvas — a strict superset of YOLO's detections.
 
+CPU-only is deliberate, not an oversight: this was tried on CUDA and
+measured 1996ms/img — ~15x SLOWER than CPU. detect_persons() calls the
+model one image at a time (batch size 1), so per-call kernel-launch and
+host<->device transfer overhead completely dominates the actual compute
+for a model this small; there's nothing for the GPU to amortize against.
+Don't "fix" this without re-batching the whole call into one forward pass
+first — the win, if any, is in batching, not device placement alone.
+
 This module is the shared boxes-only primitive used by every site that only
 needs bounding boxes (yolo_auditor.py, creative_director.py's
 person_kill_switch, vision_grading_heads.py's _run_yolo_seg). The one site

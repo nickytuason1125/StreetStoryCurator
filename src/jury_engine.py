@@ -2,20 +2,30 @@
 Multi-persona jury — replaces the Phase-0 single-Ollama-call
 generate_judges_verdict_8b stub.
 
-Three personas (Purist, Storyteller, Formalist), one shared in-process CPU
-GGUF (models/deepseek-r1-8b-q5.gguf, n_gpu_layers=0 — same rationale as
-pdf_rag.py: never compete with GPU work, and this weight file is already
-proven working in this exact configuration elsewhere in the repo), called
-sequentially with different system prompts/temperatures — not N separate
-model loads. Each verdict is grammar-constrained (GBNF, following
-vlm_niche_detector.py's pattern) and validated against the real per-image
-aspect data (src/signal_validator.py) before it's allowed to count toward
-the jury's self-consistency check or the final narrative.
+Three personas (Purist, Storyteller, Formalist), one shared in-process GGUF
+(models/deepseek-r1-8b-q5.gguf), called sequentially with different system
+prompts/temperatures — not N separate model loads. Each verdict is
+grammar-constrained (GBNF, following vlm_niche_detector.py's pattern) and
+validated against the real per-image aspect data (src/signal_validator.py)
+before it's allowed to count toward the jury's self-consistency check or
+the final narrative.
+
+GPU offload: this used to be hardcoded n_gpu_layers=0 (CPU-only), inherited
+from pdf_rag.py's rationale for ITS OWN call site — "never compete with
+SigLIP-2 VRAM" — but that rationale doesn't hold here. By the time the jury
+runs (Step 5b, after the revision loop's own GPU model has already been
+explicitly unloaded + purged), the GPU is idle; there is nothing left to
+compete with. CPU-only was blindly copying a pattern designed for a
+different point in the pipeline. _load_llm() now probes GPU offload with
+an auto-backoff ladder (try full offload, step down on OOM, land on
+CPU-only as the final fallback) — this can never be slower than the old
+behavior, only faster, and never risks a hard crash from guessing a VRAM
+budget wrong.
 
 Self-consistency: if the validated personas' scores spread by more than
 0.30 (same order of magnitude as vlm_niche_detector.py's existing 0.45-0.55
 borderline band), one additional synthesis round runs — capped at exactly
-one re-judge, bounding worst-case latency to 4 sequential CPU calls.
+one re-judge.
 """
 from __future__ import annotations
 
@@ -30,6 +40,21 @@ _GGUF = _ROOT / "models" / "deepseek-r1-8b-q5.gguf"
 
 _VALID_ASPECTS = {"Composition", "Lighting", "Narrative", "Human/Culture", "Technical"}
 _SPREAD_THRESHOLD = 0.30
+
+# DeepSeek-R1 distills emit a chain-of-thought preamble before any real
+# content, even for simple structured-output tasks — burns hundreds of
+# tokens narrating reasoning nobody reads. Priming the completion with an
+# empty <think></think> block (a well-known trick for this model family)
+# tricks it into believing it already finished thinking, skipping straight
+# to the answer. Cuts both latency and token count independent of the GPU
+# offload win below.
+_THINK_SKIP = "\n<think>\n\n</think>\n\n"
+
+# Auto-backoff ladder for GPU offload: try full (-1), then step down. The
+# 8B Q5 GGUF is ~5.7GB; a 6GB card has to share that with KV cache + CUDA
+# context overhead, so full offload may not fit — back off rather than
+# guess a fixed "safe" number that might not generalize to a different GPU.
+_GPU_LAYER_LADDER = [-1, 28, 24, 20, 16, 12, 8, 4, 0]
 
 _PERSONAS = [
     {"name": "Purist",      "temp": 0.15,
@@ -61,12 +86,38 @@ def _load_llm():
         return _llm
     if not _GGUF.exists():
         return None
+
+    from llama_cpp import Llama
     try:
-        from llama_cpp import Llama
-        _llm = Llama(model_path=str(_GGUF), n_ctx=2048, n_gpu_layers=0, verbose=False)
-    except Exception as e:
-        print(f"[jury] GGUF load failed: {e}")
-        _llm = None
+        import torch
+        has_cuda = torch.cuda.is_available()
+    except Exception:
+        has_cuda = False
+
+    ladder = _GPU_LAYER_LADDER if has_cuda else [0]
+    last_err: Optional[Exception] = None
+    for n_gpu in ladder:
+        try:
+            # flash_attn halves KV-cache memory (both VRAM and, on a CPU
+            # fallback, system RAM) and speeds up attention on GPU — it
+            # defaults to False in llama-cpp-python for no good reason here.
+            # Only requested alongside actual GPU layers: some builds don't
+            # support it on a pure-CPU context, and the n_gpu_layers=0 rung
+            # is the last-resort fallback, so it must not be the one thing
+            # that can fail with no further backoff available.
+            _llm = Llama(
+                model_path=str(_GGUF), n_ctx=1024, n_gpu_layers=n_gpu,
+                flash_attn=(n_gpu != 0), verbose=False,
+            )
+            print(f"[jury] GGUF loaded (n_gpu_layers={n_gpu}, flash_attn={n_gpu != 0})")
+            return _llm
+        except Exception as e:
+            last_err = e
+            print(f"[jury] load failed at n_gpu_layers={n_gpu} ({e}) — backing off")
+            continue
+
+    print(f"[jury] GGUF load failed on every offload level: {last_err}")
+    _llm = None
     return _llm
 
 
@@ -84,10 +135,22 @@ def _load_grammar():
 
 
 def unload() -> None:
+    """Release the GGUF singleton. Now that _load_llm() may put it on GPU,
+    this must actually free CUDA memory (empty_cache/ipc_collect), not just
+    drop the Python reference — otherwise VRAM leaks across requests within
+    the same server process, breaking the "one GPU model at a time"
+    invariant for whatever runs next."""
     global _llm
     _llm = None
     import gc
     gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available() and torch.cuda.is_initialized():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+    except Exception:
+        pass
 
 
 def _extract_json_obj(raw: str) -> Optional[dict]:
@@ -171,20 +234,19 @@ def _run_persona(
         f"ROLE: {persona['name']} juror delivering a verdict on a curated street-photo sequence.\n"
         f"Style brief: '{style_prompt[:150]}'. Theme: {niche}. Color: {color}.\n"
         f"Sequence (slot:role:file:score:aspects): {slot_summary}\n"
-        "Use <think> tags to reason briefly, then give a one-sentence verdict, a 0.00-1.00 "
-        "score, and cite the specific slot/aspect/value driving your score (or \"none\"/null "
-        "if purely qualitative).\n"
-        'After </think>, output ONLY JSON: {"verdict":"...","score":0.00,"cited_aspect":'
+        "Give a one-sentence verdict, a 0.00-1.00 score, and cite the specific slot/aspect/value "
+        "driving your score (or \"none\"/null if purely qualitative).\n"
+        'Output ONLY JSON: {"verdict":"...","score":0.00,"cited_aspect":'
         '"Composition|Lighting|Narrative|Human/Culture|Technical|none","cited_slot":<int or null>,'
         '"cited_value":<float or null>}'
-    )
-    # DeepSeek-R1 distills front-load a chain-of-thought preamble before any
-    # real content — a short max_tokens/early stop truncates before the
-    # model ever reaches its answer (observed: output cut off mid-reasoning
-    # at 400 tokens). No stop sequence; _parse_verdict's brace-matching
-    # finds the JSON tail wherever it lands, same as elsewhere in this repo
-    # (_parse_think in critique_engine.py, similar logic in creative_director.py).
-    base_kwargs = dict(max_tokens=600, temperature=persona["temp"])
+    ) + _THINK_SKIP
+    # _THINK_SKIP primes the completion with an already-closed <think></think>
+    # block, which DeepSeek-R1 distills treat as "reasoning already done" —
+    # skips the chain-of-thought preamble entirely instead of just tolerating
+    # it (the previous approach: no stop sequence + max_tokens=600 to let a
+    # ~400-token reasoning ramble finish before the JSON appeared). With the
+    # preamble skipped, the real answer is short — max_tokens drops accordingly.
+    base_kwargs = dict(max_tokens=200, temperature=persona["temp"])
 
     if not _grammar_broken:
         grammar = _load_grammar()
@@ -212,11 +274,11 @@ def _run_synthesis(llm, verdicts: list[dict], style_prompt: str) -> Optional[dic
     prompt = (
         "The jury disagreed on this sequence. Prior verdicts: " + summary[:500] + "\n"
         f"Style brief: '{style_prompt[:150]}'. "
-        "Use <think> tags to reason briefly, then give a final synthesis: one-sentence "
-        "verdict and a single 0.00-1.00 score representing the jury's consensus.\n"
-        'After </think>, output ONLY JSON: {"verdict":"...","score":0.00,"cited_aspect":"none","cited_slot":null,"cited_value":null}'
-    )
-    base_kwargs = dict(max_tokens=600, temperature=0.20)
+        "Give a final synthesis: one-sentence verdict and a single 0.00-1.00 score "
+        "representing the jury's consensus.\n"
+        'Output ONLY JSON: {"verdict":"...","score":0.00,"cited_aspect":"none","cited_slot":null,"cited_value":null}'
+    ) + _THINK_SKIP
+    base_kwargs = dict(max_tokens=200, temperature=0.20)
     try:
         out = llm(prompt, **base_kwargs)
         return _parse_verdict(out["choices"][0]["text"], "Synthesis")

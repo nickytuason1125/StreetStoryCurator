@@ -12,11 +12,15 @@ generate_judges_verdict_8b from jury_engine directly.
 
 Rule-set/brief generation is keyword-first — the same keyword tables already
 used elsewhere in creative_director.py (_compute_brief_scores, _empty_brief_
-detected) — with an optional CPU GGUF (models/deepseek-r1-8b-q5.gguf,
-n_gpu_layers=0, same loading pattern already proven in pdf_rag.py) refinement
+detected) — with an optional GGUF (models/deepseek-r1-8b-q5.gguf) refinement
 pass only when the keyword pass finds nothing at all. Every public function
 here degrades gracefully and never raises — the pipeline must complete even
 with no GGUF present and Ollama unreachable.
+
+GPU offload: _load_agent_llm() probes an offload ladder (full -> partial ->
+CPU) rather than the old hardcoded n_gpu_layers=0. This step runs at Step 1,
+before any other GPU model in the pipeline has loaded, so there's nothing to
+compete with — CPU-only here was inherited caution, not a real constraint.
 """
 from __future__ import annotations
 
@@ -100,6 +104,14 @@ class DirectorBrief:
 
 _llm_singleton: Optional[object] = None
 
+# Same auto-backoff rationale as jury_engine.py: try full GPU offload, step
+# down only if it doesn't fit, land on CPU as the final fallback — never
+# worse than the old hardcoded CPU-only behavior, often much faster.
+_GPU_LAYER_LADDER = [-1, 28, 24, 20, 16, 12, 8, 4, 0]
+
+# Same DeepSeek-R1 think-skip trick as jury_engine.py — see there for why.
+_THINK_SKIP = "\n<think>\n\n</think>\n\n"
+
 
 def _load_agent_llm():
     global _llm_singleton
@@ -107,24 +119,56 @@ def _load_agent_llm():
         return _llm_singleton
     if not _GGUF.exists():
         return None
+
+    from llama_cpp import Llama
     try:
-        from llama_cpp import Llama
-        _llm_singleton = Llama(
-            model_path=str(_GGUF), n_ctx=1024, n_gpu_layers=0, verbose=False,
-        )
-    except Exception as _e:
-        print(f"[cda] GGUF load failed: {_e}")
-        _llm_singleton = None
+        import torch
+        has_cuda = torch.cuda.is_available()
+    except Exception:
+        has_cuda = False
+
+    ladder = _GPU_LAYER_LADDER if has_cuda else [0]
+    last_err: Optional[Exception] = None
+    for n_gpu in ladder:
+        try:
+            # Same flash_attn rationale as jury_engine.py: halves KV-cache
+            # memory and speeds up attention on GPU, gated off on the
+            # n_gpu_layers=0 fallback rung so it can't be the one thing
+            # standing between this and the last-resort CPU path working.
+            # n_ctx=768 (down from 1024) — this prompt (brief up to 200
+            # chars + short instructions) never comes close to using it;
+            # smaller n_ctx means a smaller pre-allocated KV cache.
+            _llm_singleton = Llama(
+                model_path=str(_GGUF), n_ctx=768, n_gpu_layers=n_gpu,
+                flash_attn=(n_gpu != 0), verbose=False,
+            )
+            print(f"[cda] GGUF loaded (n_gpu_layers={n_gpu}, flash_attn={n_gpu != 0})")
+            return _llm_singleton
+        except Exception as e:
+            last_err = e
+            print(f"[cda] load failed at n_gpu_layers={n_gpu} ({e}) — backing off")
+            continue
+
+    print(f"[cda] GGUF load failed on every offload level: {last_err}")
+    _llm_singleton = None
     return _llm_singleton
 
 
 def unload_agent_model() -> None:
-    """Release the CPU GGUF singleton. Call once per run_creative_direction()
-    invocation after Step 1 completes."""
+    """Release the GGUF singleton. Call once per run_creative_direction()
+    invocation after Step 1 completes. Must free CUDA memory now that this
+    may be GPU-resident, not just drop the Python reference."""
     global _llm_singleton
     _llm_singleton = None
     import gc
     gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available() and torch.cuda.is_initialized():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+    except Exception:
+        pass
 
 
 def _extract_json_obj(raw: str) -> Optional[dict]:
@@ -198,7 +242,7 @@ def _gguf_refine_rule_set(style_prompt: str) -> Optional[dict]:
         '{"HARD_FILTER_PEOPLE": true|false, "GEOMETRIC_PRIORITY": "High"|"Normal", '
         '"LIGHTING_MOOD": "<=3 words"}\n'
         "JSON:"
-    )
+    ) + _THINK_SKIP
     base_kwargs: dict = dict(max_tokens=120, temperature=0.1, stop=["\n\n"])
 
     if not _grammar_broken:
