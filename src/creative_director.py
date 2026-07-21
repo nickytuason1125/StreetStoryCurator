@@ -10,7 +10,7 @@ Pipeline
    Reads the Style Brief as Boolean Constraints. Emits HARD_FILTER_PEOPLE,
    GEOMETRIC_PRIORITY, LIGHTING_MOOD, BRIEF_KEYWORDS.
 
-2. YOLO26-nano person_kill_switch (CPU)
+2. D-FINE-nano person_kill_switch (batched, GPU when available)
    If HARD_FILTER_PEOPLE is True and class:person is detected (conf ≥ 0.35),
    the image is DISQUALIFIED from the Story Sequence. Absolute — no exceptions.
 
@@ -1203,10 +1203,10 @@ def run_creative_direction(
     except Exception:
         pass
 
-    # ── Step 2: YOLO26-nano person_kill_switch ────────────────────────────────
+    # ── Step 2: D-FINE-nano person_kill_switch ────────────────────────────────
     yolo_blocked: set[str] = set()
     if rule_set["HARD_FILTER_PEOPLE"]:
-        _p(0.08, f"person_kill_switch: scanning {len(strong_paths)} images (YOLO26 CPU, conf≥0.35)…")
+        _p(0.08, f"person_kill_switch: scanning {len(strong_paths)} images (D-FINE, conf≥0.35)…")
         yolo_blocked = person_kill_switch(strong_paths, style_prompt)
         if yolo_blocked:
             _p(0.14, f"person_kill_switch: {len(yolo_blocked)} images DISQUALIFIED")
