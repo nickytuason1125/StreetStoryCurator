@@ -250,6 +250,14 @@ def upsert_batch(records: list[dict]) -> None:
         "exif_ts":         [float(r.get("exif_ts", 0.0))         for r in records],
         "has_annotations": [r.get("has_annotations", "")         for r in records],
         "score_factors":   [r.get("score_factors", "")           for r in records],
+        # Story-Mode columns — regular grading writes never set these, but they
+        # must still be present in every batch or merge_insert rejects the whole
+        # write with a schema mismatch (the table has them once migrated).
+        "narrative_role":    [str(r.get("narrative_role") or "")                          for r in records],
+        "sequence_position": [int(r.get("sequence_position")) if r.get("sequence_position") is not None else -1
+                               for r in records],
+        "revision_history":  [str(r.get("revision_history") or "")                        for r in records],
+        "folder_key":        [str(r.get("folder_key") or "")                              for r in records],
     }
     tbl = _open_table()
     with _lock:

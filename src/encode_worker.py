@@ -14,6 +14,14 @@ SIGLIP_TIER selects the model. For "high" it uses the efficient HF FP16 loader
 mid/low use the smaller open_clip ViT-L / ViT-B.
 """
 import sys, os, json
+# This is a runtime worker, not a setup script — per the project's "no external
+# network calls at runtime" rule, weights must already be cached locally
+# (scripts/download_detectors.py-style one-time setup owns fetching). Without
+# this, open_clip's create_model_and_transforms() still does an HF Hub
+# existence/metadata check even when the local cache is already complete, and
+# on a degraded connection that check can hang far longer than any request-level
+# timeout (observed: 10+ minutes near-idle CPU/GPU, not a slow download).
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
 import numpy as np
 import torch
 

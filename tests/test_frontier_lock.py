@@ -13,9 +13,7 @@ Run:
 """
 from __future__ import annotations
 
-import importlib
 import sys
-import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -28,6 +26,16 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+# Warm numpy + lance_store at collection time (not inside a test). Numpy's C
+# extension can't be initialized twice in one process ("cannot load module more
+# than once per process") — if lance_store's first-ever import happens lazily
+# inside a test that runs after another test which also cold-imports a
+# numpy-touching module (e.g. grade_pipeline_v2), the two can race for who
+# triggers numpy's init and the loser gets that ImportError. Importing here
+# guarantees numpy/lance_store are already cached in sys.modules before any
+# test body runs, so later `import lance_store` calls are cheap cache hits.
+import lance_store  # noqa: F401,E402
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -101,7 +109,7 @@ class TestModelIntegrity:
         _reset_frontier(False)
 
     def test_exits_when_weights_missing(self, tmp_path, monkeypatch):
-        """sys.exit() listing all missing models."""
+        """sys.exit() when SigLIP-2 (the only hard-required model) is absent."""
         import frontier_config
         monkeypatch.chdir(tmp_path)  # empty dir — no models/
         with pytest.raises(SystemExit) as exc:
@@ -109,21 +117,21 @@ class TestModelIntegrity:
         msg = str(exc.value)
         assert "CRITICAL" in msg
         assert "SigLIP-2" in msg
-        assert "Vision-R1-7B" in msg
 
-    def test_exits_listing_only_missing_model(self, tmp_path, monkeypatch):
-        """Only the missing model is listed — present models are not."""
+    def test_warns_but_does_not_exit_when_verifier_missing(self, tmp_path, monkeypatch, caplog):
+        """
+        Vision-R1-7B is optional (draft-only mode) — SigLIP-2 present but the
+        7B verifier absent must only warn, not sys.exit(). See frontier_config.py:113.
+        """
         import frontier_config
+        caplog.set_level("WARNING")
         monkeypatch.chdir(tmp_path)
         # Provide SigLIP-2 but not DeepSeek-7B
         siglip2 = tmp_path / "models" / "siglip2"
         siglip2.mkdir(parents=True)
         (siglip2 / "model.safetensors").write_bytes(b"fake")
-        with pytest.raises(SystemExit) as exc:
-            frontier_config.check_model_integrity()
-        msg = str(exc.value)
-        assert "Vision-R1-7B" in msg
-        assert "SigLIP-2" not in msg
+        frontier_config.check_model_integrity()  # must not raise
+        assert any("Vision-R1-7B" in r.message for r in caplog.records)
 
     def test_passes_when_both_present(self, tmp_path, monkeypatch):
         """No exception when both weight dirs exist with weight files."""
@@ -155,12 +163,15 @@ class TestEncoderFrontierBlock:
     def teardown_method(self):
         _reset_frontier(False)
 
-    def test_raises_when_siglip2_falls_back_to_1152(self, tmp_path):
+    def test_raises_when_siglip2_unavailable(self, tmp_path):
         """
-        If --force-frontier is active and the encoder produces 1152-d embeddings
-        (SigLIP So400M fallback), run_v2() must raise RuntimeError.
+        run_v2() must never silently degrade to a legacy 1152-d encoder when
+        SigLIP-2 is unavailable. The old So400M fallback path (src/siglip_encoder.py)
+        has since been removed from run_v2 entirely (grep confirms zero references),
+        which is a stronger guarantee than catching a 1152-d dim after the fact —
+        there is no code path left that can produce 1152-d embeddings. Failure to
+        load SigLIP-2 now surfaces as a loud RuntimeError instead.
         """
-        import numpy as np
         import frontier_config
         assert frontier_config.is_force_frontier()
 
@@ -168,31 +179,21 @@ class TestEncoderFrontierBlock:
         img = tmp_path / "shot.jpg"
         img.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 256)
 
-        # Fake 1152-d encoder succeeding (legacy So400M fallback)
-        class _FakeSigLIP:
-            def encode_images(self, paths, progress=None):
-                return np.zeros((len(paths), 1152), dtype=np.float32)
-            def unload(self): pass
-
-        fake_siglip_mod = types.ModuleType("siglip_encoder")
-        fake_siglip_mod.SigLIPEncoder = _FakeSigLIP  # type: ignore
-
-        with (
-            patch.dict("sys.modules", {
-                "siglip2_encoder": MagicMock(SigLIP2Encoder=MagicMock(
-                    side_effect=RuntimeError("SigLIP-2 not installed")
-                )),
-                "siglip_encoder": fake_siglip_mod,
-            }),
-        ):
+        with patch.dict("sys.modules", {
+            "siglip2_encoder": MagicMock(SigLIP2Encoder=MagicMock(
+                side_effect=RuntimeError("SigLIP-2 not installed")
+            )),
+        }):
+            # NOTE: no importlib.reload(grade_pipeline_v2) needed (or wanted) here —
+            # it imports siglip2_encoder lazily *inside* run_v2 (see
+            # grade_pipeline_v2.py:1002), so the sys.modules patch above is picked up
+            # on each call without a reload. Reloading here previously triggered a
+            # numpy "cannot load module more than once per process" ImportError when
+            # this test ran in the same session as TestLanceSchemaLock (also a
+            # reload-based test) — numpy's C extension can't survive two reloads.
             import grade_pipeline_v2
-            importlib.reload(grade_pipeline_v2)
-            result = grade_pipeline_v2.run_v2(str(tmp_path))
-            # The pipeline should surface an error (raised internally → caught by run_v2)
-            assert "error" in result, (
-                f"Expected error key in result but got: {list(result.keys())}"
-            )
-            assert "force-frontier" in result["error"].lower() or "1536" in result["error"]
+            with pytest.raises(RuntimeError, match="SigLIP-2"):
+                grade_pipeline_v2.run_v2(str(tmp_path))
 
 
 # ── 4. Grader fallback blocked ────────────────────────────────────────────────
@@ -278,8 +279,13 @@ class TestLanceSchemaLock:
             "lancedb": fake_lancedb,
             "pyarrow": fake_pa,
         }):
+            # NOTE: no importlib.reload(lance_store) — lancedb/pyarrow are imported
+            # lazily inside _open_table() (see lance_store.py:133), so the sys.modules
+            # patch above is picked up without a reload. A reload here previously
+            # collided with numpy's C-extension singleton restriction ("cannot load
+            # module more than once per process") when run in the same session as
+            # another reload-based test.
             import lance_store
-            importlib.reload(lance_store)
             lance_store._tbl = None
             try:
                 lance_store._open_table()
@@ -288,5 +294,7 @@ class TestLanceSchemaLock:
 
         mock_db.drop_table.assert_called_once_with("photos")
 
+        # Current lance_store auto-migrates on any dim change (unconditional, not
+        # force-frontier-gated) — see lance_store.py:149.
         captured = capsys.readouterr()
-        assert "FRONTIER" in captured.out or "force" in captured.out.lower()
+        assert "PURGING" in captured.out or "1152" in captured.out

@@ -6,6 +6,7 @@
 fastapi==0.110.0
 uvicorn[standard]
 pywebview               # Desktop window (pywebview 5.x)
+pywin32; sys_platform == "win32"   # Job Objects (src/win_job.py) tie subprocess lifetime to the parent — prevents orphaned encode/IQA workers surviving a kill
 
 # ── Vector store + sequencer ──────────────────────────────────────────────────
 lancedb

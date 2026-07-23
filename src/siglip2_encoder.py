@@ -143,8 +143,17 @@ class SigLIP2Encoder:
         _p(0.07, "SigLIP-2 ready (isolated encoder)…")
 
     # ── Subprocess bridge ────────────────────────────────────────────────────
+    # Retries: crash.log shows encode_worker occasionally hard-crashing at model
+    # load with a transient "CUDA error: out of memory" / "device(s) busy or
+    # unavailable" (WDDM-level contention with another GPU subprocess), and the
+    # very next attempt with identical inputs succeeding. One retry after a short
+    # backoff turns that into a self-healing blip instead of a failed grade.
+    _MAX_ATTEMPTS = 2
+    _RETRY_DELAY_S = 1.5
+
     def _run(self, mode: str, items: list) -> np.ndarray:
-        import sys, json, tempfile, subprocess
+        import sys, json, tempfile, subprocess, time
+        import win_job
         if not items:
             return np.zeros((0, EMBED_DIM), dtype=np.float32)
         fd, in_path = tempfile.mkstemp(suffix=".json"); os.close(fd)
@@ -165,20 +174,26 @@ class SigLIP2Encoder:
             env.setdefault("PYTHONIOENCODING", "utf-8")
             if mode == "images":
                 env.setdefault("SIGLIP_ENC_BATCH", str(_auto_enc_batch()))
-            print(f"[siglip2] encode_worker start: mode={mode} n={len(items)}", flush=True)
-            with open(_crash_log, "a", encoding="utf-8", errors="replace") as _lf:
-                r = subprocess.run(
-                    [sys.executable, str(self._WORKER), mode, in_path, out_path],
-                    env=env, cwd=str(Path(__file__).resolve().parent.parent),
-                    stdout=_lf, stderr=_lf,
-                    timeout=3600,
-                )
-            print(f"[siglip2] encode_worker done: rc={r.returncode} npy={os.path.exists(out_path)}", flush=True)
-            if r.returncode != 0 or not os.path.exists(out_path):
-                raise RuntimeError(
-                    f"Vision encoder subprocess failed (exit {r.returncode}) — see crash.log"
-                )
-            return np.load(out_path)
+            _last_rc = None
+            for _attempt in range(1, self._MAX_ATTEMPTS + 1):
+                print(f"[siglip2] encode_worker start: mode={mode} n={len(items)} attempt={_attempt}", flush=True)
+                with open(_crash_log, "a", encoding="utf-8", errors="replace") as _lf:
+                    r = win_job.run(
+                        [sys.executable, str(self._WORKER), mode, in_path, out_path],
+                        env=env, cwd=str(Path(__file__).resolve().parent.parent),
+                        stdout=_lf, stderr=_lf,
+                        timeout=3600,
+                    )
+                print(f"[siglip2] encode_worker done: rc={r.returncode} npy={os.path.exists(out_path)}", flush=True)
+                if r.returncode == 0 and os.path.exists(out_path):
+                    return np.load(out_path)
+                _last_rc = r.returncode
+                if _attempt < self._MAX_ATTEMPTS:
+                    print(f"[siglip2] encode_worker attempt {_attempt} failed (rc={r.returncode}) — retrying", flush=True)
+                    time.sleep(self._RETRY_DELAY_S)
+            raise RuntimeError(
+                f"Vision encoder subprocess failed after {self._MAX_ATTEMPTS} attempts (exit {_last_rc}) — see crash.log"
+            )
         finally:
             for _f in (in_path, out_path):
                 try: os.unlink(_f)

@@ -1471,7 +1471,8 @@ async def grade_photos_v2_stream(req: GradeRequest):
             # debuggability — its result stream goes via the progress file above.
             _rlog = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "crash.log"),
                          "a", encoding="utf-8", errors="replace")
-            _proc = _sp.Popen(
+            import win_job as _wj
+            _proc = _wj.popen(
                 [sys.executable, _runner, _req_path, _prog_path],
                 cwd=os.path.dirname(os.path.abspath(__file__)),
                 creationflags=_flags, close_fds=True,
@@ -1610,6 +1611,7 @@ async def personal_update(payload: dict):
     Fetches embeddings from LanceDB and runs a Margin Ranking Loss update step.
     """
     try:
+        import numpy as np
         import personal_head as ph
         import lance_store   as ls
 
@@ -1679,6 +1681,7 @@ async def personal_star(payload: dict):
         _RANK = {"Strong ✅": 2, "Mid ⚠️": 1, "Weak ❌": 0}
         star_rank = _RANK[star_grade]
 
+        import numpy as np
         import personal_head as ph
         import lance_store   as ls
 
@@ -1797,6 +1800,7 @@ async def update_preference(payload: dict):
     Runs a MarginRankingLoss update on the PersonalHead and refreshes stored scores.
     """
     try:
+        import numpy as np
         import personal_head as ph
         import lance_store as ls
         winner = payload.get("winner_path")
@@ -1973,14 +1977,32 @@ async def creative_direction_stream(payload: dict):
                     scores     = [0.75] * len(strong_paths)
 
             # Tier 3: Scan folder directly for any images (cap at 50)
+            # Extension alone isn't enough — a renamed/truncated garbage file with a
+            # .jpg suffix passes an extension check trivially. The graded paths above
+            # (catalog.json / LanceDB) already went through grade_pipeline_v2's
+            # early-exit technical gate, which is why this is the one candidate
+            # source that needs its own readability check before it can end up
+            # copied into the user's Final_Portfolio output.
             if not strong_paths and folder_path:
                 from pathlib import Path as _Path
                 fp = _Path(folder_path)
                 if fp.exists():
-                    all_imgs = sorted(
-                        str(f) for f in fp.iterdir()
+                    candidates = sorted(
+                        f for f in fp.iterdir()
                         if f.is_file() and f.suffix.lower() in IMAGE_EXTS
-                    )[:50]
+                    )
+                    all_imgs = []
+                    for f in candidates:
+                        if len(all_imgs) >= 50:
+                            break
+                        try:
+                            from PIL import Image as _Image
+                            with _Image.open(f) as _im:
+                                _im.verify()
+                        except Exception:
+                            print(f"[cd] Tier 3 folder scan: skipping unreadable file {f.name}")
+                            continue
+                        all_imgs.append(str(f))
                     if all_imgs:
                         strong_paths = all_imgs
                         embeddings   = [np.zeros(1536, dtype=np.float32) for _ in strong_paths]
@@ -3502,8 +3524,10 @@ async def export_by_grade(payload: dict):
         if not src.exists():
             errors.append(src_path)
             continue
-        # Subfolder per grade, strip emoji for safe dir name
-        safe_grade = grade.replace("✅", "Strong").replace("⚠️", "Mid").replace("❌", "Weak").strip()
+        # Subfolder per grade, strip emoji for safe dir name. Grade strings are
+        # already "{Word} {emoji}" (e.g. "Mid ⚠️") — replacing the emoji WITH
+        # the word duplicated it ("Mid Mid"); just strip the emoji instead.
+        safe_grade = grade.replace("✅", "").replace("⚠️", "").replace("❌", "").strip()
         out_dir = dest_root / safe_grade
         out_dir.mkdir(exist_ok=True)
         dest_file = out_dir / src.name

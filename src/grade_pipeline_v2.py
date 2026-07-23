@@ -667,7 +667,8 @@ def _iqa_via_subprocess(
     """Run vision_grading_heads.run_vision_heads in an isolated subprocess.
     Returns the same dict shape. Raises RuntimeError on subprocess failure so the
     caller can degrade cleanly (never a hard worker crash)."""
-    import sys as _sys, json as _json, tempfile as _tf, subprocess as _sp
+    import sys as _sys, json as _json, tempfile as _tf, subprocess as _sp, time as _time
+    import win_job as _wj
     _root = Path(__file__).resolve().parent.parent
     _crash_log = _root / "crash.log"
     _fd, in_json = _tf.mkstemp(suffix=".iqa.json"); os.close(_fd)
@@ -692,14 +693,27 @@ def _iqa_via_subprocess(
                 "vlm_breakdowns":      vlm_breakdowns or [],
             }, _f, default=lambda o: o.item() if hasattr(o, "item") else str(o))
         env = dict(os.environ); env.setdefault("PYTHONIOENCODING", "utf-8")
-        print(f"[v2] IQA subprocess: scoring {len(image_paths)} images (isolated GPU)…", flush=True)
-        with open(_crash_log, "a", encoding="utf-8", errors="replace") as _lf:
-            r = _sp.run(
-                [_sys.executable, str(_IQA_WORKER), in_npz, in_json, out_npz, out_json],
-                env=env, cwd=str(_root), stdout=_lf, stderr=_lf, timeout=3600,
-            )
+        # Retries: mirrors siglip2_encoder._run — the isolated GPU subprocesses
+        # occasionally hit a transient "CUDA error: out of memory" / "device(s)
+        # busy" at model load (WDDM contention with a sibling GPU subprocess) that
+        # clears on the very next attempt. One retry turns that into a self-healing
+        # blip instead of a failed grade.
+        _last_rc = None
+        for _attempt in range(1, 3):
+            print(f"[v2] IQA subprocess: scoring {len(image_paths)} images (isolated GPU) attempt={_attempt}…", flush=True)
+            with open(_crash_log, "a", encoding="utf-8", errors="replace") as _lf:
+                r = _wj.run(
+                    [_sys.executable, str(_IQA_WORKER), in_npz, in_json, out_npz, out_json],
+                    env=env, cwd=str(_root), stdout=_lf, stderr=_lf, timeout=3600,
+                )
+            if r.returncode == 0 and os.path.exists(out_npz):
+                break
+            _last_rc = r.returncode
+            if _attempt < 2:
+                print(f"[v2] IQA subprocess attempt {_attempt} failed (rc={r.returncode}) — retrying", flush=True)
+                _time.sleep(1.5)
         if r.returncode != 0 or not os.path.exists(out_npz):
-            raise RuntimeError(f"IQA subprocess failed (exit {r.returncode}) — see crash.log")
+            raise RuntimeError(f"IQA subprocess failed after 2 attempts (exit {_last_rc}) — see crash.log")
         _q = np.load(out_npz)["quality"]
         with open(out_json, encoding="utf-8") as _f:
             _pl = _json.load(_f)
