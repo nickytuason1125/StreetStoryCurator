@@ -30,19 +30,66 @@ from typing import Optional
 
 # Absolute path anchored to this file — never affected by CWD changes in server threads.
 _DB_DIR    = str(Path(__file__).resolve().parent.parent / "cache" / "lance.db")
-_TBL_NAME  = "photos"
+# One table PER TIER. Each encoder tier produces a different embedding
+# dimension, and _connect_or_create's dim-change path used to respond by
+# DROPPING the table ("PURGING table, photos will re-encode") — so running a
+# lighter encoder once destroyed every grade made with the heavier one, and
+# switching back destroyed them again. With a table per tier the dimensions
+# never collide, nothing is purged, and each tier's grades persist
+# independently. "high" keeps the original name so existing work is untouched.
+import sys as _sys_rp, os as _os_rp
+_sys_rp.path.insert(0, _os_rp.path.dirname(_os_rp.path.abspath(__file__)))
+import run_profile as _rp                                     # noqa: E402
+# Table name and embedding width are tier state, and tier state is declared in
+# exactly one place. Deriving them here independently is what let the table and
+# the encoder disagree about width.
+_TBL_NAME  = _rp.current().lance_table
 # Embedding dim follows the active SIGLIP_TIER (Phase 2). Read from the env
 # directly (not by importing the heavy encoder module) to keep lance_store light.
 # The table auto-migrates (purge + rebuild) below when the stored dim differs, so
 # switching tiers safely re-encodes everything. high=1536 mid=1024 low=768.
 import os as _os_dim
-_EMBED_DIM = {"high": 1536, "mid": 1024, "low": 768}.get(
-    _os_dim.environ.get("SIGLIP_TIER", "high").strip().lower(), 1536)
+_EMBED_DIM = _rp.current().embed_dim
 
 print(f"[lance_store] DB path: {_DB_DIR}")
 
 _lock = threading.Lock()
 _tbl  = None   # cached lancedb Table reference
+
+
+# ── Native-extension preload (ORDER-CRITICAL) ────────────────────────────────
+# pyarrow and lancedb are C extensions. Loading their DLLs for the FIRST time in
+# a process that has already spawned and reaped a CUDA subprocess faults with a
+# Windows access violation (0xC0000005) — reproduced 6/6:
+#
+#     pyarrow/__init__.py -> create_module  ->  ACCESS VIOLATION
+#     (called from upsert_batch's `import pyarrow`, after encode_worker exited)
+#
+# This module's imports used to be lazy (inside upsert_batch / _connect_or_
+# create), so whether a grade survived depended on whether anything happened to
+# touch the DB before the SigLIP encode. It usually did — query_embeddings_by_
+# paths opens the table — which is why this stayed hidden. But on the first run
+# after an encoder change, `_src_changed` skips that lookup entirely, so the
+# first pyarrow import landed AFTER the encode and the grade died with no
+# traceback. Importing eagerly here pins the natives into the process at
+# module-import time, which for every pipeline entry point is long before any
+# subprocess runs. Failure is non-fatal: the lazy imports below still raise a
+# normal, catchable error if the package is genuinely broken.
+def warm_native() -> bool:
+    """Load the pyarrow/lancedb native extensions NOW. Idempotent.
+
+    Call before spawning any GPU subprocess. Returns True when both are loaded.
+    """
+    try:
+        import pyarrow   # noqa: F401
+        import lancedb   # noqa: F401
+        return True
+    except Exception as _e:
+        print(f"[lance_store] native preload deferred ({type(_e).__name__}: {_e})")
+        return False
+
+
+warm_native()
 
 
 # ── Schema ────────────────────────────────────────────────────────────────────
@@ -64,7 +111,40 @@ def _make_schema():
         pa.field("sequence_position", pa.int64()),
         pa.field("revision_history",  pa.string()),
         pa.field("folder_key",        pa.string()),
+        # Which encoder produced `embedding`. See current_encoder_tag().
+        pa.field("encoder_source",    pa.string()),
     ])
+
+
+# ── Embedding vector-space tagging ───────────────────────────────────────────
+# Two SigLIP-2 loaders (open_clip fp32 and HF fp16) hold the SAME weights but
+# are NOT the same vector space (image cosine ~0.997), and mixing them corrupts
+# dedup, the archetype projection and the PersonalHead.
+#
+# grade_pipeline_v2 guards the switch with cache/encoder_source.txt — but that
+# marker is GLOBAL while the re-encode it triggers is per-run: the first grade
+# after a loader change re-encodes only ITS OWN folder and then rewrites the
+# marker, so every other folder's cached embeddings are silently reused from the
+# old space forever after. Tagging each row with the space that produced it
+# closes that hole precisely: a row is reusable only if its tag matches today's
+# encoder, so each folder re-encodes exactly once, whenever it is next graded.
+_ENC_TAG: "Optional[str]" = None
+
+
+def current_encoder_tag() -> str:
+    """Vector-space tag for rows written now ('' when undeterminable).
+
+    Callers MUST treat '' as "do not reuse" — failing toward a re-encode costs
+    time, whereas reusing a foreign-space vector silently corrupts grades.
+    """
+    global _ENC_TAG
+    if _ENC_TAG is None:
+        try:
+            from siglip2_encoder import ENCODER_SOURCE as _src
+            _ENC_TAG = str(_src or "")
+        except Exception:
+            _ENC_TAG = ""
+    return _ENC_TAG
 
 
 # ── Connection helpers ────────────────────────────────────────────────────────
@@ -145,8 +225,12 @@ def _connect_or_create():
                     existing_dim = getattr(field.type, "list_size", None)
                     break
             if existing_dim is not None and existing_dim != _EMBED_DIM:
-                print(f"[lance] Embedding dim changed ({existing_dim}-d -> {_EMBED_DIM}-d, "
-                      f"tier switch) — PURGING table, photos will re-encode.")
+                # Reached only by a genuine LEGACY dim change within one tier
+                # (e.g. the old 1152-d SigLIP-So400M -> 1536-d migration), not
+                # by a quality-tier switch: each tier now has its own table, so
+                # a tier change lands on a table whose dim already matches.
+                print(f"[lance] Legacy embedding dim ({existing_dim}-d -> {_EMBED_DIM}-d) "
+                      f"in '{_TBL_NAME}' — rebuilding this table; other tiers are untouched.")
                 db.drop_table(_TBL_NAME)
                 _tbl = db.create_table(_TBL_NAME, schema=schema)
             else:
@@ -183,6 +267,9 @@ def _ensure_columns(tbl) -> None:
         ("sequence_position",  pa.int64(),  -1),   # 0-based slot in the last sequence, -1 = never placed
         ("revision_history",   pa.string(), ""),   # JSON list[dict], one entry per revision-loop iteration that touched this image
         ("folder_key",         pa.string(), ""),   # sha1(output_dir)[:16] — same convention as grade_pipeline_v2's checkpoint key
+        # "" on migration is deliberate: pre-existing rows have an UNKNOWN
+        # vector space, so they must never be reused as an encode cache hit.
+        ("encoder_source",     pa.string(), ""),
     ]
     try:
         col_names = {f.name for f in tbl.schema}
@@ -233,11 +320,36 @@ def upsert_batch(records: list[dict]) -> None:
     if not records:
         return
 
+    def _tag_for(rec: dict) -> str:
+        """Vector-space tag to store for one record.
+
+        An explicit encoder_source always wins. Otherwise the tag is the current
+        encoder — EXCEPT for all-zero placeholder rows, which are not a real
+        encode at all: server.py's upload stub and the disqualified-image
+        pre-flush both write [0.0]*dim. Tagging those as current-space would
+        make them a valid cache hit later, so the photo would skip encoding and
+        then be discarded as a zero-norm row. They stay untagged ('') so they
+        are always re-encoded when the image is actually graded.
+        """
+        explicit = str(rec.get("encoder_source") or "")
+        if explicit:
+            return explicit
+        emb = rec.get("embedding") or []
+        return current_encoder_tag() if any(emb) else ""
+
     def _pad(emb: list) -> list:
+        # Fast path: a correctly-sized list of floats (what the grading pipeline
+        # always passes) is handed straight to pyarrow. The old unconditional
+        # `[float(x) for x in emb]` + `f[:_EMBED_DIM]` built TWO extra 1536-entry
+        # boxed-float lists per record — on a 5 000-photo upsert that is ~500 MB
+        # of pure copy on top of the caller's own list, for no change in value.
+        if type(emb) is list and len(emb) == _EMBED_DIM:
+            return emb
         f = [float(x) for x in emb]
         if len(f) < _EMBED_DIM:
             f += [0.0] * (_EMBED_DIM - len(f))
-        return f[:_EMBED_DIM]
+            return f
+        return f[:_EMBED_DIM] if len(f) > _EMBED_DIM else f
 
     rows = {
         "path":            [r["path"]                            for r in records],
@@ -258,6 +370,8 @@ def upsert_batch(records: list[dict]) -> None:
                                for r in records],
         "revision_history":  [str(r.get("revision_history") or "")                        for r in records],
         "folder_key":        [str(r.get("folder_key") or "")                              for r in records],
+        # Stamp the vector space these embeddings came from (see _tag_for).
+        "encoder_source":    [_tag_for(r)                                                 for r in records],
     }
     tbl = _open_table()
     with _lock:
@@ -319,6 +433,13 @@ def query_embeddings_by_paths(paths: list[str]) -> dict[str, np.ndarray]:
     """
     if not paths:
         return {}
+    # Only rows from TODAY's vector space are a valid encode-cache hit. A row
+    # written by the other loader (or by a build that predates tagging, tag "")
+    # is skipped so the caller re-encodes it — see current_encoder_tag().
+    cur_tag = current_encoder_tag()
+    if not cur_tag:
+        print("[lance_store] encoder tag unknown — not reusing cached embeddings")
+        return {}
     tbl = _open_table()
     # Build an IN-clause; escape single quotes in paths.
     escaped = [p.replace("'", "''") for p in paths]
@@ -328,17 +449,24 @@ def query_embeddings_by_paths(paths: list[str]) -> dict[str, np.ndarray]:
             rows = (
                 tbl.search()
                    .where(f"path IN ({in_list})", prefilter=True)
-                   .select(["path", "embedding"])
+                   .select(["path", "embedding", "encoder_source"])
                    .to_list()
             )
         result: dict[str, np.ndarray] = {}
+        _skipped = 0
         for r in rows:
             emb = r.get("embedding")
             if emb is None:
                 continue
+            if str(r.get("encoder_source") or "") != cur_tag:
+                _skipped += 1           # foreign / untagged space → re-encode
+                continue
             arr = np.array(emb, dtype=np.float32)
             if arr.shape == (_EMBED_DIM,):
                 result[r["path"]] = arr
+        if _skipped:
+            print(f"[lance_store] {_skipped} cached embeddings are from another "
+                  f"encoder space — they will be re-encoded (current: {cur_tag})")
         return result
     except Exception as _e:
         print(f"[lance_store] query_embeddings_by_paths failed: {_e}")
@@ -426,17 +554,36 @@ def update_personal_scores(path_score_map: dict[str, float]) -> None:
 
 def compact_after_write() -> None:
     """
-    Compact LanceDB fragments after a bulk write.
+    Compact fragments AND reap old versions after a bulk write.
 
-    LanceDB appends each upsert as a new fragment. Compacting merges them into
-    a single file, eliminating scan overhead on the next query. Safe to skip —
-    performance degrades gracefully without compaction.
+    LanceDB appends each upsert as a new fragment and keeps every prior version.
+    compact_files() merged the fragments but left the history, so photos.lance
+    reached 859 MB holding ~10 MB of vectors across 409 versions — growth
+    unbounded in the number of CULLS, not the number of photos.
+
+    optimize() does both in one call. Two deliberate choices:
+
+      * delete_unverified=False — all three tier tables share one database, and
+        a reader on another tier may hold references to fragments this call
+        cannot prove are orphaned.
+      * A retention WINDOW rather than "keep only current", so a cull that
+        writes bad grades can still be rolled back.
+
+    Safe to skip: this runs after grades are durably committed, so a failure
+    here must never fail the cull.
     """
+    from datetime import timedelta
+    try:
+        import run_profile as _rp
+        days = max(0, int(_rp.setting("FRAMEGRADE_LANCE_RETENTION_DAYS")))
+    except Exception:
+        days = 7
     try:
         tbl = _open_table()
         with _lock:
-            tbl.compact_files()
-        print("[lance] Compaction done")
+            tbl.optimize(cleanup_older_than=timedelta(days=days),
+                         delete_unverified=False)
+        print(f"[lance] Compaction + version cleanup done (retention {days}d)")
     except Exception as e:
         print(f"[lance] Compaction skipped ({e})")
 
