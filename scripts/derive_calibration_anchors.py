@@ -59,9 +59,26 @@ def main() -> int:
     embs = (_col.flatten().to_numpy(zero_copy_only=False)
             .astype(np.float32, copy=False)
             .reshape(len(_col), -1))
+    # Drop contaminated rows BEFORE measuring anything.
+    #
+    # The Pro store held 31 never-encoded rows (norm 0) and synthetic audit
+    # frames whose embeddings were never normalised (norm ~23 instead of 1.0).
+    # Their discriminants are inflated by the same factor, which dragged p99
+    # from 0.05 to 0.38 and produced anchors grading 97% of the library Weak.
+    # The anchors were a faithful measurement of a poisoned corpus, so the
+    # derivation has to be robust to one: any real library accumulates junk.
+    norms = np.linalg.norm(embs, axis=1)
+    keep = np.abs(norms - 1.0) <= 0.05
+    dropped = int((~keep).sum())
+    if dropped:
+        n0 = int((norms < 1e-6).sum())
+        print(f"[anchors] dropping {dropped} contaminated rows "
+              f"({n0} never encoded, {dropped - n0} un-normalised)")
+    embs = embs[keep]
+
     if embs.ndim != 2 or embs.shape[0] < args.min_photos:
-        print(f"[anchors] REFUSING: only {embs.shape[0]} photos in the store; "
-              f"need >= {args.min_photos} for a representative scale.")
+        print(f"[anchors] REFUSING: only {embs.shape[0]} usable photos in the "
+              f"store; need >= {args.min_photos} for a representative scale.")
         return 1
     print(f"[anchors] corpus: {embs.shape[0]} photos, {embs.shape[1]}-d")
 
@@ -111,9 +128,18 @@ def main() -> int:
           f"Weak={weak} ({weak/len(scored):.0%})")
     print("[anchors] NOTE: this is the CLIP term alone, before TOPIQ and the "
           "taste blend, so it is not the final grade distribution.")
-    if strong == 0 or weak == 0:
-        print("[anchors] WARNING: a degenerate bucket suggests the anchors or "
-              "the probe set are wrong, not the photographs.")
+    # REFUSE, don't warn. The first version only checked for an EMPTY bucket,
+    # so it happily wrote anchors implying 2% Strong / 1% Mid / 97% Weak - both
+    # buckets non-empty, plainly broken. A scale that pushes almost everything
+    # into one bucket is measuring contamination, not photographs.
+    worst = max(strong, mid, weak) / len(scored)
+    if worst > 0.80:
+        which = "Strong" if strong == max(strong, mid, weak) else (
+            "Mid" if mid == max(strong, mid, weak) else "Weak")
+        print(f"\n[anchors] REFUSING: {worst:.0%} of the corpus lands in "
+              f"{which}. That is a broken scale, not a verdict on the photos. "
+              f"Check for un-normalised or never-encoded rows in the store.")
+        return 1
 
     if args.dry_run:
         print("\n[anchors] --dry-run: nothing written.")
