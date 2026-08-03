@@ -65,19 +65,39 @@ _PERSONAS = [
      "system": "You value geometry, composition, and visual rhythm across the sequence above individual shot merit."},
 ]
 
-_JURY_GRAMMAR_SRC = r'''
-root       ::= "{" ws '"verdict"' ws ":" ws string ws "," ws '"score"' ws ":" ws float ws "," ws '"cited_aspect"' ws ":" ws aspect ws "," ws '"cited_slot"' ws ":" ws slot ws "," ws '"cited_value"' ws ":" ws value ws "}"
-aspect     ::= "\"Composition\"" | "\"Lighting\"" | "\"Narrative\"" | "\"Human/Culture\"" | "\"Technical\"" | "\"none\""
-slot       ::= "null" | [0-9] [0-9]?
-value      ::= "null" | float
-float      ::= "-"? [0-9]+ "." [0-9]+
-string     ::= "\"" ([^"\\] | "\\" .)* "\""
-ws         ::= [ \t\r\n]*
-'''
+# Declared as a JSON SCHEMA, not hand-written GBNF.
+#
+# The previous hand-written grammar crashed llama.cpp's sampler outright —
+# `OSError: access violation reading 0x0000000000000000` inside
+# llama_sampler_sample (llama-cpp-python 0.3.23). Because _run_persona catches
+# the failure and retries unconstrained, this never surfaced as an error: the
+# jury silently ran with NO grammar at all, and the "evidence-first, schema
+# guaranteed" property the module documents was not actually in force. On a
+# smaller model that fallback produces prose instead of JSON and the verdict is
+# dropped entirely.
+#
+# LlamaGrammar.from_json_schema compiles a grammar llama.cpp can actually run,
+# and expresses the same constraints — including the aspect enum, so a model
+# still cannot invent an aspect name.
+_JURY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "verdict":      {"type": "string"},
+        "score":        {"type": "number"},
+        "cited_aspect": {"enum": ["Composition", "Lighting", "Narrative",
+                                  "Human/Culture", "Technical", "none"]},
+        "cited_slot":   {"type": ["integer", "null"]},
+        "cited_value":  {"type": ["number", "null"]},
+    },
+    "required": ["verdict", "score", "cited_aspect", "cited_slot", "cited_value"],
+}
 
 _llm: Optional[object] = None
 _grammar: Optional[object] = None
-_grammar_broken = False
+# Counted, not latched — see _complete(). A single transient fault must not
+# disable the schema guarantee for the rest of the process.
+_grammar_fails = 0
+_GRAMMAR_FAIL_LIMIT = 3
 
 
 def _load_llm():
@@ -131,8 +151,9 @@ def _load_grammar():
     if _grammar is not None:
         return _grammar
     try:
+        import json as _json
         from llama_cpp import LlamaGrammar
-        _grammar = LlamaGrammar.from_string(_JURY_GRAMMAR_SRC)
+        _grammar = LlamaGrammar.from_json_schema(_json.dumps(_JURY_SCHEMA))
     except Exception as e:
         print(f"[jury] grammar build failed ({e}) — falling back to unconstrained decoding")
         _grammar = None
@@ -237,7 +258,6 @@ def _run_persona(
     llm, persona: dict, slot_summary: str, style_prompt: str,
     niche: str, color: str,
 ) -> Optional[dict]:
-    global _grammar_broken
     prompt = (
         f"{persona['system']}\n"
         f"ROLE: {persona['name']} juror delivering a verdict on a curated street-photo sequence.\n"
@@ -257,22 +277,40 @@ def _run_persona(
     # preamble skipped, the real answer is short — max_tokens drops accordingly.
     base_kwargs = dict(max_tokens=200, temperature=persona["temp"])
 
-    if not _grammar_broken:
-        grammar = _load_grammar()
-        if grammar is not None:
-            try:
-                out = llm(prompt, grammar=grammar, **base_kwargs)
-                return _parse_verdict(out["choices"][0]["text"], persona["name"])
-            except Exception as _e:
-                print(f"[jury] grammar-constrained decoding failed ({_e}) — "
-                      "disabling grammar for this process, retrying unconstrained")
-                _grammar_broken = True
+    return _complete(llm, prompt, base_kwargs, persona["name"])
+
+
+def _complete(llm, prompt: str, kwargs: dict, label: str) -> Optional[dict]:
+    """Grammar-constrained completion, falling back to unconstrained ONCE.
+
+    The fallback used to latch: a module-global `_grammar_broken` was set on the
+    first failure and never cleared, so a single transient fault disabled the
+    schema guarantee for every later verdict in the process. In a long-running
+    server that turns a blip into permanent degradation, and it degrades
+    silently — the unconstrained path returns prose on a small model, the
+    verdict is dropped, and the jury just gets quieter.
+
+    Failures are counted instead. Grammar is skipped only after it has failed
+    _GRAMMAR_FAIL_LIMIT times, which distinguishes "this build cannot run our
+    grammar" from "one call went wrong", and every call still logs.
+    """
+    global _grammar_fails
+    grammar = _load_grammar() if _grammar_fails < _GRAMMAR_FAIL_LIMIT else None
+    if grammar is not None:
+        try:
+            out = llm(prompt, grammar=grammar, **kwargs)
+            return _parse_verdict(out["choices"][0]["text"], label)
+        except Exception as _e:
+            _grammar_fails += 1
+            print(f"[jury] grammar-constrained decoding failed ({_e}) — "
+                  f"retrying unconstrained "
+                  f"[{_grammar_fails}/{_GRAMMAR_FAIL_LIMIT} before disabling]")
 
     try:
-        out = llm(prompt, **base_kwargs)
-        return _parse_verdict(out["choices"][0]["text"], persona["name"])
+        out = llm(prompt, **kwargs)
+        return _parse_verdict(out["choices"][0]["text"], label)
     except Exception as e:
-        print(f"[jury] {persona['name']} verdict failed: {e}")
+        print(f"[jury] {label} verdict failed: {e}")
         return None
 
 
@@ -287,13 +325,12 @@ def _run_synthesis(llm, verdicts: list[dict], style_prompt: str) -> Optional[dic
         "representing the jury's consensus.\n"
         'Output ONLY JSON: {"verdict":"...","score":0.00,"cited_aspect":"none","cited_slot":null,"cited_value":null}'
     ) + _THINK_SKIP
-    base_kwargs = dict(max_tokens=200, temperature=0.20)
-    try:
-        out = llm(prompt, **base_kwargs)
-        return _parse_verdict(out["choices"][0]["text"], "Synthesis")
-    except Exception as e:
-        print(f"[jury] synthesis round failed: {e}")
-        return None
+    # Grammar-constrained like the personas. This round's output feeds the
+    # final narrative, so it needs the same schema guarantee; it was calling
+    # the model unconstrained, which on a small model returns prose and drops
+    # the synthesis silently.
+    return _complete(llm, prompt, dict(max_tokens=200, temperature=0.20),
+                     "Synthesis")
 
 
 def run_jury_panel(
