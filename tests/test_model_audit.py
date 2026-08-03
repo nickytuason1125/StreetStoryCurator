@@ -50,6 +50,25 @@ def test_static_scan_matches_by_parent_dir(tmp_path):
     assert (ckpt / "model-00001.safetensors") in refs
 
 
+def test_static_scan_matches_any_ancestor_dir(tmp_path):
+    """HuggingFace caches nest weights several levels below the referenced dir.
+
+    models/siglip2/models--timm--X/snapshots/<hash>/open_clip_pytorch_model.bin
+    is referenced in source only as "models/siglip2". Matching just the
+    immediate parent (a content hash) called that live fallback checkpoint dead.
+    """
+    models = tmp_path / "models"
+    deep = models / "siglip2" / "models--timm--X" / "snapshots" / "ad3410be"
+    deep.mkdir(parents=True)
+    weight = deep / "open_clip_pytorch_model.bin"
+    weight.write_bytes(b"x" * 16)
+    src = tmp_path / "src"; src.mkdir()
+    (src / "enc.py").write_text('HIGH = "models/siglip2"\n', encoding="utf-8")
+
+    refs = amr.static_refs(models, [src])
+    assert weight in refs, "an ancestor dir reference must keep nested weights alive"
+
+
 def test_static_scan_skips_excluded_dirs(tmp_path):
     """A reference from deprecated/ must NOT keep a weight alive.
 

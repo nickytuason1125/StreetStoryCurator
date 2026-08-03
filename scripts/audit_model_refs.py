@@ -29,7 +29,11 @@ import subprocess
 import threading
 from pathlib import Path
 
-SOURCE_SUFFIXES = {".py", ".json", ".txt", ".bat", ".sh", ".ps1", ".spec", ".md"}
+# Deliberately NO .md. Prose that mentions a filename does not open it, and
+# including markdown made the audit self-defeating: a spec listing a weight as a
+# removal candidate thereby marked it "referenced" and kept it alive. Code,
+# config and launchers can genuinely name a weight; documentation cannot load one.
+SOURCE_SUFFIXES = {".py", ".json", ".txt", ".bat", ".sh", ".ps1", ".spec"}
 
 # Never walk these. models/ is 23 GB and venv/ is huge; rglob'ing either to look
 # for source text costs minutes and finds nothing useful. deprecated/ is excluded
@@ -37,7 +41,7 @@ SOURCE_SUFFIXES = {".py", ".json", ".txt", ".bat", ".sh", ".ps1", ".spec", ".md"
 # nothing would ever be reclaimable.
 SKIP_DIRS = {"venv", ".venv", "models", ".git", "__pycache__", "node_modules",
              "deprecated", "cache", "output", "dataset_images", "logs",
-             "frontend", "_quarantine"}
+             "frontend", "_quarantine", "docs"}
 
 
 def _iter_model_files(models_dir: Path):
@@ -74,9 +78,16 @@ def static_refs(models_dir: Path, search_roots: list[Path]) -> set[Path]:
 
     refs: set[Path] = set()
     for p in _iter_model_files(models_dir):
+        # Every ancestor name up to models_dir, not just the immediate parent.
+        # HuggingFace caches nest weights as
+        #   siglip2/models--timm--X/snapshots/<hash>/open_clip_pytorch_model.bin
+        # so the immediate parent is a content hash that appears in no source
+        # file. Matching only that parent called a live fallback checkpoint dead.
         names = {p.name}
-        if p.parent != models_dir:
-            names.add(p.parent.name)
+        for anc in p.parents:
+            if anc == models_dir:
+                break
+            names.add(anc.name)
         if any(n in text for n in names):
             refs.add(p)
     return refs
@@ -165,18 +176,25 @@ def audit(models_dir: Path, search_roots: list[Path] | None = None,
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(
+        epilog="Pass the traced command after a bare '--', so paths containing "
+               "spaces survive: audit_model_refs.py --report -- python run.py 'a b.json'")
     ap.add_argument("--models", default="models")
-    ap.add_argument("--trace", default="", help="command to run while tracing")
     ap.add_argument("--traced-out", default="", help="append traced paths here")
     ap.add_argument("--report", action="store_true")
+    # REMAINDER, not a quoted string: splitting a command on whitespace breaks
+    # on "C:\Program Files\...", and under Git Bash the shell rewrites Windows
+    # paths inside a quoted argument before argparse ever sees them.
+    ap.add_argument("trace_cmd", nargs=argparse.REMAINDER,
+                    help="command to run while tracing, after '--'")
     args = ap.parse_args()
 
+    cmd = [a for a in args.trace_cmd if a != "--"]
     models_dir = Path(args.models).resolve()
     traced: set[Path] = set()
-    if args.trace:
-        print(f"[audit] tracing: {args.trace}")
-        traced = trace_opens(args.trace.split(), models_dir)
+    if cmd:
+        print(f"[audit] tracing: {cmd}")
+        traced = trace_opens(cmd, models_dir)
         print(f"[audit] {len(traced)} model files opened at runtime")
         if not traced:
             print("[audit] WARNING: nothing was traced. Either the command did "
