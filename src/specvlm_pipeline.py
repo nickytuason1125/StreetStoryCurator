@@ -27,7 +27,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
-import torch
+# NOTE: torch is deliberately NOT imported here. This module's runtime path is
+# pure-numpy cosine scoring over embeddings the caller already holds — it never
+# ran a torch op (the import was dead: one reference, the import line itself).
+# But grade_pipeline_v2 imports `_cd_brief_implies_empty` from here during the
+# early-exit gate, so that dead import dragged 347 MB of torch into the
+# CUDA-free grade worker at exactly the wrong moment: measured peak_wset jumped
+# 0.72 -> 1.39 GB in that window, while the 2.7 GB SigLIP subprocess was about
+# to load. If a torch op is ever genuinely needed here, import it inside the
+# function that needs it — never at module scope.
 import numpy as np
 
 # Model paths
@@ -334,26 +342,108 @@ def _raw_discriminant(
     return float(np.max(img_emb @ pos_embs.T)) - float(np.max(img_emb @ neg_embs.T))
 
 
-def _calibrate(raw: np.ndarray) -> np.ndarray:
-    """
-    Min-Max stretch: batch min → 0.10, batch max → 0.95.
+_SCORE_FLOOR = 0.10
+_SCORE_CEIL  = 0.95
+_ANCHORS_PATH = Path(__file__).resolve().parent.parent / "cache" / "calibration_anchors.json"
 
-    Using full Min-Max (not IQR) guarantees the worst photo in the batch scores
-    near 0.10 and the best near 0.95 regardless of how similar the batch is.
-    IQR compressed scores into [0.33, 0.67] for homogeneous batches, causing
-    every photo to land in Mid and making TOPIQ's contribution irrelevant.
 
-    Single-image fallback: min-max is undefined for n=1 (span=0). Instead,
-    map the raw cosine discriminant through a linear sigmoid centred at 0:
-    raw=0 → 0.52, raw=-0.30 → 0.10, raw=+0.30 → 0.90. This gives real
-    scores rather than the floor value of 0.10 for every single-image run.
+def probe_fingerprint(pos_embs: np.ndarray, neg_embs: np.ndarray) -> str:
+    """Identity of the scale the anchors were derived against.
+
+    Hashing the probe EMBEDDINGS rather than the prompt text is deliberate: the
+    embeddings are already a function of all three things the discriminant
+    distribution depends on — the encoder tier (1536/1024/768-d are different
+    spaces), the encoder checkpoint, and the probe set itself. One hash covers
+    all three and cannot drift out of sync with them.
+
+    This matters more than it looks: the positive probes are RAG-augmented, so
+    uploading a reference PDF changes the probe set and therefore the scale.
     """
-    if len(raw) == 1:
-        return np.clip(0.52 + raw * 1.40, 0.10, 0.95)
-    lo   = float(np.min(raw))
-    hi   = float(np.max(raw))
-    span = max(hi - lo, 1e-4)
-    return np.clip((raw - lo) / span * 0.85 + 0.10, 0.10, 0.95)
+    import hashlib
+    h = hashlib.sha1()
+    h.update(np.ascontiguousarray(pos_embs, dtype=np.float32).tobytes())
+    h.update(np.ascontiguousarray(neg_embs, dtype=np.float32).tobytes())
+    return h.hexdigest()[:16]
+
+
+def load_anchors(pos_embs: np.ndarray, neg_embs: np.ndarray):
+    """(lo, hi) for this probe set, or None if absent or stale.
+
+    Returns None rather than guessing. A stale anchor grades every photo against
+    the wrong scale while looking completely healthy, which is a worse failure
+    than the batch-relative bug this replaces.
+    """
+    try:
+        import json
+        if not _ANCHORS_PATH.exists():
+            return None
+        d = json.loads(_ANCHORS_PATH.read_text(encoding="utf-8"))
+        want = probe_fingerprint(pos_embs, neg_embs)
+        if d.get("fingerprint") != want:
+            print(f"[specvlm] calibration anchors are STALE "
+                  f"(probes/encoder/tier changed: {d.get('fingerprint')} != {want}) "
+                  f"— re-run scripts/derive_calibration_anchors.py")
+            return None
+        return float(d["lo"]), float(d["hi"])
+    except Exception as err:
+        print(f"[specvlm] could not read calibration anchors ({err})")
+        return None
+
+
+def _calibrate(raw: np.ndarray, anchors: "Optional[tuple]" = None) -> np.ndarray:
+    """
+    Map raw discriminants onto [0.10, 0.95] against a FIXED scale.
+
+    Why a fixed scale
+    -----------------
+    This used to min-max stretch each batch: batch min → 0.10, batch max → 0.95.
+    That is grading on a curve. The same photograph scored 0.10 beside strong
+    work and 0.95 beside weak work — Weak or Strong from identical pixels — and
+    every batch was guaranteed to contain one of each, so a folder of uniformly
+    excellent frames always manufactured rejects. It also made grades
+    incomparable between culls, and reduced the absolute 0.60/0.41 thresholds to
+    decoration, since their input had already been batch-normalised.
+
+    CLAUDE.md:79 forbids exactly this. It survived because the 2026-06
+    absolute-grading work removed quantile calibration from grade_pipeline_v2
+    and stopped there; this min-max lived in the CLIP scorer.
+
+    Why not simply drop the stretch
+    -------------------------------
+    The raw discriminant spans only about ±0.05 in 1536-d space, so unscaled it
+    puts every photo in one bucket. An earlier IQR attempt compressed everything
+    into [0.33, 0.67] — all Mid, TOPIQ irrelevant. The expansion has to stay;
+    only its reference changes, from "this batch" to a fixed corpus.
+
+    `anchors` is (lo, hi): the p1 and p99 of the raw discriminant over a
+    reference corpus, derived by scripts/derive_calibration_anchors.py and
+    fingerprinted on tier + encoder + probe set. Percentiles rather than
+    min/max so one outlier frame cannot move the scale for everything graded
+    afterwards; values outside clamp.
+
+    With no anchors this degrades to the old batch-relative behaviour and SAYS
+    SO. Grading silently against an absent or stale scale would be worse than
+    the bug being fixed here.
+    """
+    if anchors is None:
+        print("[specvlm] WARNING: no calibration anchors — falling back to "
+              "batch-relative scoring. Grades are NOT comparable across culls. "
+              "Run scripts/derive_calibration_anchors.py")
+        if len(raw) == 1:
+            return np.clip(0.52 + raw * 1.40, _SCORE_FLOOR, _SCORE_CEIL)
+        lo   = float(np.min(raw))
+        hi   = float(np.max(raw))
+        span = max(hi - lo, 1e-4)
+        return np.clip((raw - lo) / span * 0.85 + _SCORE_FLOOR,
+                       _SCORE_FLOOR, _SCORE_CEIL)
+
+    lo, hi = float(anchors[0]), float(anchors[1])
+    span = max(hi - lo, 1e-6)
+    span_out = _SCORE_CEIL - _SCORE_FLOOR
+    # No len(raw)==1 special case: a fixed scale is defined for one photo
+    # exactly as it is for a thousand, which is the point.
+    return np.clip((raw - lo) / span * span_out + _SCORE_FLOOR,
+                   _SCORE_FLOOR, _SCORE_CEIL)
 
 
 def _raw_aspect_discriminants(
@@ -594,7 +684,8 @@ class SpecVLMPipeline:
 
         # ── Calibrate: stretch the batch distribution to fill the grade range ─
         # Overall score: percentile-stretch to [0.05, 0.95]
-        cal_overall = _calibrate(raw_overall)
+        cal_overall = _calibrate(raw_overall,
+                                 anchors=load_anchors(pos_text_embs, neg_text_embs))
 
         # Aspect scores: calibrate each dimension independently across the batch
         cal_aspects: Optional[np.ndarray] = None

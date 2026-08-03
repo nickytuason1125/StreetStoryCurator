@@ -245,18 +245,78 @@ def _parse_verdict(raw: str, persona_name: str) -> Optional[dict]:
 
 
 def _build_slot_summary(selected_images: list[dict], roles: list[str], scores: list[float]) -> str:
+    """Everything the model is allowed to cite, and nothing truncated away.
+
+    This showed only the first THREE aspects while the schema permitted citing
+    any of five, so asking for a citation of Technical or Human/Culture was
+    asking the model to invent a number it had never been shown. It also cut the
+    whole summary at 500 characters, which with long original camera filenames
+    silently deleted later slots from the prompt while leaving them citable.
+    Both were direct invitations to hallucinate.
+    """
     lines = []
     for i, (img, role, sc) in enumerate(zip(selected_images, roles, scores)):
-        aspects = {k: v for k, v in img.items() if k != "filename" and isinstance(v, (int, float))}
-        aspects_str = ",".join(f"{k}={v:.2f}" for k, v in list(aspects.items())[:3])
-        fname = Path(img.get("filename", "")).name
+        aspects = {k: v for k, v in img.items()
+                   if k != "filename" and isinstance(v, (int, float))}
+        aspects_str = ",".join(f"{k}={v:.2f}" for k, v in aspects.items())
+        # Stem only: the extension and any directory add length without giving
+        # the model anything to reason about.
+        fname = Path(img.get("filename", "")).stem
         lines.append(f"{i}:{role}:{fname}:score={sc:.2f}:{aspects_str}")
-    return " | ".join(lines)[:500]
+    return " | ".join(lines)
+
+
+def jury_schema(aspects_by_slot: list[dict]) -> dict:
+    """The verdict schema, constrained to THIS sequence.
+
+    Rejecting a fabricated citation after the fact costs a whole verdict — the
+    juror is dropped and says nothing. Constraining the grammar instead makes
+    the fabrication undecodable: cited_slot may only be a slot that exists, and
+    cited_value may only be a number actually present in the data.
+
+    Values are rounded to 2dp to match what _build_slot_summary prints. If the
+    enum carried full precision the model would faithfully copy the 0.41 it was
+    shown, fail the enum, and be forced into some other value — precision
+    mismatch would manufacture the very errors this prevents.
+    """
+    slots: list = list(range(len(aspects_by_slot))) or []
+    values: set = set()
+    for slot in aspects_by_slot:
+        for v in slot.values():
+            if isinstance(v, (int, float)):
+                # The SAME operation _build_slot_summary uses to print, not an
+                # equivalent-looking one. round() and format() happen to agree
+                # on half-to-even today; relying on that coincidence is how the
+                # enum and the prompt would silently drift apart.
+                values.add(float(f"{float(v):.2f}"))
+    return {
+        "type": "object",
+        "properties": {
+            "verdict":      {"type": "string"},
+            "score":        {"type": "number"},
+            "cited_aspect": {"enum": sorted(_VALID_ASPECTS) + ["none"]},
+            # None first so a purely qualitative verdict stays expressible.
+            "cited_slot":   {"enum": [None] + slots},
+            "cited_value":  {"enum": [None] + sorted(values)},
+        },
+        "required": ["verdict", "score", "cited_aspect", "cited_slot", "cited_value"],
+    }
+
+
+def build_grammar(schema: dict):
+    """Compile a schema to a llama.cpp grammar, or None if it cannot be built."""
+    try:
+        import json as _json
+        from llama_cpp import LlamaGrammar
+        return LlamaGrammar.from_json_schema(_json.dumps(schema))
+    except Exception as e:
+        print(f"[jury] grammar build failed ({e}) — falling back to unconstrained")
+        return None
 
 
 def _run_persona(
     llm, persona: dict, slot_summary: str, style_prompt: str,
-    niche: str, color: str,
+    niche: str, color: str, grammar=None,
 ) -> Optional[dict]:
     prompt = (
         f"{persona['system']}\n"
@@ -277,10 +337,10 @@ def _run_persona(
     # preamble skipped, the real answer is short — max_tokens drops accordingly.
     base_kwargs = dict(max_tokens=200, temperature=persona["temp"])
 
-    return _complete(llm, prompt, base_kwargs, persona["name"])
+    return _complete(llm, prompt, base_kwargs, persona["name"], grammar=grammar)
 
 
-def _complete(llm, prompt: str, kwargs: dict, label: str) -> Optional[dict]:
+def _complete(llm, prompt: str, kwargs: dict, label: str, grammar=None) -> Optional[dict]:
     """Grammar-constrained completion, falling back to unconstrained ONCE.
 
     The fallback used to latch: a module-global `_grammar_broken` was set on the
@@ -295,7 +355,10 @@ def _complete(llm, prompt: str, kwargs: dict, label: str) -> Optional[dict]:
     grammar" from "one call went wrong", and every call still logs.
     """
     global _grammar_fails
-    grammar = _load_grammar() if _grammar_fails < _GRAMMAR_FAIL_LIMIT else None
+    if _grammar_fails >= _GRAMMAR_FAIL_LIMIT:
+        grammar = None
+    elif grammar is None:
+        grammar = _load_grammar()          # generic fallback schema
     if grammar is not None:
         try:
             out = llm(prompt, grammar=grammar, **kwargs)
@@ -361,9 +424,17 @@ def run_jury_panel(
             for img in selected_images
         ]
 
+        # ONE grammar for this sequence, shared by all three personas: it is
+        # compiled from the sequence's real slots and values, so a fabricated
+        # citation cannot be decoded rather than being rejected afterwards.
+        # Built once — compiling per persona would triple the cost for an
+        # identical result.
+        _seq_grammar = build_grammar(jury_schema(aspects_by_slot))
+
         raw_verdicts = []
         for persona in _PERSONAS:
-            v = _run_persona(llm, persona, slot_summary, style_prompt, niche, color)
+            v = _run_persona(llm, persona, slot_summary, style_prompt, niche,
+                             color, grammar=_seq_grammar)
             if v:
                 raw_verdicts.append(v)
 
