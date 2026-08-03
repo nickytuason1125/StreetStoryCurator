@@ -50,7 +50,15 @@ def main() -> int:
 
     # ── the library ───────────────────────────────────────────────────────────
     arr = ls._open_table().to_arrow()
-    embs = np.asarray(arr["embedding"].to_pylist(), dtype=np.float32)
+    # Arrow-native, NOT .to_pylist(). to_pylist() boxes every float into a
+    # Python object: measured 10x the float32 size (0.03 GB vs 0.003 GB at 707
+    # photos), which scales to ~600 MB instead of 61 MB on a 10k-photo library
+    # at 1536-d. This project has already OOM'd once on embeddings being
+    # triple-copied as Python floats; the flat buffer avoids boxing entirely.
+    _col = arr["embedding"].combine_chunks()
+    embs = (_col.flatten().to_numpy(zero_copy_only=False)
+            .astype(np.float32, copy=False)
+            .reshape(len(_col), -1))
     if embs.ndim != 2 or embs.shape[0] < args.min_photos:
         print(f"[anchors] REFUSING: only {embs.shape[0]} photos in the store; "
               f"need >= {args.min_photos} for a representative scale.")
