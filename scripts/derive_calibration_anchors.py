@@ -61,8 +61,12 @@ def main() -> int:
     # NOT the 307 street probes: _raw_discriminant receives the RAG-augmented
     # "pos" group and "neg", which is a different and much smaller set. Deriving
     # against the wrong array would produce confidently wrong grades.
-    cache_name = getattr(prof, "probe_cache_name", None) or "probe_embs.npz"
-    cache = _ROOT / "cache" / cache_name
+    # Use grade_pipeline_v2's own naming, not a reimplementation of it. Deriving
+    # "probe_embs.npz" here independently ignored the tier suffix entirely and
+    # looked for the high-tier file while running at mid — the same
+    # re-derive-tier-state-in-a-second-place bug RunProfile exists to prevent.
+    from grade_pipeline_v2 import _tier_cache_name
+    cache = _ROOT / "cache" / _tier_cache_name("probe_embs", ".npz")
     if not cache.exists():
         print(f"[anchors] no probe cache at {cache}. Run one cull first so the "
               f"probes are computed and cached, then re-run this.")
@@ -107,8 +111,43 @@ def main() -> int:
         print("\n[anchors] --dry-run: nothing written.")
         return 0
 
+    # ── per-aspect anchors ────────────────────────────────────────────────────
+    # Each aspect needs its OWN pair. Composition and Technical do not share a
+    # distribution, so one scale for all five would systematically flatter
+    # whichever sits highest and depress the rest.
+    aspects_out: dict = {}
+    asp_fp = None
+    if "aspect_pos" in d and "aspect_neg" in d:
+        from specvlm_pipeline import aspect_fingerprint
+        ap, an = d["aspect_pos"], d["aspect_neg"]
+        # _ASPECT_PROMPTS lives in specvlm_pipeline; grade_pipeline_v2 imports
+        # it from there. Importing from the consumer rather than the definition
+        # is what made this silently yield zero names.
+        from specvlm_pipeline import _ASPECT_PROMPTS
+        names = list(_ASPECT_PROMPTS.keys())
+        if len(names) == ap.shape[0]:
+            raw_asp = (embs @ ap.T) - (embs @ an.T)          # (N, A)
+            print("\n[anchors] per-aspect p1/p99:")
+            for j, nm in enumerate(names):
+                a_lo = float(np.percentile(raw_asp[:, j], args.lo_pct))
+                a_hi = float(np.percentile(raw_asp[:, j], args.hi_pct))
+                if a_hi - a_lo < 1e-6:
+                    print(f"    {nm:<16} DEGENERATE span — skipped")
+                    continue
+                aspects_out[nm] = [a_lo, a_hi]
+                print(f"    {nm:<16} {a_lo: .5f} .. {a_hi: .5f}")
+            asp_fp = aspect_fingerprint(ap, an)
+        else:
+            print(f"\n[anchors] aspect prompts ({len(names)}) do not match the "
+                  f"cached aspect embeddings ({ap.shape[0]}) — skipping aspects")
+    else:
+        print("\n[anchors] no aspect embeddings in the probe cache — "
+              "per-aspect scores will stay batch-relative")
+
     out = {
         "fingerprint": probe_fingerprint(pos, neg),
+        "aspect_fingerprint": asp_fp,
+        "aspects":     aspects_out,
         "tier":        prof.tier,
         "dim":         int(embs.shape[1]),
         "n_photos":    int(embs.shape[0]),

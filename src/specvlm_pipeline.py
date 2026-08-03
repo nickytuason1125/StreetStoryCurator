@@ -366,6 +366,47 @@ def probe_fingerprint(pos_embs: np.ndarray, neg_embs: np.ndarray) -> str:
     return h.hexdigest()[:16]
 
 
+def aspect_fingerprint(aspect_pos: np.ndarray, aspect_neg: np.ndarray) -> str:
+    """Identity of the per-aspect scale. Separate from the overall fingerprint
+    so changing the aspect prompts does not needlessly invalidate the overall
+    anchors, and vice versa."""
+    import hashlib
+    h = hashlib.sha1()
+    h.update(np.ascontiguousarray(aspect_pos, dtype=np.float32).tobytes())
+    h.update(np.ascontiguousarray(aspect_neg, dtype=np.float32).tobytes())
+    return h.hexdigest()[:16]
+
+
+def load_aspect_anchors(aspect_pos: np.ndarray, aspect_neg: np.ndarray,
+                        aspect_names: "list"):
+    """[(lo, hi)] per aspect in `aspect_names` order, or None.
+
+    Each aspect gets its OWN pair: Composition and Technical have different
+    discriminant distributions, so one shared scale would systematically flatter
+    whichever aspect happens to sit higher.
+    """
+    try:
+        import json
+        if not _ANCHORS_PATH.exists():
+            return None
+        d = json.loads(_ANCHORS_PATH.read_text(encoding="utf-8"))
+        stored = d.get("aspects") or {}
+        want = aspect_fingerprint(aspect_pos, aspect_neg)
+        if d.get("aspect_fingerprint") != want:
+            print(f"[specvlm] aspect anchors are STALE — re-run "
+                  f"scripts/derive_calibration_anchors.py")
+            return None
+        missing = [a for a in aspect_names if a not in stored]
+        if missing:
+            print(f"[specvlm] aspect anchors missing for {missing} — "
+                  f"per-aspect scores stay batch-relative")
+            return None
+        return [(float(stored[a][0]), float(stored[a][1])) for a in aspect_names]
+    except Exception as err:
+        print(f"[specvlm] could not read aspect anchors ({err})")
+        return None
+
+
 def load_anchors(pos_embs: np.ndarray, neg_embs: np.ndarray):
     """(lo, hi) for this probe set, or None if absent or stale.
 
@@ -376,6 +417,10 @@ def load_anchors(pos_embs: np.ndarray, neg_embs: np.ndarray):
     try:
         import json
         if not _ANCHORS_PATH.exists():
+            # Say WHERE. A silent miss here is indistinguishable from a stale
+            # fingerprint at the call site, and both look like "anchors just
+            # don't work" in the log.
+            print(f"[specvlm] no anchors file at {_ANCHORS_PATH}")
             return None
         d = json.loads(_ANCHORS_PATH.read_text(encoding="utf-8"))
         want = probe_fingerprint(pos_embs, neg_embs)
@@ -690,8 +735,14 @@ class SpecVLMPipeline:
         # Aspect scores: calibrate each dimension independently across the batch
         cal_aspects: Optional[np.ndarray] = None
         if raw_aspects is not None:
+            # Per-aspect anchors, not one shared pair: the five dimensions have
+            # different discriminant distributions. Calibrating them against a
+            # single scale would systematically flatter whichever sits highest.
+            _asp_anchors = load_aspect_anchors(
+                aspect_pos_embs, aspect_neg_embs, aspect_names or [])
             cal_aspects = np.stack([
-                _calibrate(raw_aspects[:, j])
+                _calibrate(raw_aspects[:, j],
+                           anchors=_asp_anchors[j] if _asp_anchors else None)
                 for j in range(raw_aspects.shape[1])
             ], axis=1)  # (n, A)
 
