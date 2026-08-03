@@ -121,9 +121,12 @@ def _load_agent_llm():
         return None
 
     from llama_cpp import Llama
+    # NOT torch.cuda.is_available() — same reason as jury_engine._load_llm():
+    # this runs in the server process, which spawns CUDA subprocesses, and
+    # asking the question is what creates the parent's CUDA context.
     try:
-        import torch
-        has_cuda = torch.cuda.is_available()
+        from tier_select import has_gpu
+        has_cuda = has_gpu()
     except Exception:
         has_cuda = False
 
@@ -164,7 +167,10 @@ def unload_agent_model() -> None:
     gc.collect()
     try:
         import torch
-        if torch.cuda.is_available() and torch.cuda.is_initialized():
+        # is_initialized() ALONE — `is_available() and is_initialized()` is a
+        # guard that defeats itself, since is_available() creates the context
+        # and is evaluated first.
+        if torch.cuda.is_initialized():
             torch.cuda.empty_cache()
             torch.cuda.ipc_collect()
     except Exception:

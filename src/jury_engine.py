@@ -88,9 +88,14 @@ def _load_llm():
         return None
 
     from llama_cpp import Llama
+    # NOT torch.cuda.is_available(): this runs in the SERVER process, which
+    # also spawns grade_runner.py as a CUDA subprocess. Merely asking whether a
+    # GPU exists creates a CUDA context in the parent, and the child's exit
+    # then faults the parent with 0xC0000005 and no traceback. tier_select
+    # asks in a throwaway subprocess and caches the answer.
     try:
-        import torch
-        has_cuda = torch.cuda.is_available()
+        from tier_select import has_gpu
+        has_cuda = has_gpu()
     except Exception:
         has_cuda = False
 
@@ -146,7 +151,11 @@ def unload() -> None:
     gc.collect()
     try:
         import torch
-        if torch.cuda.is_available() and torch.cuda.is_initialized():
+        # is_initialized() ALONE. Writing `is_available() and is_initialized()`
+        # reads like a guard but is the opposite of one: is_available() is the
+        # call that creates the context, and it is evaluated first. If CUDA was
+        # never initialised there is nothing to purge, so this is sufficient.
+        if torch.cuda.is_initialized():
             torch.cuda.empty_cache()
             torch.cuda.ipc_collect()
     except Exception:
