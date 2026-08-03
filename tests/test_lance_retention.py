@@ -82,3 +82,22 @@ def test_cleanup_failure_never_raises(monkeypatch):
 
     monkeypatch.setattr(lance_store, "_open_table", lambda: Boom())
     lance_store.compact_after_write()      # must return normally
+
+
+def test_no_second_lancedb_is_ever_created():
+    """cache/lancedb_v2 was a parallel store with a conflicting schema.
+
+    src/lance_migration.py defined it: table photos_v2, a `confidence` column
+    the live schema lacks, and `breakdown` as a JSON string where the live store
+    uses a struct. It created the directory at IMPORT time on a CWD-relative
+    path. The module never ran only because line 1 was the literal text
+    "but ar", so it raised SyntaxError on import — corruption that was committed,
+    not a local accident.
+
+    Deleted. This guards against it returning: a second store would silently
+    split grades across two databases.
+    """
+    assert not (_ROOT / "src" / "lance_migration.py").exists(), \
+        "lance_migration.py is dead code that creates a conflicting second store"
+    assert not (_ROOT / "cache" / "lancedb_v2").exists(), \
+        "a second LanceDB appeared - something is importing a migration module"
