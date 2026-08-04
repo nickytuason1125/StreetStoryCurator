@@ -850,6 +850,82 @@ def niche_clip_probes(preset: str) -> tuple[list[str], list[str]]:
     return niche["pos_probes"], niche["neg_probes"]
 
 
+def union_probes(pos: list, neg: list) -> tuple[list, list]:
+    """Every niche's vocabulary, added to the base set. ONE shared rubric.
+
+    This is deliberately preset-INDEPENDENT. Grading each folder only against
+    its own genre would derive a scale per genre, normalising each to the same
+    spread — fine art ~30% Strong, street ~30% Strong — whether or not the work
+    is genuinely comparable. That is the batch-relative curve one level up, and
+    it flatters every folder by never letting a genre look weak as a whole.
+
+    With the union, a photograph is asked "are you excellent by ANY recognised
+    standard", on a scale shared by everything. A strong landscape wins on
+    landscape language, a strong street frame on street language, and a weak
+    photograph of any genre wins on nothing.
+
+    Side benefit, and it is not small: the base carries five generic negatives,
+    so max(negative) was nearly constant and the discriminant was effectively
+    positive-only. The union brings ~81, giving the negative side real
+    discriminating power over genre-specific failure modes.
+
+    Order is deterministic (registry order, then registry-defined probe order):
+    the probe list feeds both the encode cache key and the calibration anchor
+    fingerprint, so a varying order would re-encode every run and read every
+    anchor as stale.
+    """
+    out_pos, out_neg = list(pos), list(neg)
+    seen_p, seen_n = set(out_pos), set(out_neg)
+    for key in REGISTRY:                      # dicts preserve insertion order
+        niche = REGISTRY[key]
+        for p in niche.get("pos_probes", []) or []:
+            if p not in seen_p:
+                out_pos.append(p)
+                seen_p.add(p)
+        for n in niche.get("neg_probes", []) or []:
+            if n not in seen_n:
+                out_neg.append(n)
+                seen_n.add(n)
+    return out_pos, out_neg
+
+
+def augment_probes(preset: str, pos: list, neg: list) -> tuple[list, list]:
+    """Add this niche's probes to the base set. ADDITIVE, never substitutive.
+
+    The grade is max(similarity) over the positive set, so set SIZE is itself a
+    scoring advantage. Landscape ships 7 positive probes against the street
+    base's 74: swapping them in scored a landscape folder slightly WORSE than
+    the street probes did, purely because there were ten times fewer chances to
+    match. Replacing would have built in the very bias this is meant to remove.
+
+    Augmenting keeps every existing route to a high score and adds
+    genre-appropriate ones, so a landscape can win on landscape language while a
+    street frame is unaffected.
+
+    Unlike niche_clip_probes(), an unknown preset is a NO-OP rather than a
+    silent fall back to classic_street: quietly grading an unrecognised genre by
+    street rules is how this whole class of error started.
+
+    Idempotent, and never mutates the caller's lists — run_v2 may build probes
+    more than once per run.
+    """
+    niche = get_niche(preset) if preset else None
+    if not niche:
+        return list(pos), list(neg)
+
+    out_pos, out_neg = list(pos), list(neg)
+    seen_p, seen_n = set(out_pos), set(out_neg)
+    for p in niche.get("pos_probes", []) or []:
+        if p not in seen_p:
+            out_pos.append(p)
+            seen_p.add(p)
+    for n in niche.get("neg_probes", []) or []:
+        if n not in seen_n:
+            out_neg.append(n)
+            seen_n.add(n)
+    return out_pos, out_neg
+
+
 # Scale anchors are MODEL-SPECIFIC: each VLM generation maps language to
 # numbers differently. Qwen3-VL-2B graded the same batch 0.53-0.80 (mean 0.69)
 # where Qwen2.5-VL-3B gave 0.21-0.74 (mean 0.52) under identical anchors —
