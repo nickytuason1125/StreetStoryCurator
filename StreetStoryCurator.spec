@@ -31,6 +31,11 @@ a = Analysis(
         (str(ROOT / "src"),                "src"),
         # Pacing presets JSON
         (str(ROOT / "src" / "pacing_presets.json"), "src"),
+        # Calibration fallback anchors. WITHOUT THIS a fresh install has no
+        # anchors (cache/ is gitignored and never bundled), so _calibrate falls
+        # back to batch-relative scoring — grading on a curve, where the same
+        # photo is Weak or Strong depending on what it was culled alongside.
+        (str(ROOT / "data" / "calibration_defaults.json"), "data"),
         # App icon
         (str(ROOT / "icon.ico"),           "."),
     ],

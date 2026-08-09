@@ -108,8 +108,46 @@ def git_tracked(models_dir: Path) -> set[Path]:
         return set()
 
 
+def can_trace_children() -> bool:
+    """Can this process observe ANOTHER process's open files?
+
+    On Windows the answer is usually NO without elevation: psutil.open_files()
+    returns entries for the calling process and an empty list for a child.
+    Measured on this machine - self: 3 entries, child: 0.
+
+    That makes the dynamic pass unreliable exactly where it matters, so callers
+    must check this before treating an empty trace as evidence of anything.
+    """
+    import subprocess
+    import sys
+    import time
+
+    import psutil
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time,sys; f=open(sys.executable,'rb'); time.sleep(1.2)"])
+    try:
+        time.sleep(0.5)
+        try:
+            return len(psutil.Process(proc.pid).open_files()) > 0
+        except Exception:
+            return False
+    finally:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        proc.wait(timeout=5)
+
+
 def trace_opens(cmd: list[str], models_dir: Path, poll_s: float = 0.2) -> set[Path]:
-    """Files under models_dir opened by `cmd` or any of its children."""
+    """Files under models_dir opened by `cmd` or any of its children.
+
+    UNRELIABLE ON WINDOWS. See can_trace_children(): without elevation
+    psutil cannot enumerate a child's handles, so this returns an empty set
+    regardless of what the command actually loaded. An empty result is NOT
+    evidence that nothing was opened. The static pass carries the audit on
+    such platforms.
+    """
     import psutil
 
     models_dir = Path(models_dir).resolve()
@@ -123,11 +161,20 @@ def trace_opens(cmd: list[str], models_dir: Path, poll_s: float = 0.2) -> set[Pa
             return None
         return p if models_dir in p.parents else None
 
+    errors: list = []
+
     def _poll(proc):
+        # Catch Exception, not just psutil.Error. On Windows open_files() can
+        # raise OSError/MemoryError under memory pressure, and a bare
+        # `except psutil.Error` let that kill the polling thread outright — the
+        # trace then returned an empty set, which reads as "this binary opened
+        # nothing" and would mark every weight dead. A tracer that can fail
+        # silently is worse than no tracer.
         while not stop.is_set():
             try:
                 targets = [proc] + proc.children(recursive=True)
-            except psutil.Error:
+            except Exception as err:
+                errors.append(repr(err))
                 targets = []
             for t in targets:
                 try:
@@ -135,7 +182,8 @@ def trace_opens(cmd: list[str], models_dir: Path, poll_s: float = 0.2) -> set[Pa
                         hit = _under(f.path)
                         if hit:
                             seen.add(hit)
-                except psutil.Error:
+                except Exception as err:
+                    errors.append(repr(err))
                     continue
             stop.wait(poll_s)
 
@@ -150,6 +198,12 @@ def trace_opens(cmd: list[str], models_dir: Path, poll_s: float = 0.2) -> set[Pa
         stop.set()
         if watcher is not None:
             watcher.join(timeout=5)
+    if errors and not seen:
+        # Distinguish "observed nothing" from "could not observe".
+        uniq = sorted(set(errors))[:3]
+        print(f"[audit] WARNING: the poller hit {len(errors)} errors and saw "
+              f"nothing. This is NOT evidence the command opened no models. "
+              f"Examples: {uniq}")
     return seen
 
 

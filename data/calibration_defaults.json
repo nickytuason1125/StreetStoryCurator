@@ -1,0 +1,40 @@
+{
+  "note": "Shipped fallback anchors so a FRESH INSTALL grades absolutely instead of falling back to batch-relative scoring (grading on a curve). Matched on TIER, not on the exact probe fingerprint: the discriminant distribution is dominated by the encoder tier, so a small probe-set difference shifts the scale slightly, which is vastly better than the curve. A user-derived cache/calibration_anchors.json always wins.",
+  "derived_from": {
+    "library_photos": 1745,
+    "generated": "2026-08-04T12:59:49"
+  },
+  "by_tier": {
+    "high": {
+      "dim": 1536,
+      "lo": -0.06302570551633835,
+      "hi": 0.046485286206007004,
+      "lo_pct": 1.0,
+      "hi_pct": 99.0,
+      "fingerprint": "8047158f17c20234",
+      "aspect_fingerprint": "ea3cc07c4cb3af40",
+      "aspects": {
+        "Technical": [
+          -0.052249304950237274,
+          0.062171511352062225
+        ],
+        "Composition": [
+          -0.08043192327022552,
+          0.01969710923731327
+        ],
+        "Lighting": [
+          -0.07130534946918488,
+          0.019913217052817345
+        ],
+        "Narrative": [
+          -0.08689716458320618,
+          0.0299622043967247
+        ],
+        "Human/Culture": [
+          -0.11593858152627945,
+          0.09613040834665298
+        ]
+      }
+    }
+  }
+}

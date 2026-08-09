@@ -366,6 +366,42 @@ def probe_fingerprint(pos_embs: np.ndarray, neg_embs: np.ndarray) -> str:
     return h.hexdigest()[:16]
 
 
+_DEFAULT_ANCHORS_PATH = Path(__file__).resolve().parent.parent / "data" / "calibration_defaults.json"
+
+
+def _active_tier() -> str:
+    import os
+    t = os.environ.get("SIGLIP_TIER", "high").strip().lower()
+    return t if t in ("high", "mid", "low") else "high"
+
+
+def _shipped_defaults(tier: "Optional[str]" = None) -> "Optional[dict]":
+    """Fallback anchors that SHIP with the app.
+
+    cache/ is gitignored and the installer bundles nothing from it, so a fresh
+    install had no anchors at all and _calibrate silently fell back to
+    batch-relative scoring — the exact bug anchors exist to prevent, delivered
+    to every new user. And since anchors are DERIVED FROM a library, a
+    first-time user had nothing to derive from: a chicken-and-egg that shipped
+    defaults break.
+
+    Matched on TIER, not on the exact probe fingerprint. The discriminant
+    distribution is dominated by the encoder tier; a modest probe-set
+    difference (a user's own RAG phrases, say) shifts the scale slightly, which
+    is vastly better than no scale at all. A user-derived cache file, which
+    fits their own library, always wins.
+    """
+    try:
+        import json
+        if not _DEFAULT_ANCHORS_PATH.exists():
+            return None
+        d = json.loads(_DEFAULT_ANCHORS_PATH.read_text(encoding="utf-8"))
+        return (d.get("by_tier") or {}).get(tier or _active_tier())
+    except Exception as err:
+        print(f"[specvlm] could not read shipped default anchors ({err})")
+        return None
+
+
 def aspect_fingerprint(aspect_pos: np.ndarray, aspect_neg: np.ndarray) -> str:
     """Identity of the per-aspect scale. Separate from the overall fingerprint
     so changing the aspect prompts does not needlessly invalidate the overall
@@ -378,61 +414,74 @@ def aspect_fingerprint(aspect_pos: np.ndarray, aspect_neg: np.ndarray) -> str:
 
 
 def load_aspect_anchors(aspect_pos: np.ndarray, aspect_neg: np.ndarray,
-                        aspect_names: "list"):
+                        aspect_names: "list", tier: "Optional[str]" = None):
     """[(lo, hi)] per aspect in `aspect_names` order, or None.
 
     Each aspect gets its OWN pair: Composition and Technical have different
     discriminant distributions, so one shared scale would systematically flatter
     whichever aspect happens to sit higher.
     """
+    def _pick(stored: dict, why: str):
+        missing = [a for a in aspect_names if a not in (stored or {})]
+        if missing:
+            print(f"[specvlm] aspect anchors missing for {missing} ({why})")
+            return None
+        return [(float(stored[a][0]), float(stored[a][1])) for a in aspect_names]
+
+    def _fallback(reason: str):
+        dflt = _shipped_defaults(tier) or {}
+        got = _pick(dflt.get("aspects") or {}, "shipped defaults")
+        if got:
+            print(f"[specvlm] {reason} — using SHIPPED default aspect anchors")
+            return got
+        print(f"[specvlm] {reason}, and no shipped aspect defaults for tier "
+              f"'{tier or _active_tier()}'")
+        return None
+
     try:
         import json
         if not _ANCHORS_PATH.exists():
-            return None
+            return _fallback("no aspect anchors yet")
         d = json.loads(_ANCHORS_PATH.read_text(encoding="utf-8"))
-        stored = d.get("aspects") or {}
-        want = aspect_fingerprint(aspect_pos, aspect_neg)
-        if d.get("aspect_fingerprint") != want:
-            print(f"[specvlm] aspect anchors are STALE — re-run "
-                  f"scripts/derive_calibration_anchors.py")
-            return None
-        missing = [a for a in aspect_names if a not in stored]
-        if missing:
-            print(f"[specvlm] aspect anchors missing for {missing} — "
-                  f"per-aspect scores stay batch-relative")
-            return None
-        return [(float(stored[a][0]), float(stored[a][1])) for a in aspect_names]
+        if d.get("aspect_fingerprint") != aspect_fingerprint(aspect_pos, aspect_neg):
+            return _fallback("aspect anchors are STALE")
+        return _pick(d.get("aspects") or {}, "user cache") or _fallback(
+            "user aspect anchors incomplete")
     except Exception as err:
-        print(f"[specvlm] could not read aspect anchors ({err})")
-        return None
+        return _fallback(f"could not read aspect anchors ({err})")
 
 
-def load_anchors(pos_embs: np.ndarray, neg_embs: np.ndarray):
+def load_anchors(pos_embs: np.ndarray, neg_embs: np.ndarray, tier: "Optional[str]" = None):
     """(lo, hi) for this probe set, or None if absent or stale.
 
     Returns None rather than guessing. A stale anchor grades every photo against
     the wrong scale while looking completely healthy, which is a worse failure
     than the batch-relative bug this replaces.
     """
+    def _fallback(reason: str):
+        """Shipped tier defaults, never silently the curve."""
+        dflt = _shipped_defaults(tier)
+        if dflt and dflt.get("hi", 0) > dflt.get("lo", 0):
+            print(f"[specvlm] {reason} — using SHIPPED default anchors for tier "
+                  f"'{tier or _active_tier()}'. Grades are absolute but generic; "
+                  f"run scripts/derive_calibration_anchors.py to fit your library.")
+            return float(dflt["lo"]), float(dflt["hi"])
+        print(f"[specvlm] {reason}, and no shipped default for tier "
+              f"'{tier or _active_tier()}'")
+        return None
+
     try:
         import json
         if not _ANCHORS_PATH.exists():
-            # Say WHERE. A silent miss here is indistinguishable from a stale
-            # fingerprint at the call site, and both look like "anchors just
-            # don't work" in the log.
-            print(f"[specvlm] no anchors file at {_ANCHORS_PATH}")
-            return None
+            return _fallback("no calibration anchors yet")
         d = json.loads(_ANCHORS_PATH.read_text(encoding="utf-8"))
         want = probe_fingerprint(pos_embs, neg_embs)
         if d.get("fingerprint") != want:
-            print(f"[specvlm] calibration anchors are STALE "
-                  f"(probes/encoder/tier changed: {d.get('fingerprint')} != {want}) "
-                  f"— re-run scripts/derive_calibration_anchors.py")
-            return None
+            return _fallback(f"calibration anchors are STALE "
+                             f"({d.get('fingerprint')} != {want})")
         return float(d["lo"]), float(d["hi"])
     except Exception as err:
-        print(f"[specvlm] could not read calibration anchors ({err})")
-        return None
+        return _fallback(f"could not read calibration anchors ({err})")
 
 
 def _calibrate(raw: np.ndarray, anchors: "Optional[tuple]" = None) -> np.ndarray:

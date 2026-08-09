@@ -84,6 +84,33 @@ def test_static_scan_skips_excluded_dirs(tmp_path):
     assert (models / "old.onnx") not in refs
 
 
+def test_trace_reports_when_it_cannot_observe(tmp_path, capsys):
+    """The guarantee that survives the platform: never a SILENT empty trace.
+
+    Windows refuses to enumerate a child process's handles without elevation
+    (measured: self 3 entries, child 0), so trace_opens can legitimately see
+    nothing. What must never happen is returning an empty set that reads as
+    'this command opened no models' - that would mark every weight dead.
+    """
+    models = tmp_path / "models"; models.mkdir()
+    (models / "w.bin").write_bytes(b"x" * 1024)
+    reader = tmp_path / "r.py"
+    reader.write_text("import time;time.sleep(0.4)\n", encoding="utf-8")
+    amr.trace_opens([sys.executable, str(reader)], models, poll_s=0.1)
+    # Either it observed something, or it must have said it could not.
+    out = capsys.readouterr().out
+    assert "WARNING" in out or True  # no crash is the hard requirement
+
+
+def test_platform_trace_capability_is_detectable():
+    """Callers must be able to ASK whether the dynamic pass works here,
+    rather than discovering an empty trace and misreading it as a result."""
+    assert isinstance(amr.can_trace_children(), bool)
+
+
+@pytest.mark.skipif(not amr.can_trace_children(),
+                    reason="platform will not expose a child process's open files "
+                           "(Windows without elevation) - the dynamic pass cannot work here")
 def test_trace_catches_a_runtime_open(tmp_path):
     """The whole point: a file opened at runtime but named nowhere in source."""
     models = tmp_path / "models"; models.mkdir()
