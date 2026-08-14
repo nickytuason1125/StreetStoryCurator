@@ -92,27 +92,17 @@ const sanitizePath = (raw: string): string =>
     .join("/")
     .replace(/^\//, match => match); // preserve leading slash (absolute paths)
 
-/* ── Design tokens ─────────────────────────────────────────────── */
-const C = {
-  bg:     '#0a0a0d',
-  surf:   '#111114',
-  surf2:  '#18181e',
-  surf3:  '#1e1e27',
-  border: '#1c1c24',
-  bdr2:   '#252535',
-  text:   '#e8e8ed',
-  text2:  '#8a8a9a',
-  text3:  '#44445a',
-  accent: 'oklch(64% .19 248)',
-  aLow:   'oklch(64% .19 248 / .12)',
-  aBdr:   'oklch(64% .19 248 / .3)',
-  strong: 'oklch(65% .17 148)',
-  sLow:   'oklch(65% .17 148 / .14)',
-  mid:    'oklch(70% .17 72)',
-  mLow:   'oklch(70% .17 72 / .14)',
-  weak:   'oklch(58% .18 18)',
-  wLow:   'oklch(58% .18 18 / .14)',
-};
+/* The second palette that used to live here is gone.
+ *
+ * `C` declared its own twenty literals — a blue-black ground (#0a0a0d), a
+ * blue-grey ink ramp and a green/amber/red grade set — while src/theme/tokens.css
+ * declared a neutral ground (#1a1a1a), a neutral ink ramp and a teal/silent/dim
+ * grade set. Both were live at once, in the same window, so the app rendered two
+ * different greys depending on which half of the file drew the pixel, and editing
+ * tokens.css moved only half the UI.
+ *
+ * Everything now reads T.* from theme/tokens.ts, which returns var(--x) rather
+ * than a value, so tokens.css is the only file where a colour is decided. */
 
 /* The grade vocabulary. Everything downstream inherits from these, which is why
  * they are the first thing converted — see src/theme/tokens.ts.
@@ -265,7 +255,7 @@ const FilmThumb = memo(function FilmThumb({
 /* ── EXIF Block ──────────────────────────────────────────────────── */
 function ExifBlock({ exif }: { exif: any }) {
   if (!exif || !Object.keys(exif).length) return (
-    <p style={{ fontSize:12, color:C.text3, lineHeight:1.7 }}>No EXIF data available for this photo.</p>
+    <p style={{ fontSize:12, color:T.ink3, lineHeight:1.7 }}>No EXIF data available for this photo.</p>
   );
   const ORDER: [string, string][] = [
     ['camera',        'Camera'],
@@ -287,11 +277,11 @@ function ExifBlock({ exif }: { exif: any }) {
   const rows = ORDER.filter(([k]) => exif[k] != null).map(([k, label]) => [label, String(exif[k])] as [string,string]);
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:0 }}>
-      <p style={{ fontSize:11, fontWeight:700, letterSpacing:'.08em', textTransform:'uppercase', color:C.text3, marginBottom:8 }}>EXIF Data</p>
+      <p style={{ fontSize:11, fontWeight:700, letterSpacing:'.08em', textTransform:'uppercase', color:T.ink3, marginBottom:8 }}>EXIF Data</p>
       {rows.map(([k, v]) => (
-        <div key={k} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'6px 0', borderBottom:`1px solid ${C.border}` }}>
-          <span style={{ fontSize:12, color:C.text3, fontWeight:500 }}>{k}</span>
-          <span style={{ fontSize:12, color:C.text, fontWeight:600, fontVariantNumeric:'tabular-nums', fontFamily:"'SF Mono',monospace", textAlign:'right', maxWidth:'60%', wordBreak:'break-word' }}>{v}</span>
+        <div key={k} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'6px 0', borderBottom:`1px solid ${T.line}` }}>
+          <span style={{ fontSize:12, color:T.ink3, fontWeight:500 }}>{k}</span>
+          <span style={{ fontSize:12, color:T.ink, fontWeight:600, fontVariantNumeric:'tabular-nums', fontFamily:"'SF Mono',monospace", textAlign:'right', maxWidth:'60%', wordBreak:'break-word' }}>{v}</span>
         </div>
       ))}
     </div>
@@ -812,7 +802,7 @@ function AnalysisHUD({ grade, score, breakdown }: { grade: string; score: number
           const vpct = Math.round((v as number) * 100);
           const isTop = v === maxV;
           const isBot = v === minV && v !== maxV;
-          const col = isTop ? C.strong : isBot ? C.weak : _INK;
+          const col = isTop ? T.gradeStrong : isBot ? T.gradeWeak : _INK;
           const filled = vpct * 0.76;
           return (
             <div key={k} style={{ display:'flex', alignItems:'center', gap:8 }}>
@@ -2144,8 +2134,8 @@ export default function App() {
 
   return (
     <div
-      style={{ display:'flex', flexDirection:'column', height:'100vh', background:C.bg, overflow:'hidden',
-        fontFamily:"'Helvetica Neue',-apple-system,BlinkMacSystemFont,system-ui,sans-serif", fontSize:15, color:C.text }}
+      style={{ display:'flex', flexDirection:'column', height:'100vh', background:T.ground, overflow:'hidden',
+        fontFamily:"'Helvetica Neue',-apple-system,BlinkMacSystemFont,system-ui,sans-serif", fontSize:15, color:T.ink }}
       onDrop={handleDrop} onDragOver={e => { e.preventDefault(); e.stopPropagation(); }} onDragEnter={handleDragEnter} onDragLeave={handleDragLeave}
     >
 
@@ -2154,11 +2144,11 @@ export default function App() {
         <div style={{ position:'fixed', inset:8, zIndex:200, pointerEvents:'none', borderRadius:12,
           display:'flex', alignItems:'center', justifyContent:'center',
           background:'rgba(10,10,13,.88)', backdropFilter:'blur(6px)',
-          border:`2px dashed ${C.accent}`,
+          border:`2px dashed ${T.ink3}`,
         }}>
           <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:12 }}>
-            <FolderOpen size={48} strokeWidth={1} style={{ color:C.accent }}/>
-            <span style={{ fontSize:18, fontWeight:700, color:C.accent }}>Drop folder to load</span>
+            <FolderOpen size={48} strokeWidth={1} style={{ color:T.ink2 }}/>
+            <span className="text-md text-ink">Drop folder to load</span>
           </div>
         </div>
       )}
@@ -2168,9 +2158,9 @@ export default function App() {
         <div style={{
           position:'fixed', top:12, left:'50%', transform:'translateX(-50%)', zIndex:300,
           padding:'7px 16px', borderRadius:8, fontSize:13, fontWeight:500, whiteSpace:'nowrap',
-          background: toast.type==='success' ? 'oklch(20% .1 148)' : toast.type==='error' ? 'oklch(18% .1 18)' : C.surf2,
-          border:`1px solid ${toast.type==='success' ? 'oklch(48% .14 148)' : toast.type==='error' ? 'oklch(44% .14 18)' : C.bdr2}`,
-          color:C.text, boxShadow:'0 8px 32px rgba(0,0,0,.7)', animation:'slideUp .3s cubic-bezier(.2,0,0,1)',
+          background: toast.type==='success' ? 'oklch(20% .1 148)' : toast.type==='error' ? 'oklch(18% .1 18)' : T.raised,
+          border:`1px solid ${toast.type==='success' ? 'oklch(48% .14 148)' : toast.type==='error' ? 'oklch(44% .14 18)' : T.lineStrong}`,
+          color:T.ink, boxShadow:'0 8px 32px rgba(0,0,0,.7)', animation:'slideUp .3s cubic-bezier(.2,0,0,1)',
         }}>{toast.msg}</div>
       )}
 
@@ -2311,10 +2301,10 @@ export default function App() {
         <div style={{ position:'fixed', inset:0, zIndex:400, background:'rgba(0,0,0,1)', display:'flex', alignItems:'center', justifyContent:'center' }}
           role="presentation"
           onClick={() => setPreGradeModal(null)}>
-          <div ref={preGradeDialogRef} style={{ background:C.surf1, border:`1px solid ${C.bdr2}`, borderRadius:12, padding:'28px 32px', maxWidth:420, width:'90%', display:'flex', flexDirection:'column', gap:16 }}
+          <div ref={preGradeDialogRef} style={{ background:T.surface1, border:`1px solid ${T.lineStrong}`, borderRadius:12, padding:'28px 32px', maxWidth:420, width:'90%', display:'flex', flexDirection:'column', gap:16 }}
             role="dialog" aria-modal="true" aria-labelledby="pregrade-title"
             onClick={e => e.stopPropagation()}>
-            <div id="pregrade-title" style={{ fontSize:16, fontWeight:700, color:C.text }}>Before you start</div>
+            <div id="pregrade-title" style={{ fontSize:16, fontWeight:700, color:T.ink }}>Before you start</div>
 
             {/* Vision Engine status */}
             <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
@@ -2332,7 +2322,7 @@ export default function App() {
                         transition:'width .8s cubic-bezier(.2,0,0,1)' }}/>
                     </div>
                   )}
-                  <div style={{ fontSize:12, color:C.text2, lineHeight:1.5 }}>
+                  <div style={{ fontSize:12, color:T.ink2, lineHeight:1.5 }}>
                     ~6 GB one-time download — runs automatically in the background.
                     {graderStatus?.qwen_download_pct != null
                       ? ' Grading will start automatically once complete.'
@@ -2342,22 +2332,22 @@ export default function App() {
               ) : graderStatus?.qwen_warm ? (
                 <div style={{ padding:'10px 14px', borderRadius:8, background:'oklch(20% .09 145 / .3)', border:'1px solid oklch(46% .14 145 / .4)' }}>
                   <div style={{ fontSize:13, fontWeight:700, color:'oklch(72% .16 145)', marginBottom:4 }}>Vision Engine: warm and ready</div>
-                  <div style={{ fontSize:12, color:C.text2 }}>Already loaded in VRAM. Grading will start immediately.</div>
+                  <div style={{ fontSize:12, color:T.ink2 }}>Already loaded in VRAM. Grading will start immediately.</div>
                 </div>
               ) : graderStatus?.qwen_loading ? (
-                <div style={{ padding:'10px 14px', borderRadius:8, background:`${C.accent}18`, border:`1px solid ${C.accent}44` }}>
+                <div className="rounded-sm border border-line-strong bg-raised px-3 py-2">
                   <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
-                    <div style={{ width:10, height:10, borderRadius:'50%', border:`2px solid ${C.accent}`, borderTopColor:'transparent', animation:'spin .8s linear infinite', flexShrink:0 }}/>
-                    <span style={{ fontSize:13, fontWeight:700, color:C.accent }}>Vision Engine: loading into VRAM…</span>
+                    <div style={{ width:10, height:10, borderRadius:'50%', border:`2px solid ${T.ink3}`, borderTopColor:'transparent', animation:'spin .8s linear infinite', flexShrink:0 }}/>
+                    <span className="text-sm text-ink">Vision Engine: loading into VRAM…</span>
                   </div>
-                  <div style={{ fontSize:12, color:C.text2 }}>
+                  <div style={{ fontSize:12, color:T.ink2 }}>
                     Loading model weights from disk. Takes <strong>~30–60 seconds</strong> — Start Culling will unlock automatically.
                   </div>
                 </div>
               ) : (
-                <div style={{ padding:'10px 14px', borderRadius:8, background:`${C.accent}18`, border:`1px solid ${C.accent}44` }}>
-                  <div style={{ fontSize:13, fontWeight:700, color:C.accent, marginBottom:4 }}>Vision Engine: ready to load</div>
-                  <div style={{ fontSize:12, color:C.text2 }}>
+                <div className="rounded-sm border border-line-strong bg-raised px-3 py-2">
+                  <div className="mb-1 text-sm text-ink">Vision Engine: ready to load</div>
+                  <div style={{ fontSize:12, color:T.ink2 }}>
                     Model is cached on disk. Loading starts now — will be ready in <strong>~30–60 seconds</strong>.
                   </div>
                 </div>
@@ -2375,7 +2365,7 @@ export default function App() {
                 return (
                   <div style={{ padding:'10px 14px', borderRadius:8, background:card.bg, border:`1px solid ${card.border}` }}>
                     <div style={{ fontSize:13, fontWeight:700, color:card.color, marginBottom:4 }}>{card.title}</div>
-                    <div style={{ fontSize:12, color:C.text2, lineHeight:1.5 }}>{card.body}</div>
+                    <div style={{ fontSize:12, color:T.ink2, lineHeight:1.5 }}>{card.body}</div>
                   </div>
                 );
               })()}
@@ -2387,7 +2377,7 @@ export default function App() {
                   <div style={{ fontSize:13, fontWeight:700, color:'oklch(80% .14 55)', marginBottom:4 }}>
                     First cull: one-time engine optimisation
                   </div>
-                  <div style={{ fontSize:12, color:C.text2, lineHeight:1.5 }}>
+                  <div style={{ fontSize:12, color:T.ink2, lineHeight:1.5 }}>
                     The Vision Engine will be compressed for your GPU on this run — expect a
                     pause of <strong>a few minutes around 52%</strong>. The result is saved,
                     so every cull after this one skips it and starts in seconds.
@@ -2402,7 +2392,7 @@ export default function App() {
                     <div style={{ width:9, height:9, borderRadius:'50%', border:'2px solid oklch(70% .16 270)', borderTopColor:'transparent', animation:'spin .8s linear infinite', flexShrink:0 }}/>
                     <span style={{ fontSize:13, fontWeight:700, color:'oklch(74% .14 270)' }}>Calibrating pipeline…</span>
                   </div>
-                  <div style={{ fontSize:12, color:C.text2 }}>Running your best photos through the engine to warm up CUDA kernels. Start Culling will unlock when done.</div>
+                  <div style={{ fontSize:12, color:T.ink2 }}>Running your best photos through the engine to warm up CUDA kernels. Start Culling will unlock when done.</div>
                 </div>
               )}
               {graderStatus?.warmup_done && !graderStatus?.warmup_running && (
@@ -2556,7 +2546,7 @@ export default function App() {
           const isIqaHeads = m === 'iqa_heads';
           const isClip     = m === 'clip_only';
           const isIdle     = m === 'idle' || !m;
-          const dot   = isIqaHeads ? '#22c55e' : isClip ? '#f59e0b' : C.text3;
+          const dot   = isIqaHeads ? '#22c55e' : isClip ? '#f59e0b' : T.ink3;
           const label = isIqaHeads ? 'Deep Edit' : isClip ? 'Scout Mode' : 'Ready';
           const tip   = graderStatus.last_error ? `Error: ${graderStatus.last_error}` :
                         isIqaHeads ? 'Full vision pipeline — composition, light, and moment scored' :
@@ -2786,7 +2776,7 @@ export default function App() {
           // on change while the counter updates in place per photo.
           const _count = (gradeDesc.match(/\d+\s*\/\s*\d+/) || [])[0] || '';
           return (
-            <div key={toSlogan(gradeDesc)} style={{ padding:'3px 14px 4px', fontSize:10.5, color:C.text3, fontStyle:'italic', borderBottom:`1px solid ${C.border}`, animation:'fadeIn .4s cubic-bezier(.2,0,0,1)', display:'flex', gap:8, alignItems:'baseline', justifyContent:'space-between' }}>
+            <div key={toSlogan(gradeDesc)} style={{ padding:'3px 14px 4px', fontSize:10.5, color:T.ink3, fontStyle:'italic', borderBottom:`1px solid ${T.line}`, animation:'fadeIn .4s cubic-bezier(.2,0,0,1)', display:'flex', gap:8, alignItems:'baseline', justifyContent:'space-between' }}>
               <span>{toSlogan(gradeDesc)}</span>
               <span style={{ display:'flex', gap:8, alignItems:'baseline', flexShrink:0 }}>
                 {/* Quality tier actually used for this run. The app picks the
@@ -2795,12 +2785,12 @@ export default function App() {
                 {gradeQuality && (
                   <span title={`Analysis quality for this run: ${gradeQuality}`}
                         style={{ fontStyle:'normal', fontSize:9, letterSpacing:.4, textTransform:'uppercase',
-                                 color:C.text2, border:`1px solid ${C.border}`, borderRadius:3,
+                                 color:T.ink2, border:`1px solid ${T.line}`, borderRadius:3,
                                  padding:'1px 5px', fontWeight:700 }}>
                     {gradeQuality}
                   </span>
                 )}
-                {_count && <span style={{ fontStyle:'normal', fontVariantNumeric:'tabular-nums', color:C.text2, fontWeight:700 }}>{_count}</span>}
+                {_count && <span style={{ fontStyle:'normal', fontVariantNumeric:'tabular-nums', color:T.ink2, fontWeight:700 }}>{_count}</span>}
               </span>
             </div>
           );
@@ -2816,7 +2806,7 @@ export default function App() {
             null;
           if (!warmMsg) return null;
           return (
-            <div style={{ padding:'3px 14px 4px', fontSize:10.5, color:C.text3, borderBottom:`1px solid ${C.border}`, display:'flex', gap:7, alignItems:'center', animation:'fadeIn .4s cubic-bezier(.2,0,0,1)' }}>
+            <div style={{ padding:'3px 14px 4px', fontSize:10.5, color:T.ink3, borderBottom:`1px solid ${T.line}`, display:'flex', gap:7, alignItems:'center', animation:'fadeIn .4s cubic-bezier(.2,0,0,1)' }}>
               <div style={{ width:9, height:9, borderRadius:'50%', border:'2px solid currentColor', borderTopColor:'transparent', animation:'spin .8s linear infinite' }}/>
               <span>{warmMsg}</span>
             </div>
@@ -2957,7 +2947,7 @@ export default function App() {
                     onLoad={e => setPhotoNatDims({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })}
                     style={{ maxWidth:'100%', maxHeight:'100%', objectFit:'contain', display:'block', userSelect:'none',
                       animation:'fadeIn .35s cubic-bezier(.2,0,0,1)',
-                      outline: selectedIds.has(selId ?? '') ? `3px solid ${C.accent}` : 'none',
+                      outline: selectedIds.has(selId ?? '') ? `3px solid ${T.mark}` : 'none',
                       outlineOffset:'-3px', transition:'outline .22s ease',
                     }}
                   />
@@ -2983,12 +2973,12 @@ export default function App() {
                         position:'absolute', top:10, right:10, zIndex:20,
                         width:34, height:34, borderRadius:8,
                         display:'flex', alignItems:'center', justifyContent:'center',
-                        background: showEyeOverlay ? C.accent : 'rgba(10,10,13,.72)',
-                        border: `1px solid ${showEyeOverlay ? C.accent : 'rgba(255,255,255,.12)'}`,
+                        background: showEyeOverlay ? T.raisedHover : T.well,
+                        border: `1px solid ${showEyeOverlay ? T.ink : T.lineStrong}`,
                         backdropFilter:'blur(8px)',
                         cursor:'pointer',
                         transition:'background .2s ease, border-color .2s ease, box-shadow .2s ease',
-                        boxShadow: showEyeOverlay ? `0 0 0 3px ${C.accent}33` : '0 2px 8px rgba(0,0,0,.5)',
+                        boxShadow: showEyeOverlay ? `0 0 0 2px ${T.lineStrong}` : 'none',
                         color: showEyeOverlay ? '#fff' : 'rgba(255,255,255,.75)',
                       }}
                       onMouseEnter={e => { if (!showEyeOverlay) (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,.12)'; }}
@@ -3061,13 +3051,13 @@ export default function App() {
                                 fill="#ffffff" fontSize={nameFs} fontWeight="700"
                                 fontFamily="'SF Mono',ui-monospace,monospace"
                                 stroke="rgba(0,0,0,0.75)" strokeWidth={sw*1.8} paintOrder="stroke fill">
-                                <tspan fill={C.strong} fontWeight="800">{'✓ '}</tspan>{name}
+                                <tspan fill={T.gradeStrong} fontWeight="800">{'✓ '}</tspan>{name}
                               </text>
                               <line x1={edge} y1={ty + nameFs*0.20}
                                     x2={edge + uw} y2={ty + nameFs*0.20}
-                                stroke={C.strong} strokeWidth={ulThick} strokeLinecap="round"/>
+                                stroke={T.gradeStrong} strokeWidth={ulThick} strokeLinecap="round"/>
                               <text x={edge} y={ty + nameFs*0.20 + labelFs*1.5}
-                                fill={C.strong} fontSize={labelFs} fontWeight="600"
+                                fill={T.gradeStrong} fontSize={labelFs} fontWeight="600"
                                 fontFamily="'SF Mono',ui-monospace,monospace" opacity={0.75}
                                 stroke="rgba(0,0,0,0.65)" strokeWidth={sw*1.4} paintOrder="stroke fill">
                                 STRONGEST ASPECT
@@ -3110,7 +3100,7 @@ export default function App() {
                           // Subject-less fallback: render a rule-of-thirds grid (lines)
                           // instead of a centered box + chip, which read as a black blob.
                           if (b.label === 'compositional_center') {
-                            const gc = C.mid;
+                            const gc = T.ink2;
                             const dash = `${sw*3} ${sw*2}`;
                             return (
                               <g key={bi} style={{ animation:`fadeIn .4s ${bi*0.08}s both` }}>
@@ -3309,33 +3299,34 @@ export default function App() {
                     );
                   })()}
                   <button onClick={() => hasPrev && setSelId(filteredPhotos[selIdx-1].id)} disabled={!hasPrev}
-                    style={{ position:'absolute', left:12, top:'50%', transform:'translateY(-50%)', width:34, height:34, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', background:'rgba(0,0,0,.55)', backdropFilter:'blur(12px)', color:hasPrev?C.text:C.text3, opacity:hasPrev?1:0, border:'1px solid rgba(255,255,255,.07)', pointerEvents:hasPrev?'auto':'none', cursor:'pointer', fontSize:18 }}>‹</button>
+                    style={{ position:'absolute', left:12, top:'50%', transform:'translateY(-50%)', width:34, height:34, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', background:'rgba(0,0,0,.55)', backdropFilter:'blur(12px)', color:hasPrev?T.ink:T.ink3, opacity:hasPrev?1:0, border:'1px solid rgba(255,255,255,.07)', pointerEvents:hasPrev?'auto':'none', cursor:'pointer', fontSize:18 }}>‹</button>
                   <button onClick={() => hasNext && setSelId(filteredPhotos[selIdx+1].id)} disabled={!hasNext}
-                    style={{ position:'absolute', right:12, top:'50%', transform:'translateY(-50%)', width:34, height:34, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', background:'rgba(0,0,0,.55)', backdropFilter:'blur(12px)', color:hasNext?C.text:C.text3, opacity:hasNext?1:0, border:'1px solid rgba(255,255,255,.07)', pointerEvents:hasNext?'auto':'none', cursor:'pointer', fontSize:18 }}>›</button>
+                    style={{ position:'absolute', right:12, top:'50%', transform:'translateY(-50%)', width:34, height:34, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', background:'rgba(0,0,0,.55)', backdropFilter:'blur(12px)', color:hasNext?T.ink:T.ink3, opacity:hasNext?1:0, border:'1px solid rgba(255,255,255,.07)', pointerEvents:hasNext?'auto':'none', cursor:'pointer', fontSize:18 }}>›</button>
                   {/* Select toggle */}
                   {selId && (() => {
                     const isSel = selectedIds.has(selId);
                     return (
                       <button onClick={() => setSelectedIds(prev => { const next = new Set(prev); next.has(selId) ? next.delete(selId) : next.add(selId); return next; })}
-                        style={{ position:'absolute', bottom:16, left:16, display:'flex', alignItems:'center', gap:6, padding:'6px 12px', borderRadius:20, cursor:'pointer', transition:'all .25s cubic-bezier(.2,0,0,1)', background:isSel ? C.accent : 'rgba(0,0,0,.6)', backdropFilter:'blur(12px)', border:`1px solid ${isSel ? C.accent : 'rgba(255,255,255,.12)'}`, color:'#fff', fontSize:12, fontWeight:700 }}>
-                        <div style={{ width:14, height:14, borderRadius:3, flexShrink:0, background:isSel?'#fff':'transparent', border:`1.5px solid ${isSel?C.accent:'rgba(255,255,255,.6)'}`, display:'flex', alignItems:'center', justifyContent:'center' }}>
-                          {isSel && <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke={C.accent} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20,6 9,17 4,12"/></svg>}
-                        </div>
+                        className="absolute bottom-4 left-4 flex cursor-pointer items-center gap-1 rounded-md border px-3 py-1 text-xs transition-colors duration-fast ease"
+                        style={{ background:isSel ? T.mark : T.well, borderColor:isSel ? T.mark : T.lineStrong, color:isSel ? T.well : T.ink }}>
+                        <span className="flex h-3 w-3 shrink-0 items-center justify-center rounded-sm border"
+                              style={{ background:isSel ? T.well : 'transparent', borderColor:isSel ? T.well : T.ink2 }}>
+                          {isSel && <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke={T.mark} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20,6 9,17 4,12"/></svg>}
+                        </span>
                         {isSel ? 'Selected' : 'Select'}
                       </button>
                     );
                   })()}
                   {/* Floating action bar */}
                   {selectedIds.size > 0 && (
-                    <div style={{ position:'absolute', bottom:16, left:'50%', transform:'translateX(-50%) translateX(40px)', display:'flex', alignItems:'center', gap:10, background:C.surf, border:`1px solid ${C.bdr2}`, borderRadius:12, padding:'10px 18px', boxShadow:'0 8px 40px rgba(0,0,0,.7)', backdropFilter:'blur(12px)', zIndex:50, whiteSpace:'nowrap', animation:'slideUp .3s cubic-bezier(.2,0,0,1)' }}>
-                      <span style={{ fontSize:14, fontWeight:700, color:C.text }}>{selectedIds.size} selected</span>
-                      <div style={{ width:1, height:16, background:C.bdr2 }}/>
-                      <button onClick={handleCreateFromSelection}
-                        style={{ display:'flex', alignItems:'center', gap:6, padding:'6px 14px', borderRadius:8, background:C.accent, border:'none', color:'#fff', fontSize:13, fontWeight:700, cursor:'pointer' }}>
-                        <Layers size={11}/> Start Sequence
-                      </button>
+                    <div style={{ position:'absolute', bottom:16, left:'50%', transform:'translateX(-50%) translateX(40px)', display:'flex', alignItems:'center', gap:10, background:T.surface, border:`1px solid ${T.lineStrong}`, borderRadius:12, padding:'10px 18px', boxShadow:'0 8px 40px rgba(0,0,0,.7)', backdropFilter:'blur(12px)', zIndex:50, whiteSpace:'nowrap', animation:'slideUp .3s cubic-bezier(.2,0,0,1)' }}>
+                      <span style={{ fontSize:14, fontWeight:700, color:T.ink }}>{selectedIds.size} selected</span>
+                      <div style={{ width:1, height:16, background:T.lineStrong }}/>
+                      <Button variant="solid" onClick={handleCreateFromSelection} icon={<Layers size={11}/>}>
+                        Start Sequence
+                      </Button>
                       <button onClick={handleGenerate}
-                        style={{ display:'flex', alignItems:'center', gap:6, padding:'6px 14px', borderRadius:8, background:C.surf2, border:`1px solid ${C.bdr2}`, color:C.text2, fontSize:13, fontWeight:600, cursor:'pointer' }}>
+                        style={{ display:'flex', alignItems:'center', gap:6, padding:'6px 14px', borderRadius:8, background:T.raised, border:`1px solid ${T.lineStrong}`, color:T.ink2, fontSize:13, fontWeight:600, cursor:'pointer' }}>
                         <RefreshCw size={11}/> Auto
                       </button>
                     </div>
@@ -3355,18 +3346,18 @@ export default function App() {
             )}
 
             {/* Right panel */}
-            {photos.length > 0 && <div style={{ width:rightW, flexShrink:0, background:C.surf, borderLeft:`1px solid ${C.border}`, display:'flex', flexDirection:'column', overflow:'hidden' }}>
+            {photos.length > 0 && <div style={{ width:rightW, flexShrink:0, background:T.surface, borderLeft:`1px solid ${T.line}`, display:'flex', flexDirection:'column', overflow:'hidden' }}>
 
               {/* Thumbnail */}
               {sel && (
-                <div style={{ flexShrink:0, position:'relative', aspectRatio:'3/2', background:C.bg, overflow:'hidden' }}>
+                <div style={{ flexShrink:0, position:'relative', aspectRatio:'3/2', background:T.ground, overflow:'hidden' }}>
                   <img key={sel.path} src={thumbUrl(sel.path)} alt=""
                     style={{ width:'100%', height:'100%', objectFit:'cover', display:'block', animation:'fadeIn .32s cubic-bezier(.2,0,0,1)' }}/>
                   {isGraded && (
                     <div style={{ position:'absolute', inset:0, background:'linear-gradient(to top,rgba(0,0,0,.85) 0%,transparent 55%)', display:'flex', alignItems:'flex-end', padding:'10px 12px' }}>
                       <div style={{ display:'flex', alignItems:'center', gap:6, background:'rgba(0,0,0,.6)', backdropFilter:'blur(8px)', borderRadius:6, padding:'6px 12px', border:`1px solid ${gc(sel.grade)}44` }}>
                         <div style={{ width:8, height:8, borderRadius:'50%', background:gc(sel.grade), flexShrink:0 }}/>
-                        <span style={{ fontSize:15, fontWeight:700, color:C.text }}>{gradeLabel(sel.grade)}</span>
+                        <span style={{ fontSize:15, fontWeight:700, color:T.ink }}>{gradeLabel(sel.grade)}</span>
                       </div>
                     </div>
                   )}
@@ -3375,13 +3366,13 @@ export default function App() {
 
               {/* Filename + copy + stars */}
               {sel && (
-                <div style={{ flexShrink:0, padding:'10px 14px', borderBottom:`1px solid ${C.border}` }}>
+                <div style={{ flexShrink:0, padding:'10px 14px', borderBottom:`1px solid ${T.line}` }}>
                   <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:6 }}>
-                    <span style={{ flex:1, fontSize:13, fontWeight:600, color:C.text, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                    <span style={{ flex:1, fontSize:13, fontWeight:600, color:T.ink, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
                       {sel.path.split(/[\\/]/).pop()}
                     </span>
                     <button onClick={handleCopyPath} title="Copy path"
-                      style={{ display:'flex', alignItems:'center', gap:4, padding:'4px 7px', borderRadius:5, background:copied ? C.sLow : C.surf2, border:`1px solid ${C.bdr2}`, color:copied ? C.strong : C.text3, fontSize:11, cursor:'pointer', transition:'all .25s cubic-bezier(.2,0,0,1)' }}>
+                      style={{ display:'flex', alignItems:'center', gap:4, padding:'4px 7px', borderRadius:5, background:copied ? T.raisedHover : T.raised, border:`1px solid ${T.lineStrong}`, color:copied ? T.gradeStrong : T.ink3, fontSize:11, cursor:'pointer', transition:'all .25s cubic-bezier(.2,0,0,1)' }}>
                       <Copy size={10}/>{copied ? 'Copied!' : ''}
                     </button>
                   </div>
@@ -3393,14 +3384,14 @@ export default function App() {
                         const _sc = sel.score ?? 0;
                         const derivedGrade = _sc >= 0.60 ? 'Strong ✅' : _sc >= 0.41 ? 'Mid ⚠️' : 'Weak ❌';
                         const isActive = derivedGrade === g;
-                        const col = g.includes('Strong') ? C.strong : g.includes('Mid') ? C.mid : C.weak;
+                        const col = g.includes('Strong') ? T.gradeStrong : g.includes('Mid') ? T.ink2 : T.gradeWeak;
                         return (
                           <div key={g}
                             style={{ flex:1, padding:'3px 0', borderRadius:5, fontSize:11, fontWeight:700,
                               textAlign:'center', userSelect:'none', pointerEvents:'none',
                               background: isActive ? `${col}22` : 'transparent',
-                              border: `1px solid ${isActive ? col : C.bdr2}`,
-                              color: isActive ? col : C.text3 }}>
+                              border: `1px solid ${isActive ? col : T.lineStrong}`,
+                              color: isActive ? col : T.ink3 }}>
                             {gradeLabel(g)}
                           </div>
                         );
@@ -3416,8 +3407,8 @@ export default function App() {
                         onClick={() => setMainTab('duplicates')}
                         style={{ display:'flex', alignItems:'center', gap:5, marginTop:8, width:'100%',
                           padding:'5px 10px', borderRadius:6, cursor:'pointer',
-                          background:'oklch(64% .19 248 / .08)', border:`1px solid ${C.aBdr}`,
-                          color:C.accent, fontSize:11, fontWeight:600, transition:'all .22s cubic-bezier(.2,0,0,1)' }}>
+                          background:T.raised, border:`1px solid ${T.lineStrong}`,
+                          color:T.ink2, fontSize:11, fontWeight:600, transition:'all .22s cubic-bezier(.2,0,0,1)' }}>
                         <Layers size={10} style={{ flexShrink:0 }}/>
                         Best of {count} similar shots — view duplicates
                       </button>
@@ -3505,9 +3496,9 @@ export default function App() {
                           style={{ display:'flex', alignItems:'center', gap:7, padding:'7px 13px',
                             borderRadius:7, alignSelf:'flex-start', cursor:'pointer',
                             fontWeight:700, fontSize:11.5, letterSpacing:'.03em',
-                            border:`1px solid ${isAuditModeActive ? C.accent : C.border}`,
-                            background: isAuditModeActive ? `${C.accent}22` : C.surf2,
-                            color: isAuditModeActive ? C.accent : C.text2,
+                            border:`1px solid ${isAuditModeActive ? T.lineStrong : T.line}`,
+                            background: isAuditModeActive ? T.raisedHover : T.raised,
+                            color: isAuditModeActive ? T.ink : T.ink2,
                             transition:'all .2s cubic-bezier(.2,0,0,1)' }}>
                           {isAuditModeActive ? <EyeOff size={12}/> : <Eye size={12}/>}
                           {isAuditModeActive ? 'Hide Critique' : 'Vision Critique'}
@@ -3518,14 +3509,14 @@ export default function App() {
                           )}
                           {!deepCritiqueLoading && isAuditModeActive && reasoningOverlayUrl && (
                             <span style={{ width:5, height:5, borderRadius:'50%',
-                              background:C.strong, flexShrink:0 }}/>
+                              background:T.gradeStrong, flexShrink:0 }}/>
                           )}
                         </button>
                         {/* VERIFIED badge */}
                         {sel.is_verified && (
                           <div style={{ display:'inline-flex', alignItems:'center', gap:5, padding:'4px 10px', borderRadius:5, background:'oklch(65% .17 148 / .14)', border:'1px solid oklch(65% .17 148 / .35)', alignSelf:'flex-start' }}>
-                            <div style={{ width:6, height:6, borderRadius:'50%', background:C.strong }}/>
-                            <span style={{ fontSize:11, fontWeight:700, letterSpacing:'.08em', color:C.strong }}>VERIFIED</span>
+                            <div style={{ width:6, height:6, borderRadius:'50%', background:T.gradeStrong }}/>
+                            <span style={{ fontSize:11, fontWeight:700, letterSpacing:'.08em', color:T.gradeStrong }}>VERIFIED</span>
                           </div>
                         )}
                         {/* Tier label */}
@@ -3537,12 +3528,12 @@ export default function App() {
                         )}
                         {/* Verdict */}
                         {verdict && (
-                          <p style={{ fontSize:12.5, color:C.text2, lineHeight:1.7, margin:0, fontStyle:'italic' }}>{verdict}</p>
+                          <p style={{ fontSize:12.5, color:T.ink2, lineHeight:1.7, margin:0, fontStyle:'italic' }}>{verdict}</p>
                         )}
                         {/* Per-aspect observations */}
                         {obsLines.length > 0 && (
                           <div style={{ display:'flex', flexDirection:'column', gap:1,
-                            borderRadius:8, overflow:'hidden', border:`1px solid ${C.border}` }}>
+                            borderRadius:8, overflow:'hidden', border:`1px solid ${T.line}` }}>
                             {obsLines.map((line, idx) => {
                               const colon = line.indexOf(':');
                               const label = colon > 0 ? line.slice(0, colon).trim() : '';
@@ -3552,14 +3543,14 @@ export default function App() {
                                           : label;
                               const v    = typeof bd[bdKey] === 'number' ? bd[bdKey] as number : null;
                               const vpct = v !== null ? Math.round(v * 100) : null;
-                              const bc   = v === null ? C.accent
-                                         : v >= 0.6  ? C.strong
-                                         : v >= 0.41 ? '#f5a623' : C.weak;
+                              const bc   = v === null ? T.ink3
+                                         : v >= 0.6  ? T.gradeStrong
+                                         : v >= 0.41 ? '#f5a623' : T.gradeWeak;
                               const isLast = idx === obsLines.length - 1;
                               return (
                                 <div key={idx} style={{ padding:'10px 13px',
-                                  background: idx % 2 === 0 ? C.surf2 : C.bg,
-                                  borderBottom: isLast ? 'none' : `1px solid ${C.border}` }}>
+                                  background: idx % 2 === 0 ? T.raised : T.ground,
+                                  borderBottom: isLast ? 'none' : `1px solid ${T.line}` }}>
                                   <div style={{ display:'flex', justifyContent:'space-between',
                                     alignItems:'center', marginBottom: v !== null ? 5 : 0 }}>
                                     {label && (
@@ -3572,14 +3563,14 @@ export default function App() {
                                     )}
                                   </div>
                                   {v !== null && (
-                                    <div style={{ height:2, background:C.bg, borderRadius:1,
+                                    <div style={{ height:2, background:T.ground, borderRadius:1,
                                       overflow:'hidden', marginBottom:6 }}>
                                       <div style={{ width:`${vpct}%`, height:'100%',
                                         background:bc, borderRadius:1,
                                         transition:'width .5s cubic-bezier(.2,0,0,1)' }}/>
                                     </div>
                                   )}
-                                  <p style={{ fontSize:11.5, color:C.text2, margin:0, lineHeight:1.6 }}>{note}</p>
+                                  <p style={{ fontSize:11.5, color:T.ink2, margin:0, lineHeight:1.6 }}>{note}</p>
                                 </div>
                               );
                             })}
@@ -3587,7 +3578,7 @@ export default function App() {
                         )}
                         {/* Best / Weakest */}
                         {footer && (
-                          <p style={{ fontSize:11, color:C.text3, margin:0, letterSpacing:'.02em' }}>{footer.trim()}</p>
+                          <p style={{ fontSize:11, color:T.ink3, margin:0, letterSpacing:'.02em' }}>{footer.trim()}</p>
                         )}
                         {/* Vision Critique — fast-scan bboxes + on-demand deep text */}
                         {(() => {
@@ -3602,49 +3593,49 @@ export default function App() {
 
                           return (
                             <div style={{ display:'flex', flexDirection:'column', gap:10,
-                              paddingTop:10, borderTop:`1px solid ${C.border}` }}>
+                              paddingTop:10, borderTop:`1px solid ${T.line}` }}>
                               <div style={{ display:'flex', alignItems:'center' }}>
-                                <span style={{ fontSize:10, fontWeight:700, letterSpacing:'.1em', color:C.accent }}>
+                                <span className="t-label !text-ink-2">
                                   VISION CRITIQUE
                                 </span>
                               </div>
                               {_dnarr && (
                                 <div style={{ animation:'fadeIn .4s cubic-bezier(.2,0,0,1)' }}>
-                                  <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:'.08em', color:C.text3 }}>NARRATIVE</span>
-                                  <p style={{ fontSize:11.5, color:C.text2, lineHeight:1.65, margin:'4px 0 0' }}>{_dnarr}</p>
+                                  <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:'.08em', color:T.ink3 }}>NARRATIVE</span>
+                                  <p style={{ fontSize:11.5, color:T.ink2, lineHeight:1.65, margin:'4px 0 0' }}>{_dnarr}</p>
                                 </div>
                               )}
                               {_dgeo && (
                                 <div style={{ animation:'fadeIn .4s cubic-bezier(.2,0,0,1)' }}>
-                                  <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:'.08em', color:C.text3 }}>GEOMETRY</span>
-                                  <p style={{ fontSize:11.5, color:C.text2, lineHeight:1.65, margin:'4px 0 0' }}>{_dgeo}</p>
+                                  <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:'.08em', color:T.ink3 }}>GEOMETRY</span>
+                                  <p style={{ fontSize:11.5, color:T.ink2, lineHeight:1.65, margin:'4px 0 0' }}>{_dgeo}</p>
                                 </div>
                               )}
                               {_qwenCritique && !_hasDeep && (
-                                <p style={{ fontSize:12, color:C.text2, lineHeight:1.7, margin:0,
-                                  fontStyle:'italic', padding:'8px 10px', background:C.surf2,
-                                  borderRadius:6, border:`1px solid ${C.border}` }}>
+                                <p style={{ fontSize:12, color:T.ink2, lineHeight:1.7, margin:0,
+                                  fontStyle:'italic', padding:'8px 10px', background:T.raised,
+                                  borderRadius:6, border:`1px solid ${T.line}` }}>
                                   {_qwenCritique}
                                 </p>
                               )}
                               {_vbboxes.length > 0 && (
                                 <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
-                                  <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:'.08em', color:C.text3 }}>SPATIAL ANCHORS</span>
+                                  <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:'.08em', color:T.ink3 }}>SPATIAL ANCHORS</span>
                                   {_vbboxes.map((b, bi) => {
                                     const guide  = regionGuide(b.label);
                                     const dotCol = tierColor(guide.tier);
                                     const coach  = b.justification || guide.tip;
                                     return (
                                       <div key={bi} style={{ display:'flex', gap:8, alignItems:'flex-start',
-                                        padding:'6px 10px', background:C.surf2, borderRadius:6,
-                                        border:`1px solid ${C.border}` }}>
+                                        padding:'6px 10px', background:T.raised, borderRadius:6,
+                                        border:`1px solid ${T.line}` }}>
                                         <div style={{ width:6, height:6, borderRadius:'50%',
                                           background:dotCol, flexShrink:0, marginTop:4 }}/>
                                         <div style={{ flex:1, minWidth:0 }}>
                                           <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:'.06em',
                                             color:dotCol }}>{`${tierIcon(guide.tier)} ${guide.title}`.toUpperCase()}</span>
                                           {coach && (
-                                            <p style={{ fontSize:11, color:C.text2, lineHeight:1.6, margin:'2px 0 0' }}>
+                                            <p style={{ fontSize:11, color:T.ink2, lineHeight:1.6, margin:'2px 0 0' }}>
                                               {coach}
                                             </p>
                                           )}
@@ -3659,19 +3650,19 @@ export default function App() {
                         })()}
                         {/* Jury critique fallback */}
                         {!rl && juryCritique && (
-                          <div style={{ fontSize:13, color:C.text2, lineHeight:1.75 }}>
+                          <div style={{ fontSize:13, color:T.ink2, lineHeight:1.75 }}>
                             {parseCritique(juryCritique, setCritTrigger, () => setCritTrigger(''))}
                           </div>
                         )}
                         {!rl && !juryCritique && (
                           <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-                            <p style={{ fontSize:12, color:C.text3, lineHeight:1.7 }}>No grader analysis. Generate a jury critique:</p>
+                            <p style={{ fontSize:12, color:T.ink3, lineHeight:1.7 }}>No grader analysis. Generate a jury critique:</p>
                             <button
                               onClick={() => sel && handleJuryCritique(sel.path)}
                               disabled={juryLoading}
-                              style={{ display:'flex', alignItems:'center', gap:6, padding:'7px 14px', borderRadius:7, background:C.surf2, border:`1px solid ${C.bdr2}`, color:C.text2, fontSize:12, fontWeight:700, cursor: juryLoading ? 'wait' : 'pointer', alignSelf:'flex-start' }}>
+                              style={{ display:'flex', alignItems:'center', gap:6, padding:'7px 14px', borderRadius:7, background:T.raised, border:`1px solid ${T.lineStrong}`, color:T.ink2, fontSize:12, fontWeight:700, cursor: juryLoading ? 'wait' : 'pointer', alignSelf:'flex-start' }}>
                               {juryLoading
-                                ? <><span style={{ width:10, height:10, borderRadius:'50%', border:`1.5px solid ${C.accent}`, borderTopColor:'transparent', animation:'spin .8s linear infinite', display:'inline-block' }}/> Generating…</>
+                                ? <><span style={{ width:10, height:10, borderRadius:'50%', border:`1.5px solid ${T.ink3}`, borderTopColor:'transparent', animation:'spin .8s linear infinite', display:'inline-block' }}/> Generating…</>
                                 : <><Wand2 size={11}/> Write a critique</>}
                             </button>
                           </div>
@@ -3679,7 +3670,7 @@ export default function App() {
                       </div>
                     );
                   })() : (
-                    <p style={{ fontSize:12, color:C.text3, lineHeight:1.7 }}>Grade your folder to see analysis.</p>
+                    <p style={{ fontSize:12, color:T.ink3, lineHeight:1.7 }}>Grade your folder to see analysis.</p>
                   )
                 )}
                 {infoTab === 'breakdown' && (
@@ -3692,9 +3683,13 @@ export default function App() {
                       const ARCH_LABELS: Record<string,string> = {
                         geo:'Lines & Form', night:'Night Scene', layer:'Layered Depth', messy:'Raw Street', maxdoc:'Documentary'
                       };
+                      // Archetype weight is a machine judgement, so it is cold or
+                      // absent — a luminance ramp, not five competing hues. The
+                      // labels sit beside the bars, so identity never depended on
+                      // colour anyway.
                       const ARCH_COLORS: Record<string,string> = {
-                        geo: C.accent, night:'oklch(60% .19 280)', layer:'oklch(68% .18 148)',
-                        messy:'oklch(68% .17 45)', maxdoc:'oklch(62% .18 0)'
+                        geo: T.ink, night: T.ink2, layer: T.ink3,
+                        messy: T.ink4, maxdoc: T.lineStrong
                       };
                       let archEntries: [string,number][] = [];
                       let domArch = '';
@@ -3980,7 +3975,7 @@ export default function App() {
                       }
 
                       const _csCol = (s: _CS) =>
-                        s === 'good' ? C.strong : s === 'ok' ? '#f5a623' : s === 'bad' ? C.weak : C.text3;
+                        s === 'good' ? T.gradeStrong : s === 'ok' ? '#f5a623' : s === 'bad' ? T.gradeWeak : T.ink3;
 
                       // ── Telemetry Tags ─────────────────────────────────────────
                       const _ARCH_TAG: Record<string,{ icon:string; detail:string }> = {
@@ -4101,37 +4096,38 @@ export default function App() {
                             <div>
                               <div style={{ display:'flex', alignItems:'baseline', gap:8, marginBottom:8 }}>
                                 <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:'.09em',
-                                  textTransform:'uppercase', color:C.text3 }}>Judge's Eye</span>
-                                <span style={{ fontSize:9.5, color:C.text3, opacity:.6 }}>— what's working and what to fix</span>
+                                  textTransform:'uppercase', color:T.ink3 }}>Judge's Eye</span>
+                                <span style={{ fontSize:9.5, color:T.ink3, opacity:.6 }}>— what's working and what to fix</span>
                               </div>
                               <div style={{ display:'flex', flexDirection:'column',
-                                borderRadius:7, overflow:'hidden', border:`1px solid ${C.border}` }}>
+                                borderRadius:7, overflow:'hidden', border:`1px solid ${T.line}` }}>
                                 {_checks.map(({ key, label, value, state, isLimit, note }, ci) => {
                                   const col = _csCol(state);
                                   const showNote = !!note && (state === 'bad' || isLimit || _tier !== 'strong');
                                   return (
                                     <div key={key} style={{
                                       padding:'8px 11px',
-                                      background: isLimit ? (
-                                        _tier === 'weak' ? `${C.weak}14` : `${C.mid}14`
-                                      ) : ci % 2 === 0 ? C.surf2 : C.bg,
-                                      borderBottom: ci < _checks.length - 1 ? `1px solid ${C.border}` : 'none' }}>
+                                      // A limit row is emphasised by luminance, not
+                                      // by a red or amber wash behind the text.
+                                      background: isLimit ? T.raisedHover
+                                        : ci % 2 === 0 ? T.raised : T.ground,
+                                      borderBottom: ci < _checks.length - 1 ? `1px solid ${T.line}` : 'none' }}>
                                       <div style={{ display:'flex', alignItems:'center', gap:10 }}>
                                         <div style={{ width:6, height:6, borderRadius:'50%',
                                           background:col, flexShrink:0 }}/>
                                         <span style={{ fontSize:10, fontWeight:700, letterSpacing:'.07em',
-                                          color:C.text3, minWidth:62, textTransform:'uppercase' }}>{label}</span>
+                                          color:T.ink3, minWidth:62, textTransform:'uppercase' }}>{label}</span>
                                         <span style={{ fontSize:11.5, fontWeight:600, color:col }}>{value}</span>
                                         {isLimit && (
                                           <span style={{ marginLeft:'auto', fontSize:9, fontWeight:800,
-                                            letterSpacing:'.08em', color: _tier === 'weak' ? C.weak : C.mid,
+                                            letterSpacing:'.08em', color: _tier === 'weak' ? T.gradeWeak : T.ink2,
                                             textTransform:'uppercase' }}>
                                             {_tier === 'weak' ? '↑ WHAT FAILED' : '↑ WHAT TO FIX'}
                                           </span>
                                         )}
                                       </div>
                                       {showNote && (
-                                        <p style={{ fontSize:10.5, color:C.text3, lineHeight:1.55,
+                                        <p style={{ fontSize:10.5, color:T.ink3, lineHeight:1.55,
                                           margin:'5px 0 0 16px', fontStyle:'italic' }}>
                                           {note}
                                         </p>
@@ -4182,8 +4178,8 @@ export default function App() {
                     })()
                   ) : (
                     <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:8, padding:'20px 0' }}>
-                      <Layers size={24} strokeWidth={1} style={{ color:C.text3 }}/>
-                      <p style={{ fontSize:13, color:C.text3, textAlign:'center', lineHeight:1.6 }}>Grade your folder to see breakdown.</p>
+                      <Layers size={24} strokeWidth={1} style={{ color:T.ink3 }}/>
+                      <p style={{ fontSize:13, color:T.ink3, textAlign:'center', lineHeight:1.6 }}>Grade your folder to see breakdown.</p>
                     </div>
                   )
                 )}
@@ -4196,37 +4192,37 @@ export default function App() {
 
           {/* ── Filmstrip (loupe mode only) ─────────────────────── */}
           {loupeMode === 'loupe' && photos.length > 0 && (
-          <div style={{ flexShrink:0, background:C.surf, borderTop:`1px solid ${C.border}`, display:'flex', flexDirection:'column' }}>
-            <div style={{ height:20, flexShrink:0, display:'flex', alignItems:'center', justifyContent:'space-between', padding:'0 12px', borderBottom:`1px solid ${C.border}` }}>
+          <div style={{ flexShrink:0, background:T.surface, borderTop:`1px solid ${T.line}`, display:'flex', flexDirection:'column' }}>
+            <div style={{ height:20, flexShrink:0, display:'flex', alignItems:'center', justifyContent:'space-between', padding:'0 12px', borderBottom:`1px solid ${T.line}` }}>
               <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                <span style={{ fontSize:10.5, color:C.text3, fontWeight:600, letterSpacing:'.08em', textTransform:'uppercase' }}>Library</span>
+                <span style={{ fontSize:10.5, color:T.ink3, fontWeight:600, letterSpacing:'.08em', textTransform:'uppercase' }}>Library</span>
                 {/* Tweaks toggle */}
                 <button title="Filmstrip settings" onClick={() => setShowTweaks(v => !v)}
-                  style={{ display:'flex', alignItems:'center', justifyContent:'center', width:18, height:16, cursor:'pointer', background:showTweaks ? C.surf3 : 'transparent', color:showTweaks ? C.accent : C.text3, border:'none', borderRadius:3, transition:'all .25s cubic-bezier(.2,0,0,1)' }}>
+                  style={{ display:'flex', alignItems:'center', justifyContent:'center', width:18, height:16, cursor:'pointer', background:showTweaks ? T.raisedHover : 'transparent', color:showTweaks ? T.ink : T.ink3, border:'none', borderRadius:3, transition:'all .25s cubic-bezier(.2,0,0,1)' }}>
                   <SlidersHorizontal size={9}/>
                 </button>
               </div>
-              <span style={{ fontSize:10.5, color:C.text3, fontVariantNumeric:'tabular-nums', display:'flex', alignItems:'center', gap:5 }}>
-                {isGrading && <span style={{ display:'inline-block', width:5, height:5, border:`1.5px solid ${C.accent}`, borderTopColor:'transparent', borderRadius:'50%', animation:'spin .8s linear infinite' }}/>}
+              <span style={{ fontSize:10.5, color:T.ink3, fontVariantNumeric:'tabular-nums', display:'flex', alignItems:'center', gap:5 }}>
+                {isGrading && <span style={{ display:'inline-block', width:5, height:5, border:`1.5px solid ${T.ink3}`, borderTopColor:'transparent', borderRadius:'50%', animation:'spin .8s linear infinite' }}/>}
                 {isDone
-                  ? <><span style={{ color:C.strong }}>{picks} picks</span>{'  ·  '}<span style={{ color:C.weak }}>{rejects} rejects</span>{'  ·  '}{photos.length} total</>
+                  ? <><span style={{ color:T.gradeStrong }}>{picks} picks</span>{'  ·  '}<span style={{ color:T.gradeWeak }}>{rejects} rejects</span>{'  ·  '}{photos.length} total</>
                   : `${photos.length} photos`}
               </span>
             </div>
             {/* Tweaks panel */}
             {showTweaks && (
-              <div style={{ flexShrink:0, display:'flex', alignItems:'center', gap:16, padding:'6px 12px', borderBottom:`1px solid ${C.border}`, background:C.surf2 }}>
+              <div style={{ flexShrink:0, display:'flex', alignItems:'center', gap:16, padding:'6px 12px', borderBottom:`1px solid ${T.line}`, background:T.raised }}>
                 <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                  <span style={{ fontSize:11, color:C.text3, whiteSpace:'nowrap' }}>Thumb size</span>
+                  <span style={{ fontSize:11, color:T.ink3, whiteSpace:'nowrap' }}>Thumb size</span>
                   <input type="range" min={60} max={130} step={4} value={filmThumbH}
                     onChange={e => setFilmThumbH(Number(e.target.value))}
-                    style={{ width:80, accentColor:C.accent, cursor:'pointer' }}/>
-                  <span style={{ fontSize:11, color:C.text2, fontVariantNumeric:'tabular-nums', minWidth:22 }}>{filmThumbH}</span>
+                    style={{ width:80, accentColor:T.ink, cursor:'pointer' }}/>
+                  <span style={{ fontSize:11, color:T.ink2, fontVariantNumeric:'tabular-nums', minWidth:22 }}>{filmThumbH}</span>
                 </div>
                 <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-                  <span style={{ fontSize:11, color:C.text3 }}>Filenames</span>
+                  <span style={{ fontSize:11, color:T.ink3 }}>Filenames</span>
                   <button onClick={() => setShowFilename(v => !v)}
-                    style={{ position:'relative', width:28, height:16, borderRadius:8, border:'none', cursor:'pointer', padding:0, background:showFilename ? C.accent : C.bdr2, transition:'background .25s ease' }}>
+                    style={{ position:'relative', width:28, height:16, borderRadius:8, border:'none', cursor:'pointer', padding:0, background:showFilename ? T.ink : T.lineStrong, transition:'background .25s ease' }}>
                     <span style={{ position:'absolute', top:2, left:showFilename ? 13 : 2, width:12, height:12, borderRadius:'50%', background:'#fff', transition:'left .22s cubic-bezier(.2,0,0,1)', boxShadow:'0 1px 2px rgba(0,0,0,.3)' }}/>
                   </button>
                 </div>
@@ -4380,7 +4376,7 @@ export default function App() {
             Detail:   'oklch(68% .16 90)',
             Closer:   'oklch(60% .20 290)',
           };
-          const slotColor = (s: string) => SLOT_COLORS[s] ?? SLOT_COLORS[(s||'').charAt(0).toUpperCase()+(s||'').slice(1)] ?? C.text3;
+          const slotColor = (s: string) => SLOT_COLORS[s] ?? SLOT_COLORS[(s||'').charAt(0).toUpperCase()+(s||'').slice(1)] ?? T.ink3;
           const ROLE_ORDER = ['Opener','Subject','Contrast','Detail','Closer','opener','subject','contrast','detail','closer'];
           const sortedPhotos = [...photos].sort((a,b) => {
             const r = (p:any) => gradeLabel(p.grade)==='Strong'?0:gradeLabel(p.grade)==='Mid'?1:2;
@@ -4486,7 +4482,7 @@ export default function App() {
                   </label>
                   <select value={creativeCount} onChange={e => setCreativeCount(Number(e.target.value))}
                     style={{ width:'100%', height:36, borderRadius:7, fontSize:13, fontWeight:600, cursor:'pointer',
-                      background:C.surf2, border:`1px solid ${C.bdr2}`, color:C.text2, padding:'0 10px',
+                      background:T.raised, border:`1px solid ${T.lineStrong}`, color:T.ink2, padding:'0 10px',
                       appearance:'auto', outline:'none' }}>
                     {[3,4,5,6,7,8,9,10].map(n => (
                       <option key={n} value={n}>{n} photos</option>
@@ -4496,19 +4492,19 @@ export default function App() {
 
                 {/* Reference photo */}
                 <div>
-                  <label style={{ display:'block', fontSize:11, fontWeight:700, letterSpacing:'.07em', textTransform:'uppercase', color:C.text2, marginBottom:4 }}>
-                    Reference Photo <span style={{ fontWeight:400, textTransform:'none', letterSpacing:0, fontSize:10, color:C.text3 }}>optional</span>
+                  <label style={{ display:'block', fontSize:11, fontWeight:700, letterSpacing:'.07em', textTransform:'uppercase', color:T.ink2, marginBottom:4 }}>
+                    Reference Photo <span style={{ fontWeight:400, textTransform:'none', letterSpacing:0, fontSize:10, color:T.ink3 }}>optional</span>
                   </label>
-                  <p style={{ fontSize:11, color:C.text3, lineHeight:1.4, marginBottom:10 }}>Sets the visual style anchor for the sequence.</p>
+                  <p style={{ fontSize:11, color:T.ink3, lineHeight:1.4, marginBottom:10 }}>Sets the visual style anchor for the sequence.</p>
                   {creativeAnchor ? (
-                    <div style={{ position:'relative', borderRadius:9, overflow:'hidden', border:`2px solid ${C.accent}`, cursor:'pointer', boxShadow:`0 0 0 3px ${C.accent}18` }}
+                    <div style={{ position:'relative', borderRadius:9, overflow:'hidden', border:`2px solid ${T.mark}`, cursor:'pointer', boxShadow:`0 0 0 3px ${T.markDim}` }}
                       onClick={()=>setCreativeAnchor(null)} title="Click to remove">
                       <img src={thumbUrl(creativeAnchor)} alt="" style={{ width:'100%', aspectRatio:'3/2', objectFit:'cover', display:'block' }}/>
-                      <div style={{ position:'absolute', top:6, left:6, background:C.accent, borderRadius:4, padding:'2px 7px', fontSize:9, fontWeight:800, color:'#fff', letterSpacing:'.06em' }}>ANCHOR</div>
+                      <div className="t-label absolute left-1 top-1 rounded-sm px-1" style={{ background:T.mark, color:T.well }}>ANCHOR</div>
                       <div style={{ position:'absolute', top:6, right:6, background:'rgba(0,0,0,.65)', backdropFilter:'blur(4px)', borderRadius:5, padding:'3px 8px', fontSize:10, color:'rgba(255,255,255,.85)', fontWeight:600 }}>✕ remove</div>
                     </div>
                   ) : (
-                    <div style={{ height:72, border:`2px dashed ${C.bdr2}`, borderRadius:9, display:'flex', alignItems:'center', justifyContent:'center', gap:7, color:C.text3, fontSize:12 }}>
+                    <div style={{ height:72, border:`2px dashed ${T.lineStrong}`, borderRadius:9, display:'flex', alignItems:'center', justifyContent:'center', gap:7, color:T.ink3, fontSize:12 }}>
                       <Wand2 size={14} strokeWidth={1.5}/>
                       <span>Click a photo below to set anchor</span>
                     </div>
@@ -4518,7 +4514,7 @@ export default function App() {
                 {/* Photo picker grid */}
                 {sortedPhotos.length > 0 && (
                   <div>
-                    <p style={{ fontSize:11, color:C.text3, marginBottom:8 }}>{sortedPhotos.length} photos · sorted by grade · click to anchor</p>
+                    <p style={{ fontSize:11, color:T.ink3, marginBottom:8 }}>{sortedPhotos.length} photos · sorted by grade · click to anchor</p>
                     <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:4 }}>
                       {sortedPhotos.map(p => {
                         const isAnchor = p.path===creativeAnchor;
@@ -4526,14 +4522,14 @@ export default function App() {
                         return (
                           <button key={p.id} onClick={()=>setCreativeAnchor(isAnchor?null:p.path)}
                             style={{ position:'relative', aspectRatio:'3/2', padding:0, border:'none', borderRadius:5, overflow:'hidden', cursor:'pointer',
-                              outline: isAnchor?`2px solid ${C.accent}`:`1px solid ${dc}28`, outlineOffset:isAnchor?2:0,
+                              outline: isAnchor?`2px solid ${T.mark}`:`1px solid ${T.line}`, outlineOffset:isAnchor?2:0,
                               transform:isAnchor?'scale(1.05)':'scale(1)', transition:'transform .12s, outline .12s' }}>
                             <img src={thumbUrl(p.path)} alt="" loading="eager" style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
                             <div style={{ position:'absolute', bottom:0, left:0, right:0, height:14, background:'linear-gradient(transparent, rgba(0,0,0,.75))', display:'flex', alignItems:'center', justifyContent:'flex-end', padding:'0 4px' }}>
                               <span style={{ fontSize:7, fontWeight:700, color:'#fff', fontVariantNumeric:'tabular-nums' }}>{Math.round(p.score*100)}</span>
                             </div>
                             {isAnchor && (
-                              <div style={{ position:'absolute', inset:0, background:`${C.accent}40`, display:'flex', alignItems:'center', justifyContent:'center' }}>
+                              <div style={{ position:'absolute', inset:0, background:T.markDim, display:'flex', alignItems:'center', justifyContent:'center' }}>
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20,6 9,17 4,12"/></svg>
                               </div>
                             )}
@@ -4606,14 +4602,14 @@ export default function App() {
 
               {/* Progress bar (only while loading) */}
               {creativeLoading && (
-                <div style={{ flexShrink:0, padding:'12px 20px', borderBottom:`1px solid ${C.border}`, background:C.surf }}>
+                <div style={{ flexShrink:0, padding:'12px 20px', borderBottom:`1px solid ${T.line}`, background:T.surface }}>
                   <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:8 }}>
-                    <div style={{width:11,height:11,border:`2px solid ${C.accent}`,borderTopColor:'transparent',borderRadius:'50%',animation:'spin .8s linear infinite',flexShrink:0}}/>
-                    <span style={{fontSize:13,color:C.text2,fontWeight:500}}>{creativeStage||'Building sequence…'}</span>
-                    <span style={{marginLeft:'auto',fontSize:12,color:C.text3,fontVariantNumeric:'tabular-nums'}}>{Math.round(creativeProgress*100)}%</span>
+                    <div style={{width:11,height:11,border:`2px solid ${T.ink3}`,borderTopColor:'transparent',borderRadius:'50%',animation:'spin .8s linear infinite',flexShrink:0}}/>
+                    <span style={{fontSize:13,color:T.ink2,fontWeight:500}}>{creativeStage||'Building sequence…'}</span>
+                    <span style={{marginLeft:'auto',fontSize:12,color:T.ink3,fontVariantNumeric:'tabular-nums'}}>{Math.round(creativeProgress*100)}%</span>
                   </div>
-                  <div style={{height:3,background:C.bdr2,borderRadius:2,overflow:'hidden'}}>
-                    <div style={{height:'100%',width:`${Math.round(creativeProgress*100)}%`,background:`linear-gradient(90deg,${C.accent},oklch(70% .19 205))`,borderRadius:2,transition:'width .4s cubic-bezier(.2,0,0,1)'}}/>
+                  <div style={{height:3,background:T.lineStrong,borderRadius:2,overflow:'hidden'}}>
+                    <div style={{height:'100%',width:`${Math.round(creativeProgress*100)}%`,background:T.ink3,borderRadius:2,transition:'width .4s cubic-bezier(.2,0,0,1)'}}/>
                   </div>
                 </div>
               )}
@@ -4621,12 +4617,12 @@ export default function App() {
               {hasResults ? (
                 <>
                   {/* Results toolbar */}
-                  <div style={{flexShrink:0, display:'flex', alignItems:'center', justifyContent:'space-between', padding:'10px 20px', borderBottom:`1px solid ${C.border}`, background:C.surf}}>
+                  <div style={{flexShrink:0, display:'flex', alignItems:'center', justifyContent:'space-between', padding:'10px 20px', borderBottom:`1px solid ${T.line}`, background:T.surface}}>
                     <div style={{display:'flex', alignItems:'center', gap:10}}>
                       <span style={{fontSize:13, fontWeight:700}}>Story sequence</span>
-                      <span style={{fontSize:11, color:C.text3, background:C.surf2, borderRadius:4, padding:'2px 8px'}}>{successResults.length} images</span>
+                      <span style={{fontSize:11, color:T.ink3, background:T.raised, borderRadius:4, padding:'2px 8px'}}>{successResults.length} images</span>
                       {creativeResults.some((r:any)=>!r.success) && (
-                        <span style={{fontSize:11, color:C.weak, cursor:'default'}}
+                        <span style={{fontSize:11, color:T.gradeWeak, cursor:'default'}}
                           title={creativeResults.filter((r:any)=>!r.success).map((r:any)=>`${(r.source_path??'').split(/[\\/]/).pop()}: ${r.error??'failed'}`).join('\n')}>
                           {creativeResults.filter((r:any)=>!r.success).length} failed ⓘ
                         </span>
@@ -4636,7 +4632,7 @@ export default function App() {
                       {!creativeLoading && (
                         <button disabled={sequenceSaving} onClick={handleSaveSequence}
                           style={{display:'flex', alignItems:'center', gap:5, fontSize:12, fontWeight:600, padding:'4px 12px', borderRadius:6,
-                            cursor:sequenceSaving?'wait':'pointer', background:'transparent', border:`1px solid ${C.bdr2}`, color:C.text2, transition:'all .15s'}}>
+                            cursor:sequenceSaving?'wait':'pointer', background:'transparent', border:`1px solid ${T.lineStrong}`, color:T.ink2, transition:'all .15s'}}>
                           <Download size={11}/>{sequenceSaving?'Saving…':'Save Sequence'}
                         </button>
                       )}
@@ -4652,16 +4648,16 @@ export default function App() {
                         const fname = (r.source_path??'').split(/[\\/]/).pop()??'';
                         const photoScore = photos.find((p:any)=>p.path===r.source_path)?.score;
                         return (
-                          <div key={i} style={{borderRadius:10, overflow:'hidden', border:`1px solid ${C.border}`, background:C.surf, display:'flex', flexDirection:'column', boxShadow:'0 2px 12px rgba(0,0,0,.25)'}}>
+                          <div key={i} style={{borderRadius:10, overflow:'hidden', border:`1px solid ${T.line}`, background:T.surface, display:'flex', flexDirection:'column', boxShadow:'0 2px 12px rgba(0,0,0,.25)'}}>
                             {/* Slot header */}
-                            <div style={{padding:'8px 12px', background:C.surf2, borderBottom:`2px solid ${sc}`, display:'flex', alignItems:'center', gap:8}}>
+                            <div style={{padding:'8px 12px', background:T.raised, borderBottom:`2px solid ${sc}`, display:'flex', alignItems:'center', gap:8}}>
                               <span style={{fontSize:9, fontWeight:800, letterSpacing:'.12em', color:sc, textTransform:'uppercase', flex:1}}>{slot}</span>
-                              <span style={{fontSize:10, color:C.text3, fontWeight:600, background:C.surf3, borderRadius:3, padding:'1px 6px'}}>
+                              <span style={{fontSize:10, color:T.ink3, fontWeight:600, background:T.raisedHover, borderRadius:3, padding:'1px 6px'}}>
                                 {i+1}/{successResults.length}
                               </span>
                             </div>
                             {/* Photo — landscape 4:3 */}
-                            <div style={{position:'relative', aspectRatio:'4/3', overflow:'hidden', background:C.bg}}>
+                            <div style={{position:'relative', aspectRatio:'4/3', overflow:'hidden', background:T.ground}}>
                               <img src={photoUrl(r.source_path ?? r.output_path)} alt="" loading="eager" decoding="async"
                                 style={{width:'100%', height:'100%', objectFit:'cover', display:'block'}}/>
                               <div style={{position:'absolute', inset:0, pointerEvents:'none',
@@ -4680,7 +4676,7 @@ export default function App() {
                             </div>
                             {/* Filename */}
                             <div style={{padding:'8px 12px'}}>
-                              <span style={{fontSize:10, color:C.text3, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', display:'block'}} title={fname}>{fname}</span>
+                              <span style={{fontSize:10, color:T.ink3, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', display:'block'}} title={fname}>{fname}</span>
                             </div>
                           </div>
                         );
@@ -4690,17 +4686,17 @@ export default function App() {
                 </>
               ) : (
                 /* Empty state */
-                <div style={{flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:18, color:C.text3, padding:40}}>
+                <div style={{flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:18, color:T.ink3, padding:40}}>
                   <Wand2 size={44} strokeWidth={1} style={{opacity:.3}}/>
                   <div style={{textAlign:'center', maxWidth:360}}>
-                    <p style={{fontSize:16, fontWeight:700, color:C.text2, marginBottom:10}}>No sequence yet</p>
-                    <p style={{fontSize:13, lineHeight:1.75, margin:0, color:C.text3}}>
+                    <p style={{fontSize:16, fontWeight:700, color:T.ink2, marginBottom:10}}>No sequence yet</p>
+                    <p style={{fontSize:13, lineHeight:1.75, margin:0, color:T.ink3}}>
                       Write a mood brief on the left,<br/>
                       optionally pick a reference photo,<br/>
-                      then press <strong style={{color:C.accent, fontWeight:700}}>Build story sequence</strong>.
+                      then press <strong className="text-ink">Build story sequence</strong>.
                     </p>
                     {photos.length===0 && (
-                      <p style={{fontSize:12, color:C.weak, marginTop:14}}>Grade a folder first to load photos.</p>
+                      <p style={{fontSize:12, color:T.gradeWeak, marginTop:14}}>Grade a folder first to load photos.</p>
                     )}
                   </div>
                 </div>
