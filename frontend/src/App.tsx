@@ -675,14 +675,17 @@ const REGION_BOX: Record<string, [number,number,number,number]> = {
   'bottom-left':  [0,      0.5,    0.5,  0.5],
   'bottom-right': [0.5,    0.5,    0.5,  0.5],
 };
+/* Annotation marks are the MACHINE's, not the photographer's, so they stay cold
+ * or neutral — --mark is reserved for his own rings and stars, and a factor
+ * overlay wearing it would claim his authorship. */
 const FACTOR_COLORS: Record<string, string> = {
-  blur:    '#60a5fa',
-  heatmap: '#fb923c',
-  grid:    '#a78bfa',
+  blur:    T.alarmWarn,
+  heatmap: T.alarmCrit,
+  grid:    T.ink2,
 };
 
-const _INK  = 'rgba(255,255,255,0.92)';
-const _SH   = '0 0 8px rgba(0,0,0,1), 0 1px 3px rgba(0,0,0,.95)';
+const _INK  = T.ink;
+const _SH   = `0 0 8px ${T.well}, 0 1px 3px ${T.well}`;
 const _MONO = "'Courier New', monospace";
 
 function FactorAnnotations({ factors }: { factors: any[] }) {
@@ -694,14 +697,14 @@ function FactorAnnotations({ factors }: { factors: any[] }) {
     >
       <defs>
         <filter id="fa-txt" x="-5%" y="-20%" width="110%" height="140%">
-          <feDropShadow dx="0" dy="0" stdDeviation="2.5" floodColor="#000" floodOpacity="1"/>
+          <feDropShadow dx="0" dy="0" stdDeviation="2.5" floodColor={T.well} floodOpacity="1"/>
         </filter>
       </defs>
       {factors.map((f: any, i: number) => {
         const [bx, by, bw, bh] = REGION_BOX[f.region] ?? REGION_BOX['full'];
         const isStrength = (f.impact ?? 0) > 0;
         const isWeakness = (f.impact ?? 0) < 0;
-        const color = isStrength ? '#f5c842' : isWeakness ? '#ef4444' : (FACTOR_COLORS[f.type] ?? '#94a3b8');
+        const color = isStrength ? T.gradeStrong : isWeakness ? T.alarmCrit : (FACTOR_COLORS[f.type] ?? T.ink2);
 
         // Region in %, clamped so edges are always inside the frame
         const rx = bx * 100, ry = by * 100, rw = bw * 100, rh = bh * 100;
@@ -732,7 +735,7 @@ function FactorAnnotations({ factors }: { factors: any[] }) {
             {isStrength && (
               <ellipse cx={`${cx}%`} cy={`${cy}%`}
                 rx={`${rw * 0.44}%`} ry={`${rh * 0.42}%`}
-                fill="none" stroke="#f5c842" strokeWidth="2.2"
+                fill="none" stroke={T.gradeStrong} strokeWidth="2.2"
                 strokeOpacity="0.85" strokeDasharray="7 4"/>
             )}
 
@@ -740,10 +743,10 @@ function FactorAnnotations({ factors }: { factors: any[] }) {
             {isWeakness && (<>
               <line x1={`${rx + rw*0.06}%`} y1={`${ry + rh*0.06}%`}
                     x2={`${rx + rw*0.94}%`} y2={`${ry + rh*0.94}%`}
-                stroke="#ef4444" strokeWidth="2.2" strokeOpacity="0.8"/>
+                stroke={T.alarmCrit} strokeWidth="2.2" strokeOpacity="0.8"/>
               <line x1={`${rx + rw*0.94}%`} y1={`${ry + rh*0.06}%`}
                     x2={`${rx + rw*0.06}%`} y2={`${ry + rh*0.94}%`}
-                stroke="#ef4444" strokeWidth="2.2" strokeOpacity="0.8"/>
+                stroke={T.alarmCrit} strokeWidth="2.2" strokeOpacity="0.8"/>
             </>)}
 
             {/* Center dot */}
