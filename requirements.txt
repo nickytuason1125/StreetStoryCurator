@@ -47,6 +47,9 @@ pypdfium2               # PDF text/render (RAG upload, essay selector) — Apach
 
 # ── Metadata ──────────────────────────────────────────────────────────────────
 piexif                  # EXIF timestamp reading
+exifread                # EXIF from RAW (ARW/CR2/NEF/ORF/RAF) — pure Python, no
+                        #   binary, works offline. PIL cannot open these at all,
+                        #   so without it the EXIF panel is blank for every RAW.
 duckdb                  # Metadata analytics
 
 # ── Utilities ─────────────────────────────────────────────────────────────────

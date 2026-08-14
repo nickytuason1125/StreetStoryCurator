@@ -42,6 +42,9 @@ a = Analysis(
     hiddenimports=[
         # ── App modules ───────────────────────────────────────────────
         "server",
+        # Imported lazily inside exif_reader, so PyInstaller's static scan
+        # never sees it and the packaged build would return no RAW EXIF.
+        "exifread",
         "lightweight_analyzer",
         "sequence_engine",
         "niche_engine",

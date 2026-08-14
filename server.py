@@ -103,6 +103,41 @@ def _safe_dir_path(raw: str) -> Path:
     return p
 
 
+# ── crash.log size guard ──────────────────────────────────────────────────────
+# Every grading subprocess (grade_runner, encode_worker, iqa_worker) has its
+# stdout/stderr redirected into crash.log, and the pipeline prints one line per
+# photo per stage plus a [ram] line per progress tick. Nothing ever truncated
+# it, so on a machine that culls regularly the file grows without bound.
+#
+# The launcher holds crash.log open in APPEND mode for the whole session, so a
+# rename/rotate would hit a Windows sharing violation. Truncating in place is
+# compatible with an append-mode writer (every write seeks to the current end),
+# so the tail is preserved and the head is dropped.
+_CRASH_LOG_MAX_MB  = 25.0
+_CRASH_LOG_KEEP_MB = 4.0
+
+
+def _trim_crash_log(path: str) -> None:
+    """Keep crash.log's most recent _CRASH_LOG_KEEP_MB once it exceeds the cap."""
+    try:
+        if os.path.getsize(path) <= _CRASH_LOG_MAX_MB * 1024 * 1024:
+            return
+        _keep = int(_CRASH_LOG_KEEP_MB * 1024 * 1024)
+        with open(path, "rb") as _f:
+            _f.seek(-_keep, os.SEEK_END)
+            _tail = _f.read()
+        # Drop a partial first line so the retained head is well-formed.
+        _nl = _tail.find(b"\n")
+        if 0 <= _nl < len(_tail) - 1:
+            _tail = _tail[_nl + 1:]
+        with open(path, "wb") as _f:
+            _f.write(b"--- crash.log truncated (size cap reached); older entries dropped ---\n")
+            _f.write(_tail)
+        print(f"[server] crash.log truncated to ~{_CRASH_LOG_KEEP_MB:.0f} MB", flush=True)
+    except Exception as _e_trim:
+        print(f"[server] crash.log trim skipped: {_e_trim}", flush=True)
+
+
 RECENTLY_GENERATED: set = set()
 MAX_HISTORY = 25
 LAST_SEQUENCE: list = []   # paths from the most recent generation — used as avoid_paths
@@ -931,138 +966,17 @@ async def browse_folder(body: dict):
 
 
 def _read_exif(path: str) -> dict:
-    try:
-        from PIL import Image as _PILImage
-        with _PILImage.open(path) as img:
-            raw = img.getexif()
-            if not raw:
-                return {}
+    """Delegates to src/exif_reader.read_exif.
 
-            # ExifIFD sub-IFD holds most camera/exposure data; GPS IFD for location.
-            exif_ifd = raw.get_ifd(0x8769)
-            gps_ifd  = raw.get_ifd(0x8825)
-
-            def _frac(v):
-                try:
-                    from fractions import Fraction
-                    f = Fraction(v).limit_denominator(10000)
-                    return f"{f.numerator}/{f.denominator}" if f.denominator != 1 else str(f.numerator)
-                except Exception:
-                    return str(v)
-
-            def _s(v):
-                if isinstance(v, bytes):
-                    return v.decode("utf-8", errors="replace").strip("\x00").strip()
-                return str(v).strip() if v else None
-
-            def _get(*tags, src=None):
-                d = src if src is not None else raw
-                for t in tags:
-                    v = d.get(t)
-                    if v is not None:
-                        return v
-                return None
-
-            # Camera body — strip redundant make prefix from model string
-            make  = _s(raw.get(271)) or ""
-            model = _s(raw.get(272)) or ""
-            if make and model.upper().startswith(make.split()[0].upper()):
-                camera = model or None
-            else:
-                camera = f"{make} {model}".strip() or None
-
-            # Lens model (ExifIFD 0xA434)
-            lens = _s(_get(0xA434, src=exif_ifd) or _get(42036))
-
-            # Focal length
-            fl = _get(0x920A, src=exif_ifd) or _get(37386)
-            focal = f"{round(float(fl))}mm" if fl else None
-
-            # 35mm equivalent
-            fl35 = _get(0xA405, src=exif_ifd) or _get(41989)
-            focal_35mm = f"{int(fl35)}mm" if fl35 else None
-
-            # Aperture (FNumber)
-            fn = _get(0x829D, src=exif_ifd) or _get(33437)
-            aperture = f"f/{float(fn):.1g}" if fn else None
-
-            # Shutter speed
-            ss = _get(0x829A, src=exif_ifd) or _get(33434)
-            shutter = (_frac(ss) + "s") if ss else None
-
-            # ISO
-            iso = _get(0x8827, src=exif_ifd) or _get(34855)
-
-            # Exposure bias
-            ev_raw = _get(0x9204, src=exif_ifd) or _get(37380)
-            ev = None
-            if ev_raw is not None:
-                ev_f = float(ev_raw)
-                if ev_f != 0:
-                    ev = f"{ev_f:+.1f} EV"
-
-            # Exposure program
-            _progs = {1:"Manual", 2:"Program", 3:"Aperture priority",
-                      4:"Shutter priority", 5:"Creative", 6:"Action",
-                      7:"Portrait", 8:"Landscape"}
-            prog = _get(0x8822, src=exif_ifd) or _get(34850)
-            program = _progs.get(int(prog)) if prog is not None else None
-
-            # Metering mode
-            _meters = {1:"Average", 2:"Center-weighted", 3:"Spot",
-                       4:"Multi-spot", 5:"Multi-segment", 6:"Partial"}
-            met = _get(0x9207, src=exif_ifd) or _get(37383)
-            metering = _meters.get(int(met)) if met is not None else None
-
-            # White balance
-            wb = _get(0xA403, src=exif_ifd) or _get(41987)
-            white_balance = ("Auto" if int(wb) == 0 else "Manual") if wb is not None else None
-
-            # Flash
-            fl_tag = _get(0x9209, src=exif_ifd) or _get(37385)
-            flash = ("Fired" if (int(fl_tag) & 0x1) else "No flash") if fl_tag is not None else None
-
-            # Date / time (DateTimeOriginal preferred)
-            dt = _get(0x9003, src=exif_ifd) or _get(36867) or _get(306)
-            date = time_s = None
-            if dt:
-                parts = _s(dt).split(" ")
-                date   = parts[0].replace(":", "-") if parts else None
-                time_s = parts[1][:8] if len(parts) > 1 else None
-
-            # GPS
-            gps = None
-            if gps_ifd:
-                try:
-                    def _dms(v):
-                        return float(v[0]) + float(v[1]) / 60 + float(v[2]) / 3600
-                    lat = gps_ifd.get(2); lon = gps_ifd.get(4)
-                    if lat and lon:
-                        lat_d = _dms(lat) * (-1 if gps_ifd.get(1) in ("S", b"S") else 1)
-                        lon_d = _dms(lon) * (-1 if gps_ifd.get(3) in ("W", b"W") else 1)
-                        gps = f"{lat_d:.5f}, {lon_d:.5f}"
-                except Exception:
-                    pass
-
-            return {k: v for k, v in {
-                "camera":        camera,
-                "lens":          lens,
-                "focal":         focal,
-                "focal_35mm":    focal_35mm,
-                "aperture":      aperture,
-                "shutter":       shutter,
-                "iso":           str(iso) if iso else None,
-                "ev":            ev,
-                "program":       program,
-                "metering":      metering,
-                "white_balance": white_balance,
-                "flash":         flash,
-                "date":          date,
-                "time":          time_s,
-                "gps":           gps,
-            }.items() if v is not None}
-    except Exception:
-        return {}
+    This was 130 lines inline in this file, so it could only be exercised by
+    booting the whole server — and it carried three defects nobody caught:
+    aperture formatted at one significant digit (f/1.4 rendered "f/1", f/11
+    rendered "f/1e+01"), every ExposureTime forced through a Fraction so a 2.5s
+    exposure rendered "5/2s", and RAW files returning nothing at all because PIL
+    cannot open them and a bare `except` made that look like "no EXIF".
+    """
+    from src.exif_reader import read_exif
+    return read_exif(path)
 
 
 _RAW_EXTS = {".arw", ".cr2", ".cr3", ".nef", ".orf", ".rw2", ".raf", ".dng", ".pef", ".srw"}
@@ -1469,8 +1383,9 @@ async def grade_photos_v2_stream(req: GradeRequest):
             _renv = dict(os.environ); _renv["PYTHONIOENCODING"] = "utf-8"
             # Route the runner's [v2] progress prints to crash.log (utf-8) for
             # debuggability — its result stream goes via the progress file above.
-            _rlog = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "crash.log"),
-                         "a", encoding="utf-8", errors="replace")
+            _crash_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crash.log")
+            _trim_crash_log(_crash_path)
+            _rlog = open(_crash_path, "a", encoding="utf-8", errors="replace")
             import win_job as _wj
             _proc = _wj.popen(
                 [sys.executable, _runner, _req_path, _prog_path],

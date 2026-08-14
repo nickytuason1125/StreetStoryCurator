@@ -23,6 +23,7 @@ import { AnnotatedMark } from "./components/ui/GradeRule";
 import { Modal } from "./components/ui/Modal";
 import { Field, TextArea } from "./components/ui/Field";
 import { StarRating } from "./components/ui/StarRating";
+import { ExifPanel } from "./components/ExifPanel";
 import { T, gradeRule, gradeKey, gradeLabel, formatScore } from "./theme/tokens";
 import { cn } from "./lib/cn";
 
@@ -252,41 +253,10 @@ const FilmThumb = memo(function FilmThumb({
  * carrying two unrelated meanings inside one cell. Stars are the photographer's
  * judgement, so they belong to --mark; the machine's grade gives up colour. */
 
-/* ── EXIF Block ──────────────────────────────────────────────────── */
-function ExifBlock({ exif }: { exif: any }) {
-  if (!exif || !Object.keys(exif).length) return (
-    <p style={{ fontSize:'var(--text-sm)', color:T.ink3, lineHeight:1.7 }}>No EXIF data available for this photo.</p>
-  );
-  const ORDER: [string, string][] = [
-    ['camera',        'Camera'],
-    ['lens',          'Lens'],
-    ['focal',         'Focal Length'],
-    ['focal_35mm',    '35mm Equiv.'],
-    ['aperture',      'Aperture'],
-    ['shutter',       'Shutter'],
-    ['iso',           'ISO'],
-    ['ev',            'Exp. Bias'],
-    ['program',       'Mode'],
-    ['metering',      'Metering'],
-    ['white_balance', 'White Balance'],
-    ['flash',         'Flash'],
-    ['date',          'Date'],
-    ['time',          'Time'],
-    ['gps',           'GPS'],
-  ];
-  const rows = ORDER.filter(([k]) => exif[k] != null).map(([k, label]) => [label, String(exif[k])] as [string,string]);
-  return (
-    <div style={{ display:'flex', flexDirection:'column', gap:0 }}>
-      <p style={{ fontSize:'var(--text-xs)', fontWeight:700, letterSpacing:'.08em', textTransform:'uppercase', color:T.ink3, marginBottom:8 }}>EXIF Data</p>
-      {rows.map(([k, v]) => (
-        <div key={k} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'6px 0', borderBottom:`1px solid ${T.line}` }}>
-          <span style={{ fontSize:'var(--text-sm)', color:T.ink3, fontWeight:500 }}>{k}</span>
-          <span style={{ fontSize:'var(--text-sm)', color:T.ink, fontWeight:600, fontVariantNumeric:'tabular-nums', fontFamily:"'SF Mono',monospace", textAlign:'right', maxWidth:'60%', wordBreak:'break-word' }}>{v}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
+/* ExifBlock moved to components/ExifPanel.tsx — see that file for why it is
+ * grouped now. It was the last component still setting its values in
+ * 'SF Mono', a macOS font that does not exist on this machine, so the one
+ * panel that is entirely numbers was the one not set in the app's mono face. */
 
 /* ── Export Modal ────────────────────────────────────────────────── */
 function ExportModal({ photos, filterGrade, onClose }: { photos: any[]; filterGrade: string | null; onClose: () => void }) {
@@ -3460,7 +3430,7 @@ export default function App() {
               <div className="flex-1 overflow-y-auto p-4">
                 {infoTab === 'exif' && (
                   sel
-                    ? <ExifBlock exif={sel.exif ?? {}}/>
+                    ? <ExifPanel exif={sel.exif ?? {}}/>
                     : null
                 )}
                 {infoTab === 'analysis' && (
