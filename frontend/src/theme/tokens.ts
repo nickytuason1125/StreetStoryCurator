@@ -35,6 +35,9 @@ export const T = {
 
   focus: 'var(--focus)',
   focusInset: 'var(--focus-inset)',
+
+  /** Dialog/overlay wash. Already carries its own alpha — do not add another. */
+  scrim: 'var(--scrim)',
 } as const;
 
 /* ── Grade vocabulary ────────────────────────────────────────────────────────

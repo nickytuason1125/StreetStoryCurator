@@ -2990,10 +2990,10 @@ export default function App() {
                         cursor:'pointer',
                         transition:'background .2s ease, border-color .2s ease, box-shadow .2s ease',
                         boxShadow: showEyeOverlay ? `0 0 0 2px ${T.lineStrong}` : 'none',
-                        color: showEyeOverlay ? '#fff' : 'rgba(255,255,255,.75)',
+                        color: showEyeOverlay ? T.ink : T.ink2,
                       }}
-                      onMouseEnter={e => { if (!showEyeOverlay) (e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,.12)'; }}
-                      onMouseLeave={e => { if (!showEyeOverlay) (e.currentTarget as HTMLButtonElement).style.background = 'rgba(10,10,13,.72)'; }}
+                      onMouseEnter={e => { if (!showEyeOverlay) (e.currentTarget as HTMLButtonElement).style.background = T.raisedHover; }}
+                      onMouseLeave={e => { if (!showEyeOverlay) (e.currentTarget as HTMLButtonElement).style.background = T.well; }}
                     >
                       {/* Eye icon */}
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -3012,10 +3012,10 @@ export default function App() {
                   )}
                   {critTrigger === 'grid' && (
                     <svg style={{ position:'absolute', top:0, left:0, width:'100%', height:'100%', pointerEvents:'none' }} xmlns="http://www.w3.org/2000/svg">
-                      <line x1="33.33%" y1="0%" x2="33.33%" y2="100%" stroke="rgba(255,255,255,0.55)" strokeWidth="1"/>
-                      <line x1="66.66%" y1="0%" x2="66.66%" y2="100%" stroke="rgba(255,255,255,0.55)" strokeWidth="1"/>
-                      <line x1="0%" y1="33.33%" x2="100%" y2="33.33%" stroke="rgba(255,255,255,0.55)" strokeWidth="1"/>
-                      <line x1="0%" y1="66.66%" x2="100%" y2="66.66%" stroke="rgba(255,255,255,0.55)" strokeWidth="1"/>
+                      <line x1="33.33%" y1="0%" x2="33.33%" y2="100%" stroke={T.ink} strokeOpacity={0.55} strokeWidth="1"/>
+                      <line x1="66.66%" y1="0%" x2="66.66%" y2="100%" stroke={T.ink} strokeOpacity={0.55} strokeWidth="1"/>
+                      <line x1="0%" y1="33.33%" x2="100%" y2="33.33%" stroke={T.ink} strokeOpacity={0.55} strokeWidth="1"/>
+                      <line x1="0%" y1="66.66%" x2="100%" y2="66.66%" stroke={T.ink} strokeOpacity={0.55} strokeWidth="1"/>
                     </svg>
                   )}
                   {/* Criteria overlay — shown when eye/audit mode is active */}
@@ -3038,7 +3038,7 @@ export default function App() {
                     const labelFs  = Math.max(14, W * 0.015);
                     const edge     = Math.max(14, W * 0.020);
                     const ulThick  = Math.max(2.5, W * 0.0028);
-                    const weakCol  = 'oklch(72% .18 50)';
+                    const weakCol  = T.alarmWarn;
 
                     // Approximate text width for underline sizing
                     const _tw = (t: string, fs: number) => t.length * fs * 0.60;
@@ -3059,9 +3059,9 @@ export default function App() {
                           return (
                             <g style={{ animation:'fadeIn .5s .06s both' }}>
                               <text x={edge} y={ty}
-                                fill="#ffffff" fontSize={nameFs} fontWeight="700"
+                                fill={T.ink} fontSize={nameFs} fontWeight="700"
                                 fontFamily="'SF Mono',ui-monospace,monospace"
-                                stroke="rgba(0,0,0,0.75)" strokeWidth={sw*1.8} paintOrder="stroke fill">
+                                stroke={T.well} strokeOpacity={0.75} strokeWidth={sw*1.8} paintOrder="stroke fill">
                                 <tspan fill={T.gradeStrong} fontWeight="800">{'✓ '}</tspan>{name}
                               </text>
                               <line x1={edge} y1={ty + nameFs*0.20}
@@ -3070,7 +3070,7 @@ export default function App() {
                               <text x={edge} y={ty + nameFs*0.20 + labelFs*1.5}
                                 fill={T.gradeStrong} fontSize={labelFs} fontWeight="600"
                                 fontFamily="'SF Mono',ui-monospace,monospace" opacity={0.75}
-                                stroke="rgba(0,0,0,0.65)" strokeWidth={sw*1.4} paintOrder="stroke fill">
+                                stroke={T.well} strokeOpacity={0.65} strokeWidth={sw*1.4} paintOrder="stroke fill">
                                 STRONGEST ASPECT
                               </text>
                             </g>
@@ -3086,9 +3086,9 @@ export default function App() {
                             <g style={{ animation:'fadeIn .5s .16s both' }}>
                               <text x={W - edge} y={ty}
                                 textAnchor="end"
-                                fill="#ffffff" fontSize={nameFs} fontWeight="700"
+                                fill={T.ink} fontSize={nameFs} fontWeight="700"
                                 fontFamily="'SF Mono',ui-monospace,monospace"
-                                stroke="rgba(0,0,0,0.75)" strokeWidth={sw*1.8} paintOrder="stroke fill">
+                                stroke={T.well} strokeOpacity={0.75} strokeWidth={sw*1.8} paintOrder="stroke fill">
                                 {name}<tspan fill={weakCol} fontWeight="800">{' ↑'}</tspan>
                               </text>
                               <line x1={W - edge - uw} y1={ty + nameFs*0.20}
@@ -3098,7 +3098,7 @@ export default function App() {
                                 textAnchor="end"
                                 fill={weakCol} fontSize={labelFs} fontWeight="600"
                                 fontFamily="'SF Mono',ui-monospace,monospace" opacity={0.75}
-                                stroke="rgba(0,0,0,0.65)" strokeWidth={sw*1.4} paintOrder="stroke fill">
+                                stroke={T.well} strokeOpacity={0.65} strokeWidth={sw*1.4} paintOrder="stroke fill">
                                 NEEDS MOST WORK
                               </text>
                             </g>
@@ -3164,7 +3164,7 @@ export default function App() {
                                 fill="none" stroke={col} strokeWidth={sw*1.3} strokeLinecap="round"/>
                               {/* Teacher chip */}
                               <rect x={chipX} y={chipY} width={chipW} height={chipH}
-                                fill="rgba(4,4,9,0.86)" stroke={col} strokeWidth={sw*0.5} rx={sw*1.4}/>
+                                fill={T.well} fillOpacity={0.86} stroke={col} strokeWidth={sw*0.5} rx={sw*1.4}/>
                               {/* Accent bar */}
                               <rect x={chipX} y={chipY} width={sw*1.2} height={chipH}
                                 fill={col} rx={sw*0.6}/>
@@ -3173,7 +3173,7 @@ export default function App() {
                                 fontFamily="'SF Mono',ui-monospace,monospace">{title}</text>
                               {tip && (
                                 <text x={chipX+pad} y={chipY+pad*0.6+titleFs+tipFs*1.4}
-                                  fill="rgba(255,255,255,0.88)" fontSize={tipFs} fontWeight="500"
+                                  fill={T.ink} fillOpacity={0.88} fontSize={tipFs} fontWeight="500"
                                   fontFamily="ui-sans-serif,system-ui,sans-serif">{tip}</text>
                               )}
                             </g>
@@ -3259,7 +3259,7 @@ export default function App() {
                               <circle cx={p.cx} cy={p.cy} r={r * 1.9} fill="none"
                                 stroke={c} strokeWidth={r * 0.32} opacity={0.55}/>
                               <circle cx={p.cx} cy={p.cy} r={r} fill={c} opacity={0.95}
-                                stroke="rgba(0,0,0,0.45)" strokeWidth={r * 0.18}/>
+                                stroke={T.well} strokeOpacity={0.45} strokeWidth={r * 0.18}/>
                             </g>
                           );
                         })}
@@ -3291,18 +3291,18 @@ export default function App() {
                     return (
                       <div style={{ position:'absolute', bottom:16, right:16, zIndex:20,
                         display:'flex', flexDirection:'column', gap:5, padding:'9px 12px',
-                        background:'rgba(8,8,12,.78)', border:'1px solid rgba(255,255,255,.12)',
+                        background:T.scrim, border:`1px solid ${T.lineStrong}`,
                         borderRadius:'var(--r-md)', backdropFilter:'blur(10px)', pointerEvents:'none' }}>
-                        <div style={{ fontSize:'var(--text-xs)', fontWeight:700, letterSpacing:'.06em', color:'rgba(255,255,255,.55)', textTransform:'uppercase', marginBottom:1 }}>Critique map</div>
+                        <div className="t-label" style={{ marginBottom:1 }}>Critique map</div>
                         {_present.map(([t, l]) => {
                           const c = tierHeat(t);
                           return (
                             <div key={t} style={{ display:'flex', alignItems:'center', gap:7 }}>
                               <span style={{ width:11, height:11, borderRadius:'50%', flexShrink:0,
-                                background:`radial-gradient(circle, ${c} 0%, ${c}55 70%, transparent 100%)`,
+                                background:`radial-gradient(circle, ${c} 0%, transparent 100%)`,
                                 boxShadow:`0 0 6px ${c}` }}/>
-                              <span style={{ fontSize:'var(--text-xs)', color:'rgba(255,255,255,.85)' }}>{l}</span>
-                              <span style={{ fontSize:'var(--text-xs)', fontWeight:700, color:'rgba(255,255,255,.45)', marginLeft:'auto', paddingLeft:8 }}>{_counts[t]}</span>
+                              <span style={{ fontSize:'var(--text-xs)', color:T.ink }}>{l}</span>
+                              <span className="t-num" style={{ fontSize:'var(--text-xs)', color:T.ink3, marginLeft:'auto', paddingLeft:8 }}>{_counts[t]}</span>
                             </div>
                           );
                         })}
@@ -3351,7 +3351,7 @@ export default function App() {
             <div
               onMouseDown={onResizeDown}
               style={{ width:3, cursor:'col-resize', flexShrink:0, background:'transparent', transition:'background .25s ease' }}
-              onMouseEnter={e => (e.currentTarget.style.background = 'oklch(64% .19 248 / .3)')}
+              onMouseEnter={e => (e.currentTarget.style.background = T.raisedHover)}
               onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
             />
             )}
@@ -3365,8 +3365,8 @@ export default function App() {
                   <img key={sel.path} src={thumbUrl(sel.path)} alt=""
                     style={{ width:'100%', height:'100%', objectFit:'cover', display:'block', animation:'fadeIn .32s cubic-bezier(.2,0,0,1)' }}/>
                   {isGraded && (
-                    <div style={{ position:'absolute', inset:0, background:'linear-gradient(to top,rgba(0,0,0,.85) 0%,transparent 55%)', display:'flex', alignItems:'flex-end', padding:'10px 12px' }}>
-                      <div style={{ display:'flex', alignItems:'center', gap:6, background:'rgba(0,0,0,.6)', backdropFilter:'blur(8px)', borderRadius:'var(--r-md)', padding:'6px 12px', border:`1px solid ${gc(sel.grade)}44` }}>
+                    <div style={{ position:'absolute', inset:0, background:`linear-gradient(to top,${T.scrim} 0%,transparent 55%)`, display:'flex', alignItems:'flex-end', padding:'10px 12px' }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:6, background:T.scrim, backdropFilter:'blur(8px)', borderRadius:'var(--r-md)', padding:'6px 12px', border:`1px solid ${gc(sel.grade)}` }}>
                         <div style={{ width:8, height:8, borderRadius:'50%', background:gc(sel.grade), flexShrink:0 }}/>
                         <span style={{ fontSize:'var(--text-md)', fontWeight:700, color:T.ink }}>{gradeLabel(sel.grade)}</span>
                       </div>
@@ -3400,7 +3400,7 @@ export default function App() {
                           <div key={g}
                             style={{ flex:1, padding:'3px 0', borderRadius:'var(--r-sm)', fontSize:'var(--text-xs)', fontWeight:700,
                               textAlign:'center', userSelect:'none', pointerEvents:'none',
-                              background: isActive ? `${col}22` : 'transparent',
+                              background: isActive ? T.raisedHover : 'transparent',
                               border: `1px solid ${isActive ? col : T.lineStrong}`,
                               color: isActive ? col : T.ink3 }}>
                             {gradeLabel(g)}
