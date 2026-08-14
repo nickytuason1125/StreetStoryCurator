@@ -22,6 +22,7 @@ import { Segmented } from "./components/ui/Segmented";
 import { AnnotatedMark } from "./components/ui/GradeRule";
 import { Modal } from "./components/ui/Modal";
 import { Field, TextArea } from "./components/ui/Field";
+import { StarRating } from "./components/ui/StarRating";
 import { T, gradeRule, gradeKey, gradeLabel, formatScore } from "./theme/tokens";
 import { cn } from "./lib/cn";
 
@@ -254,26 +255,12 @@ const FilmThumb = memo(function FilmThumb({
   );
 });
 
-/* ── Star Rating ────────────────────────────────────────────────── */
-function StarRating({ stars, onSet, size = 22, gap = 4 }: { stars: number; onSet: (n: number) => void; size?: number; gap?: number }) {
-  const [hover, setHover] = useState(0);
-  const display = hover || stars;
-  return (
-    <div style={{ display:'flex', alignItems:'center', gap }} onMouseLeave={() => setHover(0)}>
-      {[1,2,3,4,5].map(n => (
-        <button key={n} onMouseEnter={() => setHover(n)} onClick={() => onSet(stars === n ? 0 : n)}
-          style={{ padding:4, cursor:'pointer', display:'flex', lineHeight:1, background:'none', border:'none', flexShrink:0 }}>
-          <svg width={size} height={size} viewBox="0 0 24 24"
-            fill={n <= display ? 'oklch(70% .18 72)' : 'oklch(30% .04 72)'}
-            stroke="none"
-            style={{ transition:'fill .2s ease' }}>
-            <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26"/>
-          </svg>
-        </button>
-      ))}
-    </div>
-  );
-}
+/* StarRating moved to components/ui/StarRating.tsx. The copy that lived here
+ * shadowed it, so the shared component sat imported by nobody while this one
+ * painted stars in oklch(70% .18 72) — an amber about ten degrees in hue from
+ * the old grade accent. At 11px over a photograph the two were the same colour,
+ * carrying two unrelated meanings inside one cell. Stars are the photographer's
+ * judgement, so they belong to --mark; the machine's grade gives up colour. */
 
 /* ── EXIF Block ──────────────────────────────────────────────────── */
 function ExifBlock({ exif }: { exif: any }) {
@@ -3412,7 +3399,7 @@ export default function App() {
                       <Copy size={10}/>{copied ? 'Copied!' : ''}
                     </button>
                   </div>
-                  <StarRating stars={sel.stars ?? 0} onSet={n => handleSetStars(sel.id, n)}/>
+                  <StarRating stars={sel.stars ?? 0} size={22} onSet={n => handleSetStars(sel.id, n)}/>
                   {/* Grade display — read-only */}
                   {isDone && (
                     <div style={{ display:'flex', gap:4, marginTop:8 }}>
