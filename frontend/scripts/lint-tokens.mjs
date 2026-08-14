@@ -192,7 +192,14 @@ if (ratchetCount > prev) {
 
 if (failed) process.exit(1);
 
-if (ratchetCount < prev || updating) {
+// A missing baseline must be WRITTEN, not quietly tolerated. `prev` falls back
+// to ratchetCount when the file is absent, so without this branch the ratchet
+// compares 401 against 401 forever: it can never fail, and never records the
+// file that would let it fail. The guard's whole second mode was inert.
+if (!existsSync(BASELINE)) {
+  writeFileSync(BASELINE, JSON.stringify({ legacyViolations: ratchetCount }, null, 2) + '\n');
+  console.log(`Token guard OK — baseline recorded at ${ratchetCount} legacy literals.`);
+} else if (ratchetCount < prev || updating) {
   writeFileSync(BASELINE, JSON.stringify({ legacyViolations: ratchetCount }, null, 2) + '\n');
   console.log(`Token guard OK — legacy literals ${prev} -> ${ratchetCount}; baseline lowered.`);
 } else {
