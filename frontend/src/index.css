@@ -2,44 +2,81 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Accessibility: honour the OS "reduce motion" setting (WCAG 2.3.3). The app is
-   animation-heavy (fades, spinners, sweeps, width transitions); collapse them all
-   to near-instant for users who opt out of motion. */
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
-  }
+/* Design tokens and the reduced-motion policy live in src/theme/tokens.css,
+ * imported ahead of this file in main.tsx. Nothing below may introduce a raw
+ * hex or px value — `npm run lint:tokens` enforces that. */
+
+body {
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  line-height: var(--leading-body);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
+
+/* Keyboard focus is neutral, never the accent — the warm mark colour is
+ * reserved for the photographer's own judgements. Two rings so the indicator
+ * survives on chrome AND on top of a photograph, where a single light ring
+ * would vanish against a blown highlight. */
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+  box-shadow: 0 0 0 1px var(--focus-inset);
+}
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Keyframes are declared HERE, not only in tailwind.config.js.
+ *
+ * Tailwind emits a @keyframes block only when the matching `animate-*` utility
+ * appears in the source. Anything driven by an inline `animation: spin …` is
+ * invisible to that scan, so moving these into the config silently deleted
+ * them: 11 spinners and every skeleton placeholder stopped moving while still
+ * looking correct in the code. Declaring them in plain CSS makes emission
+ * unconditional. */
+@keyframes spin     { to { transform: rotate(360deg) } }
+@keyframes shimmer  { 0% { background-position: 200% 0 } 100% { background-position: -200% 0 } }
+@keyframes slideUp  { from { opacity: 0; transform: translateY(7px) } to { opacity: 1; transform: translateY(0) } }
+@keyframes fadeIn   { from { opacity: 0 } to { opacity: 1 } }
+@keyframes sweep    { from { left: -45%; width: 45% } to { left: 110%; width: 45% } }
 
 @layer utilities {
   .scrollbar-hide::-webkit-scrollbar { display: none; }
   .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
-  .animate-fade-in { animation: fadeIn 0.3s ease-out; }
-  .animate-slide-up { animation: slideUp 0.4s ease-out; }
+
   .skeleton {
-    background: linear-gradient(90deg, #1f2937 25%, #374151 50%, #1f2937 75%);
+    background: linear-gradient(90deg,
+      var(--surface) 25%, var(--raised) 50%, var(--surface) 75%);
     background-size: 200% 100%;
-    animation: shimmer 1.5s infinite;
+    animation: shimmer 1.5s linear infinite;
+  }
+
+  /* Pending frames: visibly distinct from Mid, which is also unmarked. Without
+   * this, "the model hasn't seen this yet" and "the model shrugged" render
+   * identically in the grid. */
+  .hatch-pending {
+    background-image: repeating-linear-gradient(
+      45deg,
+      var(--grade-pending) 0 2px,
+      transparent 2px 5px
+    );
   }
 }
 
-@keyframes fadeIn    { from { opacity: 0; transform: translateY(4px) } to { opacity: 1; transform: translateY(0) } }
-@keyframes slideUp   { from { opacity: 0; transform: translateY(7px) } to { opacity: 1; transform: translateY(0) } }
-@keyframes slideInR  { from { opacity: 0; transform: translateX(12px) } to { opacity: 1; transform: translateX(0) } }
-@keyframes shimmer   { 0% { background-position: 200% 0 } 100% { background-position: -200% 0 } }
-@keyframes gradePop  { 0% { transform: scale(.82); opacity: 0 } 65% { transform: scale(1.06) } 100% { transform: scale(1); opacity: 1 } }
-@keyframes revealDot { from { transform: scale(0); opacity: 0 } to { transform: scale(1); opacity: 1 } }
-@keyframes barGrow   { from { transform: scaleX(0) } to { transform: scaleX(1) } }
-@keyframes fabPulse  { 0%,100% { box-shadow: 0 0 0 0 oklch(64% 0.19 248 / .4) } 60% { box-shadow: 0 0 0 14px oklch(64% 0.19 248 / 0) } }
-@keyframes spin      { to { transform: rotate(360deg) } }
-@keyframes pulse     { 0%,100% { box-shadow: 0 0 0 0 oklch(64% .19 248 / .4) } 60% { box-shadow: 0 0 0 16px oklch(64% .19 248 / 0) } }
-@keyframes stripe    { from { opacity: 0; transform: scaleX(0) } to { opacity: 1; transform: scaleX(1) } }
-@keyframes fadeSlide { from { opacity: 0; transform: translateX(6px) } to { opacity: 1; transform: translateX(0) } }
-@keyframes sweep     { 0% { left: -45%; width: 45% } 100% { left: 110%; width: 45% } }
-
-body {
-  @apply bg-[#0b0e14] text-gray-100 antialiased;
+/* Scrollbars: part of the chrome, so they follow the neutral rule. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
 }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: var(--r-md);
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover { background-clip: content-box; background-color: var(--ink-4); }

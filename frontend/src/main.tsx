@@ -1,6 +1,12 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { flushSync } from 'react-dom'
+// Bundled locally, never a CDN — the app must run fully offline (contract rule 5).
+// The `wdth` build carries BOTH axes (weight 100-900, stretch 62-125%), which is
+// what lets labels come from Archivo's width axis instead of a third family.
+import '@fontsource-variable/archivo/wdth.css'
+import '@fontsource-variable/martian-mono/wdth.css'
+import './theme/tokens.css'
 import './index.css'
 import App from './App.tsx'
 import ErrorBoundary from './ErrorBoundary.tsx'

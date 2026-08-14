@@ -16,6 +16,14 @@ import {
   Download, CheckSquare, ArrowUpDown, ArrowUp, ArrowDown,
   Wand2, Zap, Eye, EyeOff, Upload, Search,
 } from "lucide-react";
+import { Button } from "./components/ui/Button";
+import { Chip } from "./components/ui/Chip";
+import { Segmented } from "./components/ui/Segmented";
+import { AnnotatedMark } from "./components/ui/GradeRule";
+import { Modal } from "./components/ui/Modal";
+import { Field, TextArea } from "./components/ui/Field";
+import { T, gradeRule, gradeKey, gradeLabel, formatScore } from "./theme/tokens";
+import { cn } from "./lib/cn";
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -144,29 +152,27 @@ function gl(g: string) {
   if (g?.includes('Weak'))   return 'Weak';
   return 'Pending';
 }
-function gIcon(g: string) {
-  if (g?.includes('Strong')) return '✅';
-  if (g?.includes('Mid'))    return '⚠️';
-  if (g?.includes('Weak'))   return '❌';
-  return '';
-}
+// gIcon() lived here — it mapped grades to ✅ / ⚠️ / ❌. It had no callers left,
+// and emoji-as-status is the clearest "generated interface" tell there is. The
+// grade is carried by the rule under each frame instead. Do not reintroduce it.
 
 const _SLOGANS: Array<[RegExp, string]> = [
-  [/scan|found.*image|new image/i,        "Pulling the contact sheet…"],
-  [/blur|early.exit|laplacian/i,          "Culling the camera-shake casualties…"],
-  [/siglip|encod/i,                       "Reading the light in every frame…"],
-  [/duplicat/i,                           "Picking the best frame from each burst…"],
-  [/loading qwen|qwen.*load/i,            "The photo editor is pulling up a chair…"],
-  [/qwen|vlm grad|vision grad/i,          "Studying composition, moment, and story…"],
-  [/iqa|topiq|maniqa|technical.*scor/i,   "Running the darkroom technical check…"],
-  [/luminance|light.*stat/i,              "Measuring the exposure…"],
-  [/specvlm|clip.*sim/i,                  "Comparing against the reference portfolio…"],
-  [/personal|head.*scor/i,                "Recalling your editorial eye…"],
-  [/gemma|spatial|second/i,               "Second shooter weighing in…"],
-  [/sequenc|sort|bucket|calibrat|thresh/i,"Building the selects…"],
-  [/archetype|fusion|fus/i,               "Matching each frame to its genre…"],
-  [/deduplic|similar/i,                   "One frame per moment — killing your darlings…"],
-  [/persona|preference/i,                 "Tuning to your shooting style…"],
+  // Patterns match the backend's (model-agnostic) progress wording. Never put a
+  // model name in the SLOGAN text — these strings are shown to the user.
+  [/scanning folder|found \d+|already graded/i, "Pulling the contact sheet…"],
+  [/checking image files|unusable images/i,     "Culling the camera-shake casualties…"],
+  [/analyz|image analysis/i,                    "Reading the light in every frame…"],
+  [/near-duplicate|marking duplicates/i,        "Picking the best frame from each burst…"],
+  [/preparing deep analysis/i,                  "The photo editor is pulling up a chair…"],
+  [/judging each photo|deep analysis ready/i,   "Studying composition, moment, and story…"],
+  [/scoring image quality|quality scoring/i,    "Running the darkroom technical check…"],
+  [/light and contrast/i,                       "Measuring the exposure…"],
+  [/style reference|creative brief/i,           "Comparing against the reference portfolio…"],
+  [/taste profile/i,                            "Recalling your editorial eye…"],
+  [/refining composition/i,                     "Second shooter weighing in…"],
+  [/sequenc|assigning grades|building your gallery/i, "Building the selects…"],
+  [/combining scores/i,                         "Matching each frame to its genre…"],
+  [/saving results|photo details/i,             "Filing the contact sheet…"],
 ];
 function toSlogan(desc: string): string {
   if (!desc) return '';
@@ -188,60 +194,53 @@ function SortableItem({ id, children }: { id: string; children: React.ReactNode 
 const FilmThumb = memo(function FilmThumb({
   p, isSel, onSelect, isUsed, isSelected, h = 84, showFn = true,
 }: { p: any; isSel: boolean; onSelect: (id: string) => void; isUsed: boolean; isSelected: boolean; h?: number; showFn?: boolean }) {
-  const w = Math.round(h * 1.5);
+  // Frames keep their real proportions here too — a fixed row height with
+  // natural width, so a vertical reads as a vertical while scrubbing.
+  const imgH = h - 4;
+  const isWeak = gradeKey(p.grade) === 'weak';
+  const rule = gradeRule(p.grade);
   return (
     <button
       data-sel={isSel ? '1' : '0'}
       onClick={() => onSelect(p.id)}
-      style={{
-        flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 2,
-        width: w, padding: 2, borderRadius: 3, cursor: 'pointer',
-        background: isSel ? C.surf3 : 'transparent',
-        outline: isSelected ? `2px solid ${C.accent}` : isSel ? '2px solid rgba(255,255,255,.5)' : '2px solid transparent',
-        outlineOffset: 0, border: 'none',
-      }}
+      className={cn(
+        'flex shrink-0 cursor-pointer flex-col gap-px border-0 p-px',
+        'rounded-sm outline outline-2 transition-colors duration-fast ease',
+        isSel ? 'bg-raised' : 'bg-transparent hover:bg-surface',
+        isSelected ? 'outline-mark' : isSel ? 'outline-ink' : 'outline-transparent',
+      )}
     >
-      <div style={{ position: 'relative', width: w - 4, height: h - 4, overflow: 'hidden', borderRadius: 2, background: C.bg, flexShrink: 0 }}>
+      <span className="relative block shrink-0 overflow-hidden bg-well" style={{ height: imgH }}>
         <img src={thumbUrl(p.path)} alt="" decoding="async" loading="lazy"
-          style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}/>
+          className={cn('block h-full w-auto max-w-none', isWeak && 'opacity-reject')}/>
         {isUsed && (
-          <div style={{ position: 'absolute', top: 3, left: 3, background: 'rgba(0,0,0,.75)', backdropFilter: 'blur(4px)', borderRadius: 3, padding: '1px 4px', display: 'flex', alignItems: 'center', gap: 2 }}>
-            <Flag size={7} style={{ color: C.accent, flexShrink: 0 }}/>
-          </div>
+          <span className="absolute left-px top-px rounded-sm bg-well px-px">
+            <Flag size={7} className="text-ink-2"/>
+          </span>
         )}
         {isSelected && (
-          <div style={{ position: 'absolute', top: 3, right: 3, width: 12, height: 12, borderRadius: 3, background: C.accent, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <svg width="7" height="7" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20,6 9,17 4,12"/></svg>
-          </div>
+          <span className="absolute right-px top-px flex h-3 w-3 items-center justify-center rounded-sm bg-mark">
+            <svg width="7" height="7" viewBox="0 0 24 24" fill="none" stroke={T.well} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20,6 9,17 4,12"/></svg>
+          </span>
         )}
-        {p.grade !== 'Pending' && gc(p.grade) !== C.text3 && (
-          <div style={{ position:'absolute', bottom:3, left:3, display:'flex', alignItems:'center', gap:2 }}>
-            <div style={{ width:6, height:6, borderRadius:'50%', background:gc(p.grade), boxShadow:`0 0 5px ${gc(p.grade)}99` }}/>
-            {p.has_annotations && (
-              <svg width="7" height="7" viewBox="0 0 24 24" fill="none" stroke={C.accent} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
-              </svg>
-            )}
-          </div>
-        )}
-      </div>
+      </span>
+
+      {/* Same rule as the contact sheet, so both views speak one language. */}
+      <span aria-hidden className="block w-full" style={{ height: 'var(--rule)', background: rule ?? undefined }}/>
+
       {showFn && (
-        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', width: w - 4, gap: 2 }}>
-          <span style={{ fontSize: 8.5, color: isSel ? C.text2 : C.text3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: "'SF Mono',monospace", flex:1 }}>
+        <span className="flex w-full items-center gap-px">
+          <span className={cn('t-num flex-1 truncate text-left text-xs',
+                              isSel ? 'text-ink-2' : 'text-ink-3')}>
             {(p.path.split(/[\\/]/).pop() ?? '').replace(/\.[^.]+$/, '')}
           </span>
+          {p.has_annotations && <AnnotatedMark/>}
           {p.stars > 0 && (
-            <div style={{ display:'flex', gap:0.5, flexShrink:0 }}>
-              {[1,2,3,4,5].map(n => (
-                <svg key={n} width="5" height="5" viewBox="0 0 24 24"
-                  fill={n <= p.stars ? 'oklch(70% .18 72)' : 'none'}
-                  stroke={n <= p.stars ? 'oklch(70% .18 72)' : C.text3} strokeWidth="2">
-                  <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26"/>
-                </svg>
-              ))}
-            </div>
+            <svg width="6" height="6" viewBox="0 0 24 24" fill={T.mark} stroke={T.mark} strokeWidth="2" className="shrink-0">
+              <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26"/>
+            </svg>
           )}
-        </div>
+        </span>
       )}
     </button>
   );
@@ -336,70 +335,52 @@ function ExportModal({ photos, filterGrade, onClose }: { photos: any[]; filterGr
   };
 
   return (
-    <div style={{ position:'fixed', inset:0, zIndex:500, background:'rgba(0,0,0,.75)', backdropFilter:'blur(8px)', display:'flex', alignItems:'center', justifyContent:'center' }}
-      onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
-      <div style={{ background:C.surf, border:`1px solid ${C.bdr2}`, borderRadius:12, width:560, maxHeight:'80vh', display:'flex', flexDirection:'column', boxShadow:'0 24px 80px rgba(0,0,0,.8)', overflow:'hidden', animation:'slideUp .3s cubic-bezier(.2,0,0,1)' }}>
-        <div style={{ display:'flex', alignItems:'center', padding:'14px 18px', borderBottom:`1px solid ${C.border}`, flexShrink:0 }}>
-          <div style={{ flex:1 }}>
-            <p style={{ fontSize:15, fontWeight:700, color:C.text }}>Export Photos</p>
-            <p style={{ fontSize:12, color:C.text3, marginTop:2 }}>{photos.length} photo{photos.length !== 1 ? 's' : ''}{filterGrade ? ` · ${filterGrade} only` : ''}</p>
+    <Modal
+      title="Export photos"
+      subtitle={<><span className="t-num">{photos.length}</span> photo{photos.length !== 1 ? 's' : ''}{filterGrade ? ` · ${filterGrade} only` : ''}</>}
+      onClose={onClose}
+      footer={
+        <>
+          <Button onClick={onClose}>Cancel</Button>
+          <Button variant="solid" onClick={handleDownloadAll} icon={<Download size={11}/>}>
+            Download all (<span className="t-num">{photos.length}</span>)
+          </Button>
+        </>
+      }
+    >
+      {photos.map(p => (
+        <div key={p.id} className="flex items-center gap-3 border-b border-line py-2 last:border-0">
+          <img src={thumbUrl(p.path)} alt="" loading="lazy"
+            className="block h-8 w-auto max-w-none shrink-0 rounded-sm bg-well"/>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm text-ink">{p.path.split(/[\\/]/).pop()}</p>
+            <p className="t-num mt-px truncate text-xs text-ink-3">
+              {[p.exif?.camera, p.exif?.aperture, p.exif?.shutter, p.exif?.iso ? `ISO ${p.exif.iso}` : null].filter(Boolean).join(' · ')}
+            </p>
           </div>
-          <button onClick={onClose} style={{ color:C.text3, display:'flex', padding:6, borderRadius:6, cursor:'pointer' }}>
-            <X size={13}/>
-          </button>
+          <Button size="sm" variant="quiet" onClick={() => handleDownload(p)}
+            title={`Download ${p.path.split(/[\\/]/).pop()}`} icon={<Download size={10}/>}/>
         </div>
-        <div style={{ flex:1, overflow:'auto', padding:'10px 18px' }}>
-          {photos.map(p => (
-            <div key={p.id} style={{ display:'flex', alignItems:'center', gap:10, padding:'7px 0', borderBottom:`1px solid ${C.border}` }}>
-              <img src={thumbUrl(p.path)} alt="" style={{ width:48, height:32, objectFit:'cover', borderRadius:3, flexShrink:0, display:'block' }}/>
-              <div style={{ flex:1, minWidth:0 }}>
-                <p style={{ fontSize:13, fontWeight:600, color:C.text, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{p.path.split(/[\\/]/).pop()}</p>
-                <p style={{ fontSize:11, color:C.text3, marginTop:1, fontFamily:"'SF Mono',monospace" }}>
-                  {[p.exif?.camera, p.exif?.aperture, p.exif?.shutter, p.exif?.iso ? `ISO ${p.exif.iso}` : null].filter(Boolean).join(' · ')}
-                </p>
-              </div>
-              <button onClick={() => handleDownload(p)}
-                style={{ display:'flex', alignItems:'center', gap:4, padding:'4px 9px', borderRadius:6, background:C.surf2, border:`1px solid ${C.bdr2}`, color:C.text2, fontSize:12, fontWeight:600, cursor:'pointer', flexShrink:0 }}>
-                <Download size={10}/>
-              </button>
-            </div>
-          ))}
-        </div>
+      ))}
 
-        {/* XMP sidecar section */}
-        <div style={{ padding:'10px 18px', borderTop:`1px solid ${C.border}`, background:C.surf2, flexShrink:0 }}>
-          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:10 }}>
-            <div style={{ minWidth:0 }}>
-              <p style={{ fontSize:12, fontWeight:600, color:C.text2 }}>XMP Sidecars</p>
-              <p style={{ fontSize:11, color:C.text3, marginTop:1 }}>
-                {xmpState === 'idle' && 'Write .xmp files next to each photo — readable by Lightroom & Capture One'}
-                {xmpState === 'busy' && 'Writing sidecars…'}
-                {xmpState === 'done' && `✓ ${xmpCount} sidecar${xmpCount !== 1 ? 's' : ''} written next to your photos`}
-                {xmpState === 'error' && '✕ Export failed — check the server log'}
-              </p>
-            </div>
-            <button onClick={handleExportXmp} disabled={xmpState === 'busy'}
-              style={{ display:'flex', alignItems:'center', gap:6, padding:'6px 14px', borderRadius:7, flexShrink:0,
-                background: xmpState === 'done' ? C.sLow : C.surf3,
-                border:`1px solid ${xmpState === 'done' ? 'oklch(65% .17 148 / .35)' : C.bdr2}`,
-                color: xmpState === 'done' ? C.strong : C.text2,
-                fontSize:12, fontWeight:700, cursor: xmpState === 'busy' ? 'wait' : 'pointer', transition:'all .25s cubic-bezier(.2,0,0,1)' }}>
-              {xmpState === 'busy'
-                ? <><span style={{ width:10, height:10, borderRadius:'50%', border:`1.5px solid ${C.accent}`, borderTopColor:'transparent', animation:'spin .8s linear infinite', display:'inline-block' }}/> Writing…</>
-                : xmpState === 'done' ? 'Done' : 'Export XMP'}
-            </button>
-          </div>
+      {/* XMP sidecars. State is carried by the words, not by a colour change —
+          "Written" is unambiguous without turning the control green. */}
+      <div className="sticky bottom-0 -mx-4 mt-2 flex items-center justify-between gap-3 border-t border-line bg-raised px-4 py-3">
+        <div className="min-w-0">
+          <p className="text-sm text-ink-2">XMP sidecars</p>
+          <p className="mt-px text-xs text-ink-3">
+            {xmpState === 'idle'  && 'Write .xmp files beside each photo — Lightroom and Capture One read them'}
+            {xmpState === 'busy'  && 'Writing sidecars…'}
+            {xmpState === 'done'  && <><span className="t-num">{xmpCount}</span> sidecar{xmpCount !== 1 ? 's' : ''} written beside your photos</>}
+            {xmpState === 'error' && 'Export failed. Check the server log for the cause.'}
+          </p>
         </div>
-
-        <div style={{ padding:'12px 18px', borderTop:`1px solid ${C.border}`, display:'flex', justifyContent:'flex-end', gap:8, flexShrink:0 }}>
-          <button onClick={onClose} style={{ padding:'7px 16px', borderRadius:7, background:C.surf2, border:`1px solid ${C.bdr2}`, color:C.text2, fontSize:13, fontWeight:600, cursor:'pointer' }}>Cancel</button>
-          <button onClick={handleDownloadAll}
-            style={{ display:'flex', alignItems:'center', gap:6, padding:'7px 18px', borderRadius:7, background:C.accent, border:'none', color:'#fff', fontSize:13, fontWeight:700, cursor:'pointer' }}>
-            <Download size={11}/> Download All ({photos.length})
-          </button>
-        </div>
+        <Button onClick={handleExportXmp} disabled={xmpState === 'busy'}
+          variant={xmpState === 'error' ? 'danger' : 'solid'}>
+          {xmpState === 'busy' ? 'Writing…' : xmpState === 'done' ? 'Written' : 'Export XMP'}
+        </Button>
       </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -417,102 +398,125 @@ function GridView({
   };
   return (
     <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden', position:'relative' }}>
-      {/* Toolbar */}
-      <div style={{ flexShrink:0, height:36, display:'flex', alignItems:'center', justifyContent:'space-between', padding:'0 14px', background:C.surf, borderBottom:`1px solid ${C.border}` }}>
-        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-          <button onClick={() => { setSelectMode(!selectMode); setSelectedIds(new Set()); }}
-            style={{ display:'flex', alignItems:'center', gap:5, padding:'4px 10px', borderRadius:6, fontSize:12, fontWeight:700, cursor:'pointer', background:selectMode ? C.aLow : 'transparent', border:`1px solid ${selectMode ? C.aBdr : C.bdr2}`, color:selectMode ? C.accent : C.text3, transition:'all .25s cubic-bezier(.2,0,0,1)' }}>
-            <CheckSquare size={11}/>{selectMode ? `Select (${selectedIds.size})` : 'Select'}
-          </button>
+      <div className="flex h-8 shrink-0 items-center justify-between border-b border-line bg-surface px-3">
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant={selectMode ? 'solid' : 'quiet'}
+            onClick={() => { setSelectMode(!selectMode); setSelectedIds(new Set()); }}
+            icon={<CheckSquare size={11}/>}>
+            {selectMode ? `Select (${selectedIds.size})` : 'Select'}
+          </Button>
           {selectMode && selectedIds.size > 0 && (
-            <button onClick={() => setSelectedIds(new Set())}
-              style={{ fontSize:11, color:C.text3, padding:'3px 7px', borderRadius:5, border:`1px solid ${C.bdr2}`, background:C.surf2, cursor:'pointer' }}>
-              ✕ Clear
-            </button>
+            <Button size="sm" variant="quiet" onClick={() => setSelectedIds(new Set())}>
+              Clear
+            </Button>
           )}
         </div>
-        <span style={{ fontSize:11, color:C.text3 }}>{photos.length} photos</span>
+        <span className="t-num text-xs text-ink-3">{photos.length} photos</span>
       </div>
 
-      {/* Grid */}
-      <div style={{ flex:1, overflow:'auto', background:C.bg, padding:10 }}>
-        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(180px, 1fr))', gap:6 }}>
+      {/* Contact sheet.
+       *
+       * Rows are a fixed height with each frame taking its NATURAL width. The
+       * previous grid forced `aspectRatio:'3/2'` with `objectFit:'cover'`, which
+       * silently re-cropped every vertical, 4:3 and in-camera square in the
+       * library — so the composition being judged was not the one that was shot.
+       * In a tool whose entire job is judging composition that is a correctness
+       * bug, not a style one.
+       *
+       * The right edge is ragged rather than flush: true justification needs each
+       * image's dimensions to solve row widths, and the client doesn't have them
+       * without a load pass. Preserving aspect is the part that matters. */}
+      <div className="flex-1 overflow-auto bg-ground p-2">
+        <div className="flex flex-wrap gap-1">
           {photos.map(p => {
             const isChecked = selectedIds.has(p.id);
             const isUsed    = usedPaths.has(p.path);
             const isCurrent = p.id === selId && !selectMode;
+            const rule      = gradeRule(p.grade);
+            const isWeak    = gradeKey(p.grade) === 'weak';
+            const isPending = gradeKey(p.grade) === 'pending';
             return (
               <button key={p.id} onClick={() => selectMode ? toggleSelect(p.id) : onSelect(p.id)}
-                style={{
-                  position:'relative', display:'flex', flexDirection:'column',
-                  background:'transparent', borderRadius:4, overflow:'hidden', cursor:'pointer',
-                  outline: isChecked ? `2px solid ${C.accent}` : isCurrent ? `2px solid rgba(255,255,255,.5)` : `2px solid transparent`,
-                  outlineOffset:1, padding:0, border:'none', transition:'outline .2s ease',
-                  contentVisibility:'auto', containIntrinsicSize:'180px 120px',
-                }}>
-                <div style={{ position:'relative', width:'100%', aspectRatio:'3/2', background:C.surf2, overflow:'hidden' }}>
+                className={cn(
+                  'group relative flex cursor-pointer flex-col border-0 bg-transparent p-0',
+                  'rounded-sm outline outline-2 outline-offset-1 transition-[outline-color] duration-fast ease',
+                  isChecked ? 'outline-mark' : isCurrent ? 'outline-ink' : 'outline-transparent',
+                )}
+                style={{ contentVisibility: 'auto', containIntrinsicSize: '180px 150px' }}>
+                <span className="relative block overflow-hidden bg-well" style={{ height: 132 }}>
                   <img src={thumbUrl(p.path)} alt="" decoding="async" loading="lazy"
-                    style={{ width:'100%', height:'100%', objectFit:'cover', display:'block', opacity: selectMode && !isChecked ? 0.55 : 1, transition:'opacity .15s' }}/>
+                    className={cn(
+                      'block h-full w-auto max-w-none transition-opacity duration-fast ease',
+                      // Weak frames physically sink — the cheapest high-value
+                      // scanning affordance in the whole design.
+                      isWeak && 'opacity-reject',
+                      selectMode && !isChecked && 'opacity-reject',
+                    )}/>
                   {selectMode && (
-                    <div style={{ position:'absolute', top:6, left:6, width:16, height:16, borderRadius:4, background:isChecked ? C.accent : 'rgba(0,0,0,.6)', border:`1.5px solid ${isChecked ? C.accent : 'rgba(255,255,255,.4)'}`, display:'flex', alignItems:'center', justifyContent:'center', transition:'all .25s cubic-bezier(.2,0,0,1)' }}>
-                      {isChecked && <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20,6 9,17 4,12"/></svg>}
-                    </div>
+                    <span className={cn(
+                      'absolute left-1 top-1 flex h-4 w-4 items-center justify-center rounded-sm border',
+                      'transition-colors duration-fast ease',
+                      isChecked ? 'border-mark bg-mark' : 'border-ink-2 bg-well',
+                    )}>
+                      {isChecked && <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke={T.well} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20,6 9,17 4,12"/></svg>}
+                    </span>
                   )}
                   {isUsed && (
-                    <div style={{ position:'absolute', top:5, right:5, background:'rgba(0,0,0,.75)', backdropFilter:'blur(4px)', borderRadius:3, padding:'1px 5px', display:'flex', alignItems:'center', gap:2 }}>
-                      <Flag size={7} style={{ color:C.accent, flexShrink:0 }}/>
-                      <span style={{ fontSize:9, fontWeight:700, color:C.accent }}>USED</span>
-                    </div>
+                    <span className="t-label absolute right-1 top-1 rounded-sm bg-well px-1 !text-ink-2">
+                      Used
+                    </span>
                   )}
-                  {p.grade !== 'Pending' && p.score > 0 && (
-                    <div style={{ position:'absolute', bottom:5, left:5,
-                      background:'rgba(0,0,0,.68)', backdropFilter:'blur(8px)',
-                      borderRadius:5, padding:'3px 7px', display:'flex', alignItems:'center', gap:4,
-                      border:`1px solid ${gc(p.grade)}44`, pointerEvents:'none' }}>
-                      <div style={{ width:6, height:6, borderRadius:'50%', background:gc(p.grade), flexShrink:0 }}/>
-                      {p.has_annotations && (
-                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke={C.accent} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink:0 }}>
-                          <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
-                        </svg>
-                      )}
-                    </div>
-                  )}
-                </div>
-                <div style={{ padding:'4px 6px', background:isChecked ? `oklch(64% .19 248 / .1)` : isCurrent ? C.surf3 : C.surf, display:'flex', alignItems:'center', gap:4 }}>
-                  <span style={{ fontSize:10.5, color:isChecked ? C.accent : C.text2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', fontFamily:"'SF Mono',monospace", flex:1 }}>
+                </span>
+
+                {/* The machine's verdict: a rule in a fixed position, so runs of
+                    Strong align into bands down the sheet and read without being
+                    read. Mid shows nothing — silence is "no opinion". */}
+                <span aria-hidden className={cn('block w-full', isPending && 'hatch-pending')}
+                      style={{ height: 'var(--rule)', background: rule ?? undefined }}/>
+
+                <span className={cn(
+                  'flex items-center gap-1 px-1 py-px',
+                  isCurrent ? 'bg-raised' : 'bg-surface',
+                )}>
+                  <span className={cn('t-num flex-1 truncate text-left text-xs',
+                                      isWeak ? 'text-ink-4' : 'text-ink-3')}>
                     {(p.path.split(/[\\/]/).pop() ?? '').replace(/\.[^.]+$/, '')}
                   </span>
                   {p.stars > 0 && (
-                    <div style={{ display:'flex', gap:1, flexShrink:0, marginLeft:4 }}>
-                      {[1,2,3,4,5].map(n => (
-                        <svg key={n} width="7" height="7" viewBox="0 0 24 24"
-                          fill={n <= p.stars ? 'oklch(70% .18 72)' : 'none'}
-                          stroke={n <= p.stars ? 'oklch(70% .18 72)' : C.text3} strokeWidth="2">
-                          <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26"/>
-                        </svg>
-                      ))}
-                    </div>
+                    <span className="shrink-0 leading-none" title={`${p.stars} of 5`}>
+                      <svg width="8" height="8" viewBox="0 0 24 24" fill={T.mark} stroke={T.mark} strokeWidth="2">
+                        <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26"/>
+                      </svg>
+                    </span>
                   )}
-                </div>
+                  {p.stars > 0 && <span className="t-num shrink-0 text-xs text-mark-ink">{p.stars}</span>}
+                  {p.has_annotations && <AnnotatedMark/>}
+                  {!isPending && p.score > 0 && (
+                    <span className={cn('t-num shrink-0 text-xs', isWeak ? 'text-ink-4' : 'text-ink-2')}>
+                      {formatScore(p.score)}
+                    </span>
+                  )}
+                </span>
               </button>
             );
           })}
         </div>
       </div>
 
-      {/* Selection action bar */}
+      {/* Selection actions. Floats over the sheet, so it is the one surface that
+          earns real elevation rather than a border. */}
       {selectMode && selectedIds.size > 0 && (
-        <div style={{ position:'absolute', bottom:16, left:'50%', transform:'translateX(-50%)', display:'flex', alignItems:'center', gap:10, background:C.surf, border:`1px solid ${C.bdr2}`, borderRadius:12, padding:'10px 18px', boxShadow:'0 8px 40px rgba(0,0,0,.7)', backdropFilter:'blur(12px)', zIndex:50, whiteSpace:'nowrap', animation:'slideUp .3s cubic-bezier(.2,0,0,1)' }}>
-          <span style={{ fontSize:14, fontWeight:700, color:C.text }}>{selectedIds.size} selected</span>
-          <div style={{ width:1, height:16, background:C.bdr2 }}/>
-          <button onClick={onCreateSequence}
-            style={{ display:'flex', alignItems:'center', gap:6, padding:'6px 14px', borderRadius:8, background:C.accent, border:'none', color:'#fff', fontSize:13, fontWeight:700, cursor:'pointer' }}>
-            <Layers size={11}/> Start Sequence
-          </button>
-          <button onClick={onAutoSequence}
-            style={{ display:'flex', alignItems:'center', gap:6, padding:'6px 14px', borderRadius:8, background:C.surf2, border:`1px solid ${C.bdr2}`, color:C.text2, fontSize:13, fontWeight:600, cursor:'pointer' }}>
-            <RefreshCw size={11}/> Auto
-          </button>
+        <div className="animate-fade-in absolute bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 whitespace-nowrap rounded-md border border-line-strong bg-surface px-4 py-2 shadow-lg">
+          <span className="text-sm text-ink">
+            <span className="t-num">{selectedIds.size}</span> selected
+          </span>
+          <div className="h-4 w-px bg-line-strong"/>
+          <Button variant="solid" onClick={onCreateSequence} icon={<Layers size={11}/>}>
+            Start sequence
+          </Button>
+          <Button onClick={onAutoSequence} icon={<RefreshCw size={11}/>}>
+            Auto
+          </Button>
         </div>
       )}
     </div>
@@ -881,6 +885,9 @@ export default function App() {
   const [listLoading,  setListLoading]  = useState(false);
   const [gradeProgress, setGradeProgress] = useState(0);
   const [gradeDesc,     setGradeDesc]     = useState("");
+  // Encoder quality tier chosen for this run ("Fast" | "Balanced" | "Pro").
+  // Deliberately a plain quality word — never a model name.
+  const [gradeQuality,  setGradeQuality]  = useState("");
   const [gradeStartMs,  setGradeStartMs]  = useState<number | null>(null);
   const [gradeEtaSecs,  setGradeEtaSecs]  = useState<number | null>(null);
   const [toast,      setToast]      = useState<{msg: string; type: "success"|"error"|"info"} | null>(null);
@@ -1177,7 +1184,7 @@ export default function App() {
             }
           }
         } catch (e: any) {
-          modelError = e?.message ?? 'Network error — is Ollama running?';
+          modelError = e?.message ?? 'Could not reach the writing engine. Start Ollama, then try again.';
         }
         if (modelError) {
           console.error('[pull] Error downloading', model, ':', modelError);
@@ -1319,14 +1326,14 @@ export default function App() {
       try {
         const res = await axios.post(`${API}/api/list-folder`, { folder_path: sanitizePath(folder) });
         const rawPhotos: {path:string;exif:any}[] = res.data.photos || res.data.paths?.map((p: string) => ({path:p,exif:{}})) || [];
-        if (!rawPhotos.length) notify("No images found in selected folder", "info");
+        if (!rawPhotos.length) notify("That folder has no images in it", "info");
         const ps = rawPhotos.map((p, i) => ({ id:`p-${i}`, path:p.path, grade:'Pending', score:0, breakdown:{}, critique:'', reasoning_log:'', is_verified:false, stars:0, exif:p.exif||{} }));
         setPhotos(ps);
         setFolders([folder]);
         setSelId(ps[0]?.id ?? null);
         setMainTab('gallery');
         setLoupeMode('grid');
-      } catch (err: any) { notify(`❌ ${err.response?.data?.detail || "Failed to list photos"}`, "error"); }
+      } catch (err: any) { notify(`${err.response?.data?.detail || "Could not read that folder"}`, "error"); }
       finally { setListLoading(false); }
     };
     load();
@@ -1609,7 +1616,7 @@ export default function App() {
       const n = applyCatalog(r.data);
       setLoupeMode('grid');
       setCatalogBanner(false);
-      notify(`✅ Resumed — ${n} photos from ${savedFolders.length} folder${savedFolders.length !== 1 ? 's' : ''}`, 'success');
+      notify(`Resumed — ${n} photos from ${savedFolders.length} folder${savedFolders.length !== 1 ? 's' : ''}`, 'success');
     } catch { notify('Failed to resume session', 'error'); }
   }, [notify, applyCatalog]);
 
@@ -1626,7 +1633,7 @@ export default function App() {
         return [...prev, ...added];
       });
       setFolders(prev => prev.includes(newFolder) ? prev : [...prev, newFolder]);
-      notify(`✅ Added ${rawPhotos.length} photos from ${newFolder.split(/[\\/]/).pop()}`, 'success');
+      notify(`Added ${rawPhotos.length} photos from ${newFolder.split(/[\\/]/).pop()}`, 'success');
     } catch { notify('❌ Failed to add folder', 'error'); }
     finally { setListLoading(false); }
   }, [notify]);
@@ -1647,13 +1654,13 @@ export default function App() {
     try {
       const r = await axios.get(`${API}/api/pick-folder`);
       if (r.data?.path) { setFolder(r.data.path); setPhotos([]); setSelId(null); }
-    } catch { notify("Could not open folder picker.", "error"); }
+    } catch { notify("Could not open the folder picker. Paste a folder path instead.", "error"); }
   }, [notify]);
 
   /* grade — uses SSE stream so large folders never time out */
   const handleGrade = useCallback(async (forceRescan = false, skipModal = false) => {
     const safePath = sanitizePath(folder);
-    if (!safePath && folders.length === 0) { notify("Paste a valid folder path first.", "error"); return; }
+    if (!safePath && folders.length === 0) { notify("Enter a folder path, or use Open folder to browse.", "error"); return; }
     if (!skipModal) {
       const photoCount = photos.length > 0 ? photos.length : 0;
       setPreGradeModal({ photoCount });
@@ -1710,7 +1717,13 @@ export default function App() {
           let msg: any;
           try { msg = JSON.parse(line.slice(6)); } catch { continue; }
           if (msg.progress !== undefined) setGradeProgress(msg.progress);
-          if (msg.desc)                   setGradeDesc(msg.desc);
+          if (msg.desc) {
+            // "Quality: Pro" is a one-off banner, not a stage — show it in the
+            // badge rather than letting it flicker through the stage line.
+            const q = /^Quality:\s*(.+)$/.exec(msg.desc);
+            if (q) setGradeQuality(q[1].trim()); else setGradeDesc(msg.desc);
+          }
+          if (msg.quality) setGradeQuality(String(msg.quality));
           if (msg.error) throw new Error(msg.error);
           if (msg.done) {
             const ps = msg.data.map((p: any, i: number) => ({ ...p, id: `p-${i}` }));
@@ -1741,7 +1754,7 @@ export default function App() {
             const mogcoErr  = msg.mogco_error
               ? ` · Sequence: ${msg.mogco_error}`
               : '';
-            if (msg.mogco_error) notify(`⚠️ ${msg.mogco_error}`, 'error');
+            if (msg.mogco_error) notify(`${msg.mogco_error}`, 'error');
             // Transparency: report which grader actually ran, and warn (don't hide)
             // when Deep Grade was requested but silently fell back to Fast (SigLIP)
             // because there wasn't enough free RAM to load the vision model.
@@ -1749,9 +1762,9 @@ export default function App() {
             const _usedDeep = _graders.has('qwen');
             setGraderUsed(scanMode ? 'scan' : _usedDeep ? 'deep' : 'fast');
             if (deepGrade && !scanMode && !_usedDeep) {
-              notify('⚠️ Deep Grade fell back to Fast (SigLIP) — not enough free RAM to load the vision model. Close some apps and re-grade for full accuracy.', 'error');
+              notify('⚠️ Deep Grade fell back to Fast — not enough free memory for the deep analysis. Close some apps and re-grade for full accuracy.', 'error');
             }
-            notify(`✅ Graded ${msg.total} images${mogcoNote}${mogcoErr}`, 'success');
+            notify(`Graded ${msg.total} images${mogcoNote}${mogcoErr}`, 'success');
             axios.post(`${API}/api/recommend`, { photos: msg.data })
               .then(rec => setNicheRec(rec.data))
               .catch(() => {});
@@ -1773,12 +1786,12 @@ export default function App() {
         if (n > 0) {
           setMainTab('gallery');
           setLoupeMode('grid');
-          notify(`⚠️ Grading stopped early — recovered ${n} graded photo${n !== 1 ? 's' : ''} from the last checkpoint.`, 'error');
+          notify(`Grading stopped early — recovered ${n} graded photo${n !== 1 ? 's' : ''} from the last checkpoint.`, 'error');
         } else {
           notify(isStall ? '❌ No response from the grader — it may be stalled. Check the server log and retry.' : `❌ ${msg}`, 'error');
         }
       } catch {
-        notify(`❌ ${msg}`, 'error');
+        notify(`${msg}`, 'error');
       }
     }
     setLoading(false);
@@ -1791,7 +1804,7 @@ export default function App() {
       .filter(p => p.grade !== 'Pending')
       .filter(p => seqMinStars === 0 || (p.stars ?? 0) >= seqMinStars);
     const filterNote = seqMinStars > 0 ? ` rated ${seqMinStars}★+` : '';
-    if (pool.length < 5) { notify(`Need 5+ graded images${filterNote} for a sequence`, 'error'); return; }
+    if (pool.length < 5) { notify(`A sequence needs at least 5 graded photos${filterNote}. Grade more, or clear the filter.`, 'error'); return; }
     setLoading(true);
     try {
       const res = await axios.post(`${API}/api/generate`, { photos: pool, seed: Math.floor(Math.random()*999999), avoid_paths: carousel.map((c: any) => c.path) });
@@ -1800,7 +1813,7 @@ export default function App() {
       setSubjType(d.subject_type ?? null);
       setMainTab('gallery');
       notify('✅ Sequence generated', 'success');
-    } catch (err: any) { notify(`❌ ${err.response?.data?.detail || "Failed"}`, "error"); }
+    } catch (err: any) { notify(`${err.response?.data?.detail || "Could not build the sequence"}`, "error"); }
     setLoading(false);
   }, [photos, carousel, notify]);
 
@@ -1822,8 +1835,8 @@ export default function App() {
     try {
       await axios.post(`${API}/api/save-sequence`, { name, sequence: carousel });
       setSaved(prev => [...prev, { name, sequence: carousel }]);
-      notify(`✅ Saved as "${name}"`, 'success');
-    } catch (err: any) { notify(`❌ ${err.response?.data?.detail || "Failed"}`, 'error'); }
+      notify(`Saved as "${name}"`, 'success');
+    } catch (err: any) { notify(`${err.response?.data?.detail || "Could not save the sequence"}`, 'error'); }
   };
 
   const handleDeleteSaved = useCallback((idx: number) => {
@@ -1876,14 +1889,14 @@ export default function App() {
             if (ok === 0 && outputs.length === 0) {
               notify('Creative Direction ran but produced no outputs.', 'info');
             } else {
-              notify(`✅ Creative Direction — ${ok}/${outputs.length} images styled`, 'success');
+              notify(`Styled ${ok} of ${outputs.length} photos`, 'success');
             }
             break outer;
           }
         }
       }
     } catch (err: any) {
-      notify(`❌ Creative Direction failed: ${err.message || err}`, 'error');
+      notify(`Could not style the photos. ${err.message || err}`, 'error');
     } finally {
       setCreativeLoading(false);
       setCreativeProgress(0);
@@ -1903,13 +1916,13 @@ export default function App() {
       });
       const data = await resp.json();
       if (data.ok) {
-        notify(`Sequence saved — ${data.count} images in ${data.story_dir.split(/[\\/]/).pop()}`, 'success');
+        notify(`Saved ${data.count} photos to ${data.story_dir.split(/[\\/]/).pop()}`, 'success');
         setUsedCount(data.used_total ?? 0);
       } else {
-        notify(`Save failed: ${data.error}`, 'error');
+        notify(`Could not save. ${data.error}`, 'error');
       }
     } catch (err: any) {
-      notify(`Save error: ${err.message}`, 'error');
+      notify(`Could not save. ${err.message}`, 'error');
     } finally {
       setSequenceSaving(false);
     }
@@ -1924,7 +1937,7 @@ export default function App() {
         notify('History cleared — all photos eligible again', 'success');
       }
     } catch (err: any) {
-      notify(`Clear failed: ${err.message}`, 'error');
+      notify(`Could not clear. ${err.message}`, 'error');
     }
   }, [notify]);
 
@@ -1942,7 +1955,7 @@ export default function App() {
       await axios.post(`${API}/api/flags/${type}`, { path });
       const setter = type === 'lock' ? setLocked : setUsed;
       setter(prev => { const n = new Set(prev); n.has(path) ? n.delete(path) : n.add(path); return n; });
-    } catch (err: any) { notify(`❌ ${err.response?.data?.detail || `Failed to toggle ${type}`}`, 'error'); }
+    } catch (err: any) { notify(`${err.response?.data?.detail || `Failed to toggle ${type}`}`, 'error'); }
   }, [notify]);
 
   const handleDragEnd = (e: any) => {
@@ -2105,18 +2118,24 @@ export default function App() {
 
   if (!backendReady) {
     return (
-      <div style={{ position:'fixed', inset:0, background:'#0e0e13', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:20 }}>
+      <div className="fixed inset-0 flex flex-col items-center justify-center gap-4 bg-ground">
         {backendError ? (
           <>
-            <span style={{ fontSize:28 }}>⚠️</span>
-            <span style={{ fontSize:14, color:'#e05', letterSpacing:'.05em', textAlign:'center', maxWidth:340 }}>
-              Could not connect to the backend.<br/>
-              <span style={{ color:'#888', fontSize:12 }}>Make sure the app is running correctly and try again.</span>
-            </span>
-            <button onClick={() => { setBackendError(false); window.location.reload(); }}
-              style={{ marginTop:8, padding:'6px 18px', borderRadius:6, border:'1px solid #333', background:'#1a1a22', color:'#aaa', cursor:'pointer', fontSize:13 }}>
+            {/* An error explains what happened and what to do next. The previous
+                version showed a ⚠️ over "Make sure the app is running correctly",
+                which tells someone staring at a stopped app precisely nothing. */}
+            <p className="t-label !text-alarm-crit">Not connected</p>
+            <p className="max-w-[38ch] text-center text-sm text-ink">
+              FrameGrade can't reach its engine, so nothing can be graded yet.
+            </p>
+            <p className="max-w-[42ch] text-center text-xs text-ink-3">
+              It usually means the engine is still starting. Give it a few seconds and retry —
+              if it keeps failing, close the app completely and open it again.
+            </p>
+            <Button className="mt-2" variant="solid"
+              onClick={() => { setBackendError(false); window.location.reload(); }}>
               Retry
-            </button>
+            </Button>
           </>
         ) : (
           <>
@@ -2169,8 +2188,8 @@ export default function App() {
         // Model load state chips — gemma3:4b and qwen2.5vl:3b
         const VLM_TARGETS = ["gemma3:4b", "qwen2.5vl:3b"] as const;
         const MODEL_DISPLAY: Record<string, string> = {
-          "gemma3:4b":    "Spatial Judge",
-          "qwen2.5vl:3b": "Vision Eye",
+          "gemma3:4b":    "Scene reader",
+          "qwen2.5vl:3b": "Photo reader",
         };
         const modelChips = VLM_TARGETS.map(target => {
           const found = ollamaPs.find(m => m.name === target || m.name.startsWith(target.split(":")[0] + ":"));
@@ -2195,18 +2214,16 @@ export default function App() {
             display:'flex', alignItems:'center', gap:10, flexWrap:'wrap',
             boxShadow: isOffline ? '0 2px 8px oklch(0% 0 0 / .25)' : 'none',
           }}>
-            <span style={{ fontSize: isOffline ? 16 : 14, flexShrink:0 }}>
-              {isOffline ? '🔴' : '⚠'}
-            </span>
+            <span className="h-1 w-1 shrink-0 rounded-full" style={{ background: 'currentColor' }}/>
             {isOffline ? (
               <span style={{ flex:1, minWidth:0 }}>
-                <strong>Ollama is offline.</strong>{' '}
-                Jury Critique, Creative Director, and photo annotations are unavailable.{' '}
-                <span style={{ fontWeight:400, opacity:.85 }}>Start Ollama to enable AI features.</span>
+                <strong>The writing engine isn't running.</strong>{' '}
+                Grading still works. Written critiques, the creative director, and photo
+                annotations are unavailable until you start Ollama.
               </span>
             ) : (
               <span style={{ flex:1, minWidth:0 }}>
-                {missingOllama.length > 0 && <>Missing vision engines: <strong>{missingOllama.map(m => MODEL_DISPLAY[m] ?? m).join(", ")}</strong>{missingGguf.length > 0 ? " · " : ""}</>}
+                {missingOllama.length > 0 && <>Not installed yet: <strong>{missingOllama.map(m => MODEL_DISPLAY[m] ?? m).join(", ")}</strong>{missingGguf.length > 0 ? " · " : ""}</>}
                 {missingGguf.length > 0 && <>Missing local file{missingGguf.length > 1 ? "s" : ""}: <strong>{missingGguf.join(", ")}</strong> — place manually in <code style={{ fontSize:11 }}>models/</code></>}
               </span>
             )}
@@ -2472,10 +2489,10 @@ export default function App() {
               <input type="checkbox" checked={deepGrade} onChange={e => setDeepGrade(e.target.checked)}
                 style={{ marginTop:2, cursor:'pointer', accentColor:C.accent }} />
               <div>
-                <div style={{ fontSize:13, fontWeight:600, color:C.text }}>Deep Grade (Qwen VLM)</div>
+                <div style={{ fontSize:13, fontWeight:600, color:C.text }}>Deep grade</div>
                 <div style={{ fontSize:11, color:C.text3, marginTop:2, lineHeight:1.4 }}>
-                  Off: fast SigLIP zero-shot grading — light on GPU/RAM, recommended.
-                  On: a vision-language model reads each photo (more nuanced, slower, heavier GPU use).
+                  Off: fast grading — light on memory, recommended.
+                  On: each photo is read in detail (more nuanced, slower, heavier on memory).
                 </div>
               </div>
             </label>
@@ -2522,35 +2539,34 @@ export default function App() {
       )}
 
       {/* ── Header ─────────────────────────────────────────────── */}
-      <header style={{ display:'flex', alignItems:'center', gap:8, padding:'0 14px', height:44, flexShrink:0, background:C.surf, borderBottom:`1px solid ${C.border}` }}>
+      <header className="flex h-8 shrink-0 items-center gap-2 border-b border-line bg-surface px-3">
 
-        <button onClick={openBrowser}
-          title="Open folder"
-          style={{ display:'flex', alignItems:'center', gap:6, padding:'0 10px', height:30, borderRadius:7, fontSize:13, fontWeight:600, cursor:'pointer', flexShrink:0, background:'transparent', border:`1px solid ${C.bdr2}`, color:C.text3 }}>
-          <FolderOpen size={13}/>
-          {photos.length > 0 ? (folders.length > 1 ? `${folders.length} folders` : folder.split(/[\\/]/).pop()) : 'Open Folder'}
-        </button>
+        <Button onClick={openBrowser} title="Open folder" icon={<FolderOpen size={13}/>}>
+          {photos.length > 0 ? (folders.length > 1 ? `${folders.length} folders` : folder.split(/[\\/]/).pop()) : 'Open folder'}
+        </Button>
         {photos.length > 0 && (
-          <button onClick={openAddFolder}
-            title="Add another folder"
-            style={{ display:'flex', alignItems:'center', gap:5, padding:'0 10px', height:30, borderRadius:7, fontSize:13, fontWeight:600, cursor:'pointer', flexShrink:0, background:'transparent', border:`1px solid ${C.bdr2}`, color:C.text3 }}>
-            <span style={{ fontSize:16, lineHeight:1 }}>+</span>
-            Add Folder
-          </button>
+          <Button onClick={openAddFolder} title="Add another folder" variant="quiet"
+            icon={<span className="text-md leading-none">+</span>}>
+            Add folder
+          </Button>
         )}
 
-        <div style={{ flex:1 }}/>
+        <div className="flex-1"/>
 
         {/* Preset — hidden; value retained for grading logic */}
 
-        {/* Vision Engine download progress chip */}
+        {/* Model download. Progress is carried by a luminance fill behind the
+            label rather than a coloured badge — it is informational, not an
+            alarm, so it stays in the neutral register. */}
         {graderStatus?.qwen_download_pct != null && (
-          <div style={{ display:'flex', alignItems:'center', gap:7, flexShrink:0, padding:'0 10px', height:26, borderRadius:5, fontSize:12, fontWeight:600, border:'1px solid oklch(52% .18 55 / .5)', color:'oklch(78% .15 55)', background:'oklch(18% .08 55 / .4)', overflow:'hidden', position:'relative' }}>
-            {/* Animated fill */}
-            <div style={{ position:'absolute', left:0, top:0, bottom:0, width:`${graderStatus.qwen_download_pct}%`, background:'oklch(52% .18 55 / .18)', transition:'width .8s cubic-bezier(.2,0,0,1)' }}/>
-            <div style={{ width:6, height:6, borderRadius:'50%', background:'oklch(70% .18 55)', flexShrink:0, animation:'pulse 1.5s ease-in-out infinite', position:'relative' }}/>
-            <span style={{ position:'relative' }}>Downloading {graderStatus.qwen_download_pct}%</span>
-          </div>
+          <span className="relative inline-flex h-6 shrink-0 items-center gap-1 overflow-hidden rounded-sm border border-line-strong bg-surface px-2 text-ink-2">
+            <span
+              className="absolute inset-y-0 left-0 bg-raised-hover transition-[width] duration-slow ease"
+              style={{ width: `${graderStatus.qwen_download_pct}%` }}
+            />
+            <span className="t-label relative !text-ink-3">Model</span>
+            <span className="t-num relative text-xs">{graderStatus.qwen_download_pct}%</span>
+          </span>
         )}
 
         {/* Grader mode indicator */}
@@ -2566,12 +2582,8 @@ export default function App() {
                         isClip     ? 'Fast contact-sheet pass — style matching only' :
                         'No grading run yet';
           if (isIdle) return null;
-          return (
-            <div title={tip} style={{ display:'flex', alignItems:'center', gap:5, flexShrink:0, padding:'0 9px', height:26, borderRadius:5, fontSize:12, fontWeight:600, border:`1px solid ${C.bdr2}`, color:C.text3, background:C.surf2 }}>
-              <div style={{ width:6, height:6, borderRadius:'50%', background:dot, flexShrink:0 }}/>
-              {label}
-            </div>
-          );
+          void dot; // grader mode is informational, so it stays neutral
+          return <Chip label={label} title={tip} />;
         })()}
 
         {/* GPU / CPU compute chip */}
@@ -2588,19 +2600,16 @@ export default function App() {
           const tip = isGpu
             ? [gpuName, vramStr].filter(Boolean).join(' · ')
             : 'Models running on CPU — no CUDA GPU detected or VRAM too low';
-          const label = isGpu ? 'GPU' : 'CPU';
-          const chipBg     = isGpu ? 'oklch(18% .10 145 / .5)' : 'oklch(25% .10 55 / .5)';
-          const chipBorder = isGpu ? 'oklch(46% .16 145 / .5)' : 'oklch(52% .18 55 / .4)';
-          const chipColor  = isGpu ? 'oklch(74% .18 145)' : 'oklch(80% .16 55)';
-          const dotColor   = isGpu ? '#22c55e' : '#f59e0b';
+          // GPU is the expected state, so it is silent. Falling back to CPU is
+          // the case worth flagging: it means a run will be far slower.
           return (
-            <div title={tip} style={{ display:'flex', alignItems:'center', gap:5, flexShrink:0, padding:'0 9px', height:26, borderRadius:5, fontSize:12, fontWeight:700, border:`1px solid ${chipBorder}`, color:chipColor, background:chipBg }}>
-              <div style={{ width:6, height:6, borderRadius:'50%', background:dotColor, flexShrink:0 }}/>
-              {label}
-              {vramStr && isGpu && (
-                <span style={{ fontWeight:400, opacity:.75, fontSize:11 }}>{vramStr}</span>
-              )}
-            </div>
+            <Chip
+              label={isGpu ? 'GPU' : 'CPU'}
+              title={tip}
+              tone={isGpu ? 'neutral' : 'warn'}
+              numeric={isGpu}
+              value={isGpu && free != null ? `${free.toFixed(1)} GB` : undefined}
+            />
           );
         })()}
 
@@ -2608,133 +2617,100 @@ export default function App() {
         {(sysRam || graderStatus) && (() => {
           const r = ramReadiness(sysRam ?? graderStatus);
           if (r.level === 'unknown') return null;
-          const palette = {
-            clear:    { bg:'oklch(18% .10 145 / .5)', border:'oklch(46% .16 145 / .5)', color:'oklch(74% .18 145)', dot:'#22c55e' },
-            tight:    { bg:'oklch(25% .10 55 / .5)',  border:'oklch(52% .18 55 / .4)',  color:'oklch(80% .16 55)',  dot:'#f59e0b' },
-            critical: { bg:'oklch(25% .12 25 / .5)',  border:'oklch(52% .20 25 / .5)',  color:'oklch(78% .18 25)',  dot:'#ef4444' },
-          }[r.level]!;
-          return (
-            <div title={r.tip} style={{ display:'flex', alignItems:'center', gap:5, flexShrink:0, padding:'0 9px', height:26, borderRadius:5, fontSize:12, fontWeight:700, border:`1px solid ${palette.border}`, color:palette.color, background:palette.bg }}>
-              <div style={{ width:6, height:6, borderRadius:'50%', background:palette.dot, flexShrink:0 }}/>
-              RAM
-              <span style={{ fontWeight:400, opacity:.75, fontSize:11 }}>{r.readout}</span>
-            </div>
-          );
+          // The one chip that has genuinely earned its colour on this machine:
+          // two culls died tonight when free memory fell under the encoder's
+          // load floor. Clear stays neutral so tight and critical actually read.
+          const tone = ({ clear: 'neutral', tight: 'warn', critical: 'crit' } as const)[r.level];
+          return <Chip label="RAM" title={r.tip} tone={tone} numeric value={r.readout} />;
         })()}
 
-        {/* Grade filter pills — only after grading */}
+        {/* Grade filters. Mid carries a neutral dot rather than its own hue,
+            matching the grid: Strong is marked, Weak is dimmed, Mid is silence. */}
         {isDone && (
-          <div style={{ display:'flex', alignItems:'center', gap:3, flexShrink:0, animation:'fadeIn .32s cubic-bezier(.2,0,0,1)' }}>
-            {([['Strong', picks, C.strong] as const, ['Mid', mids, C.mid] as const, ['Weak', rejects, C.weak] as const]).map(([label, count, col]) => {
-              const active = filterGrade === label;
-              return (
-                <button key={label}
-                  onClick={() => setFilterGrade(active ? null : label)}
-                  style={{ display:'flex', alignItems:'center', gap:5, padding:'0 9px', height:26, borderRadius:5, fontSize:13, fontWeight:600,
-                    cursor:'pointer', border:'none', outline:'none',
-                    background: active ? `${col}22` : 'transparent',
-                    boxShadow: active ? `0 0 0 1px ${col}66` : `0 0 0 1px ${C.bdr2}`,
-                    color: active ? col : C.text3,
-                    transition:'all .22s cubic-bezier(.2,0,0,1)' }}>
-                  <div style={{ width:6, height:6, borderRadius:'50%', background:col, flexShrink:0 }}/>
-                  {label}
-                  <span style={{ fontWeight:400, opacity:.7 }}>{count}</span>
-                </button>
-              );
-            })}
-          </div>
+          <Segmented
+            className="animate-fade-in"
+            value={filterGrade as 'Strong' | 'Mid' | 'Weak' | null}
+            onChange={(v) => setFilterGrade(filterGrade === v ? null : v)}
+            options={[
+              { value: 'Strong', label: 'Strong', count: picks,   dot: T.gradeStrong },
+              { value: 'Mid',    label: 'Mid',    count: mids,    dot: T.ink4 },
+              { value: 'Weak',   label: 'Weak',   count: rejects, dot: T.gradeWeak },
+            ]}
+          />
         )}
 
         {isDone && graderUsed && (
-          <div
+          <Chip
+            label={graderUsed === 'deep' ? 'Deep' : graderUsed === 'scan' ? 'Scan' : 'Fast'}
             title={graderUsed === 'deep'
-              ? 'Deep Grade: the Qwen vision model read each photo (highest accuracy).'
+              ? 'Deep grade: each photo was read in detail (highest accuracy).'
               : graderUsed === 'scan'
-              ? 'Scan pass: SigLIP zero-shot only, technical scoring skipped (fastest).'
-              : 'Fast grade: SigLIP zero-shot + TOPIQ. Enable Deep Grade (and free RAM) for the vision model.'}
-            aria-label={`Graded in ${graderUsed === 'deep' ? 'Deep' : graderUsed === 'scan' ? 'Scan' : 'Fast'} mode`}
-            style={{ display:'flex', alignItems:'center', gap:5, padding:'0 9px', height:26, borderRadius:5,
-              fontSize:11.5, fontWeight:700, flexShrink:0, cursor:'default',
-              color: graderUsed === 'deep' ? C.accent : C.text3,
-              boxShadow: `0 0 0 1px ${graderUsed === 'deep' ? `${C.accent}66` : C.bdr2}` }}>
-            {graderUsed === 'deep' ? '◆ Deep' : graderUsed === 'scan' ? '⚡ Scan' : '⚡ Fast'}
-          </div>
+              ? 'Scan pass: quick look only, technical scoring skipped (fastest).'
+              : 'Fast grade: standard quality scoring. Turn on Deep Grade (and free memory) for the detailed read.'}
+          />
         )}
 
-        {isDone && <div style={{ width:1, height:18, background:C.bdr2, flexShrink:0 }}/>}
+        {isDone && <div className="h-4 w-px shrink-0 bg-line-strong"/>}
 
-        {/* Score sort button */}
         {isDone && (
-          <button onClick={() => setSortScore(s => s === null ? 'desc' : s === 'desc' ? 'asc' : null)}
-            title={sortScore === 'desc' ? 'Sorted: Strong → Weak' : sortScore === 'asc' ? 'Sorted: Weak → Strong' : 'Sort by score'}
-            style={{ display:'flex', alignItems:'center', gap:4, padding:'0 9px', height:26, borderRadius:5, cursor:'pointer', fontSize:12, fontWeight:600, flexShrink:0, transition:'all .25s cubic-bezier(.2,0,0,1)',
-              background: sortScore ? C.surf3 : 'transparent',
-              border: `1px solid ${sortScore ? C.aBdr : C.bdr2}`,
-              color: sortScore ? C.accent : C.text3 }}>
-            {sortScore === 'desc' ? <ArrowDown size={11}/> : sortScore === 'asc' ? <ArrowUp size={11}/> : <ArrowUpDown size={11}/>}
+          <Button
+            variant={sortScore ? 'solid' : 'quiet'}
+            onClick={() => setSortScore(s => s === null ? 'desc' : s === 'desc' ? 'asc' : null)}
+            title={sortScore === 'desc' ? 'Sorted: Strong to Weak' : sortScore === 'asc' ? 'Sorted: Weak to Strong' : 'Sort by score'}
+            icon={sortScore === 'desc' ? <ArrowDown size={11}/> : sortScore === 'asc' ? <ArrowUp size={11}/> : <ArrowUpDown size={11}/>}
+          >
             Score
-          </button>
+          </Button>
         )}
 
-        {isDone && <div style={{ width:1, height:18, background:C.bdr2, flexShrink:0 }}/>}
+        {isDone && <div className="h-4 w-px shrink-0 bg-line-strong"/>}
 
-        {/* Tab switcher: Gallery / Sequence / Duplicates / Director */}
-        {(() => {
+        {/* Main views. Counts sit in the segment rather than inside the label
+            string, so they render in tabular figures and the tab stops resizing
+            as duplicates are resolved. */}
+        {isDone && (() => {
           const dupCount = redacted.size > 0
             ? redacted.size
             : photos.filter(p => p.cluster_id >= 0 && !(p.sim_flag||'').includes('Best')).length;
-          const tabs: [string, string, React.ReactNode][] = [
-            ...(isDone ? [
-              ['gallery',    'Gallery',                                  <LayoutGrid size={11}/>],
-              ['duplicates', dupCount > 0 ? `Duplicates (${dupCount})` : 'Duplicates', <ImageOff size={11}/>],
-              ['creative', `Creative${creativeResults.length ? ` (${creativeResults.filter((r:any)=>r.success).length})` : ''}`, <Wand2 size={11}/>],
-            ] as [string,string,React.ReactNode][] : []),
-          ];
+          const madeCount = creativeResults.filter((r:any)=>r.success).length;
           return (
-            <div style={{ display:'flex', background:C.bg, borderRadius:6, border:`1px solid ${C.bdr2}`, overflow:'hidden', flexShrink:0, animation:'fadeIn .32s cubic-bezier(.2,0,0,1)' }}>
-              {tabs.map(([id, label, icon], ti) => (
-                <button key={id} onClick={() => { setMainTab(id as "gallery"|"duplicates"|"creative"); if (id === 'gallery') setLoupeMode('loupe'); }}
-                  style={{ display:'flex', alignItems:'center', gap:5, padding:'0 11px', height:30, cursor:'pointer',
-                    fontWeight:600, fontSize:13,
-                    background: mainTab === id ? C.surf3 : 'transparent',
-                    color: mainTab === id ? C.text : C.text3,
-                    borderRight: ti < tabs.length - 1 ? `1px solid ${C.bdr2}` : 'none',
-                    border:'none', outline:'none', transition:'background .22s ease, color .22s ease',
-                  }}>
-                  {icon}{label}
-                </button>
-              ))}
-            </div>
+            <Segmented
+              className="animate-fade-in"
+              value={mainTab}
+              onChange={(id) => { setMainTab(id); if (id === 'gallery') setLoupeMode('loupe'); }}
+              options={[
+                { value: 'gallery',    label: 'Gallery',    icon: <LayoutGrid size={11}/> },
+                { value: 'duplicates', label: 'Duplicates', icon: <ImageOff size={11}/>,
+                  count: dupCount > 0 ? dupCount : undefined },
+                { value: 'creative',   label: 'Creative',   icon: <Wand2 size={11}/>,
+                  count: madeCount > 0 ? madeCount : undefined },
+              ]}
+            />
           );
         })()}
 
-        {/* Loupe / Grid — only in gallery tab */}
         {isDone && mainTab === 'gallery' && (
-          <div style={{ display:'flex', background:C.bg, borderRadius:6, border:`1px solid ${C.bdr2}`, overflow:'hidden', flexShrink:0 }}>
-            {([['loupe', <RectangleHorizontal size={12}/>, 'E'] as const, ['grid', <LayoutGrid size={12}/>, 'G'] as const]).map(([m, icon, key]) => (
-              <button key={m} title={`${m==='loupe'?'Loupe':'Grid'} (${key})`} onClick={() => setLoupeMode(m)}
-                style={{ display:'flex', alignItems:'center', justifyContent:'center', width:32, height:30, cursor:'pointer',
-                  background: loupeMode===m ? C.surf3 : 'transparent',
-                  color: loupeMode===m ? C.text : C.text3,
-                  borderRight: m==='loupe' ? `1px solid ${C.bdr2}` : 'none',
-                  border:'none', transition:'all .22s cubic-bezier(.2,0,0,1)' }}>
-                {icon}
-              </button>
-            ))}
-          </div>
+          <Segmented
+            iconOnly
+            value={loupeMode}
+            onChange={setLoupeMode}
+            options={[
+              { value: 'loupe', icon: <RectangleHorizontal size={12}/>, title: 'Loupe (E)' },
+              { value: 'grid',  icon: <LayoutGrid size={12}/>,          title: 'Grid (G)' },
+            ]}
+          />
         )}
 
-        {/* Export */}
         {isDone && (
-          <button onClick={() => setExportModal(true)}
-            style={{ display:'flex', alignItems:'center', gap:5, padding:'0 10px', height:30, borderRadius:7, fontSize:13, fontWeight:600, cursor:'pointer', flexShrink:0, background:C.aLow, border:`1px solid ${C.aBdr}`, color:C.accent }}>
-            <Download size={11}/> Export
-          </button>
+          <Button onClick={() => setExportModal(true)} icon={<Download size={11}/>}>
+            Export
+          </Button>
         )}
 
-        {/* Sort Files button — appears after grading */}
         {isDone && (
-          <button
+          <Button
+            icon={<ArrowUpDown size={11}/>}
+            title="Move files on disk into Strong / Mid / Weak folders"
             onClick={async () => {
               try {
                 const res = await axios.post(`${API}/api/manage/sort-files`, {
@@ -2742,88 +2718,84 @@ export default function App() {
                   gallery: photos,
                   copy: false,
                 });
-                notify(`✅ Sorted ${res.data.moved} files into Strong / Mid / Weak`, 'success');
+                notify(`Sorted ${res.data.moved} files into Strong / Mid / Weak`, 'success');
               } catch (err: any) {
-                notify(`❌ Sort failed: ${err?.response?.data?.detail ?? err.message}`, 'error');
+                notify(`Could not sort the files. ${err?.response?.data?.detail ?? err.message}`, 'error');
               }
             }}
-            style={{ display:'flex', alignItems:'center', gap:5, padding:'0 10px', height:30,
-              borderRadius:7, fontSize:13, fontWeight:600, cursor:'pointer', flexShrink:0,
-              background:C.surf2, border:`1px solid ${C.bdr2}`, color:C.text2 }}>
-            <ArrowUpDown size={11}/> Sort Files
-          </button>
+          >
+            Sort files
+          </Button>
         )}
 
-        {/* Scan mode toggle */}
+        {/* Scan mode. Active state is a luminance step, not a hue — the warm
+            colour belongs to the photographer's marks. */}
         {!isGrading && (
-          <button
+          <Button
+            variant={scanMode ? 'solid' : 'quiet'}
             onClick={() => setScanMode(v => !v)}
             title={scanMode
-              ? 'Low-Latency Scan: 1.5B drafts all shots, 7B Architect reviews top 20% only. Click to switch to Full.'
-              : 'Full: 7B Architect reviews any shot where draft confidence ≤ 0.85. Click to switch to Scan.'}
-            style={{
-              display:'flex', alignItems:'center', gap:5, padding:'0 10px', height:30,
-              borderRadius:7, fontSize:12, fontWeight:600, cursor:'pointer', flexShrink:0,
-              background: scanMode ? 'oklch(72% .18 65 / .15)' : C.surf2,
-              border:`1px solid ${scanMode ? 'oklch(72% .18 65 / .45)' : C.bdr2}`,
-              color: scanMode ? 'oklch(72% .18 65)' : C.text3,
-              transition:'background .25s ease, border-color .25s ease, color .25s ease',
-            }}>
-            <Zap size={11} fill={scanMode ? 'currentColor' : 'none'}/>
+              ? 'Scan pass: a quick look at every frame, technical scoring skipped. Click for the full grade.'
+              : 'Full grade: quality scoring on every frame. Click for the faster scan pass.'}
+            icon={<Zap size={11} fill={scanMode ? 'currentColor' : 'none'}/>}
+          >
             Scan
-          </button>
+          </Button>
         )}
 
-        {/* Grade button */}
+        {/* Grade. The primary action, but still not accent-coloured: emphasis
+            comes from the filled surface and its position at the end of the bar.
+            The old pulse animation is gone — a control that throbs at you while
+            you are trying to look at photographs is noise. */}
         {isGrading ? (
-          <div style={{ display:'flex', alignItems:'center', gap:8, padding:'0 12px', height:30, borderRadius:7, background:C.surf2, border:`1px solid ${C.bdr2}`, flexShrink:0, minWidth:190 }}>
-            {/* Percent bar */}
-            <div style={{ flex:1, height:4, background:C.surf3, borderRadius:2, overflow:'hidden' }}>
-              <div style={{ height:'100%', width:`${Math.max(2, gradeProgress * 100)}%`, background:`linear-gradient(90deg,${C.accent},oklch(70% .19 205))`, borderRadius:2, transition:'width .4s cubic-bezier(.2,0,0,1)' }}/>
+          <div className="flex h-6 min-w-[180px] shrink-0 items-center gap-2 rounded-sm border border-line-strong bg-raised px-2">
+            <div className="h-px flex-1 overflow-hidden rounded-sm bg-well" style={{ height: 3 }}>
+              <div
+                className="h-full bg-ink-3 transition-[width] duration-slow ease"
+                style={{ width: `${Math.max(2, gradeProgress * 100)}%` }}
+              />
             </div>
-            <span style={{ fontSize:11, fontWeight:700, color:C.accent, fontVariantNumeric:'tabular-nums', flexShrink:0 }}>
+            <span className="t-num shrink-0 text-xs text-ink">
               {Math.round(gradeProgress * 100)}%
             </span>
             {gradeEtaSecs !== null && gradeEtaSecs > 3 && (
-              <span style={{ fontSize:11, color:C.text3, flexShrink:0, fontVariantNumeric:'tabular-nums' }}>
-                ~{gradeEtaSecs >= 60 ? `${Math.floor(gradeEtaSecs / 60)}m ${gradeEtaSecs % 60}s` : `${gradeEtaSecs}s`}
+              <span className="t-num shrink-0 text-xs text-ink-3">
+                {gradeEtaSecs >= 60 ? `${Math.floor(gradeEtaSecs / 60)}m ${gradeEtaSecs % 60}s` : `${gradeEtaSecs}s`}
               </span>
             )}
           </div>
         ) : (
-          <button onClick={() => handleGrade(true, false)}
-            title="Grade all images (force fresh scores)"
-            style={{
-              display:'flex', alignItems:'center', gap:6, padding:'0 14px', height:30,
-              borderRadius:7, flexShrink:0, fontSize:13, fontWeight:700, cursor:'pointer',
-              background: isDone ? C.surf2 : (scanMode ? 'oklch(72% .18 65)' : C.accent),
-              border:`1px solid ${isDone ? C.bdr2 : 'transparent'}`,
-              color: isDone ? C.text2 : '#fff',
-              animation: !isDone ? 'pulse 2.8s ease-in-out infinite' : 'none',
-            }}>
-            {scanMode ? <Zap size={12} fill="currentColor"/> : <Sparkles size={12}/>}
+          <Button
+            variant="solid"
+            onClick={() => handleGrade(true, false)}
+            title="Grade every image, replacing existing scores"
+            icon={scanMode ? <Zap size={12} fill="currentColor"/> : <Sparkles size={12}/>}
+          >
             {isDone ? (scanMode ? 'Re-scan' : 'Re-grade') : (scanMode ? 'Scan' : 'Grade')}
-          </button>
+          </Button>
         )}
       </header>
 
-      {/* Progress bar + slogan */}
-      <div style={{ flexShrink:0 }}
+      {/* Progress. A plain ink bar — no gradient. A two-stop gradient sweeping
+          across a progress bar is decoration that says nothing the width isn't
+          already saying, and it sits directly above the photographs. */}
+      <div className="shrink-0"
         role={isGrading ? "progressbar" : undefined}
         aria-label={isGrading ? "Grading progress" : undefined}
         aria-valuenow={isGrading ? Math.round(gradeProgress * 100) : undefined}
         aria-valuemin={isGrading ? 0 : undefined}
         aria-valuemax={isGrading ? 100 : undefined}
         aria-valuetext={isGrading && gradeDesc ? gradeDesc : undefined}>
-        <div style={{ height:2, background:C.border, overflow:'hidden', position:'relative' }}>
+        <div className="relative overflow-hidden bg-line" style={{ height: 'var(--rule)' }}>
           {listLoading && (
-            <div style={{ position:'absolute', top:0, height:'100%', background:`linear-gradient(90deg,transparent,${C.accent},transparent)`, animation:'sweep 1.2s ease-in-out infinite' }}/>
+            <div className="absolute top-0 h-full animate-sweep bg-ink-3"/>
           )}
           {!listLoading && isGrading && (
-            <div style={{ height:'100%', width:`${Math.max(4, gradeProgress * 100)}%`, background:`linear-gradient(90deg,${C.accent},oklch(70% .19 205))`, transition:'width .35s cubic-bezier(.2,0,0,1)' }}/>
+            <div className="h-full bg-ink-2 transition-[width] duration-slow ease"
+                 style={{ width: `${Math.max(4, gradeProgress * 100)}%` }}/>
           )}
           {!listLoading && !isGrading && isDone && (
-            <div style={{ height:'100%', width:'100%', background:`linear-gradient(90deg,${C.accent},oklch(70% .19 205))` }}/>
+            <div className="h-full w-full bg-grade-strong"/>
           )}
         </div>
         {isGrading && gradeDesc && (() => {
@@ -2835,7 +2807,20 @@ export default function App() {
           return (
             <div key={toSlogan(gradeDesc)} style={{ padding:'3px 14px 4px', fontSize:10.5, color:C.text3, fontStyle:'italic', borderBottom:`1px solid ${C.border}`, animation:'fadeIn .4s cubic-bezier(.2,0,0,1)', display:'flex', gap:8, alignItems:'baseline', justifyContent:'space-between' }}>
               <span>{toSlogan(gradeDesc)}</span>
-              {_count && <span style={{ fontStyle:'normal', fontVariantNumeric:'tabular-nums', color:C.text2, fontWeight:700, flexShrink:0 }}>{_count}</span>}
+              <span style={{ display:'flex', gap:8, alignItems:'baseline', flexShrink:0 }}>
+                {/* Quality tier actually used for this run. The app picks the
+                    best encoder that fits available memory, so this can differ
+                    run to run — showing it explains why speed/results vary. */}
+                {gradeQuality && (
+                  <span title={`Analysis quality for this run: ${gradeQuality}`}
+                        style={{ fontStyle:'normal', fontSize:9, letterSpacing:.4, textTransform:'uppercase',
+                                 color:C.text2, border:`1px solid ${C.border}`, borderRadius:3,
+                                 padding:'1px 5px', fontWeight:700 }}>
+                    {gradeQuality}
+                  </span>
+                )}
+                {_count && <span style={{ fontStyle:'normal', fontVariantNumeric:'tabular-nums', color:C.text2, fontWeight:700 }}>{_count}</span>}
+              </span>
             </div>
           );
         })()}
@@ -2858,61 +2843,69 @@ export default function App() {
         })()}
       </div>
 
-      {/* ── Star filter bar ────────────────────────────────────── */}
+      {/* ── Rating filter ──────────────────────────────────────────
+       * Star ratings are the photographer's own judgement, so this is one of
+       * the few bars allowed to show the warm mark colour. */}
       {mainTab === 'gallery' && isDone && (
-        <div style={{ flexShrink:0, display:'flex', alignItems:'center', gap:10, padding:'0 14px', height:34, background:C.surf, borderBottom:`1px solid ${C.border}` }}>
-          <span style={{ fontSize:11, fontWeight:700, color:C.text3, textTransform:'uppercase', letterSpacing:'.08em', flexShrink:0 }}>Rating</span>
-          <div style={{ display:'flex', gap:3 }}>
+        <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line bg-surface px-3">
+          <span className="t-label shrink-0">Rating</span>
+          <div className="flex gap-1">
             {[1,2,3,4,5].map(n => {
-              const count = starCounts[n];
               const active = filterStars === n;
               return (
                 <button key={n} onClick={() => setFilterStars(active ? null : n)}
-                  style={{ display:'flex', alignItems:'center', gap:5, padding:'3px 9px', borderRadius:5, cursor:'pointer', transition:'all .25s cubic-bezier(.2,0,0,1)',
-                    background: active ? 'oklch(70% .18 72 / .14)' : 'transparent',
-                    border: `1px solid ${active ? 'oklch(70% .18 72 / .5)' : C.bdr2}` }}>
-                  <div style={{ display:'flex', gap:1.5 }}>
+                  title={`${n} star${n > 1 ? 's' : ''}`}
+                  className={cn(
+                    'flex cursor-pointer items-center gap-1 rounded-sm border px-2 py-px',
+                    'transition-colors duration-fast ease',
+                    active
+                      ? 'border-mark bg-raised'
+                      : 'border-line-strong bg-transparent hover:bg-raised',
+                  )}>
+                  <span className="flex gap-px">
                     {[1,2,3,4,5].map(s => (
-                      <svg key={s} width="8" height="8" viewBox="0 0 24 24"
-                        fill={s <= n ? 'oklch(70% .18 72)' : 'none'}
-                        stroke={s <= n ? 'oklch(70% .18 72)' : C.text3} strokeWidth="2">
+                      <svg key={s} width="8" height="8" viewBox="0 0 24 24" strokeWidth="2"
+                        fill={s <= n ? T.mark : 'none'}
+                        stroke={s <= n ? T.mark : T.ink4}>
                         <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26"/>
                       </svg>
                     ))}
-                  </div>
-                  <span style={{ fontSize:11, fontWeight:700, color: active ? 'oklch(70% .18 72)' : C.text3, minWidth:10, textAlign:'center' }}>{count}</span>
+                  </span>
+                  <span className={cn('t-num min-w-2 text-center text-xs',
+                                      active ? 'text-mark-ink' : 'text-ink-3')}>
+                    {starCounts[n]}
+                  </span>
                 </button>
               );
             })}
           </div>
-          <div style={{ width:1, height:14, background:C.bdr2, flexShrink:0 }}/>
-          <button onClick={() => setFilterStars(filterStars === 0 ? null : 0)}
-            style={{ display:'flex', alignItems:'center', gap:5, padding:'3px 9px', borderRadius:5, cursor:'pointer', transition:'all .25s cubic-bezier(.2,0,0,1)',
-              background: filterStars === 0 ? `${C.surf3}` : 'transparent',
-              border: `1px solid ${filterStars === 0 ? C.bdr2 : C.bdr2}`, color: filterStars === 0 ? C.text2 : C.text3, fontSize:11, fontWeight:600 }}>
-            Unrated <span style={{ color:C.text3, marginLeft:2 }}>{starCounts[0]}</span>
-          </button>
+
+          <div className="h-4 w-px shrink-0 bg-line-strong"/>
+
+          <Button size="sm" variant={filterStars === 0 ? 'solid' : 'quiet'}
+            onClick={() => setFilterStars(filterStars === 0 ? null : 0)}>
+            Unrated <span className="t-num ml-1 opacity-70">{starCounts[0]}</span>
+          </Button>
+
           {filterStars !== null && (
-            <button onClick={() => setFilterStars(null)}
-              style={{ fontSize:11, color:C.text3, padding:'2px 6px', borderRadius:4, border:`1px solid ${C.bdr2}`, background:C.surf2, cursor:'pointer', marginLeft:2 }}>
-              ✕ Clear
-            </button>
+            <Button size="sm" variant="quiet" onClick={() => setFilterStars(null)}>Clear</Button>
           )}
+
           {redacted.size > 0 && (
             <>
-              <div style={{ width:1, height:14, background:C.bdr2, flexShrink:0 }}/>
-              <button onClick={() => setShowDuplicates(v => !v)}
+              <div className="h-4 w-px shrink-0 bg-line-strong"/>
+              <Button size="sm" variant={showDuplicates ? 'solid' : 'quiet'}
+                onClick={() => setShowDuplicates(v => !v)}
                 title={showDuplicates ? 'Hide duplicate shots' : 'Show duplicate shots'}
-                style={{ display:'flex', alignItems:'center', gap:5, padding:'3px 9px', borderRadius:5, cursor:'pointer', transition:'all .25s cubic-bezier(.2,0,0,1)',
-                  background: showDuplicates ? 'oklch(58% .18 18 / .14)' : 'transparent',
-                  border: `1px solid ${showDuplicates ? 'oklch(58% .18 18 / .45)' : C.bdr2}`,
-                  color: showDuplicates ? 'oklch(58% .18 18)' : C.text3, fontSize:11, fontWeight:600 }}>
-                <Copy size={10}/>
-                Dupes <span style={{ marginLeft:2 }}>{redacted.size}</span>
-              </button>
+                icon={<Copy size={10}/>}>
+                Dupes <span className="t-num ml-1 opacity-70">{redacted.size}</span>
+              </Button>
             </>
           )}
-          <span style={{ marginLeft:'auto', fontSize:11, color:C.text3 }}>{filteredPhotos.length} shown</span>
+
+          <span className="ml-auto text-xs text-ink-3">
+            <span className="t-num">{filteredPhotos.length}</span> shown
+          </span>
         </div>
       )}
 
@@ -2941,30 +2934,35 @@ export default function App() {
             {(loupeMode === 'loupe' || photos.length === 0) && (<>
 
             {/* Center preview */}
-            <div style={{ flex:1, background:'#060609', display:'flex', alignItems:'center', justifyContent:'center', overflow:'hidden', position:'relative', minHeight:0, minWidth:0 }}>
+            {/* The stage. `bg-well` is the one place near-black is correct —
+                it sits directly behind a photograph, where a lighter surround
+                would wash out the image being judged. */}
+            <div className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden bg-well">
               {photos.length === 0 ? (
-                <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:12 }}>
+                <div className="flex flex-col items-center gap-3">
                   <button
                     onClick={openBrowser}
-                    style={{
-                      display:'flex', flexDirection:'column', alignItems:'center', gap:16,
-                      padding:'48px 64px', borderRadius:16, cursor:'pointer', background:'transparent',
-                      border:`2px dashed ${dragOver ? '#3b82f6' : C.border}`,
-                      transition:'all .28s cubic-bezier(.2,0,0,1)', outline:'none',
-                    }}>
-                    <FolderOpen size={48} strokeWidth={1.25} style={{ color: dragOver ? '#3b82f6' : C.text3, transition:'color .28s ease' }}/>
-                    <span style={{ fontSize:20, fontWeight:500, color: dragOver ? '#3b82f6' : C.text2, transition:'color .28s ease' }}>
-                      Drop a folder of street photos here to start
+                    className={cn(
+                      'flex cursor-pointer flex-col items-center gap-4 rounded-md border-2 border-dashed',
+                      'bg-transparent px-8 py-8 transition-colors duration-slow ease',
+                      dragOver ? 'border-ink text-ink' : 'border-line-strong text-ink-3 hover:border-ink-4',
+                    )}>
+                    <FolderOpen size={40} strokeWidth={1.25} className="text-current"/>
+                    <span className={cn('text-lg', dragOver ? 'text-ink' : 'text-ink-2')}>
+                      Drop a folder of photos here
                     </span>
-                    <span style={{ fontSize:13, fontWeight:400, color: C.text3 }}>
-                      50–100 photos recommended for your first run
+                    <span className="text-sm text-ink-3">
+                      50 to 100 photos is a good first run
                     </span>
                   </button>
                   {catalogBanner && (
-                    <div style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 18px', background:C.surf2, border:`1px solid ${C.bdr2}`, borderRadius:10 }}>
-                      <span style={{ fontSize:13, color:C.text2 }}>Resume last session?</span>
-                      <button onClick={handleResume} style={{ padding:'4px 14px', fontSize:13, fontWeight:600, background:C.accent, color:'#fff', border:'none', borderRadius:7, cursor:'pointer' }}>Resume</button>
-                      <button onClick={() => { axios.post(`${API}/api/catalog/clear`); setCatalogBanner(false); }} style={{ padding:'4px 10px', fontSize:13, color:C.text3, background:'transparent', border:`1px solid ${C.bdr2}`, borderRadius:7, cursor:'pointer' }}>Discard</button>
+                    <div className="flex items-center gap-3 rounded-sm border border-line-strong bg-surface px-4 py-2">
+                      <span className="text-sm text-ink-2">Pick up where you left off?</span>
+                      <Button variant="solid" size="sm" onClick={handleResume}>Resume</Button>
+                      <Button size="sm" variant="quiet"
+                        onClick={() => { axios.post(`${API}/api/catalog/clear`); setCatalogBanner(false); }}>
+                        Start fresh
+                      </Button>
                     </div>
                   )}
                 </div>
@@ -3447,26 +3445,33 @@ export default function App() {
                 </div>
               )}
 
-              {/* Tabs */}
+              {/* Panel tabs. The active tab is marked by an ink underline and a
+                  luminance step, not the accent — warm is reserved for marks. */}
               {sel && (
-                <div style={{ flexShrink:0, display:'flex', borderBottom:`1px solid ${C.border}` }}>
+                <div className="flex shrink-0 border-b border-line" role="tablist">
                   {(isDone
                     ? [['breakdown','Breakdown'],['analysis','Analysis'],['exif','EXIF']]
                     : [['exif','EXIF']]
-                  ).map(([id, label], mapIdx, arr) => (
-                    <>
-                      <button key={id}
-                        onClick={() => setInfoTab(id as any)}
-                        style={{ flex:1, height:34, fontSize:11.5, fontWeight:600, cursor:'pointer', background:'none', border:'none', borderBottom:`2px solid ${infoTab===id ? C.accent : 'transparent'}`, color:infoTab===id ? C.accent : C.text3, transition:'all .25s cubic-bezier(.2,0,0,1)', letterSpacing:'.03em', marginBottom:-1 }}>
-                        {label}
-                      </button>
-                    </>
+                  ).map(([id, label]) => (
+                    <button key={id}
+                      role="tab"
+                      aria-selected={infoTab === id}
+                      onClick={() => setInfoTab(id as any)}
+                      className={cn(
+                        '-mb-px h-6 flex-1 cursor-pointer border-0 border-b-2 bg-transparent',
+                        'text-sm font-medium transition-colors duration-fast ease',
+                        infoTab === id
+                          ? 'border-ink text-ink'
+                          : 'border-transparent text-ink-3 hover:bg-raised hover:text-ink-2',
+                      )}>
+                      {label}
+                    </button>
                   ))}
                 </div>
               )}
 
               {/* Panel body */}
-              <div style={{ flex:1, overflowY:'auto', padding:14 }}>
+              <div className="flex-1 overflow-y-auto p-4">
                 {infoTab === 'exif' && (
                   sel
                     ? <ExifBlock exif={sel.exif ?? {}}/>
@@ -3501,7 +3506,7 @@ export default function App() {
                         });
                         setDeepCritique(r.data);
                       } catch {
-                        setDeepCritique({ narrative_arc: 'Critique unavailable — is Ollama running?', geometry_composition: '' });
+                        setDeepCritique({ narrative_arc: 'The writing engine isn’t running, so no critique could be written. Grading and scores are unaffected.', geometry_composition: '' });
                       } finally {
                         setDeepCritiqueLoading(false);
                       }
@@ -3686,7 +3691,7 @@ export default function App() {
                               style={{ display:'flex', alignItems:'center', gap:6, padding:'7px 14px', borderRadius:7, background:C.surf2, border:`1px solid ${C.bdr2}`, color:C.text2, fontSize:12, fontWeight:700, cursor: juryLoading ? 'wait' : 'pointer', alignSelf:'flex-start' }}>
                               {juryLoading
                                 ? <><span style={{ width:10, height:10, borderRadius:'50%', border:`1.5px solid ${C.accent}`, borderTopColor:'transparent', animation:'spin .8s linear infinite', display:'inline-block' }}/> Generating…</>
-                                : <><Wand2 size={11}/> Jury Critique</>}
+                                : <><Wand2 size={11}/> Write a critique</>}
                             </button>
                           </div>
                         )}
@@ -3998,11 +4003,11 @@ export default function App() {
 
                       // ── Telemetry Tags ─────────────────────────────────────────
                       const _ARCH_TAG: Record<string,{ icon:string; detail:string }> = {
-                        geo:    { icon:'📐', detail:'Leading Lines / Symmetrical Geometry' },
-                        layer:  { icon:'👥', detail:'Layered Depth — Foreground + Background' },
-                        night:  { icon:'🌙', detail:'Night / Low-Key — Chiaroscuro' },
-                        messy:  { icon:'⚡', detail:'Raw Street Energy' },
-                        maxdoc: { icon:'📰', detail:'Dense Documentary Coverage' },
+                        geo:    { icon:'', detail:'Leading lines and symmetry' },
+                        layer:  { icon:'', detail:'Layered depth, foreground against background' },
+                        night:  { icon:'', detail:'Night and low light, deep shadow' },
+                        messy:  { icon:'', detail:'Raw street energy' },
+                        maxdoc: { icon:'', detail:'Dense documentary coverage' },
                       };
                       const _teleTags: Array<{ key:string; label:string; icon:string; detail:string; dominant:boolean }> = [];
                       // Build per-image detail strings from actual aspect scores + archetype weight
@@ -4056,54 +4061,56 @@ export default function App() {
                       const _altName   = _altM ? _altM[1] : '';
 
                       return (
-                        <div style={{ display:'flex', flexDirection:'column', gap:14, animation:'fadeIn .32s cubic-bezier(.2,0,0,1)' }}>
+                        <div className="animate-fade-in flex flex-col gap-4">
 
                           {/* ── Burst Context ─────────────────────────────────── */}
                           {_isBurst && (
-                            <div style={{ padding:'10px 13px', borderRadius:8,
-                              background: _isPrimary ? `${C.strong}0d` : `${C.mid}0d`,
-                              border:`1px solid ${_isPrimary ? C.strong : C.mid}33` }}>
-                              <div style={{ fontSize:9.5, fontWeight:700, letterSpacing:'.10em', color:C.text3, marginBottom:5 }}>
-                                BURST SELECTION
-                              </div>
-                              <div style={{ display:'flex', alignItems:'baseline', gap:6, marginBottom:5 }}>
-                                <span style={{ fontSize:11.5, fontWeight:800, letterSpacing:'.04em',
-                                  color: _isPrimary ? C.strong : '#f5a623' }}>
-                                  {_isPrimary ? '★ Primary Pick' : '↩ Alternate'}
+                            <div className="rounded-sm border border-line bg-surface p-3">
+                              <p className="t-label mb-1">Burst selection</p>
+                              <div className="mb-1 flex items-baseline gap-2">
+                                <span className={cn('text-sm font-semibold',
+                                                    _isPrimary ? 'text-ink' : 'text-ink-2')}>
+                                  {_isPrimary ? 'Primary pick' : 'Alternate'}
                                 </span>
                                 {_isPrimary && _burstCnt > 0 && (
-                                  <span style={{ fontSize:10.5, color:C.text3 }}>of {_burstCnt} similar frames</span>
+                                  <span className="text-xs text-ink-3">
+                                    of <span className="t-num">{_burstCnt}</span> similar frames
+                                  </span>
                                 )}
                               </div>
-                              <p style={{ fontSize:11, color:C.text2, lineHeight:1.6, margin:0 }}>
+                              <p className="text-xs text-ink-2">
                                 {_isPrimary
-                                  ? 'Highest-scoring frame in this burst. Alternate frames scored lower on overall quality.'
-                                  : `${_altName || 'Another frame'} is the primary pick — scored higher. Compare before rejecting.`}
+                                  ? 'Highest-scoring frame in this burst. The others scored lower overall.'
+                                  : `${_altName || 'Another frame'} scored higher and is the primary pick. Compare before rejecting.`}
                               </p>
                             </div>
                           )}
 
-                          {/* ── Grade verdict ─────────────────────────────────── */}
-                          <div style={{ padding:'11px 13px', borderRadius:8,
-                            background:`${_gradeColor}0f`, border:`1px solid ${_gradeColor}33` }}>
-                            <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom: _gradeWhy ? 7 : 0 }}>
-                              <div style={{ width:9, height:9, borderRadius:'50%', background:_gradeColor, flexShrink:0 }}/>
-                              <span style={{ fontSize:13, fontWeight:800, letterSpacing:'.06em', color:_gradeColor }}>
-                                {_tier.toUpperCase()}
+                          {/* ── The verdict ───────────────────────────────────────
+                           * Score set as a typographic object rather than a badge
+                           * on a tinted panel: `.612` large, in mono, leading zero
+                           * dropped the way f/1.4 and 1/250 drop theirs. The grade
+                           * name sits under it as a quiet label, and the only
+                           * colour is the thin rule — the same rule used in the
+                           * contact sheet, so the two views speak one language. */}
+                          <div className="flex flex-col gap-2">
+                            <div className="flex items-baseline gap-3">
+                              <span className="t-num text-xl leading-none text-ink">
+                                {formatScore(sel?.score)}
                               </span>
+                              <span className="t-label">{gradeLabel(sel?.grade)}</span>
                             </div>
+                            <span aria-hidden className="block w-full"
+                                  style={{ height: 'var(--rule)',
+                                           background: gradeRule(sel?.grade) ?? T.line }}/>
                             {_gradeWhy && (
-                              <p style={{ fontSize:12, color:C.text2, lineHeight:1.65, margin:0 }}>
-                                {_gradeWhy}
-                              </p>
+                              <p className="text-sm text-ink-2">{_gradeWhy}</p>
                             )}
                           </div>
 
-                          {/* ── Qwen one-liner ────────────────────────────────── */}
+                          {/* ── Model one-liner ───────────────────────────────── */}
                           {qwenCritique && (
-                            <p style={{ fontSize:11.5, color:C.text3, lineHeight:1.7, margin:0,
-                              fontStyle:'italic', paddingLeft:10,
-                              borderLeft:`2px solid ${C.border}` }}>
+                            <p className="border-l-2 border-line-strong pl-3 text-sm text-ink-3">
                               {qwenCritique}
                             </p>
                           )}
@@ -4155,27 +4162,34 @@ export default function App() {
                             </div>
                           )}
 
-                          {/* ── Telemetry Tags ────────────────────────────────── */}
+                          {/* Visual language. The emoji that used to lead each row
+                              (📐 👥 🌙 ⚡ 📰) are gone — emoji as a category marker
+                              is decoration, and at 13px they read as clip-art next
+                              to the photograph they are describing. The dominant
+                              row is marked by a rule and brighter ink instead. */}
                           {_teleTags.length > 0 && (
-                            <div>
-                              <div style={{ display:'flex', alignItems:'baseline', gap:8, marginBottom:8 }}>
-                                <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:'.09em',
-                                  textTransform:'uppercase', color:C.text3 }}>Visual Language</span>
-                                <span style={{ fontSize:9.5, color:C.text3, opacity:.6 }}>— the photographic tradition this frame is working in</span>
+                            <div className="flex flex-col gap-2">
+                              <div>
+                                <p className="t-label">Visual language</p>
+                                <p className="mt-px text-xs text-ink-3">
+                                  The photographic tradition this frame is working in.
+                                </p>
                               </div>
-                              <div style={{ display:'flex', flexDirection:'column', gap:5, marginTop:8 }}>
-                                {_teleTags.map(({ key, label, icon, detail, dominant }) => (
-                                  <div key={key} style={{ display:'flex', alignItems:'center', gap:9,
-                                    padding:'7px 11px', borderRadius:6,
-                                    background: dominant ? `${C.accent}12` : C.surf2,
-                                    border:`1px solid ${dominant ? C.accent + '40' : C.border}` }}>
-                                    <span style={{ fontSize:13, lineHeight:1, flexShrink:0 }}>{icon}</span>
-                                    <div style={{ flex:1, minWidth:0 }}>
-                                      <span style={{ fontSize:10, fontWeight:700, letterSpacing:'.06em',
-                                        color: dominant ? C.accent : C.text2,
-                                        textTransform:'uppercase' }}>{label}</span>
-                                      <span style={{ fontSize:10.5, color:C.text3, marginLeft:7 }}>{detail}</span>
-                                    </div>
+                              <div className="flex flex-col gap-1">
+                                {_teleTags.map(({ key, label, detail, dominant }) => (
+                                  <div key={key}
+                                    className={cn('flex items-baseline gap-2 rounded-sm border px-3 py-2',
+                                                  dominant
+                                                    ? 'border-line-strong bg-raised'
+                                                    : 'border-line bg-surface')}>
+                                    <span aria-hidden className="w-2 shrink-0 self-center"
+                                          style={{ height: 'var(--rule)',
+                                                   background: dominant ? T.ink2 : T.line }}/>
+                                    <span className={cn('t-label shrink-0',
+                                                        dominant ? '!text-ink' : '!text-ink-2')}>
+                                      {label}
+                                    </span>
+                                    <span className="min-w-0 flex-1 text-xs text-ink-3">{detail}</span>
                                   </div>
                                 ))}
                               </div>
@@ -4264,104 +4278,93 @@ export default function App() {
           const totalDups = groups.reduce((s, g) => s + g.rest.length, 0);
 
           return (
-            <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden', background:C.bg, minHeight:0 }}>
-              {/* Header */}
-              <div style={{ flexShrink:0, display:'flex', alignItems:'center', gap:10, padding:'8px 16px', borderBottom:`1px solid ${C.border}`, background:C.surf }}>
-                <span style={{ fontSize:14, fontWeight:700 }}>Similar Shots</span>
-                <span style={{ fontSize:12, color:C.text3 }}>{groups.length} group{groups.length!==1?'s':''} · {totalDups} alternates</span>
-                <div style={{ marginLeft:'auto' }}>
-                  <button onClick={() => setExportModal(true)}
-                    style={{ display:'flex', alignItems:'center', gap:5, padding:'0 10px', height:26, borderRadius:6, fontSize:12, fontWeight:600, cursor:'pointer', background:C.aLow, border:`1px solid ${C.aBdr}`, color:C.accent }}>
-                    <Download size={11}/> Export
-                  </button>
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-ground">
+              <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line bg-surface px-4">
+                <span className="text-md font-semibold text-ink">Similar shots</span>
+                <span className="text-xs text-ink-3">
+                  <span className="t-num">{groups.length}</span> group{groups.length!==1?'s':''}
+                  {' · '}<span className="t-num">{totalDups}</span> alternates
+                </span>
+                <div className="ml-auto">
+                  <Button size="sm" onClick={() => setExportModal(true)} icon={<Download size={11}/>}>
+                    Export
+                  </Button>
                 </div>
               </div>
 
-              {/* Flat grid — each group is a labeled section with auto-fill cells */}
-              <div style={{ flex:1, overflowY:'auto', padding:12, minHeight:0 }}>
+              <div className="min-h-0 flex-1 overflow-y-auto p-3">
                 {groups.map((g, gi) => {
-                  const bestDc = gc(g.best.grade);
+                  const bestRule = gradeRule(g.best.grade);
                   return (
-                    <div key={gi} style={{ marginBottom: gi < groups.length - 1 ? 20 : 0 }}>
+                    <div key={gi} className={cn(gi < groups.length - 1 && 'mb-6')}>
 
-                      {/* Minimal group label row */}
-                      <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
-                        <div style={{ width:6, height:6, borderRadius:'50%', background:bestDc, flexShrink:0 }}/>
-                        <span style={{ fontSize:11, fontWeight:700, color:C.text2 }}>
-                          {g.all.length} similar shots
+                      {/* Group label. The rule colour matches the winner's grade,
+                          so a burst whose best frame is only Mid reads as such
+                          before you look at a single thumbnail. */}
+                      <div className="mb-2 flex items-center gap-2">
+                        <span aria-hidden className="w-4 shrink-0"
+                              style={{ height: 'var(--rule)', background: bestRule ?? T.line }}/>
+                        <span className="t-label !text-ink-2">
+                          <span className="t-num">{g.all.length}</span> similar
                         </span>
-                        <span style={{ fontSize:10, color:C.text3 }}>
-                          best <span style={{ color:C.text, fontWeight:600 }}>{Math.round(g.best.score * 100)}</span>
+                        <span className="text-xs text-ink-3">
+                          best <span className="t-num text-ink">{formatScore(g.best.score)}</span>
                         </span>
-                        <div style={{ flex:1, height:1, background:C.border }}/>
-                        <button
-                          onClick={() => { setMainTab('gallery'); setSelId(g.best.id); setLoupeMode('loupe'); }}
-                          style={{ fontSize:10, color:C.accent, padding:'2px 8px', borderRadius:4,
-                            border:`1px solid ${C.aBdr}`, background:C.aLow, cursor:'pointer', fontWeight:600, flexShrink:0 }}>
+                        <div className="h-px flex-1 bg-line"/>
+                        <Button size="sm" variant="quiet"
+                          onClick={() => { setMainTab('gallery'); setSelId(g.best.id); setLoupeMode('loupe'); }}>
                           Open best
-                        </button>
+                        </Button>
                       </div>
 
-                      {/* Auto-fill grid — same style as main gallery */}
-                      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(150px, 1fr))', gap:5 }}>
+                      {/* Frames keep native aspect here too. Comparing near-identical
+                          frames is the ENTIRE job of this screen, so cropping them all
+                          to the same rectangle destroyed the one difference — framing —
+                          you are here to judge. */}
+                      <div className="flex flex-wrap gap-1">
                         {g.all.map((p: any, pi: number) => {
                           const isBest = pi === 0;
-                          const dc     = gc(p.grade);
-                          const delta  = isBest ? null : Math.round((p.score - g.best.score) * 100);
+                          const delta  = isBest ? null : p.score - g.best.score;
                           const fname  = (p.path.split(/[\\/]/).pop() ?? '').replace(/\.[^.]+$/, '');
                           return (
                             <button key={p.id}
                               onClick={() => { setMainTab('gallery'); setSelId(p.id); setLoupeMode('loupe'); }}
-                              style={{ position:'relative', padding:0, border:'none', borderRadius:6,
-                                overflow:'hidden', cursor:'pointer', display:'flex', flexDirection:'column',
-                                background:C.surf,
-                                outline: isBest ? `2px solid ${bestDc}` : `1px solid ${C.border}`,
-                                outlineOffset: isBest ? -2 : -1,
-                                transition:'outline .15s ease' }}>
+                              className={cn(
+                                'flex cursor-pointer flex-col border-0 bg-surface p-0',
+                                'rounded-sm outline outline-2 outline-offset-1',
+                                'transition-[outline-color] duration-fast ease',
+                                isBest ? 'outline-ink' : 'outline-transparent hover:outline-line-strong',
+                              )}>
 
-                              {/* Image — cover fill, consistent 3:2 ratio */}
-                              <div style={{ position:'relative', width:'100%', aspectRatio:'3/2', overflow:'hidden' }}>
+                              <span className="relative block overflow-hidden bg-well" style={{ height: 116 }}>
                                 <img src={thumbUrl(p.path)} alt="" loading="lazy"
-                                  style={{ width:'100%', height:'100%', objectFit:'cover', display:'block',
-                                    opacity: isBest ? 1 : 0.8 }}/>
+                                  className={cn('block h-full w-auto max-w-none',
+                                                !isBest && 'opacity-reject')}/>
+                              </span>
 
-                                {/* Gradient scrim */}
-                                <div style={{ position:'absolute', inset:0, pointerEvents:'none',
-                                  background:'linear-gradient(to bottom, rgba(0,0,0,.5) 0%, transparent 35%, transparent 55%, rgba(0,0,0,.55) 100%)' }}/>
+                              {/* Best is marked by a rule, matching the contact sheet.
+                                  No scrim, no floating badges — nothing covers a frame
+                                  you are trying to compare. */}
+                              <span aria-hidden className="block w-full"
+                                    style={{ height: 'var(--rule)',
+                                             background: isBest ? (bestRule ?? T.ink3) : 'transparent' }}/>
 
-                                {/* BEST / ALT badge — top left */}
-                                <div style={{ position:'absolute', top:5, left:5, borderRadius:3,
-                                  padding:'1px 5px', fontSize:8, fontWeight:800, letterSpacing:'.05em',
-                                  background: isBest ? bestDc : 'rgba(0,0,0,.62)',
-                                  color: isBest ? '#000' : 'rgba(255,255,255,.75)' }}>
-                                  {isBest ? 'BEST' : 'ALT'}
-                                </div>
-
-                                {/* Score + delta — top right */}
-                                <div style={{ position:'absolute', top:5, right:5, borderRadius:3,
-                                  padding:'1px 5px', display:'flex', alignItems:'center', gap:3,
-                                  background:'rgba(0,0,0,.62)', backdropFilter:'blur(4px)' }}>
-                                  {delta !== null && (
-                                    <span style={{ fontSize:8, fontWeight:700,
-                                      color: delta < -10 ? '#f87171' : delta < 0 ? '#fbbf24' : '#86efac' }}>
-                                      {delta > 0 ? '+' : ''}{delta}
-                                    </span>
-                                  )}
-                                  <div style={{ width:4, height:4, borderRadius:'50%', background:dc }}/>
-                                  <span style={{ fontSize:9, fontWeight:800, color:'#fff', fontVariantNumeric:'tabular-nums' }}>
-                                    {Math.round(p.score * 100)}
-                                  </span>
-                                </div>
-                              </div>
-
-                              {/* Filename row — below image like gallery cells */}
-                              <div style={{ padding:'3px 6px', background: isBest ? C.surf3 : C.surf }}>
-                                <span style={{ fontSize:9.5, color: isBest ? C.text2 : C.text3,
-                                  overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap',
-                                  display:'block', fontFamily:"'SF Mono',monospace" }}>
+                              <span className="flex items-center gap-1 px-1 py-px">
+                                <span className={cn('t-num flex-1 truncate text-left text-xs',
+                                                    isBest ? 'text-ink-2' : 'text-ink-4')}>
                                   {fname}
                                 </span>
-                              </div>
+                                {delta !== null && (
+                                  <span className="t-num shrink-0 text-xs text-ink-4"
+                                        title="Score difference from the best frame">
+                                    {delta > 0 ? '+' : '−'}{formatScore(Math.abs(delta))}
+                                  </span>
+                                )}
+                                <span className={cn('t-num shrink-0 text-xs',
+                                                    isBest ? 'text-ink' : 'text-ink-3')}>
+                                  {formatScore(p.score)}
+                                </span>
+                              </span>
 
                             </button>
                           );
@@ -4373,9 +4376,12 @@ export default function App() {
                 })}
 
                 {groups.length === 0 && (
-                  <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', paddingTop:80, gap:10, color:C.text3 }}>
-                    <ImageOff size={32} strokeWidth={1}/>
-                    <p style={{ fontSize:14 }}>No duplicates detected.</p>
+                  <div className="flex flex-col items-center justify-center gap-3 pt-12 text-ink-3">
+                    <ImageOff size={28} strokeWidth={1}/>
+                    <p className="text-sm">No similar shots found.</p>
+                    <p className="max-w-[36ch] text-center text-xs text-ink-4">
+                      Bursts and near-duplicates appear here once a folder has been graded.
+                    </p>
                   </div>
                 )}
               </div>
@@ -4411,110 +4417,91 @@ export default function App() {
           const canGenerate = !creativeLoading && photos.length > 0 && engineHealth.status === 'online';
 
           return (
-          <div style={{ flex:1, display:'flex', overflow:'hidden', background:C.bg }}>
+          <div className="flex flex-1 overflow-hidden bg-ground">
 
             {/* ── Left config panel ───────────────────────────────── */}
-            <div style={{ width:288, flexShrink:0, display:'flex', flexDirection:'column', borderRight:`1px solid ${C.border}`, background:C.surf, overflow:'hidden' }}>
+            <div className="flex w-panel shrink-0 flex-col overflow-hidden border-r border-line bg-surface">
 
-              {/* Panel header */}
-              <div style={{ padding:'14px 18px 12px', borderBottom:`1px solid ${C.border}`, flexShrink:0 }}>
-                <div style={{ display:'flex', alignItems:'center', gap:7, marginBottom:4 }}>
-                  <Wand2 size={14} style={{ color:C.accent }}/>
-                  <span style={{ fontSize:14, fontWeight:700 }}>Creative Director</span>
+              <div className="shrink-0 border-b border-line px-4 py-3">
+                <div className="mb-1 flex items-center gap-2">
+                  <Wand2 size={14} className="text-ink-3"/>
+                  <span className="text-md font-semibold text-ink">Creative director</span>
                 </div>
-                <p style={{ fontSize:11, color:C.text3, lineHeight:1.5, margin:0 }}>
-                  Curate 5 visually diverse shots into a cinematic story arc.
+                <p className="text-xs text-ink-3">
+                  Builds a story arc from five visually distinct frames.
                 </p>
               </div>
 
-              {/* Scrollable config body */}
-              <div style={{ flex:1, overflowY:'auto', padding:'18px 18px 8px', display:'flex', flexDirection:'column', gap:22 }}>
+              <div className="flex flex-1 flex-col gap-6 overflow-y-auto px-4 py-4">
 
-                {/* Brief */}
-                <div>
-                  <label style={{ display:'block', fontSize:11, fontWeight:700, letterSpacing:'.07em', textTransform:'uppercase', color:C.text2, marginBottom:8 }}>
-                    Mood / Story Brief
-                  </label>
-                  <textarea
+                <Field label="Mood / story brief">
+                  <TextArea
                     value={creativePrompt}
                     onChange={e=>setCreativePrompt(e.target.value)}
                     placeholder={`Describe the mood…\ne.g. "rainy evening, neon reflections"\nor "empty streets at dawn"`}
                     rows={4}
-                    style={{ width:'100%', boxSizing:'border-box', resize:'none', background:C.bg, border:`1px solid ${C.bdr2}`, borderRadius:8, padding:'10px 12px', fontSize:12, color:C.text, lineHeight:1.6, outline:'none', fontFamily:'inherit' }}
-                    onFocus={e=>{e.currentTarget.style.borderColor=C.aBdr}}
-                    onBlur={e=>{e.currentTarget.style.borderColor=C.bdr2}}
                   />
-                </div>
+                </Field>
 
-                {/* PDF Reference Library */}
-                <div>
-                  <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:6 }}>
-                    <label style={{ fontSize:11, fontWeight:700, letterSpacing:'.07em', textTransform:'uppercase', color:C.text2 }}>
-                      Photo Reference PDFs
-                    </label>
-                    {ragPdfs.length > 0 && (
-                      <button onClick={handleRagClear}
-                        style={{ fontSize:10, color:C.text3, background:'none', border:'none', cursor:'pointer', padding:0 }}>
-                        clear all
-                      </button>
-                    )}
-                  </div>
-                  <p style={{ fontSize:11, color:C.text3, lineHeight:1.4, marginBottom:8 }}>
-                    Upload photography books or reference PDFs. Concepts are extracted and blend into the grading anchor (30%).
-                  </p>
+                <Field
+                  label="Reference PDFs"
+                  hint="Phrases are extracted from each book and blended into the grading anchor at 30%. The books themselves are never needed again afterwards."
+                  action={ragPdfs.length > 0 && (
+                    <Button size="sm" variant="quiet" onClick={handleRagClear}>Clear all</Button>
+                  )}
+                >
                   {ragPdfs.length > 0 && (
-                    <div style={{ marginBottom:8, display:'flex', flexDirection:'column', gap:4 }}>
+                    <div className="flex flex-col gap-1">
                       {ragPdfs.map(p => (
-                        <div key={p.name} style={{ display:'flex', alignItems:'center', gap:6, padding:'5px 8px', background:C.surf2, borderRadius:6, border:`1px solid ${C.bdr2}` }}>
-                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={C.accent} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20,6 9,17 4,12"/></svg>
-                          <span style={{ flex:1, fontSize:10, color:C.text2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{p.name}</span>
-                          <span style={{ fontSize:9, color:C.text3, flexShrink:0 }}>{p.phrases} phrases</span>
+                        <div key={p.name} className="flex items-center gap-2 rounded-sm border border-line-strong bg-raised px-2 py-1">
+                          <span className="flex-1 truncate text-xs text-ink-2">{p.name}</span>
+                          <span className="t-num shrink-0 text-xs text-ink-3">{p.phrases}</span>
                         </div>
                       ))}
                     </div>
                   )}
-                  <label style={{ display:'flex', alignItems:'center', gap:7, padding:'8px 12px', border:`2px dashed ${ragUploading ? C.accent : C.bdr2}`, borderRadius:8, cursor: ragUploading ? 'wait' : 'pointer', color: ragUploading ? C.accent : C.text3, fontSize:12, transition:'border-color .2s, color .2s' }}>
-                    {ragUploading
-                      ? <span style={{ width:11, height:11, borderRadius:'50%', border:`1.5px solid ${C.accent}`, borderTopColor:'transparent', animation:'spin .7s linear infinite', display:'inline-block', flexShrink:0 }}/>
-                      : <Upload size={13} strokeWidth={1.5}/>
-                    }
-                    <span>{ragUploading ? 'Extracting concepts…' : 'Add PDF reference'}</span>
-                    <input type="file" accept="application/pdf" style={{ display:'none' }} disabled={ragUploading}
+                  <label className={cn(
+                    'flex items-center gap-2 rounded-sm border border-dashed px-3 py-2 text-sm',
+                    'transition-colors duration-fast ease',
+                    ragUploading
+                      ? 'cursor-wait border-ink-4 text-ink-2'
+                      : 'cursor-pointer border-line-strong text-ink-3 hover:border-ink-4 hover:text-ink-2',
+                  )}>
+                    <Upload size={13} strokeWidth={1.5}/>
+                    <span>{ragUploading ? 'Reading the book…' : 'Add a reference PDF'}</span>
+                    <input type="file" accept="application/pdf" className="hidden" disabled={ragUploading}
                       onChange={e => { const f = e.target.files?.[0]; if (f) handleRagUpload(f); e.target.value = ''; }}
                     />
                   </label>
-                </div>
+                </Field>
 
-                {/* Peg reference upload */}
-                <div>
-                  <label style={{ display:'block', fontSize:11, fontWeight:700, letterSpacing:'.07em', textTransform:'uppercase', color:C.text2, marginBottom:4 }}>
-                    Reference Peg <span style={{ fontWeight:400, textTransform:'none', letterSpacing:0, fontSize:10, color:C.text3 }}>optional · overrides anchor pool</span>
-                  </label>
+                <Field label="Reference peg" hint="Optional. Overrides the anchor pool.">
                   {pegFile ? (
-                    <div style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 10px', background:C.surf2, border:`1px solid ${pegHash ? C.accent : C.bdr2}`, borderRadius:8 }}>
-                      {pegLoading
-                        ? <span style={{ width:10, height:10, borderRadius:'50%', border:`1.5px solid ${C.accent}`, borderTopColor:'transparent', animation:'spin .7s linear infinite', display:'inline-block', flexShrink:0 }}/>
-                        : <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={pegHash ? C.accent : C.text3} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20,6 9,17 4,12"/></svg>
-                      }
-                      <span style={{ flex:1, fontSize:11, color:C.text2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{pegFile.name}</span>
+                    <div className={cn('flex items-center gap-2 rounded-sm border bg-raised px-2 py-2',
+                                       pegHash ? 'border-ink-4' : 'border-line-strong')}>
+                      <span className="flex-1 truncate text-xs text-ink-2">{pegFile.name}</span>
+                      {pegLoading && <span className="t-label shrink-0">Reading</span>}
                       <button onClick={() => { setPegFile(null); setPegHash(null); }}
-                        style={{ padding:0, border:'none', background:'transparent', color:C.text3, cursor:'pointer', fontSize:14, lineHeight:1 }}>✕</button>
+                        aria-label="Remove reference peg"
+                        className="shrink-0 cursor-pointer border-0 bg-transparent p-0 text-ink-3 transition-colors duration-fast ease hover:text-ink">
+                        <X size={12}/>
+                      </button>
                     </div>
                   ) : (
-                    <label style={{ display:'flex', alignItems:'center', gap:7, padding:'8px 12px', border:`2px dashed ${C.bdr2}`, borderRadius:8, cursor:'pointer', color:C.text3, fontSize:12 }}>
+                    <label className="flex cursor-pointer items-center gap-2 rounded-sm border border-dashed border-line-strong px-3 py-2 text-sm text-ink-3 transition-colors duration-fast ease hover:border-ink-4 hover:text-ink-2">
                       <Upload size={13} strokeWidth={1.5}/>
-                      <span>Upload reference image</span>
-                      <input type="file" accept="image/*" style={{ display:'none' }}
+                      <span>Upload a reference image</span>
+                      <input type="file" accept="image/*" className="hidden"
                         onChange={e => { const f = e.target.files?.[0]; if (f) handlePegUpload(f); e.target.value = ''; }}
                       />
                     </label>
                   )}
-                </div>
+                </Field>
 
                 {/* Sequence length */}
                 <div>
-                  <label style={{ display:'block', fontSize:11, fontWeight:700, letterSpacing:'.07em', textTransform:'uppercase', color:C.text2, marginBottom:8 }}>
-                    Sequence Length
+                  <label className="t-label mb-2 block">
+                    Sequence length
                   </label>
                   <select value={creativeCount} onChange={e => setCreativeCount(Number(e.target.value))}
                     style={{ width:'100%', height:36, borderRadius:7, fontSize:13, fontWeight:600, cursor:'pointer',
@@ -4578,41 +4565,56 @@ export default function App() {
 
               </div>
 
-              {/* Generate button — pinned to bottom */}
-              <div style={{ padding:'14px 18px', borderTop:`1px solid ${C.border}`, flexShrink:0 }}>
-                {/* Mode selector: Auto / Story / Competition */}
-                <div style={{ display:'flex', gap:5, marginBottom:10 }}>
-                  {(['auto','story','competition'] as const).map(m => (
-                    <button key={m} onClick={()=>setSeqMode(m as any)}
-                      style={{ flex:1, height:30, borderRadius:7, fontSize:11, fontWeight:700, cursor:'pointer', transition:'all .15s',
-                        background: seqMode===m ? C.accent : C.surf2,
-                        border: `1px solid ${seqMode===m ? C.accent : C.bdr2}`,
-                        color: seqMode===m ? '#fff' : C.text2,
-                        textTransform:'capitalize' }}>
-                      {m}
-                    </button>
-                  ))}
+              {/* Build controls — pinned to the bottom of the config column. */}
+              <div className="shrink-0 border-t border-line px-4 py-3">
+                {/* What each mode is FOR, in the user's terms. "Auto / Story /
+                    Competition" alone made you pick before knowing the
+                    difference; the line underneath says what you get. */}
+                <div className="mb-2 flex flex-col gap-2">
+                  <Segmented
+                    className="w-full [&>button]:flex-1"
+                    value={seqMode === 'director' ? 'story' : seqMode}
+                    onChange={(m) => setSeqMode(m)}
+                    options={[
+                      { value: 'story',       label: 'Story' },
+                      { value: 'competition', label: 'Contest' },
+                      { value: 'auto',        label: 'Auto' },
+                    ]}
+                  />
+                  <p className="text-xs text-ink-3">
+                    {seqMode === 'competition'
+                      ? 'Picks your strongest single frames — no repeats of the same look. For entries and portfolio reviews.'
+                      : seqMode === 'auto'
+                      ? 'Reads the set and chooses whichever approach fits it best.'
+                      : 'Orders photos so they read like a story: an opening, a turn, a close.'}
+                  </p>
                 </div>
-                {photos.length===0 && (
-                  <p style={{ fontSize:11, color:C.text3, textAlign:'center', marginBottom:10 }}>Grade a folder first to load photos.</p>
+
+                {photos.length === 0 && (
+                  <p className="mb-2 text-center text-xs text-ink-3">
+                    Grade a folder first — there are no photos to work with yet.
+                  </p>
                 )}
-                <button disabled={!canGenerate} onClick={handleRunCreativeDirection}
-                  style={{ width:'100%', display:'flex', alignItems:'center', justifyContent:'center', gap:8, padding:'11px 0',
-                    background: canGenerate ? C.accent : C.surf2, border:'none', borderRadius:8,
-                    color: canGenerate ? '#fff' : C.text3, fontSize:14, fontWeight:700,
-                    cursor: canGenerate ? 'pointer' : 'not-allowed', opacity:photos.length===0?0.45:1, transition:'all .18s' }}>
+
+                <Button
+                  variant="solid"
+                  disabled={!canGenerate}
+                  onClick={handleRunCreativeDirection}
+                  className="w-full"
+                  icon={creativeLoading ? undefined : <Wand2 size={13}/>}
+                >
                   {creativeLoading
-                    ? <><div style={{width:13,height:13,border:'2px solid #888',borderTopColor:'transparent',borderRadius:'50%',animation:'spin .8s linear infinite'}}/> Building sequence…</>
-                    : <><Wand2 size={13}/> {hasResults ? 'Rebuild Sequence' : (
-                        seqMode==='competition' ? 'Build Competition Set' :
-                        seqMode==='auto'        ? 'Build Sequence (Auto)' :
-                        'Build Story Sequence'
-                      )}</>}
-                </button>
-                {usedCount>0 && (
+                    ? 'Choosing photos…'
+                    : hasResults ? 'Build it again'
+                    : seqMode === 'competition' ? 'Pick my strongest'
+                    : seqMode === 'auto' ? 'Build a set'
+                    : 'Build the story'}
+                </Button>
+
+                {usedCount > 0 && (
                   <button onClick={handleClearUsed}
-                    style={{ width:'100%', marginTop:6, fontSize:11, color:C.text3, background:'none', border:'none', cursor:'pointer', padding:'4px 0', textAlign:'center' }}>
-                    Reset {usedCount} excluded photos
+                    className="mt-2 w-full cursor-pointer border-0 bg-transparent py-1 text-center text-xs text-ink-3 transition-colors duration-fast ease hover:text-ink-2">
+                    Put back <span className="t-num">{usedCount}</span> set-aside photos
                   </button>
                 )}
               </div>
@@ -4640,7 +4642,7 @@ export default function App() {
                   {/* Results toolbar */}
                   <div style={{flexShrink:0, display:'flex', alignItems:'center', justifyContent:'space-between', padding:'10px 20px', borderBottom:`1px solid ${C.border}`, background:C.surf}}>
                     <div style={{display:'flex', alignItems:'center', gap:10}}>
-                      <span style={{fontSize:13, fontWeight:700}}>Story Sequence</span>
+                      <span style={{fontSize:13, fontWeight:700}}>Story sequence</span>
                       <span style={{fontSize:11, color:C.text3, background:C.surf2, borderRadius:4, padding:'2px 8px'}}>{successResults.length} images</span>
                       {creativeResults.some((r:any)=>!r.success) && (
                         <span style={{fontSize:11, color:C.weak, cursor:'default'}}
@@ -4714,7 +4716,7 @@ export default function App() {
                     <p style={{fontSize:13, lineHeight:1.75, margin:0, color:C.text3}}>
                       Write a mood brief on the left,<br/>
                       optionally pick a reference photo,<br/>
-                      then press <strong style={{color:C.accent, fontWeight:700}}>Build Story Sequence</strong>.
+                      then press <strong style={{color:C.accent, fontWeight:700}}>Build story sequence</strong>.
                     </p>
                     {photos.length===0 && (
                       <p style={{fontSize:12, color:C.weak, marginTop:14}}>Grade a folder first to load photos.</p>
@@ -4730,14 +4732,15 @@ export default function App() {
       ) : null}
 
       {/* ── Status bar ─────────────────────────────────────────── */}
-      <div style={{ height:26, display:'flex', alignItems:'center', padding:'0 14px', gap:16, flexShrink:0, background:C.surf, borderTop:`1px solid ${C.border}` }}>
-        <span style={{ fontSize:12, color:C.text2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', flex:1, fontWeight:500 }}>
-          {sel ? sel.path.split(/[\\/]/).pop() : 'Select a folder to begin'}
+      <div className="flex h-6 shrink-0 items-center gap-4 border-t border-line bg-surface px-3">
+        <span className="t-num flex-1 truncate text-xs text-ink-2">
+          {sel ? sel.path.split(/[\\/]/).pop() : 'Open a folder to begin'}
         </span>
-        <div style={{ display:'flex', gap:12, flexShrink:0 }}>
-          {[['← →','Navigate'],['H L','Navigate'],['1–5','Stars'],['G','Grid'],['E','Loupe']].map(([k, a]) => (
-            <span key={k} style={{ fontSize:11, color:C.text3, display:'flex', alignItems:'center', gap:4 }}>
-              <span style={{ background:C.surf2, border:`1px solid ${C.bdr2}`, borderRadius:3, padding:'1px 5px', fontSize:10.5, fontFamily:'monospace', color:C.text2 }}>{k}</span>{a}
+        <div className="flex shrink-0 gap-3">
+          {[['← →','Navigate'],['1–5','Rate'],['G','Grid'],['E','Loupe']].map(([k, a]) => (
+            <span key={k} className="flex items-center gap-1 text-xs text-ink-3">
+              <kbd className="t-num rounded-sm border border-line-strong bg-raised px-1 text-xs text-ink-2">{k}</kbd>
+              {a}
             </span>
           ))}
         </div>
@@ -4745,16 +4748,23 @@ export default function App() {
 
       {/* ── Folder browser modal ────────────────────────────────── */}
       {showBrowser && (
-        <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.82)', backdropFilter:'blur(6px)', zIndex:50, display:'flex', alignItems:'center', justifyContent:'center', padding:16 }}>
-          <div style={{ background:'#0f1218', border:'1px solid #1e242d', borderRadius:12, width:'100%', maxWidth:640, height:'82vh', display:'flex', flexDirection:'column', boxShadow:'0 24px 80px rgba(0,0,0,.8)' }}>
-            <div style={{ flexShrink:0, display:'flex', alignItems:'center', justifyContent:'space-between', padding:'12px 20px', borderBottom:'1px solid #1e242d' }}>
-              <span style={{ fontSize:15, fontWeight:600, color:'#fff' }}>Select Photo Folder</span>
-              <button onClick={() => setShowBrowser(false)} style={{ color:'#50505e', cursor:'pointer', background:'none', border:'none' }}><X size={18}/></button>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4">
+          <div className="flex h-[82vh] w-full max-w-[640px] flex-col overflow-hidden rounded-md border border-line-strong bg-surface shadow-lg">
+            <div className="flex shrink-0 items-center justify-between border-b border-line px-4 py-3">
+              <span className="text-md font-semibold text-ink">Choose a photo folder</span>
+              <button onClick={() => setShowBrowser(false)} aria-label="Close"
+                className="cursor-pointer rounded-sm border-0 bg-transparent p-1 text-ink-3 transition-colors duration-fast ease hover:bg-raised hover:text-ink">
+                <X size={16}/>
+              </button>
             </div>
-            <div style={{ flexShrink:0, display:'flex', alignItems:'center', gap:8, padding:'8px 16px', borderBottom:'1px solid #1e242d', background:'#0b0e14' }}>
-              <button onClick={goUp} style={{ flexShrink:0, padding:'4px 10px', fontSize:13, color:'#9a9aaa', background:'#161b22', border:'1px solid #252d38', borderRadius:6, cursor:'pointer' }}>↑ Up</button>
-              <span style={{ flex:1, fontSize:13, color:'#9a9aaa', fontFamily:'monospace', background:'#161b22', border:'1px solid #252d38', borderRadius:6, padding:'4px 10px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{bPath}</span>
-              <button
+            <div className="flex shrink-0 items-center gap-2 border-b border-line bg-well px-3 py-2">
+              <Button size="sm" onClick={goUp} icon={<ArrowUp size={11}/>}>Up</Button>
+              <span className="t-num flex-1 truncate rounded-sm border border-line-strong bg-raised px-2 py-1 text-xs text-ink-2">
+                {bPath}
+              </span>
+              <Button
+                size="sm"
+                variant="solid"
                 onClick={async () => {
                   try {
                     if (browserMode === 'add') {
@@ -4768,13 +4778,14 @@ export default function App() {
                   setBSelFolders(new Set());
                 }}
                 disabled={bImages.length===0}
-                style={{ flexShrink:0, padding:'4px 12px', fontSize:13, fontWeight:600, background:'#2563eb', color:'#fff', borderRadius:7, border:'none', cursor:bImages.length>0?'pointer':'not-allowed', opacity:bImages.length>0?1:0.4 }}>
-                {browserMode === 'add' ? '+ Add' : 'Use Folder'}{bImages.length>0 ? ` (${bImages.length})` : ''}
-              </button>
+                title={bImages.length === 0 ? 'This folder holds no images' : undefined}>
+                {browserMode === 'add' ? 'Add' : 'Use folder'}
+                {bImages.length > 0 && <span className="t-num ml-1 opacity-70">{bImages.length}</span>}
+              </Button>
             </div>
-            <div style={{ flex:1, display:'flex', overflow:'hidden' }}>
-              <div style={{ width:140, flexShrink:0, borderRight:'1px solid #1e242d', padding:'10px 8px', display:'flex', flexDirection:'column', gap:2, background:'#0b0e14', overflowY:'auto' }}>
-                <p style={{ fontSize:11, color:'#3a3a4a', textTransform:'uppercase', letterSpacing:'.08em', padding:'0 8px', marginBottom:6, fontWeight:600 }}>Quick access</p>
+            <div className="flex flex-1 overflow-hidden">
+              <div className="flex w-sidebar shrink-0 flex-col gap-px overflow-y-auto border-r border-line bg-well p-2">
+                <p className="t-label mb-1 px-2">Quick access</p>
                 {([
                   { label:'Desktop',   path:'C:\\Users\\Nicky Tuason\\Desktop' },
                   { label:'Pictures',  path:'C:\\Users\\Nicky Tuason\\Pictures' },
@@ -4783,33 +4794,45 @@ export default function App() {
                   { label:'C:\\',      path:'C:\\' },
                 ]).map(loc => (
                   <button key={loc.path} onClick={() => { setBPath(loc.path); loadBrowser(loc.path); }}
-                    style={{ textAlign:'left', padding:'6px 10px', fontSize:13, borderRadius:7, color:bPath===loc.path?'#93c5fd':'#9a9aaa', background:bPath===loc.path?'rgba(37,99,235,.2)':'transparent', border:'none', cursor:'pointer', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                    className={cn(
+                      'truncate rounded-sm border-0 px-2 py-1 text-left text-sm',
+                      'cursor-pointer transition-colors duration-fast ease',
+                      bPath === loc.path
+                        ? 'bg-raised-hover text-ink'
+                        : 'bg-transparent text-ink-3 hover:bg-raised hover:text-ink-2',
+                    )}>
                     {loc.label}
                   </button>
                 ))}
               </div>
-              <div style={{ flex:1, overflowY:'auto', padding:16 }}>
+              <div className="flex-1 overflow-y-auto p-4">
                 {bLoading ? (
-                  <div style={{ display:'flex', alignItems:'center', justifyContent:'center', height:'100%', flexDirection:'column', gap:10, color:'#3a3a4a' }}>
-                    <div style={{ width:24, height:24, border:'2px solid #2563eb', borderTopColor:'transparent', borderRadius:'50%', animation:'spin .8s linear infinite' }}/>
-                    <span style={{ fontSize:13 }}>Loading…</span>
+                  <div className="flex h-full items-center justify-center text-ink-3">
+                    <span className="text-sm">Reading folder…</span>
                   </div>
                 ) : bFolders.length===0 && bImages.length===0 ? (
-                  <div style={{ display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', height:'100%', color:'#3a3a4a', gap:8 }}>
-                    <FolderOpen size={32} strokeWidth={1.5}/>
-                    <p style={{ fontSize:14 }}>Empty folder</p>
+                  <div className="flex h-full flex-col items-center justify-center gap-2 text-ink-3">
+                    <FolderOpen size={28} strokeWidth={1.5}/>
+                    <p className="text-sm">Nothing here</p>
+                    <p className="text-xs text-ink-4">No folders or images in this location.</p>
                   </div>
                 ) : (
                   <>
                     {bFolders.length > 0 && (
-                      <div style={{ marginBottom:20 }}>
-                        <p style={{ fontSize:11, color:'#3a3a4a', fontWeight:600, textTransform:'uppercase', letterSpacing:'.08em', marginBottom:8 }}>Folders ({bFolders.length})</p>
-                        <div style={{ display:'grid', gap:6, gridTemplateColumns:'repeat(auto-fill, minmax(150px,1fr))' }}>
+                      <div className="mb-6">
+                        <p className="t-label mb-2">Folders <span className="t-num">{bFolders.length}</span></p>
+                        <div className="grid gap-1" style={{ gridTemplateColumns:'repeat(auto-fill, minmax(150px,1fr))' }}>
                           {bFolders.map((f, idx) => (
                             <button key={f} onClick={(e) => handleBrowserFolderClick(e as any, f, idx)}
-                              style={{ display:'flex', alignItems:'center', gap:8, padding:'8px 12px', background: bSelFolders.has(f) ? 'rgba(37,99,235,.16)' : '#161b22', border: bSelFolders.has(f) ? '1px solid rgba(37,99,235,.4)' : '1px solid #252d38', borderRadius:8, cursor:'pointer', textAlign:'left' }}>
-                              <FolderOpen size={13} style={{ color: bSelFolders.has(f) ? '#93c5fd' : '#60a5fa', flexShrink:0 }}/>
-                              <span style={{ fontSize:13, color: bSelFolders.has(f) ? '#93c5fd' : '#c0c0d0', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{f.split(/[\\/]/).pop()}</span>
+                              className={cn(
+                                'flex cursor-pointer items-center gap-2 rounded-sm border px-3 py-2 text-left',
+                                'transition-colors duration-fast ease',
+                                bSelFolders.has(f)
+                                  ? 'border-mark bg-raised text-ink'
+                                  : 'border-line-strong bg-raised text-ink-2 hover:bg-raised-hover hover:text-ink',
+                              )}>
+                              <FolderOpen size={13} className="shrink-0 text-ink-3"/>
+                              <span className="truncate text-sm">{f.split(/[\\/]/).pop()}</span>
                             </button>
                           ))}
                         </div>
@@ -4817,17 +4840,16 @@ export default function App() {
                     )}
                     {bImages.length > 0 && (
                       <div>
-                        <p style={{ fontSize:11, color:'#3a3a4a', fontWeight:600, textTransform:'uppercase', letterSpacing:'.08em', marginBottom:8 }}>Images ({bImages.length})</p>
-                        <div style={{ display:'grid', gap:6, gridTemplateColumns:'repeat(auto-fill, minmax(110px,1fr))' }}>
+                        <p className="t-label mb-2">Images <span className="t-num">{bImages.length}</span></p>
+                        <div className="flex flex-wrap gap-1">
                           {bImages.slice(0,30).map(img => (
-                            <div key={img} style={{ borderRadius:8, overflow:'hidden', border:'1px solid #1e242d', background:'#161b22' }}>
-                              <img src={thumbUrl(img)} style={{ width:'100%', height:80, objectFit:'cover', display:'block' }} loading="lazy" alt=""/>
-                              <p style={{ padding:'4px 6px', fontSize:11, color:'#50505e', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{img.split(/[\\/]/).pop()}</p>
+                            <div key={img} className="overflow-hidden rounded-sm border border-line bg-well">
+                              <img src={thumbUrl(img)} className="block h-thumb w-auto max-w-none" loading="lazy" alt=""/>
                             </div>
                           ))}
                           {bImages.length > 30 && (
-                            <div style={{ display:'flex', alignItems:'center', justifyContent:'center', borderRadius:8, border:'1px solid #1e242d', background:'#161b22', height:80 }}>
-                              <span style={{ fontSize:13, color:'#50505e' }}>+{bImages.length-30} more</span>
+                            <div className="flex h-thumb items-center justify-center rounded-sm border border-line bg-raised px-3">
+                              <span className="t-num text-xs text-ink-3">+{bImages.length-30} more</span>
                             </div>
                           )}
                         </div>

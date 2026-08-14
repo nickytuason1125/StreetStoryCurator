@@ -1,0 +1,165 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * FrameGrade design tokens — THE single source of truth.
+ *
+ * This file is the ONLY place in the frontend permitted to contain a raw hex
+ * colour or a raw px size. `npm run lint:tokens` fails the build on any hex or
+ * bare `fontSize:` found elsewhere in src/. That guard is the point: the UI got
+ * to 539 inline style blocks, 15 font sizes, 13 border radii and 41 stray hex
+ * colours by accretion, and only a mechanical check keeps it from drifting back.
+ *
+ * The governing rule, which every value below obeys:
+ *
+ *     Chrome and text are dead neutral. Machine judgements are cold or absent.
+ *     Warm colour appears ONLY where the photographer put it.
+ *
+ * Two consequences worth stating, because they look like mistakes otherwise:
+ *
+ * 1. Chrome and ink are strictly R=G=B. A warm surround shifts perception of a
+ *    neutral frame toward cool (chromatic adaptation). In a tool whose whole job
+ *    is judging light, warm chrome is a defect, not a mood.
+ * 2. --mark is reserved for the user's own judgements — his stars, his selects.
+ *    It must NEVER appear on a focus ring, an active tab, a primary button or a
+ *    progress fill. Interactivity is carried by luminance steps instead. If more
+ *    than about four elements on screen are warm, the reservation has leaked.
+ * ────────────────────────────────────────────────────────────────────────────*/
+
+:root {
+  /* ── Ground: dead neutral. Any hue here contaminates the read of a photo. ── */
+  --well:         #0b0b0b;  /* loupe stage, image backdrop                     */
+  --ground:       #1a1a1a;  /* app background, gallery field                   */
+  --surface:      #212121;  /* panels, header, filmstrip rail, modals          */
+  --raised:       #2b2b2b;  /* controls, inputs, chips                         */
+  --raised-hover: #343434;  /* THE hover token: +9 luminance, no hue           */
+  --line:         #2e2e2e;  /* hairline dividers                               */
+  --line-strong:  #3a3a3a;  /* panel edges, active control borders             */
+
+  /* Dialog scrim. A ground wash at 88%, not a backdrop blur: blurring a
+   * screenful of decoded photographs is expensive, and it smears the very
+   * images the dialog is usually describing. */
+  --scrim: #0b0b0be0;
+
+  /* Loupe surround — user-toggleable. The ONLY place the ISO mid-grey argument
+   * applies, because it is the only place tonal judgement actually happens. */
+  --surround-dark:  #0b0b0b;
+  --surround-grey:  #6e6e6e;
+  --surround-light: #e0e0e0;
+
+  /* ── Ink: neutral, never warm. Contrast ratios are against --ground. ── */
+  --ink:   #ededed;  /* 14.9:1                                                 */
+  --ink-2: #a1a1a1;  /*  6.7:1 — AA body text                                  */
+  --ink-3: #6b6b6b;  /*  3.2:1 — UI components and large text ONLY, never body */
+  --ink-4: #4d4d4d;  /*  non-text only (hairlines, disabled glyphs)            */
+
+  /* ── Machine judgement: cold, or silent. Never warm — the machine did not
+   * pick up a pencil. Mid is deliberately absent: silence is the correct
+   * rendering of "no opinion", and Mid is the majority bucket, so the grid
+   * stays quiet. Weak leans on --dim-reject so rejects physically sink. ── */
+  --grade-strong:  #48b89c;  /* teal: instrument reading, not a success toast  */
+  --grade-weak:    #575757;  /* dim neutral rule                               */
+  --grade-pending: #333333;  /* hatch in the score slot — distinct from Mid    */
+  --dim-reject:    0.55;     /* image opacity for Weak cells                   */
+  --rule:          2px;      /* the underscore beneath each frame              */
+
+  /* ── Alarm. Status chrome (RAM, GPU, grader mode) renders neutral by default
+   * and reaches for these ONLY when the user actually needs to act. "Everything
+   * is fine" is expressed as silence, not as a green badge — so any colour in
+   * the status area means something is wrong. Kept out of the general palette
+   * on purpose: these and --mark are the only non-neutral chrome that exists. */
+  --alarm-warn: #c8862a;  /* tight — amber, still readable on --surface        */
+  --alarm-crit: #c4452f;  /* critical                                          */
+
+  /* ── The photographer's mark: the ONLY warm colour in the application. ── */
+  --mark:     #e0592f;    /* grease pencil — rings, stars, his selects         */
+  --mark-ink: #f08a5f;    /* when the mark must carry text (5.1:1 on ground)   */
+  --mark-dim: #e0592f26;  /* 15% tint on a cell he marked. Never on chrome.    */
+
+  /* ── Focus: neutral, because the accent is reserved. Two rings so it stays
+   * visible over a photograph as well as over chrome. ── */
+  --focus:       #ededed;
+  --focus-inset: #0b0b0b;
+
+  /* ── Type. Two variable families; labels come from Archivo's width axis
+   * rather than a third family. ── */
+  --font-sans: 'Archivo Variable', 'Archivo', system-ui, -apple-system, sans-serif;
+  --font-mono: 'Martian Mono Variable', 'Martian Mono', ui-monospace, monospace;
+
+  --text-xs: 11px;  /* frame numbers, EXIF keys, eyebrows                      */
+  --text-sm: 13px;  /* THE workhorse — body, labels, most UI                   */
+  --text-md: 16px;  /* panel headings, verdict text                            */
+  --text-lg: 20px;  /* section titles                                          */
+  --text-xl: 30px;  /* the score, in the loupe. Only there.                    */
+
+  --leading-body:    1.35;
+  --leading-display: 1.1;
+
+  /* ── Geometry. Two radii, both small: a contact sheet has square corners.
+   * 4/8/12 is Tailwind/shadcn default furniture and reads as generic. ── */
+  --r-sm: 2px;  /* default: cells, inputs, buttons                             */
+  --r-md: 6px;  /* modals, pills. There is no third radius.                    */
+
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-12: 48px;
+
+  /* ── Named layout sizes. Distinct from the spacing rhythm above: these are
+   * structural dimensions, and giving them names stops w-72 / h-16 style
+   * magic numbers creeping back into the markup. ── */
+  --w-panel: 288px;    /* creative config column */
+  --w-sidebar: 144px;  /* folder-browser quick access */
+  --h-thumb: 64px;     /* browser image preview row */
+
+  /* ── Motion: one curve, two durations. ── */
+  --ease: cubic-bezier(.2, 0, 0, 1);
+  --t-fast: 120ms;  /* hover, focus, press                                     */
+  --t-slow: 220ms;  /* panel open, grid → loupe                                */
+}
+
+/* ── Type roles ──────────────────────────────────────────────────────────────
+ * `.label` uses Archivo's width axis (wdth 85) instead of pulling in a
+ * condensed family. One file, two voices. */
+
+.t-label {
+  font-family: var(--font-sans);
+  font-variation-settings: 'wdth' 85, 'wght' 600;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  font-size: var(--text-xs);
+  color: var(--ink-3);
+}
+
+.t-body {
+  font-family: var(--font-sans);
+  font-variation-settings: 'wdth' 100, 'wght' 400;
+  font-size: var(--text-sm);
+  line-height: var(--leading-body);
+}
+
+/* Every number in the app: scores, EXIF, counts, frame IDs. Tabular figures so
+ * score columns actually align, slashed zero so 0 and O never trade places in
+ * a filename or an ISO value. */
+.t-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'zero' 1;
+}
+
+/* ── Motion policy ───────────────────────────────────────────────────────────
+ * Never transition a property on an element containing a photograph except
+ * opacity and transform — anything else forces layout or repaint on a large
+ * decoded image and drops frames while scrubbing the filmstrip. */
+
+@media (prefers-reduced-motion: reduce) {
+  /* Keep opacity fades (they carry the Weak/reject meaning) and drop every
+   * transform, including the grid → loupe scale. */
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-property: opacity !important;
+    transition-duration: .01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
