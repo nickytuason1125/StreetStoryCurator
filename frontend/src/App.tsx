@@ -255,7 +255,7 @@ const FilmThumb = memo(function FilmThumb({
 /* ── EXIF Block ──────────────────────────────────────────────────── */
 function ExifBlock({ exif }: { exif: any }) {
   if (!exif || !Object.keys(exif).length) return (
-    <p style={{ fontSize:12, color:T.ink3, lineHeight:1.7 }}>No EXIF data available for this photo.</p>
+    <p style={{ fontSize:'var(--text-sm)', color:T.ink3, lineHeight:1.7 }}>No EXIF data available for this photo.</p>
   );
   const ORDER: [string, string][] = [
     ['camera',        'Camera'],
@@ -277,11 +277,11 @@ function ExifBlock({ exif }: { exif: any }) {
   const rows = ORDER.filter(([k]) => exif[k] != null).map(([k, label]) => [label, String(exif[k])] as [string,string]);
   return (
     <div style={{ display:'flex', flexDirection:'column', gap:0 }}>
-      <p style={{ fontSize:11, fontWeight:700, letterSpacing:'.08em', textTransform:'uppercase', color:T.ink3, marginBottom:8 }}>EXIF Data</p>
+      <p style={{ fontSize:'var(--text-xs)', fontWeight:700, letterSpacing:'.08em', textTransform:'uppercase', color:T.ink3, marginBottom:8 }}>EXIF Data</p>
       {rows.map(([k, v]) => (
         <div key={k} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'6px 0', borderBottom:`1px solid ${T.line}` }}>
-          <span style={{ fontSize:12, color:T.ink3, fontWeight:500 }}>{k}</span>
-          <span style={{ fontSize:12, color:T.ink, fontWeight:600, fontVariantNumeric:'tabular-nums', fontFamily:"'SF Mono',monospace", textAlign:'right', maxWidth:'60%', wordBreak:'break-word' }}>{v}</span>
+          <span style={{ fontSize:'var(--text-sm)', color:T.ink3, fontWeight:500 }}>{k}</span>
+          <span style={{ fontSize:'var(--text-sm)', color:T.ink, fontWeight:600, fontVariantNumeric:'tabular-nums', fontFamily:"'SF Mono',monospace", textAlign:'right', maxWidth:'60%', wordBreak:'break-word' }}>{v}</span>
         </div>
       ))}
     </div>
@@ -790,10 +790,10 @@ function AnalysisHUD({ grade, score, breakdown }: { grade: string; score: number
     <div style={{ position:'absolute', bottom:62, left:20, pointerEvents:'none', zIndex:2 }}>
       {/* Score + grade written directly on the photo */}
       <div style={{ display:'flex', alignItems:'baseline', gap:6, marginBottom:10 }}>
-        <span style={{ fontFamily:_MONO, fontSize:32, fontWeight:700, lineHeight:1,
+        <span style={{ fontFamily:_MONO, fontSize:'var(--text-xl)', fontWeight:700, lineHeight:1,
           color:gradeColor, textShadow:_SH, letterSpacing:'-.01em' }}>{pct}</span>
-        <span style={{ fontFamily:_MONO, fontSize:11, color:_INK, textShadow:_SH, opacity:.45 }}>/100</span>
-        <span style={{ fontFamily:_MONO, fontSize:11, fontWeight:700, letterSpacing:'.1em',
+        <span style={{ fontFamily:_MONO, fontSize:'var(--text-xs)', color:_INK, textShadow:_SH, opacity:.45 }}>/100</span>
+        <span style={{ fontFamily:_MONO, fontSize:'var(--text-xs)', fontWeight:700, letterSpacing:'.1em',
           color:gradeColor, textShadow:_SH, marginLeft:4 }}>{gradeLabel(grade).toUpperCase()}</span>
       </div>
       {/* Aspect scores as pen-ruled tick lines */}
@@ -806,7 +806,7 @@ function AnalysisHUD({ grade, score, breakdown }: { grade: string; score: number
           const filled = vpct * 0.76;
           return (
             <div key={k} style={{ display:'flex', alignItems:'center', gap:8 }}>
-              <span style={{ fontFamily:_MONO, fontSize:9, color:col, textShadow:_SH,
+              <span style={{ fontFamily:_MONO, fontSize:'var(--text-xs)', color:col, textShadow:_SH,
                 width:82, textAlign:'right', flexShrink:0, opacity:.85, letterSpacing:'.02em' }}>
                 {k}
               </span>
@@ -815,7 +815,7 @@ function AnalysisHUD({ grade, score, breakdown }: { grade: string; score: number
                 <line x1="0" y1="4.5" x2={filled} y2="4.5" stroke={col} strokeWidth="1.5" strokeLinecap="round"/>
                 <line x1={filled} y1="1" x2={filled} y2="8" stroke={col} strokeWidth="1.5" strokeLinecap="round"/>
               </svg>
-              <span style={{ fontFamily:_MONO, fontSize:10, fontWeight:700, color:col,
+              <span style={{ fontFamily:_MONO, fontSize:'var(--text-xs)', fontWeight:700, color:col,
                 textShadow:_SH, flexShrink:0, width:22 }}>{vpct}</span>
             </div>
           );
@@ -2125,7 +2125,7 @@ export default function App() {
         ) : (
           <>
             <div style={{ width:40, height:40, border:'3px solid #333', borderTopColor:'#7c6af7', borderRadius:'50%', animation:'spin .8s linear infinite' }}/>
-            <span style={{ fontSize:14, color:'#888', letterSpacing:'.05em' }}>Starting FrameGrade…</span>
+            <span style={{ fontSize:'var(--text-sm)', color:'#888', letterSpacing:'.05em' }}>Starting FrameGrade…</span>
           </>
         )}
       </div>
@@ -2135,13 +2135,13 @@ export default function App() {
   return (
     <div
       style={{ display:'flex', flexDirection:'column', height:'100vh', background:T.ground, overflow:'hidden',
-        fontFamily:"'Helvetica Neue',-apple-system,BlinkMacSystemFont,system-ui,sans-serif", fontSize:15, color:T.ink }}
+        fontFamily:"'Helvetica Neue',-apple-system,BlinkMacSystemFont,system-ui,sans-serif", fontSize:'var(--text-md)', color:T.ink }}
       onDrop={handleDrop} onDragOver={e => { e.preventDefault(); e.stopPropagation(); }} onDragEnter={handleDragEnter} onDragLeave={handleDragLeave}
     >
 
       {/* Drag-and-drop overlay */}
       {dragOver && (
-        <div style={{ position:'fixed', inset:8, zIndex:200, pointerEvents:'none', borderRadius:12,
+        <div style={{ position:'fixed', inset:8, zIndex:200, pointerEvents:'none', borderRadius:'var(--r-md)',
           display:'flex', alignItems:'center', justifyContent:'center',
           background:'rgba(10,10,13,.88)', backdropFilter:'blur(6px)',
           border:`2px dashed ${T.ink3}`,
@@ -2157,7 +2157,7 @@ export default function App() {
       {toast && (
         <div style={{
           position:'fixed', top:12, left:'50%', transform:'translateX(-50%)', zIndex:300,
-          padding:'7px 16px', borderRadius:8, fontSize:13, fontWeight:500, whiteSpace:'nowrap',
+          padding:'7px 16px', borderRadius:'var(--r-md)', fontSize:'var(--text-sm)', fontWeight:500, whiteSpace:'nowrap',
           background: toast.type==='success' ? 'oklch(20% .1 148)' : toast.type==='error' ? 'oklch(18% .1 18)' : T.raised,
           border:`1px solid ${toast.type==='success' ? 'oklch(48% .14 148)' : toast.type==='error' ? 'oklch(44% .14 18)' : T.lineStrong}`,
           color:T.ink, boxShadow:'0 8px 32px rgba(0,0,0,.7)', animation:'slideUp .3s cubic-bezier(.2,0,0,1)',
@@ -2209,22 +2209,22 @@ export default function App() {
             ) : (
               <span style={{ flex:1, minWidth:0 }}>
                 {missingOllama.length > 0 && <>Not installed yet: <strong>{missingOllama.map(m => MODEL_DISPLAY[m] ?? m).join(", ")}</strong>{missingGguf.length > 0 ? " · " : ""}</>}
-                {missingGguf.length > 0 && <>Missing local file{missingGguf.length > 1 ? "s" : ""}: <strong>{missingGguf.join(", ")}</strong> — place manually in <code style={{ fontSize:11 }}>models/</code></>}
+                {missingGguf.length > 0 && <>Missing local file{missingGguf.length > 1 ? "s" : ""}: <strong>{missingGguf.join(", ")}</strong> — place manually in <code style={{ fontSize:'var(--text-xs)' }}>models/</code></>}
               </span>
             )}
             {/* Ollama out-of-date — overrides all other controls */}
             {updateRequired ? (
               <>
-                <span style={{ flex:1, minWidth:0, fontSize:12, fontWeight:600, color:'oklch(80% .15 25)' }}>
+                <span style={{ flex:1, minWidth:0, fontSize:'var(--text-sm)', fontWeight:600, color:'oklch(80% .15 25)' }}>
                   Your Ollama engine is out of date and cannot run these models.
                 </span>
                 <a
                   href="https://ollama.com/download"
                   target="_blank"
                   rel="noopener noreferrer"
-                  style={{ flexShrink:0, padding:'4px 12px', fontSize:12, fontWeight:700,
+                  style={{ flexShrink:0, padding:'4px 12px', fontSize:'var(--text-sm)', fontWeight:700,
                     background:'oklch(44% .18 25)', color:'oklch(92% .05 25)',
-                    border:'1px solid oklch(58% .2 25)', borderRadius:6, cursor:'pointer',
+                    border:'1px solid oklch(58% .2 25)', borderRadius:'var(--r-md)', cursor:'pointer',
                     whiteSpace:'nowrap', textDecoration:'none' }}>
                   Download Ollama Update
                 </a>
@@ -2233,7 +2233,7 @@ export default function App() {
               <>
                 {/* Generic error */}
                 {downloadError && !isDownloading && (
-                  <span style={{ fontSize:11.5, color:'oklch(72% .18 25)', fontWeight:600, flex:1, minWidth:0 }}>
+                  <span style={{ fontSize:'var(--text-xs)'.5, color:'oklch(72% .18 25)', fontWeight:600, flex:1, minWidth:0 }}>
                     ✕ {downloadError}
                   </span>
                 )}
@@ -2241,10 +2241,10 @@ export default function App() {
                 {missingOllama.length > 0 && !isDownloading && (
                   <button
                     onClick={() => { setDownloadError(null); handleDownloadMissing(); }}
-                    style={{ flexShrink:0, padding:'4px 12px', fontSize:12, fontWeight:700,
+                    style={{ flexShrink:0, padding:'4px 12px', fontSize:'var(--text-sm)', fontWeight:700,
                       background: downloadError ? 'oklch(38% .18 25)' : 'oklch(44% .18 25)',
                       color:'oklch(92% .05 25)', border:`1px solid ${downloadError ? 'oklch(58% .2 25)' : 'oklch(55% .18 25)'}`,
-                      borderRadius:6, cursor:'pointer', whiteSpace:'nowrap' }}>
+                      borderRadius:'var(--r-md)', cursor:'pointer', whiteSpace:'nowrap' }}>
                     {downloadError ? 'Retry Download' : 'Download Missing Models'}
                   </button>
                 )}
@@ -2259,7 +2259,7 @@ export default function App() {
                   return (
                     <span key={chip.label} title={isGpu ? `${chip.display} loaded in VRAM` : isCpu ? `${chip.display} running on CPU — VRAM headroom low` : `${chip.display} not loaded`}
                       style={{
-                        padding:'2px 8px', borderRadius:4, fontSize:11, fontWeight:700, whiteSpace:'nowrap',
+                        padding:'2px 8px', borderRadius:'var(--r-sm)', fontSize:'var(--text-xs)', fontWeight:700, whiteSpace:'nowrap',
                         background: isGpu ? 'oklch(22% .09 145)' : isCpu ? 'oklch(22% .12 55)' : 'oklch(20% .04 0)',
                         border: `1px solid ${isGpu ? 'oklch(46% .14 145)' : isCpu ? 'oklch(52% .18 55)' : 'oklch(36% .04 0)'}`,
                         color: isGpu ? 'oklch(72% .16 145)' : isCpu ? 'oklch(80% .14 55)' : 'oklch(55% .04 0)',
@@ -2268,16 +2268,16 @@ export default function App() {
                     </span>
                   );
                 })}
-                {anyCpu && <span style={{ fontSize:11, color:'oklch(75% .12 55)', fontWeight:500 }}>VRAM pressure — inference may be slow</span>}
+                {anyCpu && <span style={{ fontSize:'var(--text-xs)', color:'oklch(75% .12 55)', fontWeight:500 }}>VRAM pressure — inference may be slow</span>}
               </div>
             )}
             {/* Progress indicator while downloading */}
             {isDownloading && (
               <div style={{ flexShrink:0, display:'flex', alignItems:'center', gap:8 }}>
-                <div style={{ width:120, height:6, background:'oklch(28% .08 25)', borderRadius:3, overflow:'hidden' }}>
-                  <div style={{ width:`${downloadProgress}%`, height:'100%', background:'oklch(62% .18 145)', borderRadius:3, transition:'width .3s ease' }}/>
+                <div style={{ width:120, height:6, background:'oklch(28% .08 25)', borderRadius:'var(--r-sm)', overflow:'hidden' }}>
+                  <div style={{ width:`${downloadProgress}%`, height:'100%', background:'oklch(62% .18 145)', borderRadius:'var(--r-sm)', transition:'width .3s ease' }}/>
                 </div>
-                <span style={{ fontSize:11, whiteSpace:'nowrap', color:'oklch(75% .06 25)' }}>
+                <span style={{ fontSize:'var(--text-xs)', whiteSpace:'nowrap', color:'oklch(75% .06 25)' }}>
                   {currentDownloadModel}: {downloadProgress}% — do not close the app
                 </span>
               </div>
@@ -2288,7 +2288,7 @@ export default function App() {
                 onClick={() => setBannerDismissed(true)}
                 title="Dismiss"
                 style={{ marginLeft:'auto', flexShrink:0, background:'none', border:'none', cursor:'pointer',
-                  color: isOffline ? 'oklch(20% .04 55)' : 'oklch(55% .06 25)', fontSize:16, lineHeight:1, padding:'2px 4px' }}>
+                  color: isOffline ? 'oklch(20% .04 55)' : 'oklch(55% .06 25)', fontSize:'var(--text-md)', lineHeight:1, padding:'2px 4px' }}>
                 ✕
               </button>
             )}
@@ -2301,28 +2301,28 @@ export default function App() {
         <div style={{ position:'fixed', inset:0, zIndex:400, background:'rgba(0,0,0,1)', display:'flex', alignItems:'center', justifyContent:'center' }}
           role="presentation"
           onClick={() => setPreGradeModal(null)}>
-          <div ref={preGradeDialogRef} style={{ background:T.surface1, border:`1px solid ${T.lineStrong}`, borderRadius:12, padding:'28px 32px', maxWidth:420, width:'90%', display:'flex', flexDirection:'column', gap:16 }}
+          <div ref={preGradeDialogRef} style={{ background:T.surface1, border:`1px solid ${T.lineStrong}`, borderRadius:'var(--r-md)', padding:'28px 32px', maxWidth:420, width:'90%', display:'flex', flexDirection:'column', gap:16 }}
             role="dialog" aria-modal="true" aria-labelledby="pregrade-title"
             onClick={e => e.stopPropagation()}>
-            <div id="pregrade-title" style={{ fontSize:16, fontWeight:700, color:T.ink }}>Before you start</div>
+            <div id="pregrade-title" style={{ fontSize:'var(--text-md)', fontWeight:700, color:T.ink }}>Before you start</div>
 
             {/* Vision Engine status */}
             <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
               {!graderStatus?.draft_available ? (
-                <div style={{ padding:'10px 14px', borderRadius:8, background:'oklch(22% .12 55 / .25)', border:'1px solid oklch(52% .18 55 / .4)' }}>
-                  <div style={{ fontSize:13, fontWeight:700, color:'oklch(80% .14 55)', marginBottom:4 }}>
+                <div style={{ padding:'10px 14px', borderRadius:'var(--r-md)', background:'oklch(22% .12 55 / .25)', border:'1px solid oklch(52% .18 55 / .4)' }}>
+                  <div style={{ fontSize:'var(--text-sm)', fontWeight:700, color:'oklch(80% .14 55)', marginBottom:4 }}>
                     {graderStatus?.qwen_download_pct != null
                       ? `Downloading Vision Engine — ${graderStatus.qwen_download_pct}%`
                       : 'Vision Engine: downloading in background…'}
                   </div>
                   {graderStatus?.qwen_download_pct != null && (
-                    <div style={{ height:4, background:'rgba(255,255,255,.1)', borderRadius:2, overflow:'hidden', marginBottom:8 }}>
+                    <div style={{ height:4, background:'rgba(255,255,255,.1)', borderRadius:'var(--r-sm)', overflow:'hidden', marginBottom:8 }}>
                       <div style={{ height:'100%', width:`${graderStatus.qwen_download_pct}%`,
-                        background:'oklch(70% .18 55)', borderRadius:2,
+                        background:'oklch(70% .18 55)', borderRadius:'var(--r-sm)',
                         transition:'width .8s cubic-bezier(.2,0,0,1)' }}/>
                     </div>
                   )}
-                  <div style={{ fontSize:12, color:T.ink2, lineHeight:1.5 }}>
+                  <div style={{ fontSize:'var(--text-sm)', color:T.ink2, lineHeight:1.5 }}>
                     ~6 GB one-time download — runs automatically in the background.
                     {graderStatus?.qwen_download_pct != null
                       ? ' Grading will start automatically once complete.'
@@ -2330,9 +2330,9 @@ export default function App() {
                   </div>
                 </div>
               ) : graderStatus?.qwen_warm ? (
-                <div style={{ padding:'10px 14px', borderRadius:8, background:'oklch(20% .09 145 / .3)', border:'1px solid oklch(46% .14 145 / .4)' }}>
-                  <div style={{ fontSize:13, fontWeight:700, color:'oklch(72% .16 145)', marginBottom:4 }}>Vision Engine: warm and ready</div>
-                  <div style={{ fontSize:12, color:T.ink2 }}>Already loaded in VRAM. Grading will start immediately.</div>
+                <div style={{ padding:'10px 14px', borderRadius:'var(--r-md)', background:'oklch(20% .09 145 / .3)', border:'1px solid oklch(46% .14 145 / .4)' }}>
+                  <div style={{ fontSize:'var(--text-sm)', fontWeight:700, color:'oklch(72% .16 145)', marginBottom:4 }}>Vision Engine: warm and ready</div>
+                  <div style={{ fontSize:'var(--text-sm)', color:T.ink2 }}>Already loaded in VRAM. Grading will start immediately.</div>
                 </div>
               ) : graderStatus?.qwen_loading ? (
                 <div className="rounded-sm border border-line-strong bg-raised px-3 py-2">
@@ -2340,14 +2340,14 @@ export default function App() {
                     <div style={{ width:10, height:10, borderRadius:'50%', border:`2px solid ${T.ink3}`, borderTopColor:'transparent', animation:'spin .8s linear infinite', flexShrink:0 }}/>
                     <span className="text-sm text-ink">Vision Engine: loading into VRAM…</span>
                   </div>
-                  <div style={{ fontSize:12, color:T.ink2 }}>
+                  <div style={{ fontSize:'var(--text-sm)', color:T.ink2 }}>
                     Loading model weights from disk. Takes <strong>~30–60 seconds</strong> — Start Culling will unlock automatically.
                   </div>
                 </div>
               ) : (
                 <div className="rounded-sm border border-line-strong bg-raised px-3 py-2">
                   <div className="mb-1 text-sm text-ink">Vision Engine: ready to load</div>
-                  <div style={{ fontSize:12, color:T.ink2 }}>
+                  <div style={{ fontSize:'var(--text-sm)', color:T.ink2 }}>
                     Model is cached on disk. Loading starts now — will be ready in <strong>~30–60 seconds</strong>.
                   </div>
                 </div>
@@ -2363,9 +2363,9 @@ export default function App() {
                   critical: { bg:'oklch(24% .12 25 / .3)',   border:'oklch(52% .20 25 / .5)',  color:'oklch(80% .16 25)',  title:`Low system memory`,                body:`Only ${r.free?.toFixed(1)} GB free — below the ~${(sysRam?.ram_min_gb ?? graderStatus?.ram_min_gb ?? 1.8)} GB needed. Close some apps before grading or the cull may be refused.` },
                 }[r.level]!;
                 return (
-                  <div style={{ padding:'10px 14px', borderRadius:8, background:card.bg, border:`1px solid ${card.border}` }}>
-                    <div style={{ fontSize:13, fontWeight:700, color:card.color, marginBottom:4 }}>{card.title}</div>
-                    <div style={{ fontSize:12, color:T.ink2, lineHeight:1.5 }}>{card.body}</div>
+                  <div style={{ padding:'10px 14px', borderRadius:'var(--r-md)', background:card.bg, border:`1px solid ${card.border}` }}>
+                    <div style={{ fontSize:'var(--text-sm)', fontWeight:700, color:card.color, marginBottom:4 }}>{card.title}</div>
+                    <div style={{ fontSize:'var(--text-sm)', color:T.ink2, lineHeight:1.5 }}>{card.body}</div>
                   </div>
                 );
               })()}
@@ -2373,11 +2373,11 @@ export default function App() {
               {/* One-time INT4 quantisation disclaimer — only until the
                   pre-quantised cache exists on disk */}
               {graderStatus?.draft_available && !graderStatus?.qwen_int4_cached && !graderStatus?.qwen_warm && (
-                <div style={{ padding:'10px 14px', borderRadius:8, background:'oklch(22% .12 55 / .25)', border:'1px solid oklch(52% .18 55 / .4)' }}>
-                  <div style={{ fontSize:13, fontWeight:700, color:'oklch(80% .14 55)', marginBottom:4 }}>
+                <div style={{ padding:'10px 14px', borderRadius:'var(--r-md)', background:'oklch(22% .12 55 / .25)', border:'1px solid oklch(52% .18 55 / .4)' }}>
+                  <div style={{ fontSize:'var(--text-sm)', fontWeight:700, color:'oklch(80% .14 55)', marginBottom:4 }}>
                     First cull: one-time engine optimisation
                   </div>
-                  <div style={{ fontSize:12, color:T.ink2, lineHeight:1.5 }}>
+                  <div style={{ fontSize:'var(--text-sm)', color:T.ink2, lineHeight:1.5 }}>
                     The Vision Engine will be compressed for your GPU on this run — expect a
                     pause of <strong>a few minutes around 52%</strong>. The result is saved,
                     so every cull after this one skips it and starts in seconds.
@@ -2387,19 +2387,19 @@ export default function App() {
 
               {/* Pipeline calibration warmup status */}
               {graderStatus?.warmup_running && (
-                <div style={{ padding:'10px 14px', borderRadius:8, background:'oklch(20% .08 270 / .3)', border:'1px solid oklch(52% .14 270 / .35)' }}>
+                <div style={{ padding:'10px 14px', borderRadius:'var(--r-md)', background:'oklch(20% .08 270 / .3)', border:'1px solid oklch(52% .14 270 / .35)' }}>
                   <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}>
                     <div style={{ width:9, height:9, borderRadius:'50%', border:'2px solid oklch(70% .16 270)', borderTopColor:'transparent', animation:'spin .8s linear infinite', flexShrink:0 }}/>
-                    <span style={{ fontSize:13, fontWeight:700, color:'oklch(74% .14 270)' }}>Calibrating pipeline…</span>
+                    <span style={{ fontSize:'var(--text-sm)', fontWeight:700, color:'oklch(74% .14 270)' }}>Calibrating pipeline…</span>
                   </div>
-                  <div style={{ fontSize:12, color:T.ink2 }}>Running your best photos through the engine to warm up CUDA kernels. Start Culling will unlock when done.</div>
+                  <div style={{ fontSize:'var(--text-sm)', color:T.ink2 }}>Running your best photos through the engine to warm up CUDA kernels. Start Culling will unlock when done.</div>
                 </div>
               )}
               {graderStatus?.warmup_done && !graderStatus?.warmup_running && (
-                <div style={{ display:'flex', alignItems:'center', gap:7, padding:'8px 12px', borderRadius:8,
+                <div style={{ display:'flex', alignItems:'center', gap:7, padding:'8px 12px', borderRadius:'var(--r-md)',
                   background:'oklch(20% .09 145 / .2)', border:'1px solid oklch(46% .14 145 / .3)' }}>
                   <div style={{ width:7, height:7, borderRadius:'50%', background:'oklch(64% .18 145)', flexShrink:0 }}/>
-                  <span style={{ fontSize:12, color:'oklch(70% .14 145)' }}>Pipeline calibrated — first cull of this session will be fast</span>
+                  <span style={{ fontSize:'var(--text-sm)', color:'oklch(70% .14 145)' }}>Pipeline calibrated — first cull of this session will be fast</span>
                 </div>
               )}
 
@@ -2776,7 +2776,7 @@ export default function App() {
           // on change while the counter updates in place per photo.
           const _count = (gradeDesc.match(/\d+\s*\/\s*\d+/) || [])[0] || '';
           return (
-            <div key={toSlogan(gradeDesc)} style={{ padding:'3px 14px 4px', fontSize:10.5, color:T.ink3, fontStyle:'italic', borderBottom:`1px solid ${T.line}`, animation:'fadeIn .4s cubic-bezier(.2,0,0,1)', display:'flex', gap:8, alignItems:'baseline', justifyContent:'space-between' }}>
+            <div key={toSlogan(gradeDesc)} style={{ padding:'3px 14px 4px', fontSize:'var(--text-xs)'.5, color:T.ink3, fontStyle:'italic', borderBottom:`1px solid ${T.line}`, animation:'fadeIn .4s cubic-bezier(.2,0,0,1)', display:'flex', gap:8, alignItems:'baseline', justifyContent:'space-between' }}>
               <span>{toSlogan(gradeDesc)}</span>
               <span style={{ display:'flex', gap:8, alignItems:'baseline', flexShrink:0 }}>
                 {/* Quality tier actually used for this run. The app picks the
@@ -2784,8 +2784,8 @@ export default function App() {
                     run to run — showing it explains why speed/results vary. */}
                 {gradeQuality && (
                   <span title={`Analysis quality for this run: ${gradeQuality}`}
-                        style={{ fontStyle:'normal', fontSize:9, letterSpacing:.4, textTransform:'uppercase',
-                                 color:T.ink2, border:`1px solid ${T.line}`, borderRadius:3,
+                        style={{ fontStyle:'normal', fontSize:'var(--text-xs)', letterSpacing:.4, textTransform:'uppercase',
+                                 color:T.ink2, border:`1px solid ${T.line}`, borderRadius:'var(--r-sm)',
                                  padding:'1px 5px', fontWeight:700 }}>
                     {gradeQuality}
                   </span>
@@ -2806,7 +2806,7 @@ export default function App() {
             null;
           if (!warmMsg) return null;
           return (
-            <div style={{ padding:'3px 14px 4px', fontSize:10.5, color:T.ink3, borderBottom:`1px solid ${T.line}`, display:'flex', gap:7, alignItems:'center', animation:'fadeIn .4s cubic-bezier(.2,0,0,1)' }}>
+            <div style={{ padding:'3px 14px 4px', fontSize:'var(--text-xs)'.5, color:T.ink3, borderBottom:`1px solid ${T.line}`, display:'flex', gap:7, alignItems:'center', animation:'fadeIn .4s cubic-bezier(.2,0,0,1)' }}>
               <div style={{ width:9, height:9, borderRadius:'50%', border:'2px solid currentColor', borderTopColor:'transparent', animation:'spin .8s linear infinite' }}/>
               <span>{warmMsg}</span>
             </div>
@@ -2971,7 +2971,7 @@ export default function App() {
                       title={showEyeOverlay ? "Hide judge's critique" : "Show judge's critique"}
                       style={{
                         position:'absolute', top:10, right:10, zIndex:20,
-                        width:34, height:34, borderRadius:8,
+                        width:34, height:34, borderRadius:'var(--r-md)',
                         display:'flex', alignItems:'center', justifyContent:'center',
                         background: showEyeOverlay ? T.raisedHover : T.well,
                         border: `1px solid ${showEyeOverlay ? T.ink : T.lineStrong}`,
@@ -3281,8 +3281,8 @@ export default function App() {
                       <div style={{ position:'absolute', bottom:16, right:16, zIndex:20,
                         display:'flex', flexDirection:'column', gap:5, padding:'9px 12px',
                         background:'rgba(8,8,12,.78)', border:'1px solid rgba(255,255,255,.12)',
-                        borderRadius:9, backdropFilter:'blur(10px)', pointerEvents:'none' }}>
-                        <div style={{ fontSize:10, fontWeight:700, letterSpacing:'.06em', color:'rgba(255,255,255,.55)', textTransform:'uppercase', marginBottom:1 }}>Critique map</div>
+                        borderRadius:'var(--r-md)', backdropFilter:'blur(10px)', pointerEvents:'none' }}>
+                        <div style={{ fontSize:'var(--text-xs)', fontWeight:700, letterSpacing:'.06em', color:'rgba(255,255,255,.55)', textTransform:'uppercase', marginBottom:1 }}>Critique map</div>
                         {_present.map(([t, l]) => {
                           const c = tierHeat(t);
                           return (
@@ -3290,8 +3290,8 @@ export default function App() {
                               <span style={{ width:11, height:11, borderRadius:'50%', flexShrink:0,
                                 background:`radial-gradient(circle, ${c} 0%, ${c}55 70%, transparent 100%)`,
                                 boxShadow:`0 0 6px ${c}` }}/>
-                              <span style={{ fontSize:11, color:'rgba(255,255,255,.85)' }}>{l}</span>
-                              <span style={{ fontSize:10, fontWeight:700, color:'rgba(255,255,255,.45)', marginLeft:'auto', paddingLeft:8 }}>{_counts[t]}</span>
+                              <span style={{ fontSize:'var(--text-xs)', color:'rgba(255,255,255,.85)' }}>{l}</span>
+                              <span style={{ fontSize:'var(--text-xs)', fontWeight:700, color:'rgba(255,255,255,.45)', marginLeft:'auto', paddingLeft:8 }}>{_counts[t]}</span>
                             </div>
                           );
                         })}
@@ -3299,9 +3299,9 @@ export default function App() {
                     );
                   })()}
                   <button onClick={() => hasPrev && setSelId(filteredPhotos[selIdx-1].id)} disabled={!hasPrev}
-                    style={{ position:'absolute', left:12, top:'50%', transform:'translateY(-50%)', width:34, height:34, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', background:'rgba(0,0,0,.55)', backdropFilter:'blur(12px)', color:hasPrev?T.ink:T.ink3, opacity:hasPrev?1:0, border:'1px solid rgba(255,255,255,.07)', pointerEvents:hasPrev?'auto':'none', cursor:'pointer', fontSize:18 }}>‹</button>
+                    style={{ position:'absolute', left:12, top:'50%', transform:'translateY(-50%)', width:34, height:34, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', background:'rgba(0,0,0,.55)', backdropFilter:'blur(12px)', color:hasPrev?T.ink:T.ink3, opacity:hasPrev?1:0, border:'1px solid rgba(255,255,255,.07)', pointerEvents:hasPrev?'auto':'none', cursor:'pointer', fontSize:'var(--text-md)' }}>‹</button>
                   <button onClick={() => hasNext && setSelId(filteredPhotos[selIdx+1].id)} disabled={!hasNext}
-                    style={{ position:'absolute', right:12, top:'50%', transform:'translateY(-50%)', width:34, height:34, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', background:'rgba(0,0,0,.55)', backdropFilter:'blur(12px)', color:hasNext?T.ink:T.ink3, opacity:hasNext?1:0, border:'1px solid rgba(255,255,255,.07)', pointerEvents:hasNext?'auto':'none', cursor:'pointer', fontSize:18 }}>›</button>
+                    style={{ position:'absolute', right:12, top:'50%', transform:'translateY(-50%)', width:34, height:34, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', background:'rgba(0,0,0,.55)', backdropFilter:'blur(12px)', color:hasNext?T.ink:T.ink3, opacity:hasNext?1:0, border:'1px solid rgba(255,255,255,.07)', pointerEvents:hasNext?'auto':'none', cursor:'pointer', fontSize:'var(--text-md)' }}>›</button>
                   {/* Select toggle */}
                   {selId && (() => {
                     const isSel = selectedIds.has(selId);
@@ -3319,14 +3319,14 @@ export default function App() {
                   })()}
                   {/* Floating action bar */}
                   {selectedIds.size > 0 && (
-                    <div style={{ position:'absolute', bottom:16, left:'50%', transform:'translateX(-50%) translateX(40px)', display:'flex', alignItems:'center', gap:10, background:T.surface, border:`1px solid ${T.lineStrong}`, borderRadius:12, padding:'10px 18px', boxShadow:'0 8px 40px rgba(0,0,0,.7)', backdropFilter:'blur(12px)', zIndex:50, whiteSpace:'nowrap', animation:'slideUp .3s cubic-bezier(.2,0,0,1)' }}>
-                      <span style={{ fontSize:14, fontWeight:700, color:T.ink }}>{selectedIds.size} selected</span>
+                    <div style={{ position:'absolute', bottom:16, left:'50%', transform:'translateX(-50%) translateX(40px)', display:'flex', alignItems:'center', gap:10, background:T.surface, border:`1px solid ${T.lineStrong}`, borderRadius:'var(--r-md)', padding:'10px 18px', boxShadow:'0 8px 40px rgba(0,0,0,.7)', backdropFilter:'blur(12px)', zIndex:50, whiteSpace:'nowrap', animation:'slideUp .3s cubic-bezier(.2,0,0,1)' }}>
+                      <span style={{ fontSize:'var(--text-sm)', fontWeight:700, color:T.ink }}>{selectedIds.size} selected</span>
                       <div style={{ width:1, height:16, background:T.lineStrong }}/>
                       <Button variant="solid" onClick={handleCreateFromSelection} icon={<Layers size={11}/>}>
                         Start Sequence
                       </Button>
                       <button onClick={handleGenerate}
-                        style={{ display:'flex', alignItems:'center', gap:6, padding:'6px 14px', borderRadius:8, background:T.raised, border:`1px solid ${T.lineStrong}`, color:T.ink2, fontSize:13, fontWeight:600, cursor:'pointer' }}>
+                        style={{ display:'flex', alignItems:'center', gap:6, padding:'6px 14px', borderRadius:'var(--r-md)', background:T.raised, border:`1px solid ${T.lineStrong}`, color:T.ink2, fontSize:'var(--text-sm)', fontWeight:600, cursor:'pointer' }}>
                         <RefreshCw size={11}/> Auto
                       </button>
                     </div>
@@ -3355,9 +3355,9 @@ export default function App() {
                     style={{ width:'100%', height:'100%', objectFit:'cover', display:'block', animation:'fadeIn .32s cubic-bezier(.2,0,0,1)' }}/>
                   {isGraded && (
                     <div style={{ position:'absolute', inset:0, background:'linear-gradient(to top,rgba(0,0,0,.85) 0%,transparent 55%)', display:'flex', alignItems:'flex-end', padding:'10px 12px' }}>
-                      <div style={{ display:'flex', alignItems:'center', gap:6, background:'rgba(0,0,0,.6)', backdropFilter:'blur(8px)', borderRadius:6, padding:'6px 12px', border:`1px solid ${gc(sel.grade)}44` }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:6, background:'rgba(0,0,0,.6)', backdropFilter:'blur(8px)', borderRadius:'var(--r-md)', padding:'6px 12px', border:`1px solid ${gc(sel.grade)}44` }}>
                         <div style={{ width:8, height:8, borderRadius:'50%', background:gc(sel.grade), flexShrink:0 }}/>
-                        <span style={{ fontSize:15, fontWeight:700, color:T.ink }}>{gradeLabel(sel.grade)}</span>
+                        <span style={{ fontSize:'var(--text-md)', fontWeight:700, color:T.ink }}>{gradeLabel(sel.grade)}</span>
                       </div>
                     </div>
                   )}
@@ -3368,11 +3368,11 @@ export default function App() {
               {sel && (
                 <div style={{ flexShrink:0, padding:'10px 14px', borderBottom:`1px solid ${T.line}` }}>
                   <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:6 }}>
-                    <span style={{ flex:1, fontSize:13, fontWeight:600, color:T.ink, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                    <span style={{ flex:1, fontSize:'var(--text-sm)', fontWeight:600, color:T.ink, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
                       {sel.path.split(/[\\/]/).pop()}
                     </span>
                     <button onClick={handleCopyPath} title="Copy path"
-                      style={{ display:'flex', alignItems:'center', gap:4, padding:'4px 7px', borderRadius:5, background:copied ? T.raisedHover : T.raised, border:`1px solid ${T.lineStrong}`, color:copied ? T.gradeStrong : T.ink3, fontSize:11, cursor:'pointer', transition:'all .25s cubic-bezier(.2,0,0,1)' }}>
+                      style={{ display:'flex', alignItems:'center', gap:4, padding:'4px 7px', borderRadius:'var(--r-sm)', background:copied ? T.raisedHover : T.raised, border:`1px solid ${T.lineStrong}`, color:copied ? T.gradeStrong : T.ink3, fontSize:'var(--text-xs)', cursor:'pointer', transition:'all .25s cubic-bezier(.2,0,0,1)' }}>
                       <Copy size={10}/>{copied ? 'Copied!' : ''}
                     </button>
                   </div>
@@ -3387,7 +3387,7 @@ export default function App() {
                         const col = g.includes('Strong') ? T.gradeStrong : g.includes('Mid') ? T.ink2 : T.gradeWeak;
                         return (
                           <div key={g}
-                            style={{ flex:1, padding:'3px 0', borderRadius:5, fontSize:11, fontWeight:700,
+                            style={{ flex:1, padding:'3px 0', borderRadius:'var(--r-sm)', fontSize:'var(--text-xs)', fontWeight:700,
                               textAlign:'center', userSelect:'none', pointerEvents:'none',
                               background: isActive ? `${col}22` : 'transparent',
                               border: `1px solid ${isActive ? col : T.lineStrong}`,
@@ -3406,9 +3406,9 @@ export default function App() {
                       <button
                         onClick={() => setMainTab('duplicates')}
                         style={{ display:'flex', alignItems:'center', gap:5, marginTop:8, width:'100%',
-                          padding:'5px 10px', borderRadius:6, cursor:'pointer',
+                          padding:'5px 10px', borderRadius:'var(--r-md)', cursor:'pointer',
                           background:T.raised, border:`1px solid ${T.lineStrong}`,
-                          color:T.ink2, fontSize:11, fontWeight:600, transition:'all .22s cubic-bezier(.2,0,0,1)' }}>
+                          color:T.ink2, fontSize:'var(--text-xs)', fontWeight:600, transition:'all .22s cubic-bezier(.2,0,0,1)' }}>
                         <Layers size={10} style={{ flexShrink:0 }}/>
                         Best of {count} similar shots — view duplicates
                       </button>
@@ -3494,8 +3494,8 @@ export default function App() {
                           }}
                           title={isAuditModeActive ? 'Hide annotation overlay' : 'Show critique overlay and narrative analysis'}
                           style={{ display:'flex', alignItems:'center', gap:7, padding:'7px 13px',
-                            borderRadius:7, alignSelf:'flex-start', cursor:'pointer',
-                            fontWeight:700, fontSize:11.5, letterSpacing:'.03em',
+                            borderRadius:'var(--r-md)', alignSelf:'flex-start', cursor:'pointer',
+                            fontWeight:700, fontSize:'var(--text-xs)'.5, letterSpacing:'.03em',
                             border:`1px solid ${isAuditModeActive ? T.lineStrong : T.line}`,
                             background: isAuditModeActive ? T.raisedHover : T.raised,
                             color: isAuditModeActive ? T.ink : T.ink2,
@@ -3514,26 +3514,26 @@ export default function App() {
                         </button>
                         {/* VERIFIED badge */}
                         {sel.is_verified && (
-                          <div style={{ display:'inline-flex', alignItems:'center', gap:5, padding:'4px 10px', borderRadius:5, background:'oklch(65% .17 148 / .14)', border:'1px solid oklch(65% .17 148 / .35)', alignSelf:'flex-start' }}>
+                          <div style={{ display:'inline-flex', alignItems:'center', gap:5, padding:'4px 10px', borderRadius:'var(--r-sm)', background:'oklch(65% .17 148 / .14)', border:'1px solid oklch(65% .17 148 / .35)', alignSelf:'flex-start' }}>
                             <div style={{ width:6, height:6, borderRadius:'50%', background:T.gradeStrong }}/>
-                            <span style={{ fontSize:11, fontWeight:700, letterSpacing:'.08em', color:T.gradeStrong }}>VERIFIED</span>
+                            <span style={{ fontSize:'var(--text-xs)', fontWeight:700, letterSpacing:'.08em', color:T.gradeStrong }}>VERIFIED</span>
                           </div>
                         )}
                         {/* Tier label */}
                         {tierWord && (
                           <div style={{ display:'flex', alignItems:'center', gap:8 }}>
                             <div style={{ width:10, height:10, borderRadius:'50%', background:gradeCol, flexShrink:0 }}/>
-                            <span style={{ fontSize:20, fontWeight:800, letterSpacing:'.08em', color:gradeCol }}>{tierWord.toUpperCase()}</span>
+                            <span style={{ fontSize:'var(--text-lg)', fontWeight:800, letterSpacing:'.08em', color:gradeCol }}>{tierWord.toUpperCase()}</span>
                           </div>
                         )}
                         {/* Verdict */}
                         {verdict && (
-                          <p style={{ fontSize:12.5, color:T.ink2, lineHeight:1.7, margin:0, fontStyle:'italic' }}>{verdict}</p>
+                          <p style={{ fontSize:'var(--text-sm)'.5, color:T.ink2, lineHeight:1.7, margin:0, fontStyle:'italic' }}>{verdict}</p>
                         )}
                         {/* Per-aspect observations */}
                         {obsLines.length > 0 && (
                           <div style={{ display:'flex', flexDirection:'column', gap:1,
-                            borderRadius:8, overflow:'hidden', border:`1px solid ${T.line}` }}>
+                            borderRadius:'var(--r-md)', overflow:'hidden', border:`1px solid ${T.line}` }}>
                             {obsLines.map((line, idx) => {
                               const colon = line.indexOf(':');
                               const label = colon > 0 ? line.slice(0, colon).trim() : '';
@@ -3554,23 +3554,23 @@ export default function App() {
                                   <div style={{ display:'flex', justifyContent:'space-between',
                                     alignItems:'center', marginBottom: v !== null ? 5 : 0 }}>
                                     {label && (
-                                      <span style={{ fontSize:10, fontWeight:700,
+                                      <span style={{ fontSize:'var(--text-xs)', fontWeight:700,
                                         letterSpacing:'.08em', color:bc }}>{label.toUpperCase()}</span>
                                     )}
                                     {vpct !== null && (
-                                      <span style={{ fontSize:10, fontWeight:600, letterSpacing:'.05em', textTransform:'uppercase',
+                                      <span style={{ fontSize:'var(--text-xs)', fontWeight:600, letterSpacing:'.05em', textTransform:'uppercase',
                                         color:bc }}>{vpct >= 60 ? 'Strong' : vpct >= 41 ? 'Mid' : 'Weak'}</span>
                                     )}
                                   </div>
                                   {v !== null && (
-                                    <div style={{ height:2, background:T.ground, borderRadius:1,
+                                    <div style={{ height:2, background:T.ground, borderRadius:'var(--r-sm)',
                                       overflow:'hidden', marginBottom:6 }}>
                                       <div style={{ width:`${vpct}%`, height:'100%',
-                                        background:bc, borderRadius:1,
+                                        background:bc, borderRadius:'var(--r-sm)',
                                         transition:'width .5s cubic-bezier(.2,0,0,1)' }}/>
                                     </div>
                                   )}
-                                  <p style={{ fontSize:11.5, color:T.ink2, margin:0, lineHeight:1.6 }}>{note}</p>
+                                  <p style={{ fontSize:'var(--text-xs)'.5, color:T.ink2, margin:0, lineHeight:1.6 }}>{note}</p>
                                 </div>
                               );
                             })}
@@ -3578,7 +3578,7 @@ export default function App() {
                         )}
                         {/* Best / Weakest */}
                         {footer && (
-                          <p style={{ fontSize:11, color:T.ink3, margin:0, letterSpacing:'.02em' }}>{footer.trim()}</p>
+                          <p style={{ fontSize:'var(--text-xs)', color:T.ink3, margin:0, letterSpacing:'.02em' }}>{footer.trim()}</p>
                         )}
                         {/* Vision Critique — fast-scan bboxes + on-demand deep text */}
                         {(() => {
@@ -3601,41 +3601,41 @@ export default function App() {
                               </div>
                               {_dnarr && (
                                 <div style={{ animation:'fadeIn .4s cubic-bezier(.2,0,0,1)' }}>
-                                  <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:'.08em', color:T.ink3 }}>NARRATIVE</span>
-                                  <p style={{ fontSize:11.5, color:T.ink2, lineHeight:1.65, margin:'4px 0 0' }}>{_dnarr}</p>
+                                  <span style={{ fontSize:'var(--text-xs)'.5, fontWeight:700, letterSpacing:'.08em', color:T.ink3 }}>NARRATIVE</span>
+                                  <p style={{ fontSize:'var(--text-xs)'.5, color:T.ink2, lineHeight:1.65, margin:'4px 0 0' }}>{_dnarr}</p>
                                 </div>
                               )}
                               {_dgeo && (
                                 <div style={{ animation:'fadeIn .4s cubic-bezier(.2,0,0,1)' }}>
-                                  <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:'.08em', color:T.ink3 }}>GEOMETRY</span>
-                                  <p style={{ fontSize:11.5, color:T.ink2, lineHeight:1.65, margin:'4px 0 0' }}>{_dgeo}</p>
+                                  <span style={{ fontSize:'var(--text-xs)'.5, fontWeight:700, letterSpacing:'.08em', color:T.ink3 }}>GEOMETRY</span>
+                                  <p style={{ fontSize:'var(--text-xs)'.5, color:T.ink2, lineHeight:1.65, margin:'4px 0 0' }}>{_dgeo}</p>
                                 </div>
                               )}
                               {_qwenCritique && !_hasDeep && (
-                                <p style={{ fontSize:12, color:T.ink2, lineHeight:1.7, margin:0,
+                                <p style={{ fontSize:'var(--text-sm)', color:T.ink2, lineHeight:1.7, margin:0,
                                   fontStyle:'italic', padding:'8px 10px', background:T.raised,
-                                  borderRadius:6, border:`1px solid ${T.line}` }}>
+                                  borderRadius:'var(--r-md)', border:`1px solid ${T.line}` }}>
                                   {_qwenCritique}
                                 </p>
                               )}
                               {_vbboxes.length > 0 && (
                                 <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
-                                  <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:'.08em', color:T.ink3 }}>SPATIAL ANCHORS</span>
+                                  <span style={{ fontSize:'var(--text-xs)'.5, fontWeight:700, letterSpacing:'.08em', color:T.ink3 }}>SPATIAL ANCHORS</span>
                                   {_vbboxes.map((b, bi) => {
                                     const guide  = regionGuide(b.label);
                                     const dotCol = tierColor(guide.tier);
                                     const coach  = b.justification || guide.tip;
                                     return (
                                       <div key={bi} style={{ display:'flex', gap:8, alignItems:'flex-start',
-                                        padding:'6px 10px', background:T.raised, borderRadius:6,
+                                        padding:'6px 10px', background:T.raised, borderRadius:'var(--r-md)',
                                         border:`1px solid ${T.line}` }}>
                                         <div style={{ width:6, height:6, borderRadius:'50%',
                                           background:dotCol, flexShrink:0, marginTop:4 }}/>
                                         <div style={{ flex:1, minWidth:0 }}>
-                                          <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:'.06em',
+                                          <span style={{ fontSize:'var(--text-xs)'.5, fontWeight:700, letterSpacing:'.06em',
                                             color:dotCol }}>{`${tierIcon(guide.tier)} ${guide.title}`.toUpperCase()}</span>
                                           {coach && (
-                                            <p style={{ fontSize:11, color:T.ink2, lineHeight:1.6, margin:'2px 0 0' }}>
+                                            <p style={{ fontSize:'var(--text-xs)', color:T.ink2, lineHeight:1.6, margin:'2px 0 0' }}>
                                               {coach}
                                             </p>
                                           )}
@@ -3650,17 +3650,17 @@ export default function App() {
                         })()}
                         {/* Jury critique fallback */}
                         {!rl && juryCritique && (
-                          <div style={{ fontSize:13, color:T.ink2, lineHeight:1.75 }}>
+                          <div style={{ fontSize:'var(--text-sm)', color:T.ink2, lineHeight:1.75 }}>
                             {parseCritique(juryCritique, setCritTrigger, () => setCritTrigger(''))}
                           </div>
                         )}
                         {!rl && !juryCritique && (
                           <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-                            <p style={{ fontSize:12, color:T.ink3, lineHeight:1.7 }}>No grader analysis. Generate a jury critique:</p>
+                            <p style={{ fontSize:'var(--text-sm)', color:T.ink3, lineHeight:1.7 }}>No grader analysis. Generate a jury critique:</p>
                             <button
                               onClick={() => sel && handleJuryCritique(sel.path)}
                               disabled={juryLoading}
-                              style={{ display:'flex', alignItems:'center', gap:6, padding:'7px 14px', borderRadius:7, background:T.raised, border:`1px solid ${T.lineStrong}`, color:T.ink2, fontSize:12, fontWeight:700, cursor: juryLoading ? 'wait' : 'pointer', alignSelf:'flex-start' }}>
+                              style={{ display:'flex', alignItems:'center', gap:6, padding:'7px 14px', borderRadius:'var(--r-md)', background:T.raised, border:`1px solid ${T.lineStrong}`, color:T.ink2, fontSize:'var(--text-sm)', fontWeight:700, cursor: juryLoading ? 'wait' : 'pointer', alignSelf:'flex-start' }}>
                               {juryLoading
                                 ? <><span style={{ width:10, height:10, borderRadius:'50%', border:`1.5px solid ${T.ink3}`, borderTopColor:'transparent', animation:'spin .8s linear infinite', display:'inline-block' }}/> Generating…</>
                                 : <><Wand2 size={11}/> Write a critique</>}
@@ -3670,7 +3670,7 @@ export default function App() {
                       </div>
                     );
                   })() : (
-                    <p style={{ fontSize:12, color:T.ink3, lineHeight:1.7 }}>Grade your folder to see analysis.</p>
+                    <p style={{ fontSize:'var(--text-sm)', color:T.ink3, lineHeight:1.7 }}>Grade your folder to see analysis.</p>
                   )
                 )}
                 {infoTab === 'breakdown' && (
@@ -4095,12 +4095,12 @@ export default function App() {
                           {_checks.length > 0 && (
                             <div>
                               <div style={{ display:'flex', alignItems:'baseline', gap:8, marginBottom:8 }}>
-                                <span style={{ fontSize:9.5, fontWeight:700, letterSpacing:'.09em',
+                                <span style={{ fontSize:'var(--text-xs)'.5, fontWeight:700, letterSpacing:'.09em',
                                   textTransform:'uppercase', color:T.ink3 }}>Judge's Eye</span>
-                                <span style={{ fontSize:9.5, color:T.ink3, opacity:.6 }}>— what's working and what to fix</span>
+                                <span style={{ fontSize:'var(--text-xs)'.5, color:T.ink3, opacity:.6 }}>— what's working and what to fix</span>
                               </div>
                               <div style={{ display:'flex', flexDirection:'column',
-                                borderRadius:7, overflow:'hidden', border:`1px solid ${T.line}` }}>
+                                borderRadius:'var(--r-md)', overflow:'hidden', border:`1px solid ${T.line}` }}>
                                 {_checks.map(({ key, label, value, state, isLimit, note }, ci) => {
                                   const col = _csCol(state);
                                   const showNote = !!note && (state === 'bad' || isLimit || _tier !== 'strong');
@@ -4115,11 +4115,11 @@ export default function App() {
                                       <div style={{ display:'flex', alignItems:'center', gap:10 }}>
                                         <div style={{ width:6, height:6, borderRadius:'50%',
                                           background:col, flexShrink:0 }}/>
-                                        <span style={{ fontSize:10, fontWeight:700, letterSpacing:'.07em',
+                                        <span style={{ fontSize:'var(--text-xs)', fontWeight:700, letterSpacing:'.07em',
                                           color:T.ink3, minWidth:62, textTransform:'uppercase' }}>{label}</span>
-                                        <span style={{ fontSize:11.5, fontWeight:600, color:col }}>{value}</span>
+                                        <span style={{ fontSize:'var(--text-xs)'.5, fontWeight:600, color:col }}>{value}</span>
                                         {isLimit && (
-                                          <span style={{ marginLeft:'auto', fontSize:9, fontWeight:800,
+                                          <span style={{ marginLeft:'auto', fontSize:'var(--text-xs)', fontWeight:800,
                                             letterSpacing:'.08em', color: _tier === 'weak' ? T.gradeWeak : T.ink2,
                                             textTransform:'uppercase' }}>
                                             {_tier === 'weak' ? '↑ WHAT FAILED' : '↑ WHAT TO FIX'}
@@ -4127,7 +4127,7 @@ export default function App() {
                                         )}
                                       </div>
                                       {showNote && (
-                                        <p style={{ fontSize:10.5, color:T.ink3, lineHeight:1.55,
+                                        <p style={{ fontSize:'var(--text-xs)'.5, color:T.ink3, lineHeight:1.55,
                                           margin:'5px 0 0 16px', fontStyle:'italic' }}>
                                           {note}
                                         </p>
@@ -4179,7 +4179,7 @@ export default function App() {
                   ) : (
                     <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:8, padding:'20px 0' }}>
                       <Layers size={24} strokeWidth={1} style={{ color:T.ink3 }}/>
-                      <p style={{ fontSize:13, color:T.ink3, textAlign:'center', lineHeight:1.6 }}>Grade your folder to see breakdown.</p>
+                      <p style={{ fontSize:'var(--text-sm)', color:T.ink3, textAlign:'center', lineHeight:1.6 }}>Grade your folder to see breakdown.</p>
                     </div>
                   )
                 )}
@@ -4195,14 +4195,14 @@ export default function App() {
           <div style={{ flexShrink:0, background:T.surface, borderTop:`1px solid ${T.line}`, display:'flex', flexDirection:'column' }}>
             <div style={{ height:20, flexShrink:0, display:'flex', alignItems:'center', justifyContent:'space-between', padding:'0 12px', borderBottom:`1px solid ${T.line}` }}>
               <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                <span style={{ fontSize:10.5, color:T.ink3, fontWeight:600, letterSpacing:'.08em', textTransform:'uppercase' }}>Library</span>
+                <span style={{ fontSize:'var(--text-xs)'.5, color:T.ink3, fontWeight:600, letterSpacing:'.08em', textTransform:'uppercase' }}>Library</span>
                 {/* Tweaks toggle */}
                 <button title="Filmstrip settings" onClick={() => setShowTweaks(v => !v)}
-                  style={{ display:'flex', alignItems:'center', justifyContent:'center', width:18, height:16, cursor:'pointer', background:showTweaks ? T.raisedHover : 'transparent', color:showTweaks ? T.ink : T.ink3, border:'none', borderRadius:3, transition:'all .25s cubic-bezier(.2,0,0,1)' }}>
+                  style={{ display:'flex', alignItems:'center', justifyContent:'center', width:18, height:16, cursor:'pointer', background:showTweaks ? T.raisedHover : 'transparent', color:showTweaks ? T.ink : T.ink3, border:'none', borderRadius:'var(--r-sm)', transition:'all .25s cubic-bezier(.2,0,0,1)' }}>
                   <SlidersHorizontal size={9}/>
                 </button>
               </div>
-              <span style={{ fontSize:10.5, color:T.ink3, fontVariantNumeric:'tabular-nums', display:'flex', alignItems:'center', gap:5 }}>
+              <span style={{ fontSize:'var(--text-xs)'.5, color:T.ink3, fontVariantNumeric:'tabular-nums', display:'flex', alignItems:'center', gap:5 }}>
                 {isGrading && <span style={{ display:'inline-block', width:5, height:5, border:`1.5px solid ${T.ink3}`, borderTopColor:'transparent', borderRadius:'50%', animation:'spin .8s linear infinite' }}/>}
                 {isDone
                   ? <><span style={{ color:T.gradeStrong }}>{picks} picks</span>{'  ·  '}<span style={{ color:T.gradeWeak }}>{rejects} rejects</span>{'  ·  '}{photos.length} total</>
@@ -4213,16 +4213,16 @@ export default function App() {
             {showTweaks && (
               <div style={{ flexShrink:0, display:'flex', alignItems:'center', gap:16, padding:'6px 12px', borderBottom:`1px solid ${T.line}`, background:T.raised }}>
                 <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                  <span style={{ fontSize:11, color:T.ink3, whiteSpace:'nowrap' }}>Thumb size</span>
+                  <span style={{ fontSize:'var(--text-xs)', color:T.ink3, whiteSpace:'nowrap' }}>Thumb size</span>
                   <input type="range" min={60} max={130} step={4} value={filmThumbH}
                     onChange={e => setFilmThumbH(Number(e.target.value))}
                     style={{ width:80, accentColor:T.ink, cursor:'pointer' }}/>
-                  <span style={{ fontSize:11, color:T.ink2, fontVariantNumeric:'tabular-nums', minWidth:22 }}>{filmThumbH}</span>
+                  <span style={{ fontSize:'var(--text-xs)', color:T.ink2, fontVariantNumeric:'tabular-nums', minWidth:22 }}>{filmThumbH}</span>
                 </div>
                 <div style={{ display:'flex', alignItems:'center', gap:6 }}>
-                  <span style={{ fontSize:11, color:T.ink3 }}>Filenames</span>
+                  <span style={{ fontSize:'var(--text-xs)', color:T.ink3 }}>Filenames</span>
                   <button onClick={() => setShowFilename(v => !v)}
-                    style={{ position:'relative', width:28, height:16, borderRadius:8, border:'none', cursor:'pointer', padding:0, background:showFilename ? T.ink : T.lineStrong, transition:'background .25s ease' }}>
+                    style={{ position:'relative', width:28, height:16, borderRadius:'var(--r-md)', border:'none', cursor:'pointer', padding:0, background:showFilename ? T.ink : T.lineStrong, transition:'background .25s ease' }}>
                     <span style={{ position:'absolute', top:2, left:showFilename ? 13 : 2, width:12, height:12, borderRadius:'50%', background:'#fff', transition:'left .22s cubic-bezier(.2,0,0,1)', boxShadow:'0 1px 2px rgba(0,0,0,.3)' }}/>
                   </button>
                 </div>
@@ -4481,7 +4481,7 @@ export default function App() {
                     Sequence length
                   </label>
                   <select value={creativeCount} onChange={e => setCreativeCount(Number(e.target.value))}
-                    style={{ width:'100%', height:36, borderRadius:7, fontSize:13, fontWeight:600, cursor:'pointer',
+                    style={{ width:'100%', height:36, borderRadius:'var(--r-md)', fontSize:'var(--text-sm)', fontWeight:600, cursor:'pointer',
                       background:T.raised, border:`1px solid ${T.lineStrong}`, color:T.ink2, padding:'0 10px',
                       appearance:'auto', outline:'none' }}>
                     {[3,4,5,6,7,8,9,10].map(n => (
@@ -4492,19 +4492,19 @@ export default function App() {
 
                 {/* Reference photo */}
                 <div>
-                  <label style={{ display:'block', fontSize:11, fontWeight:700, letterSpacing:'.07em', textTransform:'uppercase', color:T.ink2, marginBottom:4 }}>
-                    Reference Photo <span style={{ fontWeight:400, textTransform:'none', letterSpacing:0, fontSize:10, color:T.ink3 }}>optional</span>
+                  <label style={{ display:'block', fontSize:'var(--text-xs)', fontWeight:700, letterSpacing:'.07em', textTransform:'uppercase', color:T.ink2, marginBottom:4 }}>
+                    Reference Photo <span style={{ fontWeight:400, textTransform:'none', letterSpacing:0, fontSize:'var(--text-xs)', color:T.ink3 }}>optional</span>
                   </label>
-                  <p style={{ fontSize:11, color:T.ink3, lineHeight:1.4, marginBottom:10 }}>Sets the visual style anchor for the sequence.</p>
+                  <p style={{ fontSize:'var(--text-xs)', color:T.ink3, lineHeight:1.4, marginBottom:10 }}>Sets the visual style anchor for the sequence.</p>
                   {creativeAnchor ? (
-                    <div style={{ position:'relative', borderRadius:9, overflow:'hidden', border:`2px solid ${T.mark}`, cursor:'pointer', boxShadow:`0 0 0 3px ${T.markDim}` }}
+                    <div style={{ position:'relative', borderRadius:'var(--r-md)', overflow:'hidden', border:`2px solid ${T.mark}`, cursor:'pointer', boxShadow:`0 0 0 3px ${T.markDim}` }}
                       onClick={()=>setCreativeAnchor(null)} title="Click to remove">
                       <img src={thumbUrl(creativeAnchor)} alt="" style={{ width:'100%', aspectRatio:'3/2', objectFit:'cover', display:'block' }}/>
                       <div className="t-label absolute left-1 top-1 rounded-sm px-1" style={{ background:T.mark, color:T.well }}>ANCHOR</div>
-                      <div style={{ position:'absolute', top:6, right:6, background:'rgba(0,0,0,.65)', backdropFilter:'blur(4px)', borderRadius:5, padding:'3px 8px', fontSize:10, color:'rgba(255,255,255,.85)', fontWeight:600 }}>✕ remove</div>
+                      <div style={{ position:'absolute', top:6, right:6, background:'rgba(0,0,0,.65)', backdropFilter:'blur(4px)', borderRadius:'var(--r-sm)', padding:'3px 8px', fontSize:'var(--text-xs)', color:'rgba(255,255,255,.85)', fontWeight:600 }}>✕ remove</div>
                     </div>
                   ) : (
-                    <div style={{ height:72, border:`2px dashed ${T.lineStrong}`, borderRadius:9, display:'flex', alignItems:'center', justifyContent:'center', gap:7, color:T.ink3, fontSize:12 }}>
+                    <div style={{ height:72, border:`2px dashed ${T.lineStrong}`, borderRadius:'var(--r-md)', display:'flex', alignItems:'center', justifyContent:'center', gap:7, color:T.ink3, fontSize:'var(--text-sm)' }}>
                       <Wand2 size={14} strokeWidth={1.5}/>
                       <span>Click a photo below to set anchor</span>
                     </div>
@@ -4514,19 +4514,19 @@ export default function App() {
                 {/* Photo picker grid */}
                 {sortedPhotos.length > 0 && (
                   <div>
-                    <p style={{ fontSize:11, color:T.ink3, marginBottom:8 }}>{sortedPhotos.length} photos · sorted by grade · click to anchor</p>
+                    <p style={{ fontSize:'var(--text-xs)', color:T.ink3, marginBottom:8 }}>{sortedPhotos.length} photos · sorted by grade · click to anchor</p>
                     <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:4 }}>
                       {sortedPhotos.map(p => {
                         const isAnchor = p.path===creativeAnchor;
                         const dc = gc(p.grade);
                         return (
                           <button key={p.id} onClick={()=>setCreativeAnchor(isAnchor?null:p.path)}
-                            style={{ position:'relative', aspectRatio:'3/2', padding:0, border:'none', borderRadius:5, overflow:'hidden', cursor:'pointer',
+                            style={{ position:'relative', aspectRatio:'3/2', padding:0, border:'none', borderRadius:'var(--r-sm)', overflow:'hidden', cursor:'pointer',
                               outline: isAnchor?`2px solid ${T.mark}`:`1px solid ${T.line}`, outlineOffset:isAnchor?2:0,
                               transform:isAnchor?'scale(1.05)':'scale(1)', transition:'transform .12s, outline .12s' }}>
                             <img src={thumbUrl(p.path)} alt="" loading="eager" style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
                             <div style={{ position:'absolute', bottom:0, left:0, right:0, height:14, background:'linear-gradient(transparent, rgba(0,0,0,.75))', display:'flex', alignItems:'center', justifyContent:'flex-end', padding:'0 4px' }}>
-                              <span style={{ fontSize:7, fontWeight:700, color:'#fff', fontVariantNumeric:'tabular-nums' }}>{Math.round(p.score*100)}</span>
+                              <span style={{ fontSize:'var(--text-xs)', fontWeight:700, color:'#fff', fontVariantNumeric:'tabular-nums' }}>{Math.round(p.score*100)}</span>
                             </div>
                             {isAnchor && (
                               <div style={{ position:'absolute', inset:0, background:T.markDim, display:'flex', alignItems:'center', justifyContent:'center' }}>
@@ -4605,11 +4605,11 @@ export default function App() {
                 <div style={{ flexShrink:0, padding:'12px 20px', borderBottom:`1px solid ${T.line}`, background:T.surface }}>
                   <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:8 }}>
                     <div style={{width:11,height:11,border:`2px solid ${T.ink3}`,borderTopColor:'transparent',borderRadius:'50%',animation:'spin .8s linear infinite',flexShrink:0}}/>
-                    <span style={{fontSize:13,color:T.ink2,fontWeight:500}}>{creativeStage||'Building sequence…'}</span>
-                    <span style={{marginLeft:'auto',fontSize:12,color:T.ink3,fontVariantNumeric:'tabular-nums'}}>{Math.round(creativeProgress*100)}%</span>
+                    <span style={{fontSize:'var(--text-sm)',color:T.ink2,fontWeight:500}}>{creativeStage||'Building sequence…'}</span>
+                    <span style={{marginLeft:'auto',fontSize:'var(--text-sm)',color:T.ink3,fontVariantNumeric:'tabular-nums'}}>{Math.round(creativeProgress*100)}%</span>
                   </div>
-                  <div style={{height:3,background:T.lineStrong,borderRadius:2,overflow:'hidden'}}>
-                    <div style={{height:'100%',width:`${Math.round(creativeProgress*100)}%`,background:T.ink3,borderRadius:2,transition:'width .4s cubic-bezier(.2,0,0,1)'}}/>
+                  <div style={{height:3,background:T.lineStrong,borderRadius:'var(--r-sm)',overflow:'hidden'}}>
+                    <div style={{height:'100%',width:`${Math.round(creativeProgress*100)}%`,background:T.ink3,borderRadius:'var(--r-sm)',transition:'width .4s cubic-bezier(.2,0,0,1)'}}/>
                   </div>
                 </div>
               )}
@@ -4619,10 +4619,10 @@ export default function App() {
                   {/* Results toolbar */}
                   <div style={{flexShrink:0, display:'flex', alignItems:'center', justifyContent:'space-between', padding:'10px 20px', borderBottom:`1px solid ${T.line}`, background:T.surface}}>
                     <div style={{display:'flex', alignItems:'center', gap:10}}>
-                      <span style={{fontSize:13, fontWeight:700}}>Story sequence</span>
-                      <span style={{fontSize:11, color:T.ink3, background:T.raised, borderRadius:4, padding:'2px 8px'}}>{successResults.length} images</span>
+                      <span style={{fontSize:'var(--text-sm)', fontWeight:700}}>Story sequence</span>
+                      <span style={{fontSize:'var(--text-xs)', color:T.ink3, background:T.raised, borderRadius:'var(--r-sm)', padding:'2px 8px'}}>{successResults.length} images</span>
                       {creativeResults.some((r:any)=>!r.success) && (
-                        <span style={{fontSize:11, color:T.gradeWeak, cursor:'default'}}
+                        <span style={{fontSize:'var(--text-xs)', color:T.gradeWeak, cursor:'default'}}
                           title={creativeResults.filter((r:any)=>!r.success).map((r:any)=>`${(r.source_path??'').split(/[\\/]/).pop()}: ${r.error??'failed'}`).join('\n')}>
                           {creativeResults.filter((r:any)=>!r.success).length} failed ⓘ
                         </span>
@@ -4631,7 +4631,7 @@ export default function App() {
                     <div style={{display:'flex', alignItems:'center', gap:8}}>
                       {!creativeLoading && (
                         <button disabled={sequenceSaving} onClick={handleSaveSequence}
-                          style={{display:'flex', alignItems:'center', gap:5, fontSize:12, fontWeight:600, padding:'4px 12px', borderRadius:6,
+                          style={{display:'flex', alignItems:'center', gap:5, fontSize:'var(--text-sm)', fontWeight:600, padding:'4px 12px', borderRadius:'var(--r-md)',
                             cursor:sequenceSaving?'wait':'pointer', background:'transparent', border:`1px solid ${T.lineStrong}`, color:T.ink2, transition:'all .15s'}}>
                           <Download size={11}/>{sequenceSaving?'Saving…':'Save Sequence'}
                         </button>
@@ -4648,11 +4648,11 @@ export default function App() {
                         const fname = (r.source_path??'').split(/[\\/]/).pop()??'';
                         const photoScore = photos.find((p:any)=>p.path===r.source_path)?.score;
                         return (
-                          <div key={i} style={{borderRadius:10, overflow:'hidden', border:`1px solid ${T.line}`, background:T.surface, display:'flex', flexDirection:'column', boxShadow:'0 2px 12px rgba(0,0,0,.25)'}}>
+                          <div key={i} style={{borderRadius:'var(--r-md)', overflow:'hidden', border:`1px solid ${T.line}`, background:T.surface, display:'flex', flexDirection:'column', boxShadow:'0 2px 12px rgba(0,0,0,.25)'}}>
                             {/* Slot header */}
                             <div style={{padding:'8px 12px', background:T.raised, borderBottom:`2px solid ${sc}`, display:'flex', alignItems:'center', gap:8}}>
-                              <span style={{fontSize:9, fontWeight:800, letterSpacing:'.12em', color:sc, textTransform:'uppercase', flex:1}}>{slot}</span>
-                              <span style={{fontSize:10, color:T.ink3, fontWeight:600, background:T.raisedHover, borderRadius:3, padding:'1px 6px'}}>
+                              <span style={{fontSize:'var(--text-xs)', fontWeight:800, letterSpacing:'.12em', color:sc, textTransform:'uppercase', flex:1}}>{slot}</span>
+                              <span style={{fontSize:'var(--text-xs)', color:T.ink3, fontWeight:600, background:T.raisedHover, borderRadius:'var(--r-sm)', padding:'1px 6px'}}>
                                 {i+1}/{successResults.length}
                               </span>
                             </div>
@@ -4663,20 +4663,20 @@ export default function App() {
                               <div style={{position:'absolute', inset:0, pointerEvents:'none',
                                 background:'linear-gradient(to bottom, transparent 55%, rgba(0,0,0,.65) 100%)'}}/>
                               <a href={photoUrl(r.output_path ?? r.source_path)} download={fname} onClick={e=>e.stopPropagation()}
-                                style={{position:'absolute', top:8, right:8, background:'rgba(0,0,0,.65)', backdropFilter:'blur(4px)', borderRadius:5, padding:'5px 8px', fontSize:10, color:'#fff', textDecoration:'none', display:'flex', alignItems:'center', gap:3, fontWeight:600, opacity:.85}}>
+                                style={{position:'absolute', top:8, right:8, background:'rgba(0,0,0,.65)', backdropFilter:'blur(4px)', borderRadius:'var(--r-sm)', padding:'5px 8px', fontSize:'var(--text-xs)', color:'#fff', textDecoration:'none', display:'flex', alignItems:'center', gap:3, fontWeight:600, opacity:.85}}>
                                 <Download size={9}/>
                               </a>
                               {photoScore!=null && (
                                 <div style={{position:'absolute', bottom:8, right:10, display:'flex', alignItems:'center', gap:3,
-                                  background:'rgba(0,0,0,.7)', backdropFilter:'blur(6px)', borderRadius:4, padding:'2px 8px'}}>
+                                  background:'rgba(0,0,0,.7)', backdropFilter:'blur(6px)', borderRadius:'var(--r-sm)', padding:'2px 8px'}}>
                                   <div style={{width:5, height:5, borderRadius:'50%', background:sc}}/>
-                                  <span style={{fontSize:12, fontWeight:800, color:'#fff', fontVariantNumeric:'tabular-nums'}}>{Math.round(photoScore*100)}</span>
+                                  <span style={{fontSize:'var(--text-sm)', fontWeight:800, color:'#fff', fontVariantNumeric:'tabular-nums'}}>{Math.round(photoScore*100)}</span>
                                 </div>
                               )}
                             </div>
                             {/* Filename */}
                             <div style={{padding:'8px 12px'}}>
-                              <span style={{fontSize:10, color:T.ink3, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', display:'block'}} title={fname}>{fname}</span>
+                              <span style={{fontSize:'var(--text-xs)', color:T.ink3, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', display:'block'}} title={fname}>{fname}</span>
                             </div>
                           </div>
                         );
@@ -4689,14 +4689,14 @@ export default function App() {
                 <div style={{flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:18, color:T.ink3, padding:40}}>
                   <Wand2 size={44} strokeWidth={1} style={{opacity:.3}}/>
                   <div style={{textAlign:'center', maxWidth:360}}>
-                    <p style={{fontSize:16, fontWeight:700, color:T.ink2, marginBottom:10}}>No sequence yet</p>
-                    <p style={{fontSize:13, lineHeight:1.75, margin:0, color:T.ink3}}>
+                    <p style={{fontSize:'var(--text-md)', fontWeight:700, color:T.ink2, marginBottom:10}}>No sequence yet</p>
+                    <p style={{fontSize:'var(--text-sm)', lineHeight:1.75, margin:0, color:T.ink3}}>
                       Write a mood brief on the left,<br/>
                       optionally pick a reference photo,<br/>
                       then press <strong className="text-ink">Build story sequence</strong>.
                     </p>
                     {photos.length===0 && (
-                      <p style={{fontSize:12, color:T.gradeWeak, marginTop:14}}>Grade a folder first to load photos.</p>
+                      <p style={{fontSize:'var(--text-sm)', color:T.gradeWeak, marginTop:14}}>Grade a folder first to load photos.</p>
                     )}
                   </div>
                 </div>
