@@ -523,15 +523,15 @@ function parseCritique(
   let key  = 0;
   let m: RegExpExecArray | null;
   const COLORS: Record<string, string> = {
-    blur:    '#60a5fa',
-    heatmap: '#fb923c',
-    grid:    '#a78bfa',
+    blur:    T.alarmWarn,
+    heatmap: T.alarmCrit,
+    grid:    T.ink2,
   };
   while ((m = RE.exec(text)) !== null) {
     if (m.index > last) nodes.push(text.slice(last, m.index));
     const typ   = m[1];
     const label = m[2];
-    const col   = COLORS[typ] ?? '#60a5fa';
+    const col   = COLORS[typ] ?? T.ink2;
     nodes.push(
       <span key={key++}
         onMouseEnter={() => onEnter(typ)}
@@ -2127,8 +2127,8 @@ export default function App() {
           </>
         ) : (
           <>
-            <div style={{ width:40, height:40, border:'3px solid #333', borderTopColor:'#7c6af7', borderRadius:'50%', animation:'spin .8s linear infinite' }}/>
-            <span style={{ fontSize:'var(--text-sm)', color:'#888', letterSpacing:'.05em' }}>Starting FrameGrade…</span>
+            <div style={{ width:40, height:40, border:`3px solid ${T.raisedHover}`, borderTopColor:T.ink3, borderRadius:'50%', animation:'spin .8s linear infinite' }}/>
+            <span style={{ fontSize:'var(--text-sm)', color:T.ink2, letterSpacing:'.05em' }}>Starting FrameGrade…</span>
           </>
         )}
       </div>
@@ -2146,7 +2146,7 @@ export default function App() {
       {dragOver && (
         <div style={{ position:'fixed', inset:8, zIndex:200, pointerEvents:'none', borderRadius:'var(--r-md)',
           display:'flex', alignItems:'center', justifyContent:'center',
-          background:'rgba(10,10,13,.88)', backdropFilter:'blur(6px)',
+          background:T.scrim, backdropFilter:'blur(6px)',
           border:`2px dashed ${T.ink3}`,
         }}>
           <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:12 }}>
@@ -2560,7 +2560,7 @@ export default function App() {
           const isIqaHeads = m === 'iqa_heads';
           const isClip     = m === 'clip_only';
           const isIdle     = m === 'idle' || !m;
-          const dot   = isIqaHeads ? '#22c55e' : isClip ? '#f59e0b' : T.ink3;
+          const dot   = isIqaHeads ? T.gradeStrong : isClip ? T.alarmWarn : T.ink3;
           const label = isIqaHeads ? 'Deep Edit' : isClip ? 'Scout Mode' : 'Ready';
           const tip   = graderStatus.last_error ? `Error: ${graderStatus.last_error}` :
                         isIqaHeads ? 'Full vision pipeline — composition, light, and moment scored' :
@@ -3313,9 +3313,9 @@ export default function App() {
                     );
                   })()}
                   <button onClick={() => hasPrev && setSelId(filteredPhotos[selIdx-1].id)} disabled={!hasPrev}
-                    style={{ position:'absolute', left:12, top:'50%', transform:'translateY(-50%)', width:34, height:34, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', background:'rgba(0,0,0,.55)', backdropFilter:'blur(12px)', color:hasPrev?T.ink:T.ink3, opacity:hasPrev?1:0, border:'1px solid rgba(255,255,255,.07)', pointerEvents:hasPrev?'auto':'none', cursor:'pointer', fontSize:'var(--text-md)' }}>‹</button>
+                    style={{ position:'absolute', left:12, top:'50%', transform:'translateY(-50%)', width:34, height:34, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', background:T.scrim, backdropFilter:'blur(12px)', color:hasPrev?T.ink:T.ink3, opacity:hasPrev?1:0, border:`1px solid ${T.lineStrong}`, pointerEvents:hasPrev?'auto':'none', cursor:'pointer', fontSize:'var(--text-md)' }}>‹</button>
                   <button onClick={() => hasNext && setSelId(filteredPhotos[selIdx+1].id)} disabled={!hasNext}
-                    style={{ position:'absolute', right:12, top:'50%', transform:'translateY(-50%)', width:34, height:34, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', background:'rgba(0,0,0,.55)', backdropFilter:'blur(12px)', color:hasNext?T.ink:T.ink3, opacity:hasNext?1:0, border:'1px solid rgba(255,255,255,.07)', pointerEvents:hasNext?'auto':'none', cursor:'pointer', fontSize:'var(--text-md)' }}>›</button>
+                    style={{ position:'absolute', right:12, top:'50%', transform:'translateY(-50%)', width:34, height:34, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', background:T.scrim, backdropFilter:'blur(12px)', color:hasNext?T.ink:T.ink3, opacity:hasNext?1:0, border:`1px solid ${T.lineStrong}`, pointerEvents:hasNext?'auto':'none', cursor:'pointer', fontSize:'var(--text-md)' }}>›</button>
                   {/* Select toggle */}
                   {selId && (() => {
                     const isSel = selectedIds.has(selId);
@@ -3333,7 +3333,7 @@ export default function App() {
                   })()}
                   {/* Floating action bar */}
                   {selectedIds.size > 0 && (
-                    <div style={{ position:'absolute', bottom:16, left:'50%', transform:'translateX(-50%) translateX(40px)', display:'flex', alignItems:'center', gap:10, background:T.surface, border:`1px solid ${T.lineStrong}`, borderRadius:'var(--r-md)', padding:'10px 18px', boxShadow:'0 8px 40px rgba(0,0,0,.7)', backdropFilter:'blur(12px)', zIndex:50, whiteSpace:'nowrap', animation:'slideUp .3s cubic-bezier(.2,0,0,1)' }}>
+                    <div style={{ position:'absolute', bottom:16, left:'50%', transform:'translateX(-50%) translateX(40px)', display:'flex', alignItems:'center', gap:10, background:T.surface, border:`1px solid ${T.lineStrong}`, borderRadius:'var(--r-md)', padding:'10px 18px', boxShadow:`0 8px 40px ${T.well}`, backdropFilter:'blur(12px)', zIndex:50, whiteSpace:'nowrap', animation:'slideUp .3s cubic-bezier(.2,0,0,1)' }}>
                       <span style={{ fontSize:'var(--text-sm)', fontWeight:700, color:T.ink }}>{selectedIds.size} selected</span>
                       <div style={{ width:1, height:16, background:T.lineStrong }}/>
                       <Button variant="solid" onClick={handleCreateFromSelection} icon={<Layers size={11}/>}>
@@ -3528,7 +3528,7 @@ export default function App() {
                         </button>
                         {/* VERIFIED badge */}
                         {sel.is_verified && (
-                          <div style={{ display:'inline-flex', alignItems:'center', gap:5, padding:'4px 10px', borderRadius:'var(--r-sm)', background:'oklch(65% .17 148 / .14)', border:'1px solid oklch(65% .17 148 / .35)', alignSelf:'flex-start' }}>
+                          <div style={{ display:'inline-flex', alignItems:'center', gap:5, padding:'4px 10px', borderRadius:'var(--r-sm)', background:T.raised, border:`1px solid ${T.gradeStrong}`, alignSelf:'flex-start' }}>
                             <div style={{ width:6, height:6, borderRadius:'50%', background:T.gradeStrong }}/>
                             <span style={{ fontSize:'var(--text-xs)', fontWeight:700, letterSpacing:'.08em', color:T.gradeStrong }}>VERIFIED</span>
                           </div>
@@ -3559,7 +3559,7 @@ export default function App() {
                               const vpct = v !== null ? Math.round(v * 100) : null;
                               const bc   = v === null ? T.ink3
                                          : v >= 0.6  ? T.gradeStrong
-                                         : v >= 0.41 ? '#f5a623' : T.gradeWeak;
+                                         : v >= 0.41 ? T.ink2 : T.gradeWeak;
                               const isLast = idx === obsLines.length - 1;
                               return (
                                 <div key={idx} style={{ padding:'10px 13px',
@@ -3989,7 +3989,7 @@ export default function App() {
                       }
 
                       const _csCol = (s: _CS) =>
-                        s === 'good' ? T.gradeStrong : s === 'ok' ? '#f5a623' : s === 'bad' ? T.gradeWeak : T.ink3;
+                        s === 'good' ? T.gradeStrong : s === 'ok' ? T.ink2 : s === 'bad' ? T.gradeWeak : T.ink3;
 
                       // ── Telemetry Tags ─────────────────────────────────────────
                       const _ARCH_TAG: Record<string,{ icon:string; detail:string }> = {
@@ -4237,7 +4237,7 @@ export default function App() {
                   <span style={{ fontSize:'var(--text-xs)', color:T.ink3 }}>Filenames</span>
                   <button onClick={() => setShowFilename(v => !v)}
                     style={{ position:'relative', width:28, height:16, borderRadius:'var(--r-md)', border:'none', cursor:'pointer', padding:0, background:showFilename ? T.ink : T.lineStrong, transition:'background .25s ease' }}>
-                    <span style={{ position:'absolute', top:2, left:showFilename ? 13 : 2, width:12, height:12, borderRadius:'50%', background:'#fff', transition:'left .22s cubic-bezier(.2,0,0,1)', boxShadow:'0 1px 2px rgba(0,0,0,.3)' }}/>
+                    <span style={{ position:'absolute', top:2, left:showFilename ? 13 : 2, width:12, height:12, borderRadius:'50%', background:T.ink, transition:'left .22s cubic-bezier(.2,0,0,1)', boxShadow:`0 1px 2px ${T.well}` }}/>
                   </button>
                 </div>
               </div>
@@ -4384,11 +4384,13 @@ export default function App() {
         /* ── Creative Direction view ───────────────────────────── */
         (() => {
           const SLOT_COLORS: Record<string,string> = {
-            Opener:   'oklch(60% .20 250)',
-            Subject:  'oklch(65% .17 148)',
-            Contrast: 'oklch(65% .20 55)',
-            Detail:   'oklch(68% .16 90)',
-            Closer:   'oklch(60% .20 290)',
+            // Sequence roles are assigned by the machine, so they read as a
+            // luminance ramp rather than five hues competing with the frames.
+            Opener:   T.ink,
+            Subject:  T.ink,
+            Contrast: T.ink2,
+            Detail:   T.ink3,
+            Closer:   T.ink2,
           };
           const slotColor = (s: string) => SLOT_COLORS[s] ?? SLOT_COLORS[(s||'').charAt(0).toUpperCase()+(s||'').slice(1)] ?? T.ink3;
           const ROLE_ORDER = ['Opener','Subject','Contrast','Detail','Closer','opener','subject','contrast','detail','closer'];
@@ -4515,7 +4517,7 @@ export default function App() {
                       onClick={()=>setCreativeAnchor(null)} title="Click to remove">
                       <img src={thumbUrl(creativeAnchor)} alt="" style={{ width:'100%', aspectRatio:'3/2', objectFit:'cover', display:'block' }}/>
                       <div className="t-label absolute left-1 top-1 rounded-sm px-1" style={{ background:T.mark, color:T.well }}>ANCHOR</div>
-                      <div style={{ position:'absolute', top:6, right:6, background:'rgba(0,0,0,.65)', backdropFilter:'blur(4px)', borderRadius:'var(--r-sm)', padding:'3px 8px', fontSize:'var(--text-xs)', color:'rgba(255,255,255,.85)', fontWeight:600 }}>✕ remove</div>
+                      <div style={{ position:'absolute', top:6, right:6, background:T.scrim, backdropFilter:'blur(4px)', borderRadius:'var(--r-sm)', padding:'3px 8px', fontSize:'var(--text-xs)', color:T.ink, fontWeight:600 }}>✕ remove</div>
                     </div>
                   ) : (
                     <div style={{ height:72, border:`2px dashed ${T.lineStrong}`, borderRadius:'var(--r-md)', display:'flex', alignItems:'center', justifyContent:'center', gap:7, color:T.ink3, fontSize:'var(--text-sm)' }}>
@@ -4539,12 +4541,12 @@ export default function App() {
                               outline: isAnchor?`2px solid ${T.mark}`:`1px solid ${T.line}`, outlineOffset:isAnchor?2:0,
                               transform:isAnchor?'scale(1.05)':'scale(1)', transition:'transform .12s, outline .12s' }}>
                             <img src={thumbUrl(p.path)} alt="" loading="eager" style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
-                            <div style={{ position:'absolute', bottom:0, left:0, right:0, height:14, background:'linear-gradient(transparent, rgba(0,0,0,.75))', display:'flex', alignItems:'center', justifyContent:'flex-end', padding:'0 4px' }}>
-                              <span style={{ fontSize:'var(--text-xs)', fontWeight:700, color:'#fff', fontVariantNumeric:'tabular-nums' }}>{Math.round(p.score*100)}</span>
+                            <div style={{ position:'absolute', bottom:0, left:0, right:0, height:14, background:`linear-gradient(transparent, ${T.scrim})`, display:'flex', alignItems:'center', justifyContent:'flex-end', padding:'0 4px' }}>
+                              <span style={{ fontSize:'var(--text-xs)', fontWeight:700, color:T.ink, fontVariantNumeric:'tabular-nums' }}>{Math.round(p.score*100)}</span>
                             </div>
                             {isAnchor && (
                               <div style={{ position:'absolute', inset:0, background:T.markDim, display:'flex', alignItems:'center', justifyContent:'center' }}>
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20,6 9,17 4,12"/></svg>
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={T.ink} strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20,6 9,17 4,12"/></svg>
                               </div>
                             )}
                           </button>
@@ -4662,7 +4664,7 @@ export default function App() {
                         const fname = (r.source_path??'').split(/[\\/]/).pop()??'';
                         const photoScore = photos.find((p:any)=>p.path===r.source_path)?.score;
                         return (
-                          <div key={i} style={{borderRadius:'var(--r-md)', overflow:'hidden', border:`1px solid ${T.line}`, background:T.surface, display:'flex', flexDirection:'column', boxShadow:'0 2px 12px rgba(0,0,0,.25)'}}>
+                          <div key={i} style={{borderRadius:'var(--r-md)', overflow:'hidden', border:`1px solid ${T.line}`, background:T.surface, display:'flex', flexDirection:'column', boxShadow:`0 2px 12px ${T.well}`}}>
                             {/* Slot header */}
                             <div style={{padding:'8px 12px', background:T.raised, borderBottom:`2px solid ${sc}`, display:'flex', alignItems:'center', gap:8}}>
                               <span style={{fontSize:'var(--text-xs)', fontWeight:800, letterSpacing:'.12em', color:sc, textTransform:'uppercase', flex:1}}>{slot}</span>
@@ -4675,16 +4677,16 @@ export default function App() {
                               <img src={photoUrl(r.source_path ?? r.output_path)} alt="" loading="eager" decoding="async"
                                 style={{width:'100%', height:'100%', objectFit:'cover', display:'block'}}/>
                               <div style={{position:'absolute', inset:0, pointerEvents:'none',
-                                background:'linear-gradient(to bottom, transparent 55%, rgba(0,0,0,.65) 100%)'}}/>
+                                background:`linear-gradient(to bottom, transparent 55%, ${T.scrim} 100%)`}}/>
                               <a href={photoUrl(r.output_path ?? r.source_path)} download={fname} onClick={e=>e.stopPropagation()}
-                                style={{position:'absolute', top:8, right:8, background:'rgba(0,0,0,.65)', backdropFilter:'blur(4px)', borderRadius:'var(--r-sm)', padding:'5px 8px', fontSize:'var(--text-xs)', color:'#fff', textDecoration:'none', display:'flex', alignItems:'center', gap:3, fontWeight:600, opacity:.85}}>
+                                style={{position:'absolute', top:8, right:8, background:T.scrim, backdropFilter:'blur(4px)', borderRadius:'var(--r-sm)', padding:'5px 8px', fontSize:'var(--text-xs)', color:T.ink, textDecoration:'none', display:'flex', alignItems:'center', gap:3, fontWeight:600, opacity:.85}}>
                                 <Download size={9}/>
                               </a>
                               {photoScore!=null && (
                                 <div style={{position:'absolute', bottom:8, right:10, display:'flex', alignItems:'center', gap:3,
-                                  background:'rgba(0,0,0,.7)', backdropFilter:'blur(6px)', borderRadius:'var(--r-sm)', padding:'2px 8px'}}>
+                                  background:T.scrim, backdropFilter:'blur(6px)', borderRadius:'var(--r-sm)', padding:'2px 8px'}}>
                                   <div style={{width:5, height:5, borderRadius:'50%', background:sc}}/>
-                                  <span style={{fontSize:'var(--text-sm)', fontWeight:800, color:'#fff', fontVariantNumeric:'tabular-nums'}}>{Math.round(photoScore*100)}</span>
+                                  <span style={{fontSize:'var(--text-sm)', fontWeight:800, color:T.ink, fontVariantNumeric:'tabular-nums'}}>{Math.round(photoScore*100)}</span>
                                 </div>
                               )}
                             </div>
