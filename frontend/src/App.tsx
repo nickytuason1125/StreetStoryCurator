@@ -113,11 +113,18 @@ const C = {
   wLow:   'oklch(58% .18 18 / .14)',
 };
 
+/* The grade vocabulary. Everything downstream inherits from these, which is why
+ * they are the first thing converted — see src/theme/tokens.ts.
+ *
+ * Mid is deliberately silent. It is the majority bucket, so an amber badge on
+ * every Mid frame put colour on most of the grid and made the machine's least
+ * confident verdict its loudest. Neutral ink and no rule instead. */
 function gc(g: string) {
-  if (g?.includes('Strong')) return C.strong;
-  if (g?.includes('Mid'))    return C.mid;
-  if (g?.includes('Weak'))   return C.weak;
-  return C.text3;
+  const k = gradeKey(g);
+  if (k === 'strong') return T.gradeStrong;
+  if (k === 'weak')   return T.gradeWeak;
+  if (k === 'mid')    return T.ink2;   // silent — neutral, never amber
+  return T.ink3;
 }
 
 /* ── Vision-critique region guide ───────────────────────────────────────────
@@ -136,22 +143,23 @@ const REGION_GUIDE: Record<string, { tier: RegionTier; title: string; tip: strin
 };
 const regionGuide = (label: string) =>
   REGION_GUIDE[label] ?? { tier: 'refine' as RegionTier, title: (label || 'region').replace(/_/g, ' '), tip: '' };
-const tierColor = (t: RegionTier) => t === 'strong' ? C.strong : t === 'fix' ? C.weak : C.mid;
+const tierColor = (t: RegionTier) =>
+  t === 'strong' ? T.gradeStrong : t === 'fix' ? T.gradeWeak : T.ink2;
 const tierIcon  = (t: RegionTier) => t === 'strong' ? '✓' : t === 'fix' ? '!' : '◐';
-// Vivid thermal palette for the soft-glow heatmap (kept distinct from theme tokens).
-const tierHeat  = (t: RegionTier) => t === 'strong' ? '#3fb950' : t === 'fix' ? '#f85149' : '#d8a657';
-function gLow(g: string) {
-  if (g?.includes('Strong')) return C.sLow;
-  if (g?.includes('Mid'))    return C.mLow;
-  if (g?.includes('Weak'))   return C.wLow;
-  return 'transparent';
-}
-function gl(g: string) {
-  if (g?.includes('Strong')) return 'Strong';
-  if (g?.includes('Mid'))    return 'Mid';
-  if (g?.includes('Weak'))   return 'Weak';
-  return 'Pending';
-}
+/* The heatmap is painted ON the photograph, so it may not reach for --mark:
+ * that colour is reserved for marks the photographer made himself. This is the
+ * one place the alarm tokens apply to image content rather than status chrome,
+ * because `fix` and `refine` flag something he actually has to act on.
+ *
+ * These were #3fb950 / #f85149 / #d8a657 — GitHub's palette, three raw hex
+ * literals sitting under a comment claiming they were "kept distinct from theme
+ * tokens". Distinct from the tokens is exactly what a stray literal is. */
+const tierHeat  = (t: RegionTier) =>
+  t === 'strong' ? T.gradeStrong : t === 'fix' ? T.alarmCrit : T.alarmWarn;
+
+/* gLow() mapped each grade to a 14% tinted badge background. Deleted: the
+ * machine's verdict is a 2px rule under the frame, not a filled badge behind
+ * text. gl() was a duplicate of gradeLabel() in theme/tokens.ts. */
 // gIcon() lived here — it mapped grades to ✅ / ⚠️ / ❌. It had no callers left,
 // and emoji-as-status is the clearest "generated interface" tell there is. The
 // grade is carried by the rule under each frame instead. Do not reintroduce it.
@@ -809,7 +817,7 @@ function AnalysisHUD({ grade, score, breakdown }: { grade: string; score: number
           color:gradeColor, textShadow:_SH, letterSpacing:'-.01em' }}>{pct}</span>
         <span style={{ fontFamily:_MONO, fontSize:11, color:_INK, textShadow:_SH, opacity:.45 }}>/100</span>
         <span style={{ fontFamily:_MONO, fontSize:11, fontWeight:700, letterSpacing:'.1em',
-          color:gradeColor, textShadow:_SH, marginLeft:4 }}>{gl(grade).toUpperCase()}</span>
+          color:gradeColor, textShadow:_SH, marginLeft:4 }}>{gradeLabel(grade).toUpperCase()}</span>
       </div>
       {/* Aspect scores as pen-ruled tick lines */}
       <div style={{ display:'flex', flexDirection:'column', gap:5 }}>
@@ -1267,7 +1275,7 @@ export default function App() {
       if (searchResults !== null && !searchResults.has(p.path)) return false; // semantic search filter
       if (!showDuplicates && redacted.has(p.path)) return false;   // non-best duplicates hidden unless toggled
       const starsOk = filterStars === null || p.stars === filterStars;
-      if (filterGrade) return gl(p.grade) === filterGrade && starsOk;
+      if (filterGrade) return gradeLabel(p.grade) === filterGrade && starsOk;
       if (carouselPaths.has(p.path)) return true;                   // sequence photos always visible when no grade filter
       return starsOk;
     });
@@ -2041,15 +2049,15 @@ export default function App() {
   useEffect(() => {
     if (!isDone && mainTab !== 'gallery') setMainTab('gallery');
   }, [isDone, mainTab]);
-  const picks     = photos.filter(p => gl(p.grade) === 'Strong' && !redacted.has(p.path)).length;
-  const mids      = photos.filter(p => gl(p.grade) === 'Mid'    && !redacted.has(p.path)).length;
+  const picks     = photos.filter(p => gradeLabel(p.grade) === 'Strong' && !redacted.has(p.path)).length;
+  const mids      = photos.filter(p => gradeLabel(p.grade) === 'Mid'    && !redacted.has(p.path)).length;
   // Paths marked as used: server flags + photos committed to any saved sequence
   const allUsedPaths = useMemo(() =>
     new Set([...Array.from(used), ...saved.flatMap(s => s.sequence.map((p: any) => p.path))]),
   [used, saved]);
-  const rejects   = photos.filter(p => gl(p.grade) === 'Weak'    && !redacted.has(p.path)).length;
+  const rejects   = photos.filter(p => gradeLabel(p.grade) === 'Weak'    && !redacted.has(p.path)).length;
   // Star counts within the current grade filter (for the filter bar labels)
-  const gradeFiltered = filterGrade ? photos.filter(p => gl(p.grade) === filterGrade) : photos;
+  const gradeFiltered = filterGrade ? photos.filter(p => gradeLabel(p.grade) === filterGrade) : photos;
   const starCounts = [0,1,2,3,4,5].map(n =>
     n === 0 ? gradeFiltered.filter(p => !p.stars).length
             : gradeFiltered.filter(p => p.stars === n).length
@@ -3385,7 +3393,7 @@ export default function App() {
                     <div style={{ position:'absolute', inset:0, background:'linear-gradient(to top,rgba(0,0,0,.85) 0%,transparent 55%)', display:'flex', alignItems:'flex-end', padding:'10px 12px' }}>
                       <div style={{ display:'flex', alignItems:'center', gap:6, background:'rgba(0,0,0,.6)', backdropFilter:'blur(8px)', borderRadius:6, padding:'6px 12px', border:`1px solid ${gc(sel.grade)}44` }}>
                         <div style={{ width:8, height:8, borderRadius:'50%', background:gc(sel.grade), flexShrink:0 }}/>
-                        <span style={{ fontSize:15, fontWeight:700, color:C.text }}>{gl(sel.grade)}</span>
+                        <span style={{ fontSize:15, fontWeight:700, color:C.text }}>{gradeLabel(sel.grade)}</span>
                       </div>
                     </div>
                   )}
@@ -3420,7 +3428,7 @@ export default function App() {
                               background: isActive ? `${col}22` : 'transparent',
                               border: `1px solid ${isActive ? col : C.bdr2}`,
                               color: isActive ? col : C.text3 }}>
-                            {gl(g)}
+                            {gradeLabel(g)}
                           </div>
                         );
                       })}
@@ -4402,7 +4410,7 @@ export default function App() {
           const slotColor = (s: string) => SLOT_COLORS[s] ?? SLOT_COLORS[(s||'').charAt(0).toUpperCase()+(s||'').slice(1)] ?? C.text3;
           const ROLE_ORDER = ['Opener','Subject','Contrast','Detail','Closer','opener','subject','contrast','detail','closer'];
           const sortedPhotos = [...photos].sort((a,b) => {
-            const r = (p:any) => gl(p.grade)==='Strong'?0:gl(p.grade)==='Mid'?1:2;
+            const r = (p:any) => gradeLabel(p.grade)==='Strong'?0:gradeLabel(p.grade)==='Mid'?1:2;
             return r(a)-r(b) || b.score-a.score;
           });
           const successResults = [...creativeResults.filter((r:any)=>r.success)]
