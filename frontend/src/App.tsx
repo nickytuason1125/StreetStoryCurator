@@ -2414,39 +2414,32 @@ export default function App() {
               )}
 
               {/* Re-grade toggle */}
-              <div style={{ display:'flex', gap:6 }}>
-                {(['all','new'] as const).map(opt => {
-                  const active = opt === 'all' ? rescanAll : !rescanAll;
-                  return (
-                    <button key={opt} onClick={() => setRescanAll(opt === 'all')}
-                      style={{ flex:1, padding:'7px 10px', borderRadius:7, fontSize:12, fontWeight:600,
-                        cursor:'pointer', border:`1px solid ${active ? C.accent : C.bdr2}`,
-                        background: active ? `${C.accent}22` : 'transparent',
-                        color: active ? C.accent : C.text2,
-                        transition:'all .15s' }}>
-                      {opt === 'all' ? 'Re-grade everything' : 'New photos only'}
-                    </button>
-                  );
-                })}
-              </div>
-              <div style={{ fontSize:11, color:C.text3, paddingLeft:2, marginTop:-6 }}>
+              <Segmented
+                value={rescanAll ? 'all' : 'new'}
+                onChange={v => setRescanAll(v === 'all')}
+                options={[
+                  { value: 'all', label: 'Re-grade everything' },
+                  { value: 'new', label: 'New photos only' },
+                ]}
+              />
+              <p className="text-xs text-ink-3">
                 {rescanAll
                   ? 'Every photo runs through the full pipeline.'
                   : 'Already-graded photos are skipped — only new additions are scored.'}
-              </div>
+              </p>
 
               {/* Niche picker */}
-              <div style={{ display:'flex', flexDirection:'column', gap:5 }}>
-                <div style={{ display:'flex', alignItems:'center', gap:7, fontSize:11, fontWeight:600, color:C.text3, letterSpacing:'.06em', textTransform:'uppercase' }}>
+              <div className="flex flex-col gap-1">
+                <div className="t-label flex items-center gap-2">
                   Photography Niche
                   {nicheDetecting && (
-                    <span style={{ display:'flex', alignItems:'center', gap:5, textTransform:'none', letterSpacing:0, fontWeight:500, color:C.text3 }}>
-                      <div style={{ width:9, height:9, borderRadius:'50%', border:'2px solid currentColor', borderTopColor:'transparent', animation:'spin .8s linear infinite' }}/>
+                    <span className="flex items-center gap-1 normal-case tracking-normal text-ink-3">
+                      <span style={{ width:9, height:9, borderRadius:'50%', border:'2px solid currentColor', borderTopColor:'transparent', animation:'spin .8s linear infinite' }}/>
                       Detecting ideal niche…
                     </span>
                   )}
                   {!nicheDetecting && nicheRec?.detected && nicheRec?.preset === preset && (
-                    <span style={{ textTransform:'none', letterSpacing:0, fontWeight:600, color:C.accent }}>
+                    <span className="normal-case tracking-normal text-ink-2">
                       ✓ auto-selected
                     </span>
                   )}
@@ -2455,9 +2448,7 @@ export default function App() {
                   value={preset}
                   aria-label="Grading niche / preset"
                   onChange={e => setPreset(e.target.value)}
-                  style={{ width:'100%', padding:'7px 10px', borderRadius:7, fontSize:13,
-                    background:C.surf2, border:`1px solid ${C.bdr2}`, color:C.text,
-                    cursor:'pointer', outline:'none' }}>
+                  className="w-full cursor-pointer rounded-sm border border-line-strong bg-raised px-2 py-1 text-sm text-ink outline-none focus-visible:border-focus">
                   {NICHE_GROUPS.map(g => (
                     <optgroup key={g.category} label={g.category}>
                       {g.niches.map(n => (
@@ -2472,20 +2463,19 @@ export default function App() {
 
               {/* Photo count */}
               {preGradeModal.photoCount > 0 && (
-                <div style={{ fontSize:12, color:C.text3, paddingLeft:2 }}>
-                  {preGradeModal.photoCount} photo{preGradeModal.photoCount !== 1 ? 's' : ''} in folder
-                </div>
+                <p className="text-xs text-ink-3">
+                  <span className="t-num">{preGradeModal.photoCount}</span> photo{preGradeModal.photoCount !== 1 ? 's' : ''} in folder
+                </p>
               )}
             </div>
 
             {/* Deep Grade toggle — default OFF = fast SigLIP zero-shot; ON = Qwen VLM */}
-            <label style={{ display:'flex', alignItems:'flex-start', gap:10, cursor:'pointer',
-              padding:'10px 12px', borderRadius:8, background:C.surf2, border:`1px solid ${C.bdr2}`, marginTop:4 }}>
+            <label className="mt-1 flex cursor-pointer items-start gap-2 rounded-sm border border-line-strong bg-raised p-2">
               <input type="checkbox" checked={deepGrade} onChange={e => setDeepGrade(e.target.checked)}
-                style={{ marginTop:2, cursor:'pointer', accentColor:C.accent }} />
+                className="mt-px cursor-pointer" style={{ accentColor: T.ink }} />
               <div>
-                <div style={{ fontSize:13, fontWeight:600, color:C.text }}>Deep grade</div>
-                <div style={{ fontSize:11, color:C.text3, marginTop:2, lineHeight:1.4 }}>
+                <div className="text-sm text-ink">Deep grade</div>
+                <div className="mt-px text-xs text-ink-3">
                   Off: fast grading — light on memory, recommended.
                   On: each photo is read in detail (more nuanced, slower, heavier on memory).
                 </div>
@@ -2496,27 +2486,23 @@ export default function App() {
             {(() => {
               const _notReady = graderStatus?.qwen_loading || graderStatus?.qwen_download_pct != null || graderStatus?.warmup_running;
               return (
-                <div style={{ display:'flex', gap:10, justifyContent:'flex-end', marginTop:4 }}>
-                  <button onClick={() => setPreGradeModal(null)}
-                    style={{ padding:'7px 18px', borderRadius:7, fontSize:13, fontWeight:600, cursor:'pointer',
-                      background:'transparent', border:`1px solid ${C.bdr2}`, color:C.text2 }}>
+                <div className="mt-1 flex justify-end gap-2">
+                  <Button onClick={() => setPreGradeModal(null)}>
                     Cancel
-                  </button>
-                  <button
+                  </Button>
+                  {/* The confirm was the accent-filled "primary" this design does
+                      not have: emphasis is luminance, so it is simply the solid
+                      variant sitting next to a bordered one. */}
+                  <Button
+                    variant="solid"
                     disabled={!!_notReady}
                     autoFocus
                     onClick={() => { setPreGradeModal(null); handleGrade(rescanAll, true); }}
-                    style={{ padding:'7px 20px', borderRadius:7, fontSize:13, fontWeight:700,
-                      cursor: _notReady ? 'not-allowed' : 'pointer',
-                      background: _notReady ? C.surf3 : C.accent,
-                      border:'none', color: _notReady ? C.text3 : '#fff',
-                      display:'flex', alignItems:'center', gap:7,
-                      transition:'background .2s, color .2s' }}>
-                    {(graderStatus?.qwen_loading || graderStatus?.warmup_running) && (
-                      <div style={{ width:10, height:10, borderRadius:'50%', border:'2px solid currentColor', borderTopColor:'transparent', animation:'spin .8s linear infinite' }}/>
-                    )}
+                    icon={(graderStatus?.qwen_loading || graderStatus?.warmup_running)
+                      ? <span style={{ width:10, height:10, borderRadius:'50%', border:'2px solid currentColor', borderTopColor:'transparent', animation:'spin .8s linear infinite' }}/>
+                      : undefined}>
                     {graderStatus?.qwen_loading ? 'Loading Engine…' : graderStatus?.warmup_running ? 'Calibrating…' : 'Start Culling'}
-                  </button>
+                  </Button>
                 </div>
               );
             })()}
