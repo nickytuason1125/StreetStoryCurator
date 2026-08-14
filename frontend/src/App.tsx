@@ -2285,7 +2285,7 @@ export default function App() {
                 <div style={{ width:120, height:6, background:T.raised, borderRadius:'var(--r-sm)', overflow:'hidden' }}>
                   <div style={{ width:`${downloadProgress}%`, height:'100%', background:T.ink3, borderRadius:'var(--r-sm)', transition:'width .3s ease' }}/>
                 </div>
-                <span style={{ fontSize:'var(--text-xs)', whiteSpace:'nowrap', color:'oklch(75% .06 25)' }}>
+                <span style={{ fontSize:'var(--text-xs)', whiteSpace:'nowrap', color:T.ink2 }}>
                   {currentDownloadModel}: {downloadProgress}% — do not close the app
                 </span>
               </div>
@@ -2296,7 +2296,7 @@ export default function App() {
                 onClick={() => setBannerDismissed(true)}
                 title="Dismiss"
                 style={{ marginLeft:'auto', flexShrink:0, background:'none', border:'none', cursor:'pointer',
-                  color: isOffline ? 'oklch(20% .04 55)' : 'oklch(55% .06 25)', fontSize:'var(--text-md)', lineHeight:1, padding:'2px 4px' }}>
+                  color: isOffline ? T.well : T.ink3, fontSize:'var(--text-md)', lineHeight:1, padding:'2px 4px' }}>
                 ✕
               </button>
             )}
@@ -2306,7 +2306,7 @@ export default function App() {
 
       {/* Pre-grade info modal */}
       {preGradeModal && (
-        <div style={{ position:'fixed', inset:0, zIndex:400, background:'rgba(0,0,0,1)', display:'flex', alignItems:'center', justifyContent:'center' }}
+        <div style={{ position:'fixed', inset:0, zIndex:400, background:T.well, display:'flex', alignItems:'center', justifyContent:'center' }}
           role="presentation"
           onClick={() => setPreGradeModal(null)}>
           <div ref={preGradeDialogRef} style={{ background:T.surface1, border:`1px solid ${T.lineStrong}`, borderRadius:'var(--r-md)', padding:'28px 32px', maxWidth:420, width:'90%', display:'flex', flexDirection:'column', gap:16 }}
@@ -2317,16 +2317,16 @@ export default function App() {
             {/* Vision Engine status */}
             <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
               {!graderStatus?.draft_available ? (
-                <div style={{ padding:'10px 14px', borderRadius:'var(--r-md)', background:'oklch(22% .12 55 / .25)', border:'1px solid oklch(52% .18 55 / .4)' }}>
-                  <div style={{ fontSize:'var(--text-sm)', fontWeight:700, color:'oklch(80% .14 55)', marginBottom:4 }}>
+                <div className="rounded-sm border border-line-strong bg-raised px-3 py-2">
+                  <div style={{ fontSize:'var(--text-sm)', fontWeight:700, color:T.ink, marginBottom:4 }}>
                     {graderStatus?.qwen_download_pct != null
                       ? `Downloading Vision Engine — ${graderStatus.qwen_download_pct}%`
                       : 'Vision Engine: downloading in background…'}
                   </div>
                   {graderStatus?.qwen_download_pct != null && (
-                    <div style={{ height:4, background:'rgba(255,255,255,.1)', borderRadius:'var(--r-sm)', overflow:'hidden', marginBottom:8 }}>
+                    <div style={{ height:4, background:T.raisedHover, borderRadius:'var(--r-sm)', overflow:'hidden', marginBottom:8 }}>
                       <div style={{ height:'100%', width:`${graderStatus.qwen_download_pct}%`,
-                        background:'oklch(70% .18 55)', borderRadius:'var(--r-sm)',
+                        background:T.ink3, borderRadius:'var(--r-sm)',
                         transition:'width .8s cubic-bezier(.2,0,0,1)' }}/>
                     </div>
                   )}
@@ -2338,8 +2338,8 @@ export default function App() {
                   </div>
                 </div>
               ) : graderStatus?.qwen_warm ? (
-                <div style={{ padding:'10px 14px', borderRadius:'var(--r-md)', background:'oklch(20% .09 145 / .3)', border:'1px solid oklch(46% .14 145 / .4)' }}>
-                  <div style={{ fontSize:'var(--text-sm)', fontWeight:700, color:'oklch(72% .16 145)', marginBottom:4 }}>Vision Engine: warm and ready</div>
+                <div className="rounded-sm border border-line-strong bg-raised px-3 py-2">
+                  <div style={{ fontSize:'var(--text-sm)', fontWeight:700, color:T.ink, marginBottom:4 }}>Vision Engine: warm and ready</div>
                   <div style={{ fontSize:'var(--text-sm)', color:T.ink2 }}>Already loaded in VRAM. Grading will start immediately.</div>
                 </div>
               ) : graderStatus?.qwen_loading ? (
@@ -2365,14 +2365,18 @@ export default function App() {
               {(sysRam || graderStatus) && (() => {
                 const r = ramReadiness(sysRam ?? graderStatus);
                 if (r.level === 'unknown') return null;
+                // clear / tight / critical maps exactly onto silent / warn / crit.
+                // "Clear to grade" needs no green tick: nothing being wrong is the
+                // expected state, so it reads as neutral and only the two states
+                // the user can act on carry a colour.
                 const card = {
-                  clear:    { bg:'oklch(20% .09 145 / .3)', border:'oklch(46% .14 145 / .4)', color:'oklch(72% .16 145)', title:`✓ System memory: clear to grade`,    body:`${r.free?.toFixed(1)} GB free — plenty of headroom for a full cull.` },
-                  tight:    { bg:'oklch(22% .12 55 / .25)',  border:'oklch(52% .18 55 / .4)',  color:'oklch(80% .14 55)',  title:`System memory: tight but OK`,       body:`${r.free?.toFixed(1)} GB free. Grading will run, but may drop to lighter CLIP scoring. Closing a few apps gives the best results.` },
-                  critical: { bg:'oklch(24% .12 25 / .3)',   border:'oklch(52% .20 25 / .5)',  color:'oklch(80% .16 25)',  title:`Low system memory`,                body:`Only ${r.free?.toFixed(1)} GB free — below the ~${(sysRam?.ram_min_gb ?? graderStatus?.ram_min_gb ?? 1.8)} GB needed. Close some apps before grading or the cull may be refused.` },
+                  clear:    { accent:T.ink,       edge:T.lineStrong, title:`System memory: clear to grade`, body:`${r.free?.toFixed(1)} GB free — plenty of headroom for a full cull.` },
+                  tight:    { accent:T.alarmWarn, edge:T.alarmWarn,  title:`System memory: tight but OK`,   body:`${r.free?.toFixed(1)} GB free. Grading will run, but may drop to lighter CLIP scoring. Closing a few apps gives the best results.` },
+                  critical: { accent:T.alarmCrit, edge:T.alarmCrit,  title:`Low system memory`,             body:`Only ${r.free?.toFixed(1)} GB free — below the ~${(sysRam?.ram_min_gb ?? graderStatus?.ram_min_gb ?? 1.8)} GB needed. Close some apps before grading or the cull may be refused.` },
                 }[r.level]!;
                 return (
-                  <div style={{ padding:'10px 14px', borderRadius:'var(--r-md)', background:card.bg, border:`1px solid ${card.border}` }}>
-                    <div style={{ fontSize:'var(--text-sm)', fontWeight:700, color:card.color, marginBottom:4 }}>{card.title}</div>
+                  <div className="rounded-sm border bg-raised px-3 py-2" style={{ borderColor:card.edge }}>
+                    <div style={{ fontSize:'var(--text-sm)', fontWeight:700, color:card.accent, marginBottom:4 }}>{card.title}</div>
                     <div style={{ fontSize:'var(--text-sm)', color:T.ink2, lineHeight:1.5 }}>{card.body}</div>
                   </div>
                 );
@@ -2381,8 +2385,8 @@ export default function App() {
               {/* One-time INT4 quantisation disclaimer — only until the
                   pre-quantised cache exists on disk */}
               {graderStatus?.draft_available && !graderStatus?.qwen_int4_cached && !graderStatus?.qwen_warm && (
-                <div style={{ padding:'10px 14px', borderRadius:'var(--r-md)', background:'oklch(22% .12 55 / .25)', border:'1px solid oklch(52% .18 55 / .4)' }}>
-                  <div style={{ fontSize:'var(--text-sm)', fontWeight:700, color:'oklch(80% .14 55)', marginBottom:4 }}>
+                <div className="rounded-sm border border-line-strong bg-raised px-3 py-2">
+                  <div style={{ fontSize:'var(--text-sm)', fontWeight:700, color:T.ink, marginBottom:4 }}>
                     First cull: one-time engine optimisation
                   </div>
                   <div style={{ fontSize:'var(--text-sm)', color:T.ink2, lineHeight:1.5 }}>
@@ -2395,19 +2399,18 @@ export default function App() {
 
               {/* Pipeline calibration warmup status */}
               {graderStatus?.warmup_running && (
-                <div style={{ padding:'10px 14px', borderRadius:'var(--r-md)', background:'oklch(20% .08 270 / .3)', border:'1px solid oklch(52% .14 270 / .35)' }}>
+                <div className="rounded-sm border border-line-strong bg-raised px-3 py-2">
                   <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}>
-                    <div style={{ width:9, height:9, borderRadius:'50%', border:'2px solid oklch(70% .16 270)', borderTopColor:'transparent', animation:'spin .8s linear infinite', flexShrink:0 }}/>
-                    <span style={{ fontSize:'var(--text-sm)', fontWeight:700, color:'oklch(74% .14 270)' }}>Calibrating pipeline…</span>
+                    <div style={{ width:9, height:9, borderRadius:'50%', border:`2px solid ${T.ink3}`, borderTopColor:'transparent', animation:'spin .8s linear infinite', flexShrink:0 }}/>
+                    <span style={{ fontSize:'var(--text-sm)', fontWeight:700, color:T.ink }}>Calibrating pipeline…</span>
                   </div>
                   <div style={{ fontSize:'var(--text-sm)', color:T.ink2 }}>Running your best photos through the engine to warm up CUDA kernels. Start Culling will unlock when done.</div>
                 </div>
               )}
               {graderStatus?.warmup_done && !graderStatus?.warmup_running && (
-                <div style={{ display:'flex', alignItems:'center', gap:7, padding:'8px 12px', borderRadius:'var(--r-md)',
-                  background:'oklch(20% .09 145 / .2)', border:'1px solid oklch(46% .14 145 / .3)' }}>
-                  <div style={{ width:7, height:7, borderRadius:'50%', background:'oklch(64% .18 145)', flexShrink:0 }}/>
-                  <span style={{ fontSize:'var(--text-sm)', color:'oklch(70% .14 145)' }}>Pipeline calibrated — first cull of this session will be fast</span>
+                <div className="flex items-center gap-2 rounded-sm border border-line-strong bg-raised px-3 py-2">
+                  <div style={{ width:7, height:7, borderRadius:'50%', background:T.ink3, flexShrink:0 }}/>
+                  <span style={{ fontSize:'var(--text-sm)', color:T.ink2 }}>Pipeline calibrated — first cull of this session will be fast</span>
                 </div>
               )}
 
