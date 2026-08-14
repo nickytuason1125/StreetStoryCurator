@@ -23,6 +23,9 @@ try {
     )
   })
 } catch (err) {
-  document.body.style.cssText = 'margin:0;background:#0e0e13;color:#ff6b6b;font-family:monospace;padding:20px'
+  // Safe to use tokens here: tokens.css is imported above, so the custom
+  // properties are already applied even though React never mounted.
+  document.body.style.cssText =
+    'margin:0;background:var(--well);color:var(--alarm-crit);font-family:var(--font-mono);padding:var(--sp-4)'
   document.body.innerHTML = '<h2>Render error</h2><pre>' + String(err) + '</pre>'
 }

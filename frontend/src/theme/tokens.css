@@ -97,6 +97,11 @@
   --r-sm: 2px;  /* default: cells, inputs, buttons                             */
   --r-md: 6px;  /* modals, pills. There is no third radius.                    */
 
+  /* Not a third step — a shape. Dots, spinners and avatars are circles, and a
+   * circle is 50% rather than a large radius. Named so the guard can tell the
+   * difference between "a circle" and "someone invented rounded-14px". */
+  --r-round: 50%;
+
   --sp-1: 4px;
   --sp-2: 8px;
   --sp-3: 12px;

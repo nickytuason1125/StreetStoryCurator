@@ -40,35 +40,40 @@ export default class ErrorBoundary extends Component<Props, State> {
     if (!error) return this.props.children
 
     return (
+      // Tokens are safe here even though the tree failed to render: tokens.css
+      // is imported in main.tsx before React mounts, so the custom properties
+      // are on :root regardless of what threw.
       <div style={{
         position: 'fixed', inset: 0, overflow: 'auto', zIndex: 99999,
-        background: '#0b0e14', color: '#e5e7eb',
-        font: '13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace',
-        padding: '32px 40px',
+        background: 'var(--well)', color: 'var(--ink)',
+        font: 'var(--text-sm)/1.5 var(--font-mono)',
+        padding: 'var(--sp-8) var(--sp-12)',
       }}>
-        <h2 style={{ color: '#ff6b6b', fontSize: 18, margin: '0 0 8px' }}>
+        <h2 style={{ color: 'var(--alarm-crit)', fontSize: 'var(--text-md)', margin: '0 0 var(--sp-2)' }}>
           Something broke while rendering
         </h2>
-        <p style={{ color: '#9ca3af', margin: '0 0 20px' }}>
+        <p style={{ color: 'var(--ink-2)', margin: '0 0 var(--sp-4)' }}>
           The app hit an error and stopped drawing this screen. Your graded photos are safe —
           try “Back to gallery”, or reload if that doesn’t help.
         </p>
-        <div style={{ display: 'flex', gap: 10, marginBottom: 24 }}>
+        <div style={{ display: 'flex', gap: 'var(--sp-2)', marginBottom: 'var(--sp-6)' }}>
+          {/* Emphasis by luminance, not hue — the recovery action is not a
+              destructive one, and the accent is reserved regardless. */}
           <button onClick={this.reset}
-            style={{ padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer',
-              background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 8 }}>
+            style={{ padding: 'var(--sp-2) var(--sp-4)', fontSize: 'var(--text-sm)', fontWeight: 600, cursor: 'pointer',
+              background: 'var(--raised)', color: 'var(--ink)', border: '1px solid var(--line-strong)', borderRadius: 'var(--r-sm)' }}>
             Back to gallery
           </button>
           <button onClick={() => window.location.reload()}
-            style={{ padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer',
-              background: 'transparent', color: '#e5e7eb', border: '1px solid #374151', borderRadius: 8 }}>
+            style={{ padding: 'var(--sp-2) var(--sp-4)', fontSize: 'var(--text-sm)', fontWeight: 600, cursor: 'pointer',
+              background: 'transparent', color: 'var(--ink-2)', border: '1px solid var(--line-strong)', borderRadius: 'var(--r-sm)' }}>
             Reload app
           </button>
         </div>
-        <div style={{ color: '#ff8a8a', fontWeight: 600, marginBottom: 6 }}>
+        <div style={{ color: 'var(--alarm-crit)', fontWeight: 600, marginBottom: 'var(--sp-1)' }}>
           {String(error.message ?? error)}
         </div>
-        <pre style={{ whiteSpace: 'pre-wrap', color: '#9ca3af', margin: 0 }}>
+        <pre style={{ whiteSpace: 'pre-wrap', color: 'var(--ink-2)', margin: 0 }}>
           {error.stack ?? ''}
           {info?.componentStack ?? ''}
         </pre>

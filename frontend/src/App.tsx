@@ -2127,7 +2127,7 @@ export default function App() {
           </>
         ) : (
           <>
-            <div style={{ width:40, height:40, border:`3px solid ${T.raisedHover}`, borderTopColor:T.ink3, borderRadius:'50%', animation:'spin .8s linear infinite' }}/>
+            <div style={{ width:40, height:40, border:`3px solid ${T.raisedHover}`, borderTopColor:T.ink3, borderRadius:'var(--r-round)', animation:'spin .8s linear infinite' }}/>
             <span style={{ fontSize:'var(--text-sm)', color:T.ink2, letterSpacing:'.05em' }}>Starting FrameGrade…</span>
           </>
         )}
@@ -2348,7 +2348,7 @@ export default function App() {
               ) : graderStatus?.qwen_loading ? (
                 <div className="rounded-sm border border-line-strong bg-raised px-3 py-2">
                   <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
-                    <div style={{ width:10, height:10, borderRadius:'50%', border:`2px solid ${T.ink3}`, borderTopColor:'transparent', animation:'spin .8s linear infinite', flexShrink:0 }}/>
+                    <div style={{ width:10, height:10, borderRadius:'var(--r-round)', border:`2px solid ${T.ink3}`, borderTopColor:'transparent', animation:'spin .8s linear infinite', flexShrink:0 }}/>
                     <span className="text-sm text-ink">Vision Engine: loading into VRAM…</span>
                   </div>
                   <div style={{ fontSize:'var(--text-sm)', color:T.ink2 }}>
@@ -2404,7 +2404,7 @@ export default function App() {
               {graderStatus?.warmup_running && (
                 <div className="rounded-sm border border-line-strong bg-raised px-3 py-2">
                   <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}>
-                    <div style={{ width:9, height:9, borderRadius:'50%', border:`2px solid ${T.ink3}`, borderTopColor:'transparent', animation:'spin .8s linear infinite', flexShrink:0 }}/>
+                    <div style={{ width:9, height:9, borderRadius:'var(--r-round)', border:`2px solid ${T.ink3}`, borderTopColor:'transparent', animation:'spin .8s linear infinite', flexShrink:0 }}/>
                     <span style={{ fontSize:'var(--text-sm)', fontWeight:700, color:T.ink }}>Calibrating pipeline…</span>
                   </div>
                   <div style={{ fontSize:'var(--text-sm)', color:T.ink2 }}>Running your best photos through the engine to warm up CUDA kernels. Start Culling will unlock when done.</div>
@@ -2412,7 +2412,7 @@ export default function App() {
               )}
               {graderStatus?.warmup_done && !graderStatus?.warmup_running && (
                 <div className="flex items-center gap-2 rounded-sm border border-line-strong bg-raised px-3 py-2">
-                  <div style={{ width:7, height:7, borderRadius:'50%', background:T.ink3, flexShrink:0 }}/>
+                  <div style={{ width:7, height:7, borderRadius:'var(--r-round)', background:T.ink3, flexShrink:0 }}/>
                   <span style={{ fontSize:'var(--text-sm)', color:T.ink2 }}>Pipeline calibrated — first cull of this session will be fast</span>
                 </div>
               )}
@@ -2438,7 +2438,7 @@ export default function App() {
                   Photography Niche
                   {nicheDetecting && (
                     <span className="flex items-center gap-1 normal-case tracking-normal text-ink-3">
-                      <span style={{ width:9, height:9, borderRadius:'50%', border:'2px solid currentColor', borderTopColor:'transparent', animation:'spin .8s linear infinite' }}/>
+                      <span style={{ width:9, height:9, borderRadius:'var(--r-round)', border:'2px solid currentColor', borderTopColor:'transparent', animation:'spin .8s linear infinite' }}/>
                       Detecting ideal niche…
                     </span>
                   )}
@@ -2503,7 +2503,7 @@ export default function App() {
                     autoFocus
                     onClick={() => { setPreGradeModal(null); handleGrade(rescanAll, true); }}
                     icon={(graderStatus?.qwen_loading || graderStatus?.warmup_running)
-                      ? <span style={{ width:10, height:10, borderRadius:'50%', border:'2px solid currentColor', borderTopColor:'transparent', animation:'spin .8s linear infinite' }}/>
+                      ? <span style={{ width:10, height:10, borderRadius:'var(--r-round)', border:'2px solid currentColor', borderTopColor:'transparent', animation:'spin .8s linear infinite' }}/>
                       : undefined}>
                     {graderStatus?.qwen_loading ? 'Loading Engine…' : graderStatus?.warmup_running ? 'Calibrating…' : 'Start Culling'}
                   </Button>
@@ -2821,7 +2821,7 @@ export default function App() {
           if (!warmMsg) return null;
           return (
             <div style={{ padding:'3px 14px 4px', fontSize:'var(--text-xs)', color:T.ink3, borderBottom:`1px solid ${T.line}`, display:'flex', gap:7, alignItems:'center', animation:'fadeIn .4s cubic-bezier(.2,0,0,1)' }}>
-              <div style={{ width:9, height:9, borderRadius:'50%', border:'2px solid currentColor', borderTopColor:'transparent', animation:'spin .8s linear infinite' }}/>
+              <div style={{ width:9, height:9, borderRadius:'var(--r-round)', border:'2px solid currentColor', borderTopColor:'transparent', animation:'spin .8s linear infinite' }}/>
               <span>{warmMsg}</span>
             </div>
           );
@@ -3301,7 +3301,7 @@ export default function App() {
                           const c = tierHeat(t);
                           return (
                             <div key={t} style={{ display:'flex', alignItems:'center', gap:7 }}>
-                              <span style={{ width:11, height:11, borderRadius:'50%', flexShrink:0,
+                              <span style={{ width:11, height:11, borderRadius:'var(--r-round)', flexShrink:0,
                                 background:`radial-gradient(circle, ${c} 0%, transparent 100%)`,
                                 boxShadow:`0 0 6px ${c}` }}/>
                               <span style={{ fontSize:'var(--text-xs)', color:T.ink }}>{l}</span>
@@ -3313,9 +3313,9 @@ export default function App() {
                     );
                   })()}
                   <button onClick={() => hasPrev && setSelId(filteredPhotos[selIdx-1].id)} disabled={!hasPrev}
-                    style={{ position:'absolute', left:12, top:'50%', transform:'translateY(-50%)', width:34, height:34, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', background:T.scrim, backdropFilter:'blur(12px)', color:hasPrev?T.ink:T.ink3, opacity:hasPrev?1:0, border:`1px solid ${T.lineStrong}`, pointerEvents:hasPrev?'auto':'none', cursor:'pointer', fontSize:'var(--text-md)' }}>‹</button>
+                    style={{ position:'absolute', left:12, top:'50%', transform:'translateY(-50%)', width:34, height:34, borderRadius:'var(--r-round)', display:'flex', alignItems:'center', justifyContent:'center', background:T.scrim, backdropFilter:'blur(12px)', color:hasPrev?T.ink:T.ink3, opacity:hasPrev?1:0, border:`1px solid ${T.lineStrong}`, pointerEvents:hasPrev?'auto':'none', cursor:'pointer', fontSize:'var(--text-md)' }}>‹</button>
                   <button onClick={() => hasNext && setSelId(filteredPhotos[selIdx+1].id)} disabled={!hasNext}
-                    style={{ position:'absolute', right:12, top:'50%', transform:'translateY(-50%)', width:34, height:34, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', background:T.scrim, backdropFilter:'blur(12px)', color:hasNext?T.ink:T.ink3, opacity:hasNext?1:0, border:`1px solid ${T.lineStrong}`, pointerEvents:hasNext?'auto':'none', cursor:'pointer', fontSize:'var(--text-md)' }}>›</button>
+                    style={{ position:'absolute', right:12, top:'50%', transform:'translateY(-50%)', width:34, height:34, borderRadius:'var(--r-round)', display:'flex', alignItems:'center', justifyContent:'center', background:T.scrim, backdropFilter:'blur(12px)', color:hasNext?T.ink:T.ink3, opacity:hasNext?1:0, border:`1px solid ${T.lineStrong}`, pointerEvents:hasNext?'auto':'none', cursor:'pointer', fontSize:'var(--text-md)' }}>›</button>
                   {/* Select toggle */}
                   {selId && (() => {
                     const isSel = selectedIds.has(selId);
@@ -3370,7 +3370,7 @@ export default function App() {
                   {isGraded && (
                     <div style={{ position:'absolute', inset:0, background:`linear-gradient(to top,${T.scrim} 0%,transparent 55%)`, display:'flex', alignItems:'flex-end', padding:'10px 12px' }}>
                       <div style={{ display:'flex', alignItems:'center', gap:6, background:T.scrim, backdropFilter:'blur(8px)', borderRadius:'var(--r-md)', padding:'6px 12px', border:`1px solid ${gc(sel.grade)}` }}>
-                        <div style={{ width:8, height:8, borderRadius:'50%', background:gc(sel.grade), flexShrink:0 }}/>
+                        <div style={{ width:8, height:8, borderRadius:'var(--r-round)', background:gc(sel.grade), flexShrink:0 }}/>
                         <span style={{ fontSize:'var(--text-md)', fontWeight:700, color:T.ink }}>{gradeLabel(sel.grade)}</span>
                       </div>
                     </div>
@@ -3517,26 +3517,26 @@ export default function App() {
                           {isAuditModeActive ? <EyeOff size={12}/> : <Eye size={12}/>}
                           {isAuditModeActive ? 'Hide Critique' : 'Vision Critique'}
                           {deepCritiqueLoading && (
-                            <span style={{ width:8, height:8, borderRadius:'50%',
+                            <span style={{ width:8, height:8, borderRadius:'var(--r-round)',
                               border:'1.5px solid currentColor', borderTopColor:'transparent',
                               animation:'spin .8s linear infinite', display:'inline-block' }}/>
                           )}
                           {!deepCritiqueLoading && isAuditModeActive && reasoningOverlayUrl && (
-                            <span style={{ width:5, height:5, borderRadius:'50%',
+                            <span style={{ width:5, height:5, borderRadius:'var(--r-round)',
                               background:T.gradeStrong, flexShrink:0 }}/>
                           )}
                         </button>
                         {/* VERIFIED badge */}
                         {sel.is_verified && (
                           <div style={{ display:'inline-flex', alignItems:'center', gap:5, padding:'4px 10px', borderRadius:'var(--r-sm)', background:T.raised, border:`1px solid ${T.gradeStrong}`, alignSelf:'flex-start' }}>
-                            <div style={{ width:6, height:6, borderRadius:'50%', background:T.gradeStrong }}/>
+                            <div style={{ width:6, height:6, borderRadius:'var(--r-round)', background:T.gradeStrong }}/>
                             <span style={{ fontSize:'var(--text-xs)', fontWeight:700, letterSpacing:'.08em', color:T.gradeStrong }}>VERIFIED</span>
                           </div>
                         )}
                         {/* Tier label */}
                         {tierWord && (
                           <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                            <div style={{ width:10, height:10, borderRadius:'50%', background:gradeCol, flexShrink:0 }}/>
+                            <div style={{ width:10, height:10, borderRadius:'var(--r-round)', background:gradeCol, flexShrink:0 }}/>
                             <span style={{ fontSize:'var(--text-lg)', fontWeight:800, letterSpacing:'.08em', color:gradeCol }}>{tierWord.toUpperCase()}</span>
                           </div>
                         )}
@@ -3643,7 +3643,7 @@ export default function App() {
                                       <div key={bi} style={{ display:'flex', gap:8, alignItems:'flex-start',
                                         padding:'6px 10px', background:T.raised, borderRadius:'var(--r-md)',
                                         border:`1px solid ${T.line}` }}>
-                                        <div style={{ width:6, height:6, borderRadius:'50%',
+                                        <div style={{ width:6, height:6, borderRadius:'var(--r-round)',
                                           background:dotCol, flexShrink:0, marginTop:4 }}/>
                                         <div style={{ flex:1, minWidth:0 }}>
                                           <span style={{ fontSize:'var(--text-xs)', fontWeight:700, letterSpacing:'.06em',
@@ -3676,7 +3676,7 @@ export default function App() {
                               disabled={juryLoading}
                               style={{ display:'flex', alignItems:'center', gap:6, padding:'7px 14px', borderRadius:'var(--r-md)', background:T.raised, border:`1px solid ${T.lineStrong}`, color:T.ink2, fontSize:'var(--text-sm)', fontWeight:700, cursor: juryLoading ? 'wait' : 'pointer', alignSelf:'flex-start' }}>
                               {juryLoading
-                                ? <><span style={{ width:10, height:10, borderRadius:'50%', border:`1.5px solid ${T.ink3}`, borderTopColor:'transparent', animation:'spin .8s linear infinite', display:'inline-block' }}/> Generating…</>
+                                ? <><span style={{ width:10, height:10, borderRadius:'var(--r-round)', border:`1.5px solid ${T.ink3}`, borderTopColor:'transparent', animation:'spin .8s linear infinite', display:'inline-block' }}/> Generating…</>
                                 : <><Wand2 size={11}/> Write a critique</>}
                             </button>
                           </div>
@@ -4127,7 +4127,7 @@ export default function App() {
                                         : ci % 2 === 0 ? T.raised : T.ground,
                                       borderBottom: ci < _checks.length - 1 ? `1px solid ${T.line}` : 'none' }}>
                                       <div style={{ display:'flex', alignItems:'center', gap:10 }}>
-                                        <div style={{ width:6, height:6, borderRadius:'50%',
+                                        <div style={{ width:6, height:6, borderRadius:'var(--r-round)',
                                           background:col, flexShrink:0 }}/>
                                         <span style={{ fontSize:'var(--text-xs)', fontWeight:700, letterSpacing:'.07em',
                                           color:T.ink3, minWidth:62, textTransform:'uppercase' }}>{label}</span>
@@ -4217,7 +4217,7 @@ export default function App() {
                 </button>
               </div>
               <span style={{ fontSize:'var(--text-xs)', color:T.ink3, fontVariantNumeric:'tabular-nums', display:'flex', alignItems:'center', gap:5 }}>
-                {isGrading && <span style={{ display:'inline-block', width:5, height:5, border:`1.5px solid ${T.ink3}`, borderTopColor:'transparent', borderRadius:'50%', animation:'spin .8s linear infinite' }}/>}
+                {isGrading && <span style={{ display:'inline-block', width:5, height:5, border:`1.5px solid ${T.ink3}`, borderTopColor:'transparent', borderRadius:'var(--r-round)', animation:'spin .8s linear infinite' }}/>}
                 {isDone
                   ? <><span style={{ color:T.gradeStrong }}>{picks} picks</span>{'  ·  '}<span style={{ color:T.gradeWeak }}>{rejects} rejects</span>{'  ·  '}{photos.length} total</>
                   : `${photos.length} photos`}
@@ -4237,7 +4237,7 @@ export default function App() {
                   <span style={{ fontSize:'var(--text-xs)', color:T.ink3 }}>Filenames</span>
                   <button onClick={() => setShowFilename(v => !v)}
                     style={{ position:'relative', width:28, height:16, borderRadius:'var(--r-md)', border:'none', cursor:'pointer', padding:0, background:showFilename ? T.ink : T.lineStrong, transition:'background .25s ease' }}>
-                    <span style={{ position:'absolute', top:2, left:showFilename ? 13 : 2, width:12, height:12, borderRadius:'50%', background:T.ink, transition:'left .22s cubic-bezier(.2,0,0,1)', boxShadow:`0 1px 2px ${T.well}` }}/>
+                    <span style={{ position:'absolute', top:2, left:showFilename ? 13 : 2, width:12, height:12, borderRadius:'var(--r-round)', background:T.ink, transition:'left .22s cubic-bezier(.2,0,0,1)', boxShadow:`0 1px 2px ${T.well}` }}/>
                   </button>
                 </div>
               </div>
@@ -4620,7 +4620,7 @@ export default function App() {
               {creativeLoading && (
                 <div style={{ flexShrink:0, padding:'12px 20px', borderBottom:`1px solid ${T.line}`, background:T.surface }}>
                   <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:8 }}>
-                    <div style={{width:11,height:11,border:`2px solid ${T.ink3}`,borderTopColor:'transparent',borderRadius:'50%',animation:'spin .8s linear infinite',flexShrink:0}}/>
+                    <div style={{width:11,height:11,border:`2px solid ${T.ink3}`,borderTopColor:'transparent',borderRadius:'var(--r-round)',animation:'spin .8s linear infinite',flexShrink:0}}/>
                     <span style={{fontSize:'var(--text-sm)',color:T.ink2,fontWeight:500}}>{creativeStage||'Building sequence…'}</span>
                     <span style={{marginLeft:'auto',fontSize:'var(--text-sm)',color:T.ink3,fontVariantNumeric:'tabular-nums'}}>{Math.round(creativeProgress*100)}%</span>
                   </div>
@@ -4685,7 +4685,7 @@ export default function App() {
                               {photoScore!=null && (
                                 <div style={{position:'absolute', bottom:8, right:10, display:'flex', alignItems:'center', gap:3,
                                   background:T.scrim, backdropFilter:'blur(6px)', borderRadius:'var(--r-sm)', padding:'2px 8px'}}>
-                                  <div style={{width:5, height:5, borderRadius:'50%', background:sc}}/>
+                                  <div style={{width:5, height:5, borderRadius:'var(--r-round)', background:sc}}/>
                                   <span style={{fontSize:'var(--text-sm)', fontWeight:800, color:T.ink, fontVariantNumeric:'tabular-nums'}}>{Math.round(photoScore*100)}</span>
                                 </div>
                               )}
