@@ -2233,7 +2233,7 @@ export default function App() {
               <>
                 {/* Generic error */}
                 {downloadError && !isDownloading && (
-                  <span style={{ fontSize:'var(--text-xs)'.5, color:'oklch(72% .18 25)', fontWeight:600, flex:1, minWidth:0 }}>
+                  <span style={{ fontSize:'var(--text-xs)', color:'oklch(72% .18 25)', fontWeight:600, flex:1, minWidth:0 }}>
                     ✕ {downloadError}
                   </span>
                 )}
@@ -2776,7 +2776,7 @@ export default function App() {
           // on change while the counter updates in place per photo.
           const _count = (gradeDesc.match(/\d+\s*\/\s*\d+/) || [])[0] || '';
           return (
-            <div key={toSlogan(gradeDesc)} style={{ padding:'3px 14px 4px', fontSize:'var(--text-xs)'.5, color:T.ink3, fontStyle:'italic', borderBottom:`1px solid ${T.line}`, animation:'fadeIn .4s cubic-bezier(.2,0,0,1)', display:'flex', gap:8, alignItems:'baseline', justifyContent:'space-between' }}>
+            <div key={toSlogan(gradeDesc)} style={{ padding:'3px 14px 4px', fontSize:'var(--text-xs)', color:T.ink3, fontStyle:'italic', borderBottom:`1px solid ${T.line}`, animation:'fadeIn .4s cubic-bezier(.2,0,0,1)', display:'flex', gap:8, alignItems:'baseline', justifyContent:'space-between' }}>
               <span>{toSlogan(gradeDesc)}</span>
               <span style={{ display:'flex', gap:8, alignItems:'baseline', flexShrink:0 }}>
                 {/* Quality tier actually used for this run. The app picks the
@@ -2806,7 +2806,7 @@ export default function App() {
             null;
           if (!warmMsg) return null;
           return (
-            <div style={{ padding:'3px 14px 4px', fontSize:'var(--text-xs)'.5, color:T.ink3, borderBottom:`1px solid ${T.line}`, display:'flex', gap:7, alignItems:'center', animation:'fadeIn .4s cubic-bezier(.2,0,0,1)' }}>
+            <div style={{ padding:'3px 14px 4px', fontSize:'var(--text-xs)', color:T.ink3, borderBottom:`1px solid ${T.line}`, display:'flex', gap:7, alignItems:'center', animation:'fadeIn .4s cubic-bezier(.2,0,0,1)' }}>
               <div style={{ width:9, height:9, borderRadius:'50%', border:'2px solid currentColor', borderTopColor:'transparent', animation:'spin .8s linear infinite' }}/>
               <span>{warmMsg}</span>
             </div>
@@ -3495,7 +3495,7 @@ export default function App() {
                           title={isAuditModeActive ? 'Hide annotation overlay' : 'Show critique overlay and narrative analysis'}
                           style={{ display:'flex', alignItems:'center', gap:7, padding:'7px 13px',
                             borderRadius:'var(--r-md)', alignSelf:'flex-start', cursor:'pointer',
-                            fontWeight:700, fontSize:'var(--text-xs)'.5, letterSpacing:'.03em',
+                            fontWeight:700, fontSize:'var(--text-xs)', letterSpacing:'.03em',
                             border:`1px solid ${isAuditModeActive ? T.lineStrong : T.line}`,
                             background: isAuditModeActive ? T.raisedHover : T.raised,
                             color: isAuditModeActive ? T.ink : T.ink2,
@@ -3528,7 +3528,7 @@ export default function App() {
                         )}
                         {/* Verdict */}
                         {verdict && (
-                          <p style={{ fontSize:'var(--text-sm)'.5, color:T.ink2, lineHeight:1.7, margin:0, fontStyle:'italic' }}>{verdict}</p>
+                          <p style={{ fontSize:'var(--text-sm)', color:T.ink2, lineHeight:1.7, margin:0, fontStyle:'italic' }}>{verdict}</p>
                         )}
                         {/* Per-aspect observations */}
                         {obsLines.length > 0 && (
@@ -3570,7 +3570,7 @@ export default function App() {
                                         transition:'width .5s cubic-bezier(.2,0,0,1)' }}/>
                                     </div>
                                   )}
-                                  <p style={{ fontSize:'var(--text-xs)'.5, color:T.ink2, margin:0, lineHeight:1.6 }}>{note}</p>
+                                  <p style={{ fontSize:'var(--text-xs)', color:T.ink2, margin:0, lineHeight:1.6 }}>{note}</p>
                                 </div>
                               );
                             })}
@@ -3601,14 +3601,14 @@ export default function App() {
                               </div>
                               {_dnarr && (
                                 <div style={{ animation:'fadeIn .4s cubic-bezier(.2,0,0,1)' }}>
-                                  <span style={{ fontSize:'var(--text-xs)'.5, fontWeight:700, letterSpacing:'.08em', color:T.ink3 }}>NARRATIVE</span>
-                                  <p style={{ fontSize:'var(--text-xs)'.5, color:T.ink2, lineHeight:1.65, margin:'4px 0 0' }}>{_dnarr}</p>
+                                  <span style={{ fontSize:'var(--text-xs)', fontWeight:700, letterSpacing:'.08em', color:T.ink3 }}>NARRATIVE</span>
+                                  <p style={{ fontSize:'var(--text-xs)', color:T.ink2, lineHeight:1.65, margin:'4px 0 0' }}>{_dnarr}</p>
                                 </div>
                               )}
                               {_dgeo && (
                                 <div style={{ animation:'fadeIn .4s cubic-bezier(.2,0,0,1)' }}>
-                                  <span style={{ fontSize:'var(--text-xs)'.5, fontWeight:700, letterSpacing:'.08em', color:T.ink3 }}>GEOMETRY</span>
-                                  <p style={{ fontSize:'var(--text-xs)'.5, color:T.ink2, lineHeight:1.65, margin:'4px 0 0' }}>{_dgeo}</p>
+                                  <span style={{ fontSize:'var(--text-xs)', fontWeight:700, letterSpacing:'.08em', color:T.ink3 }}>GEOMETRY</span>
+                                  <p style={{ fontSize:'var(--text-xs)', color:T.ink2, lineHeight:1.65, margin:'4px 0 0' }}>{_dgeo}</p>
                                 </div>
                               )}
                               {_qwenCritique && !_hasDeep && (
@@ -3620,7 +3620,7 @@ export default function App() {
                               )}
                               {_vbboxes.length > 0 && (
                                 <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
-                                  <span style={{ fontSize:'var(--text-xs)'.5, fontWeight:700, letterSpacing:'.08em', color:T.ink3 }}>SPATIAL ANCHORS</span>
+                                  <span style={{ fontSize:'var(--text-xs)', fontWeight:700, letterSpacing:'.08em', color:T.ink3 }}>SPATIAL ANCHORS</span>
                                   {_vbboxes.map((b, bi) => {
                                     const guide  = regionGuide(b.label);
                                     const dotCol = tierColor(guide.tier);
@@ -3632,7 +3632,7 @@ export default function App() {
                                         <div style={{ width:6, height:6, borderRadius:'50%',
                                           background:dotCol, flexShrink:0, marginTop:4 }}/>
                                         <div style={{ flex:1, minWidth:0 }}>
-                                          <span style={{ fontSize:'var(--text-xs)'.5, fontWeight:700, letterSpacing:'.06em',
+                                          <span style={{ fontSize:'var(--text-xs)', fontWeight:700, letterSpacing:'.06em',
                                             color:dotCol }}>{`${tierIcon(guide.tier)} ${guide.title}`.toUpperCase()}</span>
                                           {coach && (
                                             <p style={{ fontSize:'var(--text-xs)', color:T.ink2, lineHeight:1.6, margin:'2px 0 0' }}>
@@ -4095,9 +4095,9 @@ export default function App() {
                           {_checks.length > 0 && (
                             <div>
                               <div style={{ display:'flex', alignItems:'baseline', gap:8, marginBottom:8 }}>
-                                <span style={{ fontSize:'var(--text-xs)'.5, fontWeight:700, letterSpacing:'.09em',
+                                <span style={{ fontSize:'var(--text-xs)', fontWeight:700, letterSpacing:'.09em',
                                   textTransform:'uppercase', color:T.ink3 }}>Judge's Eye</span>
-                                <span style={{ fontSize:'var(--text-xs)'.5, color:T.ink3, opacity:.6 }}>— what's working and what to fix</span>
+                                <span style={{ fontSize:'var(--text-xs)', color:T.ink3, opacity:.6 }}>— what's working and what to fix</span>
                               </div>
                               <div style={{ display:'flex', flexDirection:'column',
                                 borderRadius:'var(--r-md)', overflow:'hidden', border:`1px solid ${T.line}` }}>
@@ -4117,7 +4117,7 @@ export default function App() {
                                           background:col, flexShrink:0 }}/>
                                         <span style={{ fontSize:'var(--text-xs)', fontWeight:700, letterSpacing:'.07em',
                                           color:T.ink3, minWidth:62, textTransform:'uppercase' }}>{label}</span>
-                                        <span style={{ fontSize:'var(--text-xs)'.5, fontWeight:600, color:col }}>{value}</span>
+                                        <span style={{ fontSize:'var(--text-xs)', fontWeight:600, color:col }}>{value}</span>
                                         {isLimit && (
                                           <span style={{ marginLeft:'auto', fontSize:'var(--text-xs)', fontWeight:800,
                                             letterSpacing:'.08em', color: _tier === 'weak' ? T.gradeWeak : T.ink2,
@@ -4127,7 +4127,7 @@ export default function App() {
                                         )}
                                       </div>
                                       {showNote && (
-                                        <p style={{ fontSize:'var(--text-xs)'.5, color:T.ink3, lineHeight:1.55,
+                                        <p style={{ fontSize:'var(--text-xs)', color:T.ink3, lineHeight:1.55,
                                           margin:'5px 0 0 16px', fontStyle:'italic' }}>
                                           {note}
                                         </p>
@@ -4195,14 +4195,14 @@ export default function App() {
           <div style={{ flexShrink:0, background:T.surface, borderTop:`1px solid ${T.line}`, display:'flex', flexDirection:'column' }}>
             <div style={{ height:20, flexShrink:0, display:'flex', alignItems:'center', justifyContent:'space-between', padding:'0 12px', borderBottom:`1px solid ${T.line}` }}>
               <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                <span style={{ fontSize:'var(--text-xs)'.5, color:T.ink3, fontWeight:600, letterSpacing:'.08em', textTransform:'uppercase' }}>Library</span>
+                <span style={{ fontSize:'var(--text-xs)', color:T.ink3, fontWeight:600, letterSpacing:'.08em', textTransform:'uppercase' }}>Library</span>
                 {/* Tweaks toggle */}
                 <button title="Filmstrip settings" onClick={() => setShowTweaks(v => !v)}
                   style={{ display:'flex', alignItems:'center', justifyContent:'center', width:18, height:16, cursor:'pointer', background:showTweaks ? T.raisedHover : 'transparent', color:showTweaks ? T.ink : T.ink3, border:'none', borderRadius:'var(--r-sm)', transition:'all .25s cubic-bezier(.2,0,0,1)' }}>
                   <SlidersHorizontal size={9}/>
                 </button>
               </div>
-              <span style={{ fontSize:'var(--text-xs)'.5, color:T.ink3, fontVariantNumeric:'tabular-nums', display:'flex', alignItems:'center', gap:5 }}>
+              <span style={{ fontSize:'var(--text-xs)', color:T.ink3, fontVariantNumeric:'tabular-nums', display:'flex', alignItems:'center', gap:5 }}>
                 {isGrading && <span style={{ display:'inline-block', width:5, height:5, border:`1.5px solid ${T.ink3}`, borderTopColor:'transparent', borderRadius:'50%', animation:'spin .8s linear infinite' }}/>}
                 {isDone
                   ? <><span style={{ color:T.gradeStrong }}>{picks} picks</span>{'  ·  '}<span style={{ color:T.gradeWeak }}>{rejects} rejects</span>{'  ·  '}{photos.length} total</>
