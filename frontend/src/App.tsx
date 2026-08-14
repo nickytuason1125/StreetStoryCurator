@@ -2158,9 +2158,12 @@ export default function App() {
         <div style={{
           position:'fixed', top:12, left:'50%', transform:'translateX(-50%)', zIndex:300,
           padding:'7px 16px', borderRadius:'var(--r-md)', fontSize:'var(--text-sm)', fontWeight:500, whiteSpace:'nowrap',
-          background: toast.type==='success' ? 'oklch(20% .1 148)' : toast.type==='error' ? 'oklch(18% .1 18)' : T.raised,
-          border:`1px solid ${toast.type==='success' ? 'oklch(48% .14 148)' : toast.type==='error' ? 'oklch(44% .14 18)' : T.lineStrong}`,
-          color:T.ink, boxShadow:'0 8px 32px rgba(0,0,0,.7)', animation:'slideUp .3s cubic-bezier(.2,0,0,1)',
+          // Success is silence: a completed action needs no green. Only an error
+          // takes a hue, and only on the border — "everything is fine" is
+          // expressed by the absence of colour, so colour here always means act.
+          background: T.raised,
+          border:`1px solid ${toast.type==='error' ? T.alarmCrit : T.lineStrong}`,
+          color:T.ink, animation:'slideUp .3s cubic-bezier(.2,0,0,1)',
         }}>{toast.msg}</div>
       )}
 
@@ -2192,12 +2195,14 @@ export default function App() {
           <div style={{
             position:'fixed', top:0, left:0, right:0, zIndex:250,
             padding: isOffline ? '10px 18px' : '7px 16px',
-            fontSize: isOffline ? 13 : 12.5, fontWeight: isOffline ? 600 : 500,
-            background: isOffline ? 'oklch(72% .19 55)' : 'oklch(18% .12 25)',
-            borderBottom: isOffline ? '2px solid oklch(52% .22 50)' : '1px solid oklch(44% .18 25)',
-            color: isOffline ? 'oklch(12% .04 55)' : 'oklch(85% .08 25)',
+            fontSize:'var(--text-sm)', fontWeight: isOffline ? 600 : 500,
+            // Offline is the one banner the user must act on, so it takes the
+            // alarm fill. A missing optional model is informational: neutral
+            // surface, with the alarm colour reduced to a single hairline.
+            background: isOffline ? T.alarmWarn : T.surface,
+            borderBottom: isOffline ? `2px solid ${T.alarmCrit}` : `1px solid ${T.alarmWarn}`,
+            color: isOffline ? T.well : T.ink2,
             display:'flex', alignItems:'center', gap:10, flexWrap:'wrap',
-            boxShadow: isOffline ? '0 2px 8px oklch(0% 0 0 / .25)' : 'none',
           }}>
             <span className="h-1 w-1 shrink-0 rounded-full" style={{ background: 'currentColor' }}/>
             {isOffline ? (
@@ -2215,7 +2220,7 @@ export default function App() {
             {/* Ollama out-of-date — overrides all other controls */}
             {updateRequired ? (
               <>
-                <span style={{ flex:1, minWidth:0, fontSize:'var(--text-sm)', fontWeight:600, color:'oklch(80% .15 25)' }}>
+                <span style={{ flex:1, minWidth:0, fontSize:'var(--text-sm)', fontWeight:600, color:T.alarmCrit }}>
                   Your Ollama engine is out of date and cannot run these models.
                 </span>
                 <a
@@ -2223,8 +2228,8 @@ export default function App() {
                   target="_blank"
                   rel="noopener noreferrer"
                   style={{ flexShrink:0, padding:'4px 12px', fontSize:'var(--text-sm)', fontWeight:700,
-                    background:'oklch(44% .18 25)', color:'oklch(92% .05 25)',
-                    border:'1px solid oklch(58% .2 25)', borderRadius:'var(--r-md)', cursor:'pointer',
+                    background:T.raised, color:T.ink,
+                    border:`1px solid ${T.lineStrong}`, borderRadius:'var(--r-md)', cursor:'pointer',
                     whiteSpace:'nowrap', textDecoration:'none' }}>
                   Download Ollama Update
                 </a>
@@ -2233,7 +2238,7 @@ export default function App() {
               <>
                 {/* Generic error */}
                 {downloadError && !isDownloading && (
-                  <span style={{ fontSize:'var(--text-xs)', color:'oklch(72% .18 25)', fontWeight:600, flex:1, minWidth:0 }}>
+                  <span style={{ fontSize:'var(--text-xs)', color:T.alarmCrit, fontWeight:600, flex:1, minWidth:0 }}>
                     ✕ {downloadError}
                   </span>
                 )}
@@ -2242,8 +2247,8 @@ export default function App() {
                   <button
                     onClick={() => { setDownloadError(null); handleDownloadMissing(); }}
                     style={{ flexShrink:0, padding:'4px 12px', fontSize:'var(--text-sm)', fontWeight:700,
-                      background: downloadError ? 'oklch(38% .18 25)' : 'oklch(44% .18 25)',
-                      color:'oklch(92% .05 25)', border:`1px solid ${downloadError ? 'oklch(58% .2 25)' : 'oklch(55% .18 25)'}`,
+                      background: T.raised,
+                      color:T.ink, border:`1px solid ${downloadError ? T.alarmCrit : T.lineStrong}`,
                       borderRadius:'var(--r-md)', cursor:'pointer', whiteSpace:'nowrap' }}>
                     {downloadError ? 'Retry Download' : 'Download Missing Models'}
                   </button>
@@ -2260,22 +2265,25 @@ export default function App() {
                     <span key={chip.label} title={isGpu ? `${chip.display} loaded in VRAM` : isCpu ? `${chip.display} running on CPU — VRAM headroom low` : `${chip.display} not loaded`}
                       style={{
                         padding:'2px 8px', borderRadius:'var(--r-sm)', fontSize:'var(--text-xs)', fontWeight:700, whiteSpace:'nowrap',
-                        background: isGpu ? 'oklch(22% .09 145)' : isCpu ? 'oklch(22% .12 55)' : 'oklch(20% .04 0)',
-                        border: `1px solid ${isGpu ? 'oklch(46% .14 145)' : isCpu ? 'oklch(52% .18 55)' : 'oklch(36% .04 0)'}`,
-                        color: isGpu ? 'oklch(72% .16 145)' : isCpu ? 'oklch(80% .14 55)' : 'oklch(55% .04 0)',
+                        // A model sitting in VRAM is the expected case, so it is
+                        // silent. Only CPU fallback — the case with a real cost
+                        // the user can act on — reaches for the alarm token.
+                        background: T.raised,
+                        border: `1px solid ${isCpu ? T.alarmWarn : T.lineStrong}`,
+                        color: isGpu ? T.ink2 : isCpu ? T.alarmWarn : T.ink3,
                       }}>
                       {chip.display} {isGpu ? '✓ GPU' : isCpu ? '⚡ CPU' : '—'}
                     </span>
                   );
                 })}
-                {anyCpu && <span style={{ fontSize:'var(--text-xs)', color:'oklch(75% .12 55)', fontWeight:500 }}>VRAM pressure — inference may be slow</span>}
+                {anyCpu && <span style={{ fontSize:'var(--text-xs)', color:T.alarmWarn, fontWeight:500 }}>VRAM pressure — inference may be slow</span>}
               </div>
             )}
             {/* Progress indicator while downloading */}
             {isDownloading && (
               <div style={{ flexShrink:0, display:'flex', alignItems:'center', gap:8 }}>
-                <div style={{ width:120, height:6, background:'oklch(28% .08 25)', borderRadius:'var(--r-sm)', overflow:'hidden' }}>
-                  <div style={{ width:`${downloadProgress}%`, height:'100%', background:'oklch(62% .18 145)', borderRadius:'var(--r-sm)', transition:'width .3s ease' }}/>
+                <div style={{ width:120, height:6, background:T.raised, borderRadius:'var(--r-sm)', overflow:'hidden' }}>
+                  <div style={{ width:`${downloadProgress}%`, height:'100%', background:T.ink3, borderRadius:'var(--r-sm)', transition:'width .3s ease' }}/>
                 </div>
                 <span style={{ fontSize:'var(--text-xs)', whiteSpace:'nowrap', color:'oklch(75% .06 25)' }}>
                   {currentDownloadModel}: {downloadProgress}% — do not close the app
