@@ -4347,13 +4347,15 @@ async def health_engine():
     Story Mode; the response is advisory, never a gate.
     """
     def _check_sync() -> dict:
-        _local_ggufs = [
-            Path("models/qwen2.5-vl-2b-instruct-q4_k_m.gguf"),
-            Path("models/mmproj-qwen2.5-vl-2b-instruct-f16.gguf"),
-            Path("models/deepseek-r1-8b-q5.gguf"),
-        ]
-        missing = [g.name for g in _local_ggufs if not g.exists()]
-        present = len(_local_ggufs) - len(missing)
+        # From model_registry, not a fourth copy of the literals. The list here
+        # named the 2B GGUFs, which do not exist on the Hub, so this endpoint
+        # reported two permanently-missing files and the UI offered to download
+        # something unobtainable. That is precisely why the registry exists.
+        import sys as _s, os as _o
+        _s.path.insert(0, _o.path.join(_o.path.dirname(__file__), "src"))
+        import model_registry as _mr
+        missing = [m.dest.name for m in _mr.missing_gguf()]
+        present = len(_mr.GGUF_MODELS) - len(missing)
         return {"status": "online" if present else "offline",
                 "missing_models": missing}
 
