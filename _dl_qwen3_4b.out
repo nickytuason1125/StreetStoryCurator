@@ -1,4 +1,0 @@
-Fetching 14 files:   0%|          | 0/14 [00:00<?, ?it/s]C:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator\venv\Lib\site-packages\huggingface_hub\file_download.py:949: FutureWarning: `resume_download` is deprecated and will be removed in version 1.0.0. Downloads always resume when possible. If you want to force a new download, use `force_download=True`.
-  warnings.warn(
-Fetching 14 files:  57%|#####7    | 8/14 [03:39<02:44, 27.43s/it]Fetching 14 files: 100%|##########| 14/14 [03:39<00:00, 15.67s/it]
-DOWNLOAD COMPLETE: C:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator\models\qwen3_vl

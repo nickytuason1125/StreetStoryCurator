@@ -1,2 +1,0 @@
-INFO:     Started server process [26352]
-INFO:     Waiting for application startup.

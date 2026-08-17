@@ -28,10 +28,27 @@ frontend/src-tauri/target/
 *.msgpack
 *.ckpt
 models/**/*.onnx
+models/**/*.weights
 # root-level stragglers
 /*.pt
 /*.bin
 /*.gguf
+
+# Partial HuggingFace downloads. A 112 MB *.incomplete blob was tracked and
+# would have entered history permanently — it is never a valid model.
+*.incomplete
+.download_owner_lock
+**/.locks/
+
+# Throwaway experiment + debug artefacts at the repo root. The _ab_* set is the
+# closed 2026-06 VLM tournament; nothing outside that set imports them.
+/_ab_*
+/_cull_*.out
+/_dl_*.out
+/_tmp_*.py
+/_train_baseline.py
+/srv_out*.txt
+/srv_err*.txt
 
 # Legacy backup files
 *.legacy_backup
@@ -45,6 +62,3 @@ Thumbs.db
 
 # Isolated Edge profile
 StreetStoryCurator/
-
-# CI workflow — push blocked by PAT lacking workflow scope; add manually via web UI
-.github/workflows/
