@@ -75,8 +75,6 @@ _YOLO_PERSON_CONF     = 0.35    # YOLO26-nano strict detection threshold (audito
 _YOLO_MIN_AREA_FRAC   = 0.0005  # ignore detections < 0.05% of canvas (distant background figures)
 
 
-_OLLAMA_CHAT_URL = "http://localhost:11434/api/chat"
-
 # CPU-side text encoder cache — loaded lazily on first semantic search when the
 # grading singleton (GPU) is unavailable.  Avoids reloading 3.7 GB on every query.
 _text_enc_cpu: Optional["SigLIP2Encoder"] = None  # type: ignore[name-defined]
@@ -90,7 +88,7 @@ def embed_text_query(query: str) -> np.ndarray:
       1. Reuse the grading pipeline's GPU singleton if it is already in VRAM —
          zero overhead and fully VRAM-safe (it's already loaded).
       2. Otherwise, create (and cache) a CPU-only SigLIP2Encoder instance.
-         CPU encoding consumes no VRAM, keeping Ollama's budget intact.
+         CPU encoding consumes no VRAM, leaving the GPU budget intact.
 
     Returns a normalised (1536,) float32 vector.
     """
@@ -218,18 +216,12 @@ def generate_jury_critique(image_hash: str) -> dict:
     )
 
     try:
-        resp = _req.post(
-            _OLLAMA_CHAT_URL,
-            json={
-                "model":   "deepseek-r1:8b",
-                "stream":  False,
-                "messages": [{"role": "user", "content": prompt}],
-                "options": {"num_ctx": 2048, "temperature": 0.45},
-            },
-            timeout=120,
-        )
-        resp.raise_for_status()
-        raw = resp.json().get("message", {}).get("content", "").strip()
+        import local_llm
+        raw = local_llm.generate(prompt, max_tokens=700, temperature=0.45)
+        if not raw:
+            return {"error": "No local text model is installed — run the model "
+                             "downloader to enable critique.",
+                    "critique": "", "think": ""}
 
         # Separate <think> block for debugging
         think_text = ""
@@ -249,8 +241,6 @@ def generate_jury_critique(image_hash: str) -> dict:
         print(f"[cd] jury_critique: {filename} → {len(critique)} chars")
         return {"critique": critique, "think": think_text}
 
-    except ConnectionError as _e:
-        return {"error": f"Ollama unreachable: {_e}", "critique": "", "think": ""}
     except Exception as _e:
         return {"error": f"Critique failed: {_e}", "critique": "", "think": ""}
 
@@ -276,20 +266,18 @@ def ask_local_art_director(
     limit: int = 5,
 ) -> list[str]:
     """
-    Phase 2 — Mixture of Experts Art Director via local Ollama.
+    Phase 2 — Mixture of Experts Art Director, running the local text model.
 
     Payload Starvation: slices pool to ≤ 25 items and strips all vectors, paths,
     and heavy float arrays.  Each item keeps only:
         id (int index), score (int 0–100), style (dominant aspect), profile (str).
 
-    Context is hard-locked to 2048 tokens and temperature 0.25 to respect the
-    6 GB VRAM budget.
-
-    Returns up to `limit` image paths selected by the model.
-    Falls back to top-limit by raw score if Ollama is unreachable.
+    Returns up to `limit` image paths selected by the model, and falls back to
+    top-limit by raw score when no model is installed. `model_name` is now a
+    label for logging only — there is one local model, not a menu of Ollama tags.
     """
     try:
-        import requests as _req
+        import local_llm
 
         pool_slim = candidate_pool[:25]
         payload_items = [
@@ -303,27 +291,16 @@ def ask_local_art_director(
         ]
         user_msg = json.dumps(payload_items, separators=(",", ":"))
 
-        resp = _req.post(
-            _OLLAMA_CHAT_URL,
-            json={
-                "model":   model_name,
-                "stream":  False,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {
-                        "role":    "user",
-                        "content": (
-                            f"Candidates: {user_msg}\n"
-                            f"Select exactly {limit} IDs as a JSON array, e.g. [0,3,7,2,1]."
-                        ),
-                    },
-                ],
-                "options": {"num_ctx": 2048, "temperature": 0.25},
-            },
-            timeout=90,
+        raw = local_llm.generate(
+            f"Candidates: {user_msg}\n"
+            f"Select exactly {limit} IDs as a JSON array, e.g. [0,3,7,2,1].",
+            system=system_prompt,
+            max_tokens=300,
+            temperature=0.25,
         )
-        resp.raise_for_status()
-        raw = resp.json().get("message", {}).get("content", "")
+        if not raw:
+            print(f"[cd] {model_name}: no local text model — falling back to score sort")
+            raise RuntimeError("no local text model")
 
         # Strip DeepSeek-R1 <think> blocks before parsing JSON
         m = re.search(r"</think>\s*(.*)", raw, re.DOTALL)
@@ -345,15 +322,13 @@ def ask_local_art_director(
                 except (ValueError, TypeError):
                     pass
             if selected:
-                print(f"[cd] Ollama {model_name}: selected {len(selected)} images")
+                print(f"[cd] {model_name}: selected {len(selected)} images")
                 return selected[:limit]
 
-        print(f"[cd] Ollama {model_name}: no parseable selection — falling back to score sort")
+        print(f"[cd] {model_name}: no parseable selection — falling back to score sort")
 
-    except ConnectionError as _e:
-        print(f"[cd] Ollama unreachable ({_e}) — falling back to score sort")
     except Exception as _e:
-        print(f"[cd] Ollama {model_name} failed ({_e}) — falling back to score sort")
+        print(f"[cd] {model_name} failed ({_e}) — falling back to score sort")
 
     # Fallback: top `limit` by raw score
     return [
@@ -1332,7 +1307,7 @@ def run_creative_direction(
             "_embedding":       filtered_embs[real_i],
         })
 
-    # 4b: Ollama Art Director — model choice driven by mode
+    # 4b: Art Director — one local model; the mode drives the system prompt
     llm_paths: list[str] = []
     if mode == "story":
         # Build dynamic role list for the middle slots (everything between Opener and Closer)
@@ -1350,8 +1325,8 @@ def run_creative_direction(
             f"Output ONLY a JSON array of {n_target} integer IDs after your </think> closing tag, "
             "e.g. [3,0,7,2,1]."
         )
-        _p(0.22, f"Art Director (deepseek-r1:8b, Story): selecting {n_target} images from top-{top_n}…")
-        llm_paths = ask_local_art_director(_story_prompt, art_pool, model_name="deepseek-r1:8b", limit=n_target)
+        _p(0.22, f"Art Director (Story): selecting {n_target} images from top-{top_n}…")
+        llm_paths = ask_local_art_director(_story_prompt, art_pool, model_name="Story", limit=n_target)
     elif mode == "competition":
         _comp_prompt = (
             "You are a strict LensCulture Jury Member. No <think> tags. "
@@ -1359,8 +1334,8 @@ def run_creative_direction(
             f"Select exactly {n_target} standalone competition winners by visual uniqueness. "
             "Output ONLY a JSON array of IDs [0..N-1], nothing else."
         )
-        _p(0.22, f"Art Director (llama3.2, Competition): selecting {n_target} images from top-{top_n}…")
-        llm_paths = ask_local_art_director(_comp_prompt, art_pool, model_name="llama3.2", limit=n_target)
+        _p(0.22, f"Art Director (Competition): selecting {n_target} images from top-{top_n}…")
+        llm_paths = ask_local_art_director(_comp_prompt, art_pool, model_name="Competition", limit=n_target)
 
     # 4c: Build final sequence from Art Director selection, or fall back to agent/greedy
     if llm_paths:

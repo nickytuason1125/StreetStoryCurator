@@ -21,47 +21,37 @@ from concurrent.futures import ThreadPoolExecutor
 
 print("[fast_ingestion] V3 Vision-to-Text Architecture loaded")
 
-_OLLAMA_URL  = "http://localhost:11434/api/chat"
-_PIXEL_MODEL = "qwen2.5vl:3b"
-
-
 def run_pixel_inspector(image_path: str, technical_score: float = 0.5) -> str:
     """
     Phase 1 — VLM Pixel Inspector.
 
-    Sends the image as base64 to a local qwen2.5vl:3b Ollama instance and
-    returns a 2-sentence semantic profile focused on lighting, tension, and mood.
-    Context is hard-locked to 2048 tokens to respect the 6 GB VRAM budget.
+    Runs the local vision model over the image and returns a 2-sentence semantic
+    profile focused on lighting, tension and mood.
 
-    Returns "" if Ollama is offline or the image cannot be read.
+    Returns "" when the vision weights are absent or the image cannot be read.
+    That is a supported outcome — the profile is an enrichment, and the ingestion
+    path is defined without it.
+
+    This used to POST the same base64 payload to Ollama's /api/chat asking for the
+    qwen2.5vl:3b tag. No installer pulled that tag, and no document mentioned it,
+    so on every machine but the developer's this returned "" via the exception
+    handler. Same model family, same prompt, now in-process through the loader
+    critique_engine already owns — which also means one resident copy instead of
+    a second runtime holding its own.
     """
     try:
-        import requests as _req
-        with open(image_path, "rb") as fh:
-            b64 = base64.b64encode(fh.read()).decode("ascii")
+        import critique_engine as _ce
         prompt = (
             f"Analyze this street photograph. Its technical score is {technical_score:.2f}. "
             "Write a strict 2-sentence semantic profile focusing on lighting, visual tension, "
             "and mood. No filler."
         )
-        resp = _req.post(
-            _OLLAMA_URL,
-            json={
-                "model":   _PIXEL_MODEL,
-                "stream":  False,
-                "messages": [
-                    {"role": "user", "content": prompt, "images": [b64]},
-                ],
-                "options": {"num_ctx": 2048},
-            },
-            timeout=90,
-        )
-        resp.raise_for_status()
-        profile = resp.json().get("message", {}).get("content", "").strip()
-        print(f"[fast_ingestion] pixel_inspector: {Path(image_path).name} → {len(profile)} chars")
+        profile = _ce.describe_image(image_path, prompt, max_dimension=1024,
+                                     max_tokens=200, temperature=0.2)
+        if profile:
+            print(f"[fast_ingestion] pixel_inspector: {Path(image_path).name} "
+                  f"→ {len(profile)} chars")
         return profile
-    except ConnectionError as _e:
-        print(f"[fast_ingestion] Ollama unreachable for pixel_inspector: {_e}")
     except Exception as _e:
         print(f"[fast_ingestion] pixel_inspector failed ({_e})")
     return ""

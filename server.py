@@ -234,25 +234,22 @@ _THUMB_PREWARM  = ThreadPoolExecutor(max_workers=_THUMB_PW_WORKERS)  # low-prior
 _grading_active = threading.Event()
 
 
-def _evict_ollama_models() -> None:
-    """Unload any Ollama-resident models (the annotation/critique qwen2.5vl:3b,
-    ~3-4 GB, held in llama-server) so they don't compete with the grade's SigLIP-2
-    load on RAM-tight machines. Called at grade start. Best-effort; annotations
-    reload the model on demand after the grade. Annotations are gpu_lock-serialised
-    with grades, so nothing is actively using it during a cull."""
+def _release_annotation_model() -> None:
+    """Drop the resident annotation model so it does not compete with the grade's
+    SigLIP-2 load on RAM-tight machines. Called at grade start; annotations reload
+    on demand afterwards, and they are gpu_lock-serialised with grades, so nothing
+    is actively using it during a cull.
+
+    This used to ask Ollama over HTTP to evict its models, which on a machine
+    without Ollama — i.e. every correct install — meant a 2-second connection
+    timeout at the start of every single grade, to free memory nothing was using.
+    The annotation model now lives in-process, so releasing it is a function call.
+    """
     try:
-        import requests as _rq
-        _ps = _rq.get("http://localhost:11434/api/ps", timeout=2).json()
-        for _m in _ps.get("models", []):
-            _name = _m.get("name") or _m.get("model")
-            if not _name:
-                continue
-            try:
-                _rq.post("http://localhost:11434/api/generate",
-                         json={"model": _name, "keep_alive": 0}, timeout=5)
-                print(f"[grade] evicted Ollama model {_name} to free RAM for grading")
-            except Exception:
-                pass
+        import sys as _s, os as _o
+        _s.path.insert(0, _o.path.join(_o.path.dirname(__file__), "src"))
+        import critique_engine as _ce
+        _ce.unload()
     except Exception:
         pass
 
@@ -1260,21 +1257,30 @@ async def grade_photos(req: GradeRequest):
 @app.get("/api/ollama/status")
 async def ollama_status():
     """
-    Returns Ollama daemon health + currently resident models from /api/ps.
-    Used by the frontend banner and the grade endpoint health gate.
-    Response: {alive: bool, models: [{name, size_vram, size_total, until}]}
+    Local text/vision model availability. Response shape is unchanged:
+    {alive: bool, models: [{name, size_vram, size_total, until}]}
+
+    The path keeps its name so the frontend's 15-second poll keeps working, but
+    it no longer speaks to an Ollama daemon — there isn't one. `alive` now means
+    "a local model is installed", and `models` lists those files with their
+    on-disk size. size_vram is 0 because llama_cpp's residency is decided per
+    call by the offload ladder, not held as a server-side fact.
     """
-    # Run all blocking Ollama HTTP calls in a thread — combined timeout up to 5 s.
     def _sync() -> dict:
         try:
             import sys as _s, os as _o
             _s.path.insert(0, _o.path.join(_o.path.dirname(__file__), "src"))
-            from critique_engine import _check_ollama_available, get_ollama_ps
+            import local_llm as _llm
             import critique_engine as _ce
-            _ce._ollama_last_check = 0.0   # force fresh check
-            alive  = _check_ollama_available()
-            models = get_ollama_ps() if alive else []
-            return {"alive": alive, "models": models}
+
+            models = []
+            for _p in (_llm.model_path(),
+                       Path("models/qwen2.5-vl-2b-instruct-q4_k_m.gguf")):
+                if _p.exists():
+                    models.append({"name": _p.name, "size_vram": 0,
+                                   "size_total": _p.stat().st_size, "until": ""})
+            return {"alive": bool(_llm.available() or _ce.vision_available()),
+                    "models": models}
         except Exception as _e:
             return {"alive": False, "models": [], "error": str(_e)}
 
@@ -1309,24 +1315,13 @@ async def grade_photos_v2_stream(req: GradeRequest):
     except Exception:
         pass
 
-    # ── Ollama health gate — fail fast before spawning the grading thread ────────
-    if not req.scan_mode:
-        try:
-            import sys as _sys2, os as _os2
-            _sys2.path.insert(0, _os2.path.join(_os2.path.dirname(__file__), "src"))
-            import critique_engine as _ce2
-            _ce2._ollama_last_check = 0.0          # force fresh ping
-            from critique_engine import _check_ollama_available as _chk_oll
-            # Run in executor — this makes a blocking HTTP call (timeout=2 s).
-            _ollama_alive = await asyncio.get_running_loop().run_in_executor(None, _chk_oll)
-            if not _ollama_alive:
-                return JSONResponse(
-                    status_code=503,
-                    content={"error": "Ollama service is unresponsive. "
-                             "Start Ollama and ensure gemma3:4b is pulled, then retry."},
-                )
-        except Exception:
-            pass   # if the import itself fails, let the pipeline handle it
+    # NOTE: there was an Ollama health gate here that 503'd every non-scan grade
+    # when http://localhost:11434 did not answer. Nothing installed Ollama — not
+    # Setup.ps1, not requirements.txt — and no user-facing doc mentioned it, while
+    # CLAUDE.md rule 5 promised a fully offline app. So a correct, complete install
+    # could not grade a single photo. Grading never needed it either: the default
+    # path is SigLIP zero-shot plus TOPIQ, and the modules that did call Ollama now
+    # run the same models locally through llama_cpp. Removed, not made optional.
 
     # Resolve all valid folders — folder_paths (multi) takes priority over folder_path
     all_folders = [str(Path(fp).resolve()) for fp in req.folder_paths if os.path.isdir(fp)]
@@ -1350,7 +1345,7 @@ async def grade_photos_v2_stream(req: GradeRequest):
             _fnd_rel.release()
         except Exception:
             pass
-        _evict_ollama_models()   # free the ~3-4 GB annotation model from llama-server
+        _release_annotation_model()   # free the ~1.5-4 GB annotation model
         _grading_active.set()
         try:
             import tempfile as _tf, subprocess as _sp
@@ -4161,7 +4156,8 @@ async def critique_details(req: Request):
     result = await run_in_threadpool(execute_vlm_text_deep_dive, img_path, mode)
 
     if result is None:
-        raise HTTPException(503, "Ollama unavailable or VLM critique failed — is qwen2.5-vl:3b running?")
+        raise HTTPException(503, "The critique model is not installed. Run the model "
+                                 "downloader to fetch it — grading is unaffected.")
 
     return JSONResponse(result)
 
@@ -4310,40 +4306,32 @@ async def pull_model_stream(req: ModelPullRequest):
 
 @app.get("/api/health/engine")
 async def health_engine():
-    """Check Ollama reachability and required model availability (hybrid: Ollama + local GGUF).
+    """Report which optional AI model files are present on disk.
 
-    Logic:
-      - status "online"  : Ollama is reachable (models may still be missing)
-      - status "offline" : Ollama unreachable AND no local GGUF fallback exists
-      - missing_models   : Ollama models not yet pulled (can be auto-downloaded)
-      - missing_files    : GGUF files not present (must be placed manually in models/)
-      At least one of (any Ollama model OR any local GGUF) must exist for AI features to work.
+      - status "online"  : at least one model file is installed
+      - status "offline" : none are
+      - missing_models   : the file names that are absent
+
+    This used to be a hybrid check that first asked Ollama over HTTP which model
+    tags it had pulled. That made a network round-trip on a 10-second UI poll to
+    answer a question about the local filesystem, and every entry it could return
+    named a third-party service the installer never set up. Every name here is now
+    a .gguf file, which the frontend already distinguishes from a service tag, so
+    the "install Ollama" branch of the banner is unreachable by construction.
+
+    Grading does not depend on any of these. They power critique, annotations and
+    Story Mode; the response is advisory, never a gate.
     """
-    # Run the blocking Ollama HTTP check in a thread so the event loop is never stalled.
     def _check_sync() -> dict:
-        _ollama_models = ["qwen2.5vl:3b", "deepseek-r1:8b"]
-        _local_ggufs   = [
+        _local_ggufs = [
             Path("models/qwen2.5-vl-2b-instruct-q4_k_m.gguf"),
             Path("models/mmproj-qwen2.5-vl-2b-instruct-f16.gguf"),
             Path("models/deepseek-r1-8b-q5.gguf"),
         ]
-        gguf_present  = [g for g in _local_ggufs if g.exists()]
-        missing_files = [g.name for g in _local_ggufs if not g.exists()]
-        try:
-            resp = _requests.get("http://localhost:11434/api/tags", timeout=2)
-            resp.raise_for_status()
-            installed_names = [m.get("name", "") for m in resp.json().get("models", [])]
-            missing_ollama: list = []
-            for _m in _ollama_models:
-                base = _m.split(":")[0]
-                if not any(_i == _m or _i.startswith(base + ":") for _i in installed_names):
-                    missing_ollama.append(_m)
-            extra = missing_files if not gguf_present else []
-            return {"status": "online", "missing_models": missing_ollama + extra}
-        except Exception:
-            if gguf_present:
-                return {"status": "online", "missing_models": ["qwen2.5vl:3b", "deepseek-r1:8b"]}
-            return {"status": "offline", "missing_models": []}
+        missing = [g.name for g in _local_ggufs if not g.exists()]
+        present = len(_local_ggufs) - len(missing)
+        return {"status": "online" if present else "offline",
+                "missing_models": missing}
 
     result = await asyncio.get_running_loop().run_in_executor(None, _check_sync)
     return JSONResponse(result)

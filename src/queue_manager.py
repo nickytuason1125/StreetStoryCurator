@@ -14,7 +14,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-_GGUF_PATH = Path(__file__).resolve().parent.parent / "models" / "qwen2.5-vl-2b-instruct-q4_k_m.gguf"
+import model_registry as _mr
+_GGUF_PATH = _mr.vision_gguf_path()
 _LOCK_PATH = Path(__file__).resolve().parent.parent / "cache" / "grading.lock"
 
 
@@ -55,16 +56,15 @@ def _annotate_min_ram_gb() -> float:
         return 3.0
 
 
-def _gguf_or_ollama_available() -> bool:
-    """Return True if Qwen2.5-VL GGUF exists OR Ollama is reachable."""
-    if _GGUF_PATH.exists():
-        return True
-    try:
-        import urllib.request
-        urllib.request.urlopen("http://localhost:11434/api/tags", timeout=2)
-        return True
-    except Exception:
-        return False
+def _annotation_backend_available() -> bool:
+    """Return True if the local Qwen2.5-VL GGUF is on disk.
+
+    This used to also accept "Ollama answers on 11434", which made the daemon
+    start on a machine that had a running Ollama but none of FrameGrade's own
+    weights — every annotation then failed one at a time, in the background,
+    where nobody saw it. One backend, one check.
+    """
+    return _GGUF_PATH.exists()
 
 
 def _annotate_one(path: str) -> None:
@@ -92,8 +92,8 @@ async def start_async(queue: asyncio.Queue, gpu_lock: asyncio.Lock) -> None:
     Acquires gpu_lock before calling the GGUF model so grading and annotation
     are never in VRAM simultaneously.
     """
-    if not _gguf_or_ollama_available():
-        print("[qm] No GGUF or Ollama backend — annotation daemon idle")
+    if not _annotation_backend_available():
+        print("[qm] annotation model not installed — daemon idle")
         return
 
     print("[qm] Async annotation daemon started")

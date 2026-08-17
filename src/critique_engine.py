@@ -22,8 +22,12 @@ from pathlib import Path
 from typing import Optional
 
 _ROOT       = Path(__file__).resolve().parent.parent
-_MODEL_GGUF = _ROOT / "models" / "qwen2.5-vl-2b-instruct-q4_k_m.gguf"
-_MMPROJ     = _ROOT / "models" / "mmproj-qwen2.5-vl-2b-instruct-f16.gguf"
+# Paths come from model_registry: these two literals named a Qwen2.5-VL-2B
+# GGUF that does not exist on the Hub (the published build is 3B), so this
+# loader could never succeed and every critique fell through to Ollama.
+import model_registry as _mr
+_MODEL_GGUF = _mr.vision_gguf_path()
+_MMPROJ     = _mr.vision_mmproj_path()
 
 _llm: object = None   # cached Llama instance
 
@@ -187,11 +191,62 @@ def unload() -> None:
     gc.collect()
     try:
         import torch
-        if torch.cuda.is_available() and torch.cuda.is_initialized():
+        # is_initialized() FIRST, and alone. is_available() initialises a CUDA
+        # context by itself, and this runs in the server process — the ancestor of
+        # grade_runner's CUDA subprocess, whose exit then faults the parent with
+        # 0xC0000005 and no traceback. If CUDA is not already up there is nothing
+        # here to free anyway, so asking is pure downside.
+        if torch.cuda.is_initialized():
             torch.cuda.empty_cache()
             torch.cuda.ipc_collect()
     except Exception:
         pass
+
+
+def vision_available() -> bool:
+    """True when the vision GGUF and its projector are both on disk.
+
+    Cheap and side-effect free, so callers can gate a feature without paying the
+    load. Both files are required — the projector alone cannot see, and the model
+    alone cannot take an image.
+    """
+    return _MODEL_GGUF.exists() and _MMPROJ.exists()
+
+
+def describe_image(image_path: str,
+                   prompt_text: str,
+                   *,
+                   max_dimension: int = 1024,
+                   max_tokens: int = 200,
+                   temperature: float = 0.1) -> str:
+    """Run the local vision model over one image. "" when it is unavailable.
+
+    Exposed so other modules stop reimplementing this. fast_ingestion used to
+    POST the same base64 payload to Ollama's /api/chat with the qwen2.5vl:3b tag
+    — a tag no installer pulled — and returned "" on every machine that had not
+    manually set Ollama up. Same model family, same prompt, now in-process.
+
+    "" is a supported answer, not a failure: the caller's semantic profile is an
+    enrichment, and the pipeline is defined without it.
+    """
+    llm = _load_model()
+    if llm is None:
+        return ""
+    try:
+        b64 = secure_image_for_vram(image_path, max_dimension=max_dimension)
+        output = llm.create_chat_completion(  # type: ignore[union-attr]
+            messages=[{"role": "user", "content": [
+                {"type": "image_url",
+                 "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                {"type": "text", "text": prompt_text},
+            ]}],
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return (output["choices"][0]["message"]["content"] or "").strip()
+    except Exception as _e:
+        print(f"[ce] describe_image failed ({_e})")
+        return ""
 
 
 # ── Coordinate normalisation ──────────────────────────────────────────────────
@@ -355,18 +410,15 @@ def run_jury_critique(image_hash: str) -> dict:
             print(f"[ce] jury (qwen-vl gguf): {filename}  {len(critique)} chars  {len(bboxes)} bboxes")
             return {"critique": critique, "think": think, "bbox_factors": bboxes}
         except Exception as _e:
-            print(f"[ce] Qwen-VL critique error ({_e}) — trying Ollama")
+            print(f"[ce] Qwen-VL critique error ({_e})")
 
-    # ── Ollama fallback — qwen2.5vl:3b first, then deepseek ──────────────────
-    if _check_ollama_available():
-        for model in ("qwen2.5vl:3b", "deepseek-r1:8b"):
-            raw = _ollama(prompt_text, model=model, max_tokens=400)
-            if raw:
-                critique, think = _parse_think(raw)
-                print(f"[ce] jury (ollama/{model}): {filename}  {len(critique)} chars")
-                return {"critique": critique, "think": think, "bbox_factors": []}
-
-    return {"error": "All critique backends unavailable. Install qwen2.5vl:3b via Ollama.",
+    # There used to be an Ollama fallback here (qwen2.5vl:3b, then deepseek-r1:8b)
+    # whose failure message told the user to install a third-party service that
+    # nothing in FrameGrade's installer set up and no document mentioned. The
+    # local GGUF above is the supported path; if it is absent, say so and name the
+    # remedy we actually ship.
+    return {"error": "The critique model is not installed. Run the model "
+                     "downloader to fetch it — grading is unaffected.",
             "critique": "", "think": "", "bbox_factors": []}
 
 

@@ -36,7 +36,8 @@ from typing import Optional
 from signal_validator import Claim, validate_claims
 
 _ROOT = Path(__file__).resolve().parent.parent
-_GGUF = _ROOT / "models" / "deepseek-r1-8b-q5.gguf"
+import model_registry as _mr
+_GGUF = _mr.text_gguf_path()
 
 _VALID_ASPECTS = {"Composition", "Lighting", "Narrative", "Human/Culture", "Technical"}
 _SPREAD_THRESHOLD = 0.30

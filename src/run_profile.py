@@ -131,6 +131,10 @@ SETTINGS = {
     "FRAMEGRADE_LUM_DRAFT":   Setting(bool, True, "draft decode for luminance stats"),
     "FRAMEGRADE_GATE_WORKERS": Setting(int, 0, "early-gate worker threads; 0 = auto"),
     "FRAMEGRADE_IQA_SLICE":   Setting(int, 0, "IQA slice size"),
+    # local LLM (replaces the Ollama HTTP dependency)
+    "FRAMEGRADE_LOCAL_LLM_GGUF": Setting(str, "", "override the text GGUF path"),
+    "FRAMEGRADE_LOCAL_LLM_MIN_RAM_GB": Setting(
+        float, 6.0, "refuse to load the text GGUF below this much free RAM"),
     # diagnostics
     "FRAMEGRADE_RAM_TRACE":   Setting(bool, False, "log RSS/peak per stage"),
     "FRAMEGRADE_FUSION_DUMP": Setting(bool, False, "dump per-photo fusion terms"),

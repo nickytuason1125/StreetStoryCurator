@@ -187,50 +187,45 @@ def _parse_phrases(raw: str) -> list[str]:
     return phrases[:25]
 
 
-# Preference order — first model that exists on the local Ollama wins.
-# gemma3:4b: fast on GPU, clean instruction-following, no <think> preamble.
-_OLLAMA_EXTRACT_MODELS = ("gemma3:4b", "qwen2.5:7b", "llama3.2:latest")
+def _extract_concepts_llm(text: str) -> list[str]:
+    """Extract rubric phrases with the shared local text model.
 
-
-def _extract_concepts_ollama(text: str) -> list[str]:
-    """Use Ollama if a local server is running. Tries models in preference order."""
-    import requests as _req
-    prompt = _CONCEPT_PROMPT.format(text=text[:8000])
+    This replaced an Ollama HTTP call that tried gemma3:4b, then qwen2.5:7b, then
+    llama3.2 — three model tags nothing in the installer ever pulled, so on any
+    machine but the developer's it returned [] immediately and every PDF fell
+    through to the slow path below.
+    """
     try:
-        tags = _req.get("http://127.0.0.1:11434/api/tags", timeout=3).json()
-        installed = {m.get("name", "") for m in tags.get("models", [])}
+        import local_llm
     except Exception:
         return []
-    for model in _OLLAMA_EXTRACT_MODELS:
-        if model not in installed and f"{model}:latest" not in installed:
-            continue
-        try:
-            r = _req.post(
-                "http://127.0.0.1:11434/api/generate",
-                json={"model": model, "prompt": prompt, "stream": False,
-                      "options": {"temperature": 0.2}},
-                timeout=180,
-            )
-            if r.status_code == 200:
-                phrases = _parse_phrases(r.json().get("response", ""))
-                if len(phrases) >= 5:
-                    print(f"[pdf_rag] Ollama/{model}: {len(phrases)} phrases")
-                    return phrases
-        except Exception as _e:
-            print(f"[pdf_rag] Ollama/{model} failed: {_e}")
+    if not local_llm.available():
+        return []
+    out = local_llm.generate(
+        _CONCEPT_PROMPT.format(text=text[:8000]),
+        max_tokens=800,
+        temperature=0.2,
+    )
+    if not out:
+        return []
+    phrases = _parse_phrases(out)
+    if len(phrases) >= 5:
+        print(f"[pdf_rag] local model: {len(phrases)} phrases")
+        return phrases
     return []
 
 
 def _extract_concepts(text: str) -> list[str]:
-    """Try Ollama first (GPU, fast, clean output), fall back to GGUF CPU.
+    """Shared local model first, then this module's own GGUF path.
 
-    Order swapped 2026-06: the GGUF here is DeepSeek-R1-8B on CPU — minutes
-    per PDF and its <think> preamble eats the token budget. Same lesson as
-    story mode (R1 too slow on this machine; gemma3:4b preferred)."""
-    phrases = _extract_concepts_ollama(text)
+    Both are now local; the difference is that the first is the warm singleton
+    every text feature shares, and the second builds its own. Ingest is a rare,
+    user-initiated action, so the slow path staying as a backstop costs nothing.
+    """
+    phrases = _extract_concepts_llm(text)
     if phrases:
         return phrases
-    print("[pdf_rag] Ollama unavailable/empty — trying GGUF (CPU, slow)…")
+    print("[pdf_rag] shared model unavailable/empty — trying the local GGUF…")
     return _extract_concepts_gguf(text)
 
 
