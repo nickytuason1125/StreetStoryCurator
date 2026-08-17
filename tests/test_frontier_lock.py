@@ -55,21 +55,22 @@ class TestVramGatekeeper:
     def teardown_method(self):
         _reset_frontier(False)
 
-    def _mock_torch(self, total_gb: float, allocated_gb: float) -> MagicMock:
-        m = MagicMock()
-        m.cuda.is_available.return_value = True
-        m.cuda.memory_reserved.return_value = int(allocated_gb * 1e9)
-        m.cuda.get_device_properties.return_value = MagicMock(
-            total_memory=int(total_gb * 1e9)
-        )
-        m.cuda.get_device_name.return_value = "Test GPU"
-        return m
+    # The probe is patched, not sys.modules["torch"], because validate_vram_overhead
+    # no longer imports torch in this process. It shells out to a throwaway
+    # subprocess: main.py is an ancestor of the isolated encode/IQA workers, and
+    # initialising CUDA in an ancestor makes it fault 0xC0000005 with no traceback
+    # when a GPU child exits. Patching sys.modules also made two of these tests
+    # pass for the wrong reason — with torch mocked but never imported, the real
+    # subprocess ran and reported this machine's actual GPU.
+    @staticmethod
+    def _probe(total_gb: float, reserved_gb: float):
+        return lambda: (total_gb, reserved_gb)
 
     def test_exits_when_vram_insufficient(self):
         """sys.exit() if free VRAM < required_gb."""
         import frontier_config
-        mock = self._mock_torch(total_gb=6.0, allocated_gb=5.6)  # 0.4 GB free
-        with patch.dict("sys.modules", {"torch": mock}):
+        with patch.object(frontier_config, "_probe_vram_subprocess",
+                          self._probe(6.0, 5.6)):          # 0.4 GB free
             with pytest.raises(SystemExit) as exc:
                 frontier_config.validate_vram_overhead(required_gb=5.0)
         assert "CRITICAL" in str(exc.value)
@@ -77,19 +78,33 @@ class TestVramGatekeeper:
     def test_passes_when_vram_sufficient(self):
         """No exception if free VRAM >= required_gb."""
         import frontier_config
-        mock = self._mock_torch(total_gb=6.0, allocated_gb=0.5)  # 5.5 GB free
-        with patch.dict("sys.modules", {"torch": mock}):
+        with patch.object(frontier_config, "_probe_vram_subprocess",
+                          self._probe(6.0, 0.5)):          # 5.5 GB free
             frontier_config.validate_vram_overhead(required_gb=5.0)  # must not raise
 
-    def test_exits_when_no_cuda(self):
-        """sys.exit() if CUDA is unavailable in force-frontier mode."""
+    def test_skips_when_no_gpu(self):
+        """A CPU-only machine is a SUPPORTED configuration, not a failure.
+
+        This test previously asserted the opposite — that --force-frontier
+        sys.exit()s with "requires CUDA" when no GPU is present. That made the
+        documented CLI entry point refuse to start on exactly the low-RAM CPU
+        laptops tier_select's ladder exists to serve: it caps such machines at the
+        Fast encoder and grades them on the CPU, so there is nothing here for a
+        VRAM check to protect. The check now skips instead.
+        """
         import frontier_config
-        mock = MagicMock()
-        mock.cuda.is_available.return_value = False
-        with patch.dict("sys.modules", {"torch": mock}):
-            with pytest.raises(SystemExit) as exc:
-                frontier_config.validate_vram_overhead()
-        assert "CUDA" in str(exc.value) or "CRITICAL" in str(exc.value)
+        with patch.object(frontier_config, "_probe_vram_subprocess", lambda: None):
+            frontier_config.validate_vram_overhead(required_gb=5.0)  # must not raise
+
+    def test_probe_never_imports_torch_in_this_process(self):
+        """The whole point of the subprocess: no CUDA context in the parent."""
+        import frontier_config
+        src = Path(frontier_config.__file__).read_text(encoding="utf-8")
+        body = src.split("def validate_vram_overhead")[1].split("\ndef ")[0]
+        assert "torch" not in body, (
+            "validate_vram_overhead must not touch torch in-process — "
+            "probe in a subprocess and read the result"
+        )
 
     def test_no_op_when_flag_off(self):
         """Gatekeeper does nothing when force-frontier is False."""
@@ -108,50 +123,53 @@ class TestModelIntegrity:
     def teardown_method(self):
         _reset_frontier(False)
 
-    def test_exits_when_weights_missing(self, tmp_path, monkeypatch):
-        """sys.exit() when SigLIP-2 (the only hard-required model) is absent."""
+    # Integrity is now asked of tier_select, not of one hardcoded directory. The
+    # old check demanded models/siglip2 — the 7 GB open_clip fp32 fallback — so a
+    # lean install carrying only models/siglip2_B_hf_fp16 (753 MB), which is
+    # exactly what a CPU laptop should receive, was rejected as "weights missing".
+    # These tests patch tier_select rather than chdir'ing, because the check now
+    # anchors to the repo root instead of the working directory.
+
+    def test_exits_when_no_encoder_installed(self):
+        """sys.exit() when no encoder tier is present at all."""
         import frontier_config
-        monkeypatch.chdir(tmp_path)  # empty dir — no models/
-        with pytest.raises(SystemExit) as exc:
-            frontier_config.check_model_integrity()
+        import tier_select
+        with patch.object(tier_select, "available", lambda t: False):
+            with pytest.raises(SystemExit) as exc:
+                frontier_config.check_model_integrity()
         msg = str(exc.value)
         assert "CRITICAL" in msg
-        assert "SigLIP-2" in msg
+        assert "fetch_models" in msg, "the message must name the remedy"
 
-    def test_warns_but_does_not_exit_when_verifier_missing(self, tmp_path, monkeypatch, caplog):
-        """
-        Vision-R1-7B is optional (draft-only mode) — SigLIP-2 present but the
-        7B verifier absent must only warn, not sys.exit(). See frontier_config.py:113.
-        """
+    def test_passes_when_only_the_smallest_tier_is_installed(self, caplog):
+        """A Fast-only install is valid — this is the CPU laptop's configuration."""
         import frontier_config
+        import tier_select
+        caplog.set_level("INFO")
+        with patch.object(tier_select, "available", lambda t: t == "low"):
+            frontier_config.check_model_integrity()          # must not raise
+        assert any("Fast" in r.message for r in caplog.records)
+
+    def test_warns_but_does_not_exit_when_jury_gguf_missing(self, caplog, monkeypatch):
+        """The GGUF jury model is optional — warn, never exit. Grading is unaffected."""
+        import frontier_config
+        import tier_select
         caplog.set_level("WARNING")
-        monkeypatch.chdir(tmp_path)
-        # Provide SigLIP-2 but not DeepSeek-7B
-        siglip2 = tmp_path / "models" / "siglip2"
-        siglip2.mkdir(parents=True)
-        (siglip2 / "model.safetensors").write_bytes(b"fake")
-        frontier_config.check_model_integrity()  # must not raise
-        assert any("Vision-R1-7B" in r.message for r in caplog.records)
+        real_exists = Path.exists
+        monkeypatch.setattr(
+            Path, "exists",
+            lambda self: False if self.name == "deepseek-r1-8b-q5.gguf" else real_exists(self))
+        with patch.object(tier_select, "available", lambda t: True):
+            frontier_config.check_model_integrity()          # must not raise
+        assert any("Jury GGUF absent" in r.message for r in caplog.records)
 
-    def test_passes_when_both_present(self, tmp_path, monkeypatch):
-        """No exception when both weight dirs exist with weight files."""
-        import frontier_config
-        monkeypatch.chdir(tmp_path)
-        for d, fname in [
-            ("models/siglip2", "model.safetensors"),
-            ("models/deepseek/deepseek-ai_DeepSeek-R1-Distill-Qwen-7B", "model.safetensors"),
-        ]:
-            p = tmp_path / d
-            p.mkdir(parents=True)
-            (p / fname).write_bytes(b"fake")
-        frontier_config.check_model_integrity()  # must not raise
-
-    def test_no_op_when_flag_off(self, tmp_path, monkeypatch):
+    def test_no_op_when_flag_off(self):
         """No check when force-frontier is False."""
         import frontier_config
+        import tier_select
         frontier_config.set_force_frontier(False)
-        monkeypatch.chdir(tmp_path)  # no models/ — would fail if check ran
-        frontier_config.check_model_integrity()  # must not raise
+        with patch.object(tier_select, "available", lambda t: False):
+            frontier_config.check_model_integrity()          # must not raise
 
 
 # ── 3. Encoder fallback blocked ───────────────────────────────────────────────

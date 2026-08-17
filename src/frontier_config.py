@@ -33,24 +33,60 @@ def set_force_frontier(val: bool) -> None:
 
 # ── Pre-flight checks (called from main.py before server starts) ───────────────
 
+def _probe_vram_subprocess() -> "tuple[float, float] | None":
+    """(total_gb, reserved_gb), or None when there is no usable GPU.
+
+    Runs in a THROWAWAY subprocess. This function is called from main.py, which
+    is an ancestor of the grade runner and therefore of the isolated encode and
+    IQA subprocesses. Touching torch.cuda here initialises a CUDA context in that
+    ancestor, and when a GPU child later exits the ancestor faults with
+    0xC0000005 and no traceback — the crash class tier_select.has_gpu() and
+    run_profile._gpu_present() both go out of their way to avoid. Reintroducing
+    it here would defeat both of them.
+    """
+    import subprocess
+    try:
+        r = subprocess.run(
+            [sys.executable, "-c",
+             "import torch\n"
+             "if torch.cuda.is_available() and torch.cuda.device_count() > 0:\n"
+             "    p = torch.cuda.get_device_properties(0)\n"
+             "    print(p.total_memory, torch.cuda.memory_reserved())\n"
+             "else:\n"
+             "    print('none')\n"],
+            capture_output=True, text=True, timeout=180)
+        out = r.stdout.strip().splitlines()[-1].strip()
+        if out == "none":
+            return None
+        total, reserved = out.split()
+        return float(total) / 1e9, float(reserved) / 1e9
+    except Exception:
+        return None
+
+
 def validate_vram_overhead(required_gb: float = 5.0) -> None:
     """
     Assert free VRAM >= required_gb when --force-frontier is active.
     sys.exit() with CRITICAL message if the check fails.
+
+    A machine with no GPU is a SUPPORTED configuration, not a failure. This used
+    to sys.exit("--force-frontier requires CUDA"), which meant the documented CLI
+    entry point refused to start on precisely the low-RAM CPU laptops the tier
+    ladder exists to serve. tier_select caps such machines at the Fast encoder
+    and grades them on the CPU; there is nothing here for this check to protect.
     """
     if not _FORCE_FRONTIER:
         return
     try:
-        import torch
-        if not torch.cuda.is_available():
-            sys.exit(
-                "CRITICAL: --force-frontier requires CUDA. No GPU detected.\n"
-                "Either install CUDA drivers or run without --force-frontier."
+        probe = _probe_vram_subprocess()
+        if probe is None:
+            logger.info(
+                "VRAM pre-flight skipped — no GPU detected. Running on the CPU; "
+                "the encoder tier will be selected to fit."
             )
-        props       = torch.cuda.get_device_properties(0)
-        total_gb    = props.total_memory / 1e9
-        reserved_gb = torch.cuda.memory_reserved() / 1e9
-        free_gb     = total_gb - reserved_gb
+            return
+        total_gb, reserved_gb = probe
+        free_gb = total_gb - reserved_gb
         if free_gb < required_gb:
             _log_vram_block(total_gb, reserved_gb, free_gb, required_gb)
             sys.exit(
@@ -69,11 +105,18 @@ def validate_vram_overhead(required_gb: float = 5.0) -> None:
 
 
 def _log_vram_block(total_gb: float, reserved_gb: float, free_gb: float, required_gb: float) -> None:
+    # nvidia-smi, not torch.cuda — see _probe_vram_subprocess. server.py's polled
+    # telemetry endpoint reads the device name the same way for the same reason.
+    device_name = "unknown"
     try:
-        import torch
-        device_name = torch.cuda.get_device_name(0)
+        import subprocess
+        r = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=10)
+        if r.returncode == 0 and r.stdout.strip():
+            device_name = r.stdout.strip().splitlines()[0].strip()
     except Exception:
-        device_name = "unknown"
+        pass
     logger.critical(
         "VRAM GATEKEEPER TRIGGERED\n"
         f"  Device  : {device_name}\n"
@@ -93,28 +136,33 @@ def check_model_integrity() -> None:
     if not _FORCE_FRONTIER:
         return
 
-    weight_exts = {".bin", ".safetensors", ".pt", ".pth"}
-    siglip2_dir = Path("models/siglip2")
-    verify_dir  = Path("models/deepseek/deepseek-ai_DeepSeek-R1-Distill-Qwen-7B")
+    root = Path(__file__).resolve().parent.parent
 
-    def _has_weights(d: Path) -> bool:
-        return d.exists() and any(
-            f.suffix in weight_exts for f in d.rglob("*") if f.is_file()
-        )
+    # ANY installed encoder tier satisfies this. The old check demanded
+    # models/siglip2 specifically — the 7 GB open_clip fp32 fallback — so a lean
+    # install carrying only models/siglip2_B_hf_fp16 (753 MB), which is exactly
+    # what a CPU laptop should receive, was rejected as "weights missing".
+    try:
+        import tier_select
+        import run_profile as _rp
+        installed = [t for t in _rp.TIERS if tier_select.available(t)]
+    except Exception as exc:                     # pragma: no cover — import guard
+        logger.warning(f"Model integrity check could not run: {exc}")
+        return
 
-    # SigLIP-2 encoder is always required — hard abort if absent.
-    if not _has_weights(siglip2_dir):
+    if not installed:
         sys.exit(
-            "CRITICAL: SigLIP-2 weights missing (expected at models/siglip2/).\n"
-            "Run: python -c \"from siglip2_encoder import _download_siglip2_if_needed; "
-            "_download_siglip2_if_needed()\""
+            "CRITICAL: no vision encoder weights are installed.\n"
+            "Run:  python -m scripts.fetch_models\n"
+            "It selects the right encoder for this machine and downloads only that."
         )
 
-    # DeepSeek 7B verifier is optional — warn if absent, draft-only mode will run.
-    if not _has_weights(verify_dir):
+    labels = ", ".join(tier_select.label(t) for t in installed)
+    logger.info(f"✓ Model integrity: encoder tiers installed — {labels}")
+
+    # The GGUF jury/critique model is optional; without it those panels fall back.
+    if not (root / "models" / "deepseek-r1-8b-q5.gguf").exists():
         logger.warning(
-            "Vision-R1-7B weights absent (models/deepseek/deepseek-ai_DeepSeek-R1-Distill-Qwen-7B/)."
-            " 7B verification disabled — pipeline runs in draft-only mode."
+            "Jury GGUF absent (models/deepseek-r1-8b-q5.gguf). "
+            "Jury critique disabled — grading is unaffected."
         )
-    else:
-        logger.info("✓ Model integrity: SigLIP-2-Giant-NaFlex + Vision-R1-7B-NF4 weights found")

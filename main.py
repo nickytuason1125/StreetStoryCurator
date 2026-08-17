@@ -3,18 +3,21 @@ FrameGrade — CLI entrypoint.
 
 Usage
 -----
-    python main.py --force-frontier         # required — Frontier 2026 strict mode
-    python main.py --force-frontier --port 8080
-    python main.py --host 0.0.0.0 --force-frontier
+    python main.py                          # normal
+    python main.py --port 8080
+    python main.py --force-frontier         # demand the Pro stack
 
---force-frontier  [REQUIRED]
+--force-frontier  [OPTIONAL]
     Activates the Frontier 2026 enforcement layer before the server starts:
-      1. Model integrity check — aborts if SigLIP-2 or Vision-R1-7B weights are absent.
-      2. VRAM pre-flight    — aborts if free VRAM < 5.0 GB.
+      1. Model integrity check — aborts if no encoder tier is installed.
+      2. VRAM pre-flight    — aborts if a GPU is present with < 5.0 GB free.
+                              Skipped entirely on a CPU-only machine.
       3. Legacy fallbacks   — permanently disabled for the life of the process.
 
-When launched through the Tauri desktop app, server.py is invoked directly
-(no argparse), so set env var FORCE_FRONTIER=1 for packaged builds.
+    It used to be REQUIRED, and it exited on "No GPU detected" — so the
+    documented entry point refused to start on the low-RAM CPU laptops the
+    encoder tier ladder exists to serve. Enforcement is a deliberate choice for
+    a machine that can meet it, not the price of admission.
 """
 import argparse
 import logging
@@ -52,25 +55,8 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-_FRONTIER_REQUIRED_BANNER = """
-╔══════════════════════════════════════════════════════════════════╗
-║            FRONTIER 2026 — ENFORCEMENT REQUIRED                  ║
-╠══════════════════════════════════════════════════════════════════╣
-║  FrameGrade requires --force-frontier to launch.        ║
-║  Legacy graders have been permanently removed.                   ║
-║                                                                  ║
-║  Run:   python main.py --force-frontier                          ║
-║     or  FORCE_FRONTIER=1 python main.py                          ║
-╚══════════════════════════════════════════════════════════════════╝
-"""
-
-
 def main() -> None:
     args = parse_args()
-
-    if not args.force_frontier:
-        print(_FRONTIER_REQUIRED_BANNER, file=sys.stderr)
-        sys.exit(1)
 
     # Resolve working dir so relative paths (models/, cache/, frontend/dist/) work.
     os.chdir(Path(__file__).parent)
@@ -82,12 +68,18 @@ def main() -> None:
         validate_vram_overhead,
         check_model_integrity,
     )
-    set_force_frontier(True)
+    set_force_frontier(args.force_frontier)
 
-    logger.info("--force-frontier active — running pre-flight checks…")
-    check_model_integrity()              # aborts if 2026 weights are missing
-    validate_vram_overhead(required_gb=5.0)   # aborts if VRAM is insufficient
-    logger.info("Pre-flight passed — all Frontier 2026 requirements met")
+    if args.force_frontier:
+        logger.info("--force-frontier active — running pre-flight checks…")
+        check_model_integrity()                   # aborts if no encoder is installed
+        validate_vram_overhead(required_gb=5.0)   # skipped when there is no GPU
+        logger.info("Pre-flight passed")
+    else:
+        logger.info(
+            "Starting in normal mode. The encoder tier is selected at grade time "
+            "to fit this machine; pass --force-frontier to demand the Pro stack."
+        )
 
     import uvicorn
     logger.info(
