@@ -84,14 +84,10 @@ def _offenders(path: Path):
 #                        it reports local model files — but renaming the path is a
 #                        frontend change (App.tsx polls it every 15 s), so the name
 #                        outlives the dependency for one more step.
-#   /api/models/pull     still proxies Ollama's pull stream. Unreachable from the
-#                        UI now that /api/health/engine returns only .gguf names,
-#                        and replaced outright when the model downloader lands.
-#
-# They are listed rather than allowlisted by pattern: this set may only shrink.
+# It is listed rather than allowlisted by pattern: this set may only shrink.
+# (/api/models/pull used to be here too; it now runs scripts/fetch_models.py.)
 _KNOWN_REMAINING = {
     "server.py:/api/ollama/status",
-    "server.py:http://localhost:11434/api/pull",
 }
 
 

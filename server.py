@@ -4282,24 +4282,48 @@ class ModelPullRequest(BaseModel):
 
 @app.post("/api/models/pull")
 async def pull_model_stream(req: ModelPullRequest):
-    """Proxy Ollama's pull stream so the frontend can show live download progress."""
+    """Stream the model downloader's progress as ndjson.
+
+    This used to proxy Ollama's /api/pull. Ollama is gone, so it proxied a port
+    nothing was listening on. It now runs scripts/fetch_models.py, which asks
+    tier_select which encoder this machine will actually use and fetches only
+    that — the difference between ~0.8 GB on a CPU laptop and the 20+ GB the old
+    unconditional prefetch would have pulled.
+
+    A subprocess, not an in-process call: downloads take minutes, and the event
+    loop must stay free to serve the UI that is displaying this progress.
+    """
     def _stream():
+        # Imported here, not at module scope: suppress_console patches subprocess
+        # at import line 1, and a local import picks up the patched module.
+        import subprocess
+        proc = None
         try:
-            with _requests.post(
-                "http://localhost:11434/api/pull",
-                json={"name": req.model_name, "stream": True},
-                stream=True,
-                timeout=None,
-            ) as r:
-                for line in r.iter_lines():
-                    if line:
-                        yield line + b"\n"
-                        # Close early — don't wait for Ollama to drop the connection
-                        if b'"success"' in line:
-                            break
+            cmd = [sys.executable, str(Path(__file__).parent / "scripts" / "fetch_models.py"),
+                   "--json"]
+            if req.model_name in ("optional", "all"):
+                cmd.append("--with-optional" if req.model_name == "optional" else "--all")
+            proc = subprocess.Popen(
+                cmd, cwd=str(Path(__file__).parent),
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1,
+            )
+            for line in proc.stdout:                      # type: ignore[union-attr]
+                line = line.strip()
+                if line.startswith("{"):
+                    yield (line + "\n").encode()
+            proc.wait(timeout=30)
         except Exception as exc:
             import json as _j
-            yield (_j.dumps({"error": str(exc)}) + "\n").encode()
+            yield (_j.dumps({"name": "plan", "status": "fail",
+                             "message": str(exc)[:200]}) + "\n").encode()
+        finally:
+            # A disconnected client must not leave a multi-GB download orphaned.
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
 
     return StreamingResponse(_stream(), media_type="application/x-ndjson")
 
