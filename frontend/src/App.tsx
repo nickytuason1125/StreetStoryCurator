@@ -1196,9 +1196,18 @@ export default function App() {
     if (photos.length > 0 && !selId) setSelId(photos[0].id);
   }, [photos]);
 
-  /* lazy EXIF fetch — load when a photo is selected and has no EXIF yet */
+  /* Lazy EXIF fetch.
+   *
+   * "Has no EXIF yet" was the wrong test. A catalogue written before the reader
+   * was rewritten holds the old sparse shape — often just date and time — and
+   * that is non-empty, so the panel would show two rows forever and never ask
+   * the server for the other twenty. `file_size` is the marker: it comes from
+   * stat() rather than the file's EXIF block, so the current reader emits it for
+   * every readable photo and no older record can have it. */
   useEffect(() => {
-    if (!sel || Object.keys(sel.exif || {}).length > 0) return;
+    if (!sel) return;
+    const cached = sel.exif || {};
+    if (Object.keys(cached).length > 0 && cached.file_size) return;
     const ctrl = new AbortController();
     axios.get(`${API}/api/exif`, { params: { path: sel.path }, signal: ctrl.signal })
       .then(r => {

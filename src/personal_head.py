@@ -93,6 +93,11 @@ def score(embeddings: np.ndarray) -> np.ndarray:
     """
     Return personal preference scores in [0, 1] for an (N, D) embedding array.
     D is inferred from the input shape — head is (re-)initialised on first call.
+
+    NOTE: grading does NOT call this — it uses personal_head_np.score(), which
+    runs the same forward pass in numpy so the CUDA-free grade worker never
+    imports torch. This remains the reference implementation and the training
+    path; personal_head_np mirrors its weights and is verified against it.
     """
     embed_dim = embeddings.shape[1] if embeddings.ndim == 2 else _DEFAULT_EMBED_DIM
     head, _ = _get_head(embed_dim=embed_dim)

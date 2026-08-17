@@ -73,18 +73,44 @@ def grade_worker_main(
         q.put({"progress": round(frac, 3), "desc": desc})
 
     try:
+        # Pick the encoder quality tier BEFORE importing the pipeline. This must
+        # happen first: grade_pipeline_v2, lance_store and siglip2_encoder each
+        # read SIGLIP_TIER at module scope to fix their embedding dimension and
+        # table name, so selecting afterwards would have no effect.
+        try:
+            import tier_select
+            _tier, _tier_label, _tier_reason = tier_select.apply()
+            print(f"[grade_worker] tier={_tier} ({_tier_label}) — {_tier_reason}")
+            # Say up-front when RAM is short. select() deliberately falls through
+            # to the smallest installed tier and lets the encoder's own floor
+            # raise the one clear error (see tier_select.select docstring), but
+            # that error arrives ~20s in, after the folder scan. The shortfall is
+            # known here, so warn immediately instead of discarding the reason.
+            # A warning only — the selector's estimate is conservative and runs
+            # below it often still succeed, so this must never block a grade.
+            _free = tier_select.free_ram_gb()
+            if _free < tier_select.ram_need_gb(_tier):
+                q.put({"progress": 0.0,
+                       "desc": f"Quality: {_tier_label} — only {_free:.1f} GB RAM free; "
+                               f"close a couple of apps if this fails"})
+            else:
+                q.put({"progress": 0.0, "desc": f"Quality: {_tier_label}"})
+        except Exception as _e_tier:
+            _tier_label = ""
+            print(f"[grade_worker] tier selection skipped ({_e_tier}) — using default")
+
         from grade_pipeline_v2 import run_v2
         n = len(all_folders)
         combined_gallery: list = []
 
-        # detect_only (pre-grade niche detection) must NEVER touch the catalog —
-        # it runs on a sample and would otherwise wipe the user's real gallery.
-        if _CATALOG_PATH.exists() and not detect_only:
-            try:
-                _CATALOG_PATH.unlink()
-                print("[grade_worker] Cleared stale catalog.json")
-            except OSError as _e_del:
-                print(f"[grade_worker] catalog delete warning: {_e_del}")
+        # NOTE: catalog.json is intentionally NOT deleted here. It used to be
+        # unlinked upfront ("clear stale state"), but _write_catalog() below
+        # already does an atomic tmp-file + replace, which overwrites the old
+        # catalog just as well once real results exist. Deleting it first only
+        # created a window where a crash between the delete and the first
+        # write (e.g. an early SigLIP-2/RAM failure) permanently lost the
+        # user's whole graded catalog instead of just leaving the previous
+        # (still-valid) one in place until fresh data replaces it.
 
         for i, fp in enumerate(all_folders):
             p_start = i / n
@@ -113,6 +139,23 @@ def grade_worker_main(
             for photo in combined_gallery
         ]
 
+        # Drop the embeddings now that gallery_slim exists.
+        #
+        # Each entry's "embedding" is a 1536-element Python-float list (~49 KB);
+        # across a few thousand photos combined_gallery holds hundreds of MB of
+        # them. In cull mode (mogco_target<=0, which is what server.py always
+        # sends) nothing below this line reads them again — the counts use
+        # .get("grade"), the catalog write and the result message both use
+        # gallery_slim — yet they stayed resident through the catalog write and
+        # the whole JSON serialisation of the result, exactly when the process is
+        # already at its peak. Only the NSGA-III branch needs them, so free them
+        # whenever that branch is off.
+        if mogco_target <= 0:
+            import gc as _gc_emb
+            for _photo in combined_gallery:
+                _photo.pop("embedding", None)
+            _gc_emb.collect()
+
         def _write_catalog(tag: str = "") -> None:
             """Persist gallery_slim to catalog.json (atomic). Safe to call repeatedly.
             No-op under detect_only so a sampled detection run never overwrites the
@@ -120,23 +163,12 @@ def grade_worker_main(
             if detect_only:
                 return
             try:
-                import time as _cat_time
-                _cat_folders = list(dict.fromkeys(
-                    str(Path(g["path"]).parent) for g in gallery_slim
-                ))
-                _CATALOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-                _cat_tmp = _CATALOG_PATH.with_suffix(".json.tmp")
-                _cat_tmp.write_text(
-                    json.dumps(
-                        {"photos": gallery_slim, "folders": _cat_folders,
-                         "saved_at": _cat_time.strftime("%Y-%m-%dT%H:%M:%S")},
-                        ensure_ascii=False, indent=2,
-                        default=lambda o: o.item() if hasattr(o, "item") else str(o),
-                    ),
-                    encoding="utf-8",
-                )
-                _cat_tmp.replace(_CATALOG_PATH)
-                print(f"[grade_worker] catalog.json → {len(gallery_slim)} photos {tag}".rstrip())
+                # MERGE by path (see catalog_store): this used to write ONLY the
+                # freshly graded folder, wiping every other folder out of the
+                # user's gallery on each run.
+                import catalog_store as _cat_store
+                _cat_store.merge_write(gallery_slim, path=_CATALOG_PATH,
+                                       tag=f"(worker {tag})".rstrip())
             except Exception as _e_cat:
                 print(f"[grade_worker] catalog.json write failed: {_e_cat}")
 
@@ -226,6 +258,7 @@ def grade_worker_main(
 
         q.put({
             "done":           True,
+            "quality":        _tier_label,   # "Fast" | "Balanced" | "Pro"
             "total":          len(combined_gallery),
             "strong":         strong,
             "mid":            mid,

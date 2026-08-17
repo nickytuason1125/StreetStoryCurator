@@ -37,6 +37,24 @@ def _grade_worker_running() -> bool:
         return False
 
 
+def _free_ram_gb() -> float:
+    """Currently available system RAM, or a permissive default if psutil fails."""
+    try:
+        import psutil
+        return psutil.virtual_memory().available / 1e9
+    except Exception:
+        return 99.0
+
+
+def _annotate_min_ram_gb() -> float:
+    """Free-RAM floor below which annotation waits. FRAMEGRADE_ANNOTATE_MIN_RAM_GB."""
+    import os
+    try:
+        return float(os.environ.get("FRAMEGRADE_ANNOTATE_MIN_RAM_GB", "3.0"))
+    except (TypeError, ValueError):
+        return 3.0
+
+
 def _gguf_or_ollama_available() -> bool:
     """Return True if Qwen2.5-VL GGUF exists OR Ollama is reachable."""
     if _GGUF_PATH.exists():
@@ -91,6 +109,20 @@ async def start_async(queue: asyncio.Queue, gpu_lock: asyncio.Lock) -> None:
             while _grade_worker_running() and _spins < 1800:   # cap ~30 min
                 await asyncio.sleep(1.0)
                 _spins += 1
+            # RAM backpressure. A finished cull hands this daemon one job per
+            # graded photo, and each annotation keeps a 1.5-4 GB VL model
+            # resident — a long sustained tail landing right after the heaviest
+            # part of the run. Waiting for headroom changes only WHEN a photo is
+            # annotated, never WHICH, and the bounded spin means a permanently
+            # tight machine still makes progress rather than stalling forever.
+            _floor  = _annotate_min_ram_gb()
+            _rspins = 0
+            while _free_ram_gb() < _floor and _rspins < 600:    # cap ~10 min
+                if _rspins == 0:
+                    print(f"[qm] RAM {_free_ram_gb():.1f} GB < {_floor:.1f} GB floor "
+                          f"— deferring annotation of {Path(path).name}")
+                await asyncio.sleep(1.0)
+                _rspins += 1
             async with gpu_lock:
                 await loop.run_in_executor(None, _annotate_one, path)
         except Exception as _e:

@@ -45,6 +45,33 @@ except (TypeError, ValueError):
     _FLAT_STD_MIN = 2.0
 
 
+def decode_workers(n: int, mb_per_worker: float = 120.0,
+                   lo: int = 2, hi: int = 8) -> int:
+    """
+    RAM-bounded thread count for parallel full-resolution image decode.
+
+    Each worker holds a decoded frame plus a working copy, so N workers cost
+    N × (frame size) all at once. Sizing off *currently free* RAM makes this
+    self-tuning the same way _iqa_chunk_size does for the IQA decode window: a
+    starved machine drops to `lo` workers instead of OOM-ing, a roomy one runs
+    the full `hi`. Override with FRAMEGRADE_GATE_WORKERS.
+    """
+    _env = _os.environ.get("FRAMEGRADE_GATE_WORKERS")
+    if _env:
+        try:
+            return max(1, min(int(_env), max(n, 1)))
+        except ValueError:
+            pass
+    try:
+        import psutil as _ps
+        free_gb = _ps.virtual_memory().available / 1e9
+    except Exception:
+        free_gb = 2.0
+    budget_mb = max(0.4, free_gb) * 0.25 * 1000     # quarter of free RAM
+    workers   = int(budget_mb / max(mb_per_worker, 1.0))
+    return max(lo, min(workers, hi, max(n, 1)))
+
+
 def _file_ready(path: str, tries: int = 3, backoff: float = 0.10) -> bool:
     """Phase 1 — file lock & completeness guard.
 
@@ -107,12 +134,21 @@ def _technical_inspect(path: str) -> dict:
     if _ext in RAW_EXTS:
         return {"reason": None, "blur": 999.0}
     # Non-RAW: full flat/void + blur inspection (fast, thread-safe PIL decode).
+    # RAM: the full frame stays uint8 (~24 MB for a 24 MP image) instead of being
+    # materialised as float32 (~96 MB) — with n_workers in flight that was the
+    # single largest transient in the pre-model stage. Only the centre crop (36%
+    # of the area) is promoted to float32, and only for the Laplacian. The numbers
+    # are preserved: np.diff on the float32 crop is bit-identical to before, and
+    # arr.std() on uint8 input accumulates in float64 (strictly more accurate).
+    # NOTE: do NOT add Image.draft()/downscaling here — Laplacian variance is
+    # scale-dependent, so drafting would silently change blur disqualifications.
     try:
         from PIL import Image
-        img = Image.open(path).convert("L")
+        with Image.open(path) as _im:
+            img = _im.convert("L")
         if img is None:
             return {"reason": "unreadable", "blur": 0.0}
-        arr = np.asarray(img, dtype=np.float32)
+        arr = np.asarray(img)          # uint8 view, not a float32 copy
     except Exception:
         return {"reason": "unreadable", "blur": 0.0}
     if arr.size == 0:
@@ -124,7 +160,8 @@ def _technical_inspect(path: str) -> dict:
     h, w = arr.shape[:2]
     cw = int(w * _CENTER_CROP_PCT); ch = int(h * _CENTER_CROP_PCT)
     x0 = (w - cw) // 2; y0 = (h - ch) // 2
-    crop = arr[y0:y0 + ch, x0:x0 + cw]
+    crop = arr[y0:y0 + ch, x0:x0 + cw].astype(np.float32)
+    arr  = None                        # release the full frame before np.diff
     lap  = np.diff(crop, n=2, axis=0)
     return {"reason": None, "blur": float(lap.var()) if lap.size else 999.0}
 
@@ -149,7 +186,11 @@ def run_early_exit_gate(
         return [], set(), set(), set(), {}
 
     # ── Step 1: technical inspection (readiness + flat/void + blur), parallel ──
-    with ThreadPoolExecutor(max_workers=min(n_workers, len(paths))) as pool:
+    # Worker count is derived from free RAM (see decode_workers) rather than the
+    # fixed n_workers default, so a memory-tight machine narrows the fan-out
+    # instead of running 8 concurrent full-resolution decodes into an OOM.
+    _workers = min(decode_workers(len(paths), hi=n_workers), len(paths))
+    with ThreadPoolExecutor(max_workers=_workers) as pool:
         results = list(pool.map(_technical_inspect, paths))
 
     technical_disq:    dict[str, str] = {}

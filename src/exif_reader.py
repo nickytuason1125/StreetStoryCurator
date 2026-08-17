@@ -276,7 +276,17 @@ def _from_exifread(p: Path) -> dict:
         "orientation": _ORIENTATION.get(_int(one("Image Orientation"))),
         "date":       date,
         "time":       time_s,
+        # The camera's own count. LibRaw reports the visible sensor area, which
+        # on a Sony ARW is ~16px wider than what the body recorded (5184 vs
+        # 5168) because it includes a border the camera does not count.
+        **_dims(_int(one("EXIF ExifImageWidth")), _int(one("EXIF ExifImageLength"))),
     }
+
+
+def _dims(w: Optional[int], h: Optional[int]) -> dict:
+    if not w or not h:
+        return {}
+    return {"dimensions": f"{w} x {h}", "megapixels": f"{(w * h) / 1e6:.1f} MP"}
 
 
 def _from_rawpy(p: Path) -> dict:
@@ -346,7 +356,10 @@ def read_exif(path: str) -> dict:
         data = {}
 
     try:
-        data.update(_file_facts(p))
+        # setdefault, not update: where the camera stated a value we keep it and
+        # only fall back to what we can measure off the file ourselves.
+        for k, v in _file_facts(p).items():
+            data.setdefault(k, v)
     except Exception:
         log.debug("could not stat/size %s", p.name, exc_info=True)
         if not data:

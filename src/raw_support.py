@@ -100,6 +100,73 @@ def extract_embedded_preview(path: str, mode: str = "RGB"):
         return None
 
 
+# An embedded preview smaller than this is a navigation thumbnail, not a usable
+# image. Some bodies embed 160px JPEGs; running person detection on those finds
+# nothing and reports "no people" with full confidence.
+_MIN_PREVIEW_SIDE = 320
+
+
+def load_rgb(path: str, mode: str = "RGB", min_side: int = _MIN_PREVIEW_SIDE):
+    """Best-effort decode of ANY image to PIL. Returns (image | None, source).
+
+    RAW_EXTS lists 25 extensions but LibRaw does not decode all of them equally
+    — some bodies embed only a tiny thumbnail, some formats (notably .r3d, and
+    .x3f/.liq in places) LibRaw handles partially or not at all. Every RAW
+    consumer previously called extract_embedded_preview() alone, so any of those
+    cases returned None and the caller carried on with nothing: the photo was
+    scored as an empty scene rather than flagged as unreadable. That is the
+    silent-wrong-answer shape this project keeps getting bitten by.
+
+    The chain tries progressively more expensive options and reports which one
+    worked, so "we could not read this" is always distinguishable from
+    "we read it and there was nothing there":
+
+        embedded preview (cheap, no demosaic)  -> "preview"
+        half-size demosaic                     -> "half"
+        full demosaic                          -> "full"
+        PIL (DNG and some RAWs are TIFF-based) -> "pil"
+        nothing worked                         -> (None, "unreadable")
+    """
+    from PIL import Image
+
+    def _as(img, tag):
+        """Enforce `mode` on EVERY route, so callers never have to check."""
+        try:
+            if img is not None and mode and img.mode != mode:
+                img = img.convert(mode)
+        except Exception:
+            return None, "unreadable"
+        return img, tag
+
+    if Path(path).suffix.lower() not in RAW_EXTS:
+        try:
+            return _as(Image.open(path), "pil")
+        except Exception:
+            return None, "unreadable"
+
+    # Every stage is individually guarded: this function's contract is that it
+    # returns a verdict, never raises. A stage that throws is just a stage that
+    # did not work.
+    try:
+        img = extract_embedded_preview(path, mode)
+    except Exception:
+        img = None
+    if img is not None and min(img.size) >= min_side:
+        return _as(img, "preview")
+
+    for half, tag in ((True, "half"), (False, "full")):
+        try:
+            return _as(Image.fromarray(_rawpy_decode(path, half_size=half), "RGB"), tag)
+        except Exception:
+            continue
+    if img is not None:
+        return _as(img, "preview-small")   # tiny, but better than nothing
+    try:                                   # DNG/TIFF-based RAWs PIL can sometimes open
+        return _as(Image.open(path), "pil")
+    except Exception:
+        return None, "unreadable"
+
+
 def imread_bgr(path: str, half_size: bool = False) -> Optional[np.ndarray]:
     """
     cv2.imread() replacement that handles RAW files.

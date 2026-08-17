@@ -116,15 +116,19 @@ def _load_images_parallel(
 
 
 def _iqa_chunk_size(n: int) -> int:
-    """
-    RAM-bounded chunk size for the streamed IQA decode. Peak decode memory is
-    O(chunk), NOT O(N) — so a 10 000-image import uses the same working set as a
-    200-image one, and photographers can drop 5-10k frames without an OOM.
+    """Decode-window size — FIXED, deliberately not RAM-derived.
 
-    Override with FRAMEGRADE_IQA_CHUNK=<int>. Otherwise the window is sized to a
-    fraction of *currently free* RAM (a 512px float32 decode is ~5 MB), clamped to
-    [64, 512]. Sizing off free RAM makes it self-tuning: a starved machine shrinks
-    the window instead of crashing; a roomy one runs bigger chunks for throughput.
+    Deriving this from free RAM made the DECODE WINDOW vary run to run
+    (chunk=226 one cull, chunk=187 the next), which changes TOPIQ's batch
+    composition and therefore the float reduction order on the GPU. Two
+    identical culls of the same 514 photos then disagreed on 76 of them —
+    mostly noise (mean 0.019) but 5 crossed a grade threshold. A grading tool
+    has to be reproducible, so the window is now constant.
+
+    Memory is still bounded: peak decode RAM is O(chunk), and 256 images at
+    ~5 MB each (512px float32) is ~1.3 GB worst case, which the streamed design
+    already handled. FRAMEGRADE_IQA_CHUNK overrides for a memory-tight machine —
+    at the cost of reproducibility across machines with different free RAM.
     """
     import os as _os
     _env = _os.environ.get("FRAMEGRADE_IQA_CHUNK")
@@ -133,15 +137,7 @@ def _iqa_chunk_size(n: int) -> int:
             return max(16, min(int(_env), max(n, 1)))
         except ValueError:
             pass
-    try:
-        import psutil as _ps
-        free_gb = _ps.virtual_memory().available / 1e9
-    except Exception:
-        free_gb = 2.0
-    _MB_PER_IMG = 5.0                       # ~512px long-edge float32 decode
-    budget_gb   = max(0.4, free_gb) * 0.35  # keep the decode buffer well under free RAM
-    est         = int(budget_gb * 1000.0 / _MB_PER_IMG)
-    return max(64, min(512, est, max(n, 1)))
+    return max(16, min(256, max(n, 1)))
 
 
 def _run_yolo_seg(
@@ -458,11 +454,19 @@ class UniQAHead:
         chunk = _iqa_chunk_size(n)
         print(f"[uniqa_head] Streamed IQA: {n} images, chunk={chunk} "
               f"(peak decode RAM bounded, not O(N))")
+        # Time decode vs inference separately: the IQA stage is 58% of a cull's
+        # runtime, and nothing recorded whether that is image decoding or GPU
+        # work. Optimising the wrong one wastes the effort.
+        import time as _tprof
+        _t_decode = 0.0
+        _t_infer  = 0.0
         done = 0
         for c0 in range(0, n, chunk):
             c_idx     = list(range(c0, min(c0 + chunk, n)))
             c_paths   = [image_paths[i] for i in c_idx]
+            _td0 = _tprof.monotonic()
             c_tensors = _load_images_parallel(c_paths, pin=False)
+            _t_decode += _tprof.monotonic() - _td0
 
             # Routing + Route-1 fill for this chunk.
             for pos, i in enumerate(c_idx):
@@ -493,12 +497,14 @@ class UniQAHead:
                     break
                 resized = [TF.resize(c_tensors[pos], [S, S], antialias=True) for pos in b_pos]
                 batch_t = torch.stack(resized).to(device, non_blocking=True)
+                _ti0 = _tprof.monotonic()
                 try:
                     with torch.inference_mode():
                         out = self._model(batch_t)
                     out = out.squeeze(-1) if out.dim() > 1 else out
                     for j, pos in enumerate(b_pos):
                         quality_raw[c_idx[pos]] = float(out[j].item())
+                    _t_infer += _tprof.monotonic() - _ti0
                     del batch_t
                 except Exception as e:
                     print(f"[uniqa_head] Std batch failed ({e}) — per-image fallback")
@@ -580,6 +586,8 @@ class UniQAHead:
             _p(progress_start + (progress_end - progress_start) * done / max(n, 1),
                f"UniQA {done}/{n} images…")
 
+        print(f"[uniqa_head] TIME  decode {_t_decode:6.1f}s   TOPIQ inference {_t_infer:6.1f}s"
+              f"   ({_t_decode/max(n,1)*1000:.0f} + {_t_infer/max(n,1)*1000:.0f} ms/img)", flush=True)
         n_r1 = routes.count(1); n_r2 = routes.count(2); n_std = routes.count(0)
         print(f"[uniqa_head] Routes: {n_r1} empty-scene, {n_r2} layered-frame, {n_std} standard")
         if n_failed:
@@ -600,9 +608,241 @@ class UniQAHead:
         )
         return quality_norm, person_detected, subject_bboxes
 
+
+    def score_tensors(self, paths, tensors, vlm_breakdowns=None,
+                      person_detected=None, subject_bboxes=None,
+                      framing_obstruction=None):
+        """Score ALREADY-DECODED images. Returns raw (uncalibrated) quality.
+
+        Same routing and maths as score_all's inner loop, but it never touches
+        the filesystem — the caller owns the decode. That is the whole point of
+        the streaming path: one decode feeds both the detector and this model
+        instead of each re-reading every photo.
+        """
+        device = torch.device(self._device)
+        S = self._INPUT_SIZE
+        if self._model is None:
+            self.load()
+        n = len(paths)
+        quality_raw = [0.5] * n
+        routes = [0] * n
+        person_detected = person_detected or {}
+        subject_bboxes = subject_bboxes or {}
+        _fo = framing_obstruction or {}
+
+        for i, path in enumerate(paths):
+            t = tensors[i]
+            has_person = person_detected.get(path, True)
+            bboxes = subject_bboxes.get(path, [])
+            if not has_person:
+                routes[i] = 1
+                bd = vlm_breakdowns[i] if vlm_breakdowns else {}
+                comp = float(bd.get("Composition", 0.5))
+                light = float(bd.get("Lighting", 0.5))
+                quality_raw[i] = float(np.sqrt(max(comp, 0.01) * max(light, 0.01)))
+            elif bool(_fo.get(path, False)) or (bboxes and t is not None
+                                                and _is_layered_frame(t, bboxes)):
+                routes[i] = 2
+            else:
+                routes[i] = 0
+
+        std_pos = [i for i in range(n) if routes[i] == 0 and tensors[i] is not None]
+        for b0 in range(0, len(std_pos), self._BATCH_SIZE):
+            bp = std_pos[b0:b0 + self._BATCH_SIZE]
+            if not bp:
+                break
+            batch_t = torch.stack([TF.resize(tensors[i], [S, S], antialias=True)
+                                   for i in bp]).to(device, non_blocking=True)
+            try:
+                with torch.inference_mode():
+                    out = self._model(batch_t)
+                out = out.squeeze(-1) if out.dim() > 1 else out
+                for j, i in enumerate(bp):
+                    quality_raw[i] = float(out[j].item())
+            except Exception as e:
+                print(f"[uniqa_head] streaming std batch failed ({e})")
+            finally:
+                del batch_t
+
+        r2 = [i for i in range(n) if routes[i] == 2 and tensors[i] is not None]
+        for b0 in range(0, len(r2), self._BATCH_SIZE):
+            bp = r2[b0:b0 + self._BATCH_SIZE]
+            crops, fulls = [], []
+            for i in bp:
+                t = tensors[i]
+                bb = subject_bboxes.get(paths[i], [])
+                _, H, W = t.shape
+                x1 = min(b[0] for b in bb); y1 = min(b[1] for b in bb)
+                x2 = max(b[2] for b in bb); y2 = max(b[3] for b in bb)
+                px, py = 0.15 * (x2 - x1), 0.15 * (y2 - y1)
+                X1 = max(0, int((x1 - px) * W)); Y1 = max(0, int((y1 - py) * H))
+                X2 = min(W, int((x2 + px) * W)); Y2 = min(H, int((y2 + py) * H))
+                crop = t[:, Y1:Y2, X1:X2] if (Y2 - Y1) >= 32 and (X2 - X1) >= 32 else t
+                crops.append(TF.resize(crop, [S, S], antialias=True))
+                fulls.append(TF.resize(t, [S, S], antialias=True))
+            if not crops:
+                break
+            batch_t = torch.stack(crops + fulls).to(device, non_blocking=True)
+            try:
+                with torch.inference_mode():
+                    out = self._model(batch_t)
+                out = out.squeeze(-1) if out.dim() > 1 else out
+                nc = len(bp)
+                for j, i in enumerate(bp):
+                    quality_raw[i] = 0.5 * float(out[j].item()) + 0.5 * float(out[nc + j].item())
+            except Exception as e:
+                print(f"[uniqa_head] streaming route2 batch failed ({e})")
+            finally:
+                del batch_t
+        return quality_raw, routes
+
     def unload(self) -> None:
         self._model = None
         _purge_vram()
+
+
+def _run_vision_heads_streaming(
+    image_paths, image_embeddings, prompt_embedding, clip_scores,
+    genre_ref_embs=None, lum_stats=None, progress=None,
+    comp_eligible_paths=None, vlm_breakdowns=None,
+) -> dict:
+    """Streaming IQA: decode each photo ONCE, feed both models from that buffer.
+
+    The batched path runs two full passes over the folder — detection decodes
+    every photo, then scoring decodes every photo again — on top of the
+    early-exit gate's own full-resolution decode. Three decodes per photo, and
+    decode is the dominant cost of a cull (214-241 ms/img versus 5 ms for the
+    quality model). This processes a chunk at a time: decode -> detect -> route
+    -> score -> discard, so peak memory is O(chunk) and each photo is read once.
+
+    TOPIQ scores are UNCHANGED: the decode is the same 512px path score_all
+    already used, so the quality model sees identical pixels. Only the detector
+    changes — it now sees that 512px buffer instead of its own 640px read, which
+    can move a borderline detection and therefore which formula a photo routes
+    through. Enable with FRAMEGRADE_SHARED_DECODE=1.
+    """
+    import os as _os
+    import time as _t
+    import dfine_detector as _dfine
+    _p = progress or (lambda f, d: None)
+    n = len(image_paths)
+    if n == 0:
+        empty = np.array([], dtype=np.float32)
+        return {"quality": empty, "tech": empty, "aesthetic": empty, "breakdowns": [],
+                "composition_overrides": {}, "chiaroscuro_flags": {},
+                "person_detected": {}, "framing_obstruction": {}, "subject_bboxes": {}}
+
+    try:
+        chunk = int(_os.environ.get("FRAMEGRADE_STREAM_CHUNK", "128"))
+    except ValueError:
+        chunk = 128
+    chunk = max(8, min(chunk, n))
+
+    comp_lum = lum_stats if lum_stats else [(128.0, 64.0)] * n
+    _comp_eligible = comp_eligible_paths or set(image_paths)
+
+    global _uniqa_singleton
+    if _uniqa_singleton is None or _uniqa_singleton._model is None:
+        _p(0.70, "Loading quality model…")
+        _uniqa_singleton = UniQAHead()
+        _uniqa_singleton.load()
+
+    quality_raw: list = [0.5] * n
+    routes: list = [0] * n
+    person_detected: dict = {}
+    subject_bboxes: dict = {}
+    framing_obstruction: dict = {}
+    composition_overrides: dict = {}
+    chiaroscuro_flags: dict = {}
+    t_decode = t_detect = t_score = 0.0
+
+    for c0 in range(0, n, chunk):
+        c1 = min(c0 + chunk, n)
+        c_paths = image_paths[c0:c1]
+
+        _td = _t.monotonic()
+        tensors = _load_images_parallel(c_paths, pin=False)      # THE ONLY DECODE
+        t_decode += _t.monotonic() - _td
+
+        # detector consumes the same buffer (uint8 HWC as the processor expects)
+        _tt = _t.monotonic()
+        arrays = [(p, (t.clamp(0, 1) * 255).byte().permute(1, 2, 0).numpy())
+                  for p, t in zip(c_paths, tensors) if t is not None]
+        det = _dfine.detect_persons_from_arrays(arrays, conf=0.55)
+        t_detect += _t.monotonic() - _tt
+
+        for p in c_paths:
+            boxes = [d["bbox"] for d in det.get(p, [])
+                     if (d["bbox"][2] - d["bbox"][0]) * (d["bbox"][3] - d["bbox"][1]) >= 0.005]
+            person_detected[p] = bool(boxes)
+            if boxes:
+                subject_bboxes[p] = boxes
+
+        for p in c_paths:
+            bb = subject_bboxes.get(p, [])
+            if p in _comp_eligible and len(bb) >= 2:
+                is_fo, subj = _detect_framing_obstruction(bb)
+                if is_fo:
+                    framing_obstruction[p] = True
+                    subject_bboxes[p] = subj
+        composition_overrides.update(
+            _derive_ots_from_bboxes([p for p in c_paths if p in _comp_eligible],
+                                    subject_bboxes))
+
+        dark = [(p, comp_lum[c0 + i]) for i, p in enumerate(c_paths)
+                if comp_lum[c0 + i][0] < 50.0 and p in _comp_eligible]
+        if dark:
+            try:
+                from vision_composition_heads import ChiaroscuroHead as _Ch
+                _ch = _Ch()
+                if _ch.load():
+                    for p, flag in zip([d[0] for d in dark],
+                                       _ch.score_batch([d[0] for d in dark],
+                                                       [d[1] for d in dark])):
+                        chiaroscuro_flags[p] = flag
+                else:
+                    for p, (lm, ls) in dark:
+                        chiaroscuro_flags[p] = (lm < 55.0) and (ls > 48.0)
+                _ch.unload()
+            except Exception as e:
+                print(f"[vision_heads] chiaroscuro skipped ({e})")
+
+        _ts = _t.monotonic()
+        q, r = _uniqa_singleton.score_tensors(
+            c_paths, tensors,
+            vlm_breakdowns=vlm_breakdowns[c0:c1] if vlm_breakdowns else None,
+            person_detected=person_detected, subject_bboxes=subject_bboxes,
+            framing_obstruction=framing_obstruction)
+        t_score += _t.monotonic() - _ts
+        quality_raw[c0:c1] = q
+        routes[c0:c1] = r
+
+        del tensors, arrays
+        gc.collect()
+        if torch.cuda.is_available() and torch.cuda.is_initialized():
+            torch.cuda.empty_cache()
+        _p(0.70 + 0.13 * (c1 / n), f"Scoring image quality — {c1}/{n} photos…")
+
+    print(f"[vision_heads] STREAMING TIME  decode {t_decode:6.1f}s  detect {t_detect:6.1f}s  "
+          f"score {t_score:6.1f}s  ({t_decode/max(n,1)*1000:.0f} + "
+          f"{t_detect/max(n,1)*1000:.0f} + {t_score/max(n,1)*1000:.0f} ms/img)", flush=True)
+
+    # Same fixed-affine recalibration as the batched path (chunk-independent).
+    q_arr = np.array(quality_raw, dtype=np.float32)
+    mask = np.array([r != 1 for r in routes], dtype=bool) & (q_arr != 0.5)
+    q_norm = q_arr.copy()
+    q_norm[mask] = _batch_normalize(q_arr[mask])
+    print(f"[vision_heads] Routes: {routes.count(1)} empty-scene, "
+          f"{routes.count(2)} layered-frame, {routes.count(0)} standard")
+    return {
+        "quality": q_norm, "tech": q_norm, "aesthetic": q_norm,
+        "breakdowns": [{"Technical": round(float(q_norm[i]), 3)} for i in range(n)],
+        "composition_overrides": composition_overrides,
+        "chiaroscuro_flags": chiaroscuro_flags,
+        "person_detected": person_detected,
+        "framing_obstruction": framing_obstruction,
+        "subject_bboxes": subject_bboxes,
+    }
 
 
 def run_vision_heads(
@@ -637,6 +877,13 @@ def run_vision_heads(
         chiaroscuro_flags    dict[str,bool]   path → True when chiaroscuro
         person_detected      dict[str,bool]   path → True when person detected
     """
+    import os as _os_sd
+    if _os_sd.environ.get("FRAMEGRADE_SHARED_DECODE", "").strip() == "1":
+        return _run_vision_heads_streaming(
+            image_paths, image_embeddings, prompt_embedding, clip_scores,
+            genre_ref_embs=genre_ref_embs, lum_stats=lum_stats, progress=progress,
+            comp_eligible_paths=comp_eligible_paths, vlm_breakdowns=vlm_breakdowns)
+
     _p = progress or (lambda f, d: None)
     n  = len(image_paths)
 
@@ -667,7 +914,12 @@ def run_vision_heads(
     # IQA fractions live in 0.66 → 0.83: vision grading (Qwen) ends at 0.65,
     # so anything lower makes the bar jump backwards and look stuck.
     _p(0.66, f"YOLO person detection — {n} images…")
+    import time as _tvh
+    _t_dfine0 = _tvh.monotonic()
     person_detected_dict, subject_bboxes_dict = _run_yolo_seg(image_paths)
+    _t_dfine = _tvh.monotonic() - _t_dfine0
+    print(f"[vision_heads] TIME  person detection {_t_dfine:6.1f}s "
+          f"({_t_dfine/max(n,1)*1000:.0f} ms/img)", flush=True)
 
     _comp_eligible = comp_eligible_paths or set(image_paths)
     _ots_paths     = [p for p in image_paths if p in _comp_eligible]
@@ -745,6 +997,7 @@ def run_vision_heads(
         _p(0.70, "UniQA cached — scoring directly…")
         print("[vision_heads] UniQAHead singleton reused — no reload")
 
+    _t_uniqa0 = _tvh.monotonic()
     try:
         quality_scores, _, _ = _uniqa_singleton.score_all(
             image_paths             = image_paths,
@@ -756,6 +1009,7 @@ def run_vision_heads(
             subject_bboxes_in       = subject_bboxes_dict,
             framing_obstruction_in  = framing_obstruction_dict,
         )
+        print(f"[vision_heads] TIME  quality head total {_tvh.monotonic()-_t_uniqa0:6.1f}s", flush=True)
         print(
             f"[vision_heads] UniQA: min={quality_scores.min():.3f}  "
             f"max={quality_scores.max():.3f}  mean={quality_scores.mean():.3f}"

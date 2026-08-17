@@ -1687,6 +1687,32 @@ def run_v2(
     from pipeline_stages import drop_unreadable_rows as _drop_unreadable_rows
     paths, embs, n = _drop_unreadable_rows(paths, embs, np)
 
+    if n == 0:
+        # Every file that survived the cache check turned out to be unreadable, so the
+        # drop above emptied paths/embs. Their 0.00 fail records were ALREADY flushed to
+        # LanceDB by the early-exit gate, so this folder's work is genuinely finished.
+        #
+        # Falling through instead is what killed a 785-folder cull three times: every
+        # stage below assumes at least one row, and `scores` becomes zero-length, so
+        # `scores_arr.min()` — inside a diagnostic print — raises "zero-size array to
+        # reduction operation minimum which has no identity". Guarding the prints one
+        # by one just moves the crash; the degenerate walk itself is the bug. A folder
+        # of unreadable files is a normal outcome (AppleDouble `._*` sidecars alone
+        # produce it), not an error.
+        print("[v2] All remaining files were unreadable — nothing to grade in this folder")
+        _p(1.0, "No usable images in this folder")
+        gallery = [_cached_to_gallery(cached_rows[p]) for p in all_paths if p in cached_rows]
+        grades  = [g["grade"] for g in gallery]
+        return {
+            "gallery": gallery,
+            "mogco_sequence": [],
+            "strong": sum(1 for g in grades if g == GRADE_STRONG),
+            "mid":    sum(1 for g in grades if g == GRADE_MID),
+            "weak":   sum(1 for g in grades if g == GRADE_WEAK),
+            "total":  len(gallery),
+            "pipeline": "v2_cached",
+        }
+
     _p(0.50, "Finding near-duplicate shots…")
     cluster_ids:     list[int] = [-1] * n
     sim_flags:       list[str] = [""] * n
@@ -1776,6 +1802,15 @@ def run_v2(
     to_rate_indices = [i for i in to_rate_indices if paths[i] not in _all_disqualified]
     paths_to_rate = [paths[i] for i in to_rate_indices]
 
+    # Index array for every `embs[...]` / `_sa[...]` gather below. Built ONCE with an
+    # explicit integer dtype because `np.array([])` defaults to float64 and NumPy
+    # rejects float arrays as indices ("arrays used as indices must be of integer
+    # type"). That is not hypothetical: a folder whose images are all cached or all
+    # disqualified empties this list, and the bare `np.array(to_rate_indices)` form
+    # then killed the whole multi-folder cull. An empty intp array gathers to an
+    # empty slice, and the vectorized scoring below is shape-safe at M=0.
+    _rate_idx = np.asarray(to_rate_indices, dtype=np.intp)
+
     # VRAM telemetry via nvidia-smi — NEVER torch.cuda here. get_device_properties /
     # memory_reserved would INITIALIZE a CUDA context in THIS grade-worker process,
     # and holding a CUDA context while the isolated GPU subprocess (encode / iqa)
@@ -1835,7 +1870,7 @@ def run_v2(
                 ]
                 _arch_hints = None
                 if archetype_embs is not None and len(paths_to_rate) > 0:
-                    _prate_embs  = embs[np.array(to_rate_indices)].astype(np.float32)
+                    _prate_embs  = embs[_rate_idx].astype(np.float32)
                     _prate_norms = np.linalg.norm(_prate_embs, axis=1, keepdims=True)
                     _prate_unit  = _prate_embs / np.where(_prate_norms > 1e-9, _prate_norms, 1.0)
                     _arch_norms  = np.linalg.norm(archetype_embs, axis=1, keepdims=True)
@@ -2024,15 +2059,30 @@ def run_v2(
 
                 _vlm_ran = True
                 _p(0.65, "Scoring image quality…")
-                print(
-                    f"[v2] Qwen2.5-VL scores: min={vlm_scores_rated.min():.3f}  "
-                    f"max={vlm_scores_rated.max():.3f}  mean={vlm_scores_rated.mean():.3f}"
-                    + (f"  rag={len(_rag_phrases)} phrases" if _rag_phrases else "")
-                )
+                if vlm_scores_rated.size:
+                    print(
+                        f"[v2] Qwen2.5-VL scores: min={vlm_scores_rated.min():.3f}  "
+                        f"max={vlm_scores_rated.max():.3f}  mean={vlm_scores_rated.mean():.3f}"
+                        + (f"  rag={len(_rag_phrases)} phrases" if _rag_phrases else "")
+                    )
+                else:
+                    print("[v2] Qwen2.5-VL scores: nothing rateable in this folder")
             else:
                 print("[v2] Qwen2.5-VL weights not cached — using SpecVLM CLIP scoring")
         except Exception as _e_qwen:
             print(f"[v2] Qwen2.5-VL grading failed ({_e_qwen}) — using SpecVLM CLIP")
+
+    # `paths_to_rate` can be empty even when the folder holds images: everything
+    # may already be cached, and whatever is new can be removed by the
+    # disqualification filter above (blur / YOLO / technical gate). Running a
+    # scoring pipeline over zero images then reducing the empty score array
+    # raised "zero-size array to reduction operation minimum", and because the
+    # handler re-raises it killed an entire multi-folder cull mid-run. A folder
+    # with nothing rateable is a normal outcome, not an error.
+    if not _vlm_ran and not paths_to_rate:
+        print("[v2] Nothing left to rate in this folder "
+              f"({len(_all_disqualified)} disqualified) — skipping VLM scoring")
+        _vlm_ran = True
 
     if not _vlm_ran:
         # ── SpecVLM CLIP scoring (scan mode or Qwen2.5-VL unavailable) ───────
@@ -2067,10 +2117,11 @@ def run_v2(
                     scores[idx]                         = float(r.score)
 
             _p(0.55, "Scoring image quality…")
-            print(
-                f"[v2] SpecVLM scores: min={vlm_scores_rated.min():.3f}  "
-                f"max={vlm_scores_rated.max():.3f}  mean={vlm_scores_rated.mean():.3f}"
-            )
+            if vlm_scores_rated.size:
+                print(
+                    f"[v2] SpecVLM scores: min={vlm_scores_rated.min():.3f}  "
+                    f"max={vlm_scores_rated.max():.3f}  mean={vlm_scores_rated.mean():.3f}"
+                )
 
         except Exception as e_clip:
             import traceback as _tb_clip
@@ -2237,7 +2288,7 @@ def run_v2(
 
     fine_art_scores_rated = np.full(len(paths_to_rate), 0.5, dtype=np.float32)
     if _fine_art_anchor is not None and len(to_rate_indices) > 0:
-        _fa_sims_rated = _fine_art_sims_all[np.array(to_rate_indices)]
+        _fa_sims_rated = _fine_art_sims_all[_rate_idx]
         _fa_lo   = float(_fa_sims_rated.min())
         _fa_hi   = float(_fa_sims_rated.max())
         _fa_span = max(_fa_hi - _fa_lo, 1e-4)
@@ -2326,10 +2377,10 @@ def run_v2(
     arr_yolo_soft      = np.array([paths[idx] in _yolo_soft_penalized            for idx in to_rate_indices], dtype=bool)
     # Street aesthetic genre-fit signal: 304-probe multi-vector cosine scoring (N,) → (M,)
     _sa = street_aesthetic_scores if street_aesthetic_scores is not None else np.full(n, 0.5, dtype=np.float32)
-    arr_street = _sa[np.array(to_rate_indices)]                                  # (M,)
+    arr_street = _sa[_rate_idx]                                                  # (M,)
 
     # ── Batch archetype projection: one matrix multiply for all M images ──────
-    rated_embs  = embs[np.array(to_rate_indices)].astype(np.float32)          # (M, 1536)
+    rated_embs  = embs[_rate_idx].astype(np.float32)                          # (M, 1536)
     rated_norms = np.linalg.norm(rated_embs, axis=1, keepdims=True)
     rated_unit  = rated_embs / np.where(rated_norms > 1e-9, rated_norms, 1.0)
 
@@ -2599,11 +2650,15 @@ def run_v2(
 
     # ── DIAG: target image breakdown (replaces per-image loop prints) ─────────
     scores_arr = np.array(scores, dtype=np.float32)
-    print(
-        f"[v2] grader scores — min={scores_arr.min():.3f}  "
-        f"max={scores_arr.max():.3f}  mean={scores_arr.mean():.3f}  "
-        f"median={float(np.median(scores_arr)):.3f}"
-    )
+    # The n == 0 bail-out above should make this unreachable, but this exact print is
+    # what crashed the cull, so it stays defended: a diagnostic must never be able to
+    # take down a multi-hour run.
+    if scores_arr.size:
+        print(
+            f"[v2] grader scores — min={scores_arr.min():.3f}  "
+            f"max={scores_arr.max():.3f}  mean={scores_arr.mean():.3f}  "
+            f"median={float(np.median(scores_arr)):.3f}"
+        )
 
     # ── Step 4e: Qwen2.5-VL Ollama fast-scan pass — final score authority ────────
     # Runs AFTER IQA heads so TOPIQ + YOLO data are available for injection.
@@ -2863,11 +2918,16 @@ def run_v2(
 
                 if _vlm4e_ok:
                     scores_arr = np.array(scores, dtype=np.float32)
-                    print(
-                        f"[v2] Qwen VLM fast-scan: {_vlm4e_ok}/{len(paths_to_rate)} scored — "
-                        f"min={scores_arr.min():.3f}  max={scores_arr.max():.3f}  "
-                        f"mean={scores_arr.mean():.3f}"
-                    )
+                    # `_vlm4e_ok` implies images were scored, which implies n > 0 —
+                    # but that reasoning depends on the bail-out ~900 lines up. This
+                    # exact reduction pattern has taken down a cull three times, so
+                    # the invariant is asserted locally rather than inherited.
+                    if scores_arr.size:
+                        print(
+                            f"[v2] VLM fast-scan: {_vlm4e_ok}/{len(paths_to_rate)} scored — "
+                            f"min={scores_arr.min():.3f}  max={scores_arr.max():.3f}  "
+                            f"mean={scores_arr.mean():.3f}"
+                        )
                     # Score stretch REMOVED (2026-06): it rescaled any tightly
                     # clustered batch (range < 0.20) onto [0.18, 0.88], which
                     # manufactured Strong and Weak grades out of trivial relative

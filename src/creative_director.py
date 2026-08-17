@@ -416,11 +416,26 @@ def get_diptych_matches(
     return [c for _, c in scored[:top_n]]
 
 
-def _load_people_emb() -> "Optional[np.ndarray]":
+def _load_people_emb(expect_dim: "Optional[int]" = None) -> "Optional[np.ndarray]":
+    """Load the people reference vector for the CURRENT quality tier.
+
+    Tier-namespaced: each encoder emits a different embedding width, and this
+    vector is dot-producted against image embeddings downstream — loading one
+    tier's vector while the images came from another is a shape mismatch, not a
+    slightly-wrong number. 'high' keeps the historical unsuffixed filename.
+    `expect_dim` adds a second check for files from any other source.
+    """
+    import os as _os
+    _tag = _os.environ.get("SIGLIP_TIER", "high").strip().lower()
+    _name = "people_emb.npy" if _tag not in ("mid", "low") else f"people_emb_{_tag}.npy"
     try:
-        p = Path("cache/people_emb.npy")
+        p = Path("cache") / _name
         if p.exists():
             emb  = np.load(str(p)).astype(np.float32)
+            if expect_dim is not None and emb.shape[-1] != expect_dim:
+                print(f"[cd] people_emb is {emb.shape[-1]}-d but embeddings are "
+                      f"{expect_dim}-d — skipping the people gate for this tier")
+                return None
             norm = np.linalg.norm(emb)
             return emb / (norm + 1e-9)
     except Exception as e:
@@ -444,7 +459,15 @@ def _apply_brief_constraints(
     if not _empty_brief_detected(style_prompt):
         return list(scores), [""] * len(scores)
 
-    people_emb = _load_people_emb()
+    # Pass the live embedding width so a vector from another quality tier is
+    # rejected instead of blowing up the dot product below.
+    _emb_dim = None
+    try:
+        if len(embeddings):
+            _emb_dim = int(np.asarray(embeddings[0], dtype=np.float32).shape[-1])
+    except Exception:
+        _emb_dim = None
+    people_emb = _load_people_emb(expect_dim=_emb_dim)
     adjusted   = list(scores)
     notes: list[str] = [""] * len(scores)
 
