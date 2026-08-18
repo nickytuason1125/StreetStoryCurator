@@ -447,6 +447,40 @@ function Show-Installing {
                 "install `"torch==2.5.1`" `"torchvision==0.20.1`" --index-url https://download.pytorch.org/whl/cpu --quiet" `
                 "torch + torchvision (CPU)"
         }
+
+        # onnxruntime must match the machine too. requirements.txt pins the CPU
+        # wheel as a floor so a bare `pip install -r` works, but installing that
+        # on a GPU machine is NOT harmless: run_profile.onnx_enabled() still
+        # returns True, ORT silently falls back to CPUExecutionProvider, and the
+        # default Pro-tier encoder drops from ~1.2 s/img to 11-14 s/img with no
+        # error anywhere. Only the installer knows which wheel is right.
+        if ($ok -and $hasCuda) {
+            Set-Progress 16 "Installing ONNX runtime (GPU)..."
+            $ok = Run-Cmd $pip "install `"onnxruntime-gpu==1.22.0`" --quiet" "onnxruntime-gpu"
+        }
+
+        # llama-cpp-python from a prebuilt wheel index. The PyPI sdist builds from
+        # source and needs CMake + MSVC Build Tools, which a clean Windows machine
+        # does not have — it is a hard install failure, not a warning. Installed
+        # BEFORE requirements.txt so pip sees it already satisfied.
+        if ($ok) {
+            Set-Progress 18 "Installing the local model runtime..."
+            $llamaIdx = if ($hasCuda) {
+                "https://abetlen.github.io/llama-cpp-python/whl/cu121"
+            } else {
+                "https://abetlen.github.io/llama-cpp-python/whl/cpu"
+            }
+            # Non-fatal: this powers critique, annotations and Story Mode. Grading
+            # is SigLIP + TOPIQ and does not touch it, so a failure here must not
+            # cost the user the whole install.
+            $llamaOk = Run-Cmd $pip `
+                "install `"llama-cpp-python==0.3.23`" --extra-index-url $llamaIdx --quiet" `
+                "llama-cpp-python"
+            if (-not $llamaOk) {
+                Log "  ! llama-cpp-python unavailable - critique and Story Mode will be disabled."
+                Log "    Grading is unaffected. Continuing."
+            }
+        }
     }
 
     # Step 4 — HuggingFace + quantisation core
@@ -459,6 +493,25 @@ function Show-Installing {
     if ($ok) {
         Set-Progress 65 "Installing remaining libraries..."
         $ok = Run-Cmd $pip "install -r `"$(Join-Path $ROOT 'requirements.txt')`" --quiet" "requirements.txt"
+    }
+
+    # Step 5b — model weights
+    # The install used to end without a single model file on disk. Nothing called
+    # a downloader, so the first grade either failed or triggered encode_worker's
+    # open_clip fallback: a ~7 GB fp32 fetch peaking at 10.3 GB RAM, i.e. the
+    # heaviest path, on whatever machine happened to run first.
+    #
+    # fetch_models.py asks tier_select which encoder THIS machine will actually
+    # use and downloads only that — roughly 0.8 GB on a CPU laptop against the
+    # 20+ GB an unconditional prefetch would have pulled. Optional models
+    # (critique, Story Mode) are left for the user to request from the UI.
+    if ($ok) {
+        Set-Progress 74 "Downloading AI models for this machine..."
+        $fetchOk = Run-Cmd $pythonV "`"$(Join-Path $ROOT 'scripts\fetch_models.py')`"" "model download"
+        if (-not $fetchOk) {
+            Log "  ! Model download incomplete. The app will retry on first launch,"
+            Log "    or you can run: venv\Scripts\python.exe scripts\fetch_models.py"
+        }
     }
 
     # Step 6 — frontend

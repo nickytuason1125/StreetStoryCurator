@@ -302,13 +302,41 @@ def _get_editorial_fns():
     from editorial_renderer import generate_magazine_carousel, render_editorial_carousel
     return generate_magazine_carousel, render_editorial_carousel
 
+_MODELS_SENTINEL = Path(__file__).parent / "models" / ".models_ready"
+
+
 def _bg_model_prefetch():
-    """Download missing models, then run pipeline calibration warmup."""
+    """Fetch what grading needs on first run, then warm the pipeline caches.
+
+    This was commented out at the call site, and rightly so in its old form: it
+    called model_loader.ensure_all_models_downloaded(), which fetched every model
+    unconditionally — over 20 GB, including a 6.8 GB VLM for an opt-in feature and
+    the giant encoder for a machine that may run the 768-d one. That cannot
+    complete on a laptop, so leaving it disabled was safer than running it.
+
+    It now runs scripts/fetch_models.py, which asks tier_select which encoder this
+    machine will actually use and fetches only that (~0.8 GB on a CPU laptop).
+    REQUIRED group only: the optional critique/Story-Mode models are several GB
+    and the user asks for those explicitly from the UI, which streams the same
+    script through /api/models/pull.
+
+    Subprocess, not an in-process import: this must not hold a reference to torch
+    or CUDA in the server process, which is the ancestor of the grade worker.
+    """
     try:
-        from model_loader import ensure_all_models_downloaded
-        ensure_all_models_downloaded()
+        if _MODELS_SENTINEL.exists():
+            return
+        import subprocess
+        print("[models] first run — fetching what this machine needs")
+        subprocess.run(
+            [sys.executable, str(Path(__file__).parent / "scripts" / "fetch_models.py")],
+            cwd=str(Path(__file__).parent), timeout=3600,
+        )
     except Exception as exc:
-        print(f"⚠️  Background model prefetch error: {exc}")
+        # Never fatal. A failed prefetch leaves the app running and the UI can
+        # retry through /api/models/pull; aborting startup would strand the user
+        # with no way to trigger the download at all.
+        print(f"[models] background prefetch error: {exc}")
     # Chain calibration warmup — uses top Strong photos from LanceDB history
     # to pre-populate Inductor + BnB CUDA kernel caches on disk.
     try:
@@ -415,13 +443,21 @@ async def lifespan(app: FastAPI):
     # machines. It is also released at the start of each grade (see the grade
     # stream) so it never competes with SigLIP-2 / Qwen for RAM. First detect
     # pays a ~3 s load; the spinner already covers it.
-    # Background model prefetch is intentionally DISABLED.
-    # On Windows, BitsAndBytes INT4 + pyiqa loaded from a daemon thread before
-    # CUDA is initialised by the main grading path causes a fatal C-level crash
-    # (hard process kill, no traceback). All models load on-demand when Grade is
-    # clicked — preloading from a thread here only crashes the startup.
-    # _t = threading.Thread(target=_bg_model_prefetch, daemon=True, name="model-prefetch")
-    # _t.start()
+    # Background model prefetch — re-enabled, and ONLY safe because it changed
+    # shape. It was disabled because the old version called
+    # model_loader.ensure_all_models_downloaded() directly in this daemon thread,
+    # which imports BitsAndBytes INT4 and instantiates a pyiqa metric — i.e. it
+    # initialised CUDA in the server process before the grading path did, and
+    # Windows then killed the process at C level with no traceback.
+    #
+    # _bg_model_prefetch now shells out to scripts/fetch_models.py, so no torch,
+    # no CUDA and no BitsAndBytes ever enter THIS process. The crash cause is
+    # removed rather than tolerated. It is also a no-op once models/.models_ready
+    # exists, so it costs a stat() on every launch after the first.
+    #
+    # Do NOT convert this back to an in-process call.
+    _t = threading.Thread(target=_bg_model_prefetch, daemon=True, name="model-prefetch")
+    _t.start()
 
     # ── Pre-load LanceDB (Rust DLL) on the server thread ─────────────────────
     # On Windows, loading a Rust DLL for the FIRST TIME from a nested daemon

@@ -51,6 +51,16 @@ for _p in (str(_SRC), str(_ROOT)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+try:
+    # utf-8, NOT the Windows cp1252 default. Same fix as grade_runner.py:73-78,
+    # for the same reason: a cp1252 stdout raises UnicodeEncodeError on the first
+    # non-ASCII character and aborts the run. tier_select's reason strings contain
+    # an em dash, so this script cannot avoid emitting one.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+except Exception:
+    pass
+
 _SENTINEL = _ROOT / "models" / ".models_ready"
 
 # Keep a margin beyond the download itself: snapshot_download stages files before
@@ -62,16 +72,32 @@ REQUIRED, OPTIONAL, DEEP = "required", "optional", "deep"
 
 
 def _emit(as_json: bool, **fields) -> None:
-    """One progress record. ndjson when --json, human text otherwise."""
-    if as_json:
-        sys.stdout.write(json.dumps(fields) + "\n")
-    else:
-        status = fields.get("status", "")
-        name = fields.get("name", "")
-        msg = fields.get("message", "")
-        prefix = {"start": "  →", "ok": "  ✓", "skip": "  ·", "fail": "  ✗"}.get(status, "   ")
-        sys.stdout.write(f"{prefix} {name}{(': ' + msg) if msg else ''}\n")
-    sys.stdout.flush()
+    """One progress record. ndjson when --json, human text otherwise.
+
+    ASCII markers, and it can never raise. Both matter more than they look: the
+    first version used arrows and check marks, hit UnicodeEncodeError on a cp1252
+    console, and then crashed AGAIN inside the exception handler — which calls
+    this same function — so the encoding error buried the real one and the
+    installer died on its own progress output. A progress printer must not be
+    able to abort the download it is reporting on.
+    """
+    try:
+        if as_json:
+            line = json.dumps(fields) + "\n"
+        else:
+            status = fields.get("status", "")
+            prefix = {"start": "  >", "ok": "  [ok]", "skip": "  [--]",
+                      "fail": "  [!!]"}.get(status, "     ")
+            msg = fields.get("message", "")
+            line = f"{prefix} {fields.get('name', '')}{(': ' + msg) if msg else ''}\n"
+        sys.stdout.write(line)
+        sys.stdout.flush()
+    except Exception:
+        try:
+            sys.stdout.write(repr(fields).encode("ascii", "replace").decode("ascii") + "\n")
+            sys.stdout.flush()
+        except Exception:
+            pass
 
 
 def _free_disk_gb(path: Path) -> float:
@@ -79,6 +105,58 @@ def _free_disk_gb(path: Path) -> float:
         return shutil.disk_usage(str(path)).free / 1e9
     except Exception:
         return 999.0
+
+
+def _free_ram_gb() -> float:
+    try:
+        import psutil
+        return psutil.virtual_memory().available / 1e9
+    except Exception:
+        return 999.0
+
+
+# Torch loads several hundred MB before it does anything useful. Below this, the
+# step is skipped rather than attempted — see _run_isolated.
+_TORCH_MIN_RAM_GB = 1.5
+
+
+def _run_isolated(label: str, code: str, as_json: bool, timeout: int = 900) -> bool:
+    """Run torch-touching setup in a SUBPROCESS.
+
+    Two reasons, both learned the hard way here:
+
+    1. A C-level death cannot be caught. pyiqa.create_metric() loads torch, and on
+       a machine with 0.4 GB free that gets killed by the OS with no exception and
+       no traceback — which took the whole installer down mid-run and still
+       reported exit 0. The user saw a truncated log and no error. In a subprocess
+       that is a non-zero return code we can report.
+    2. This process must not initialise CUDA. It is launched from the server's
+       prefetch thread, and the server is the ancestor of the grade worker; a CUDA
+       context here reintroduces the 0xC0000005 parent-fault.
+
+    Mirrors src/iqa_worker.py and src/encode_worker.py, which exist for (2).
+    """
+    free = _free_ram_gb()
+    if free < _TORCH_MIN_RAM_GB:
+        _emit(as_json, name=label, status="skip",
+              message=f"only {free:.1f} GB RAM free, needs ~{_TORCH_MIN_RAM_GB:.1f} GB "
+                      f"— close some apps and re-run; grading is unaffected")
+        return True          # not a failure: nothing is broken, just deferred
+    try:
+        r = subprocess.run([sys.executable, "-c", code], cwd=str(_ROOT),
+                           capture_output=True, text=True, timeout=timeout)
+        if r.returncode != 0:
+            tail = (r.stderr or r.stdout or "").strip().splitlines()
+            _emit(as_json, name=label, status="fail",
+                  message=(tail[-1][:120] if tail else f"exited {r.returncode}"))
+            return False
+        return True
+    except subprocess.TimeoutExpired:
+        _emit(as_json, name=label, status="fail", message=f"timed out after {timeout}s")
+        return False
+    except Exception as exc:
+        _emit(as_json, name=label, status="fail", message=str(exc)[:120])
+        return False
 
 
 # ── Individual fetchers ──────────────────────────────────────────────────────
@@ -118,13 +196,13 @@ def _fetch_topiq(as_json: bool) -> bool:
     machine the user believed was offline-ready.
     """
     _emit(as_json, name="topiq_nr", status="start", message="caching quality-head weights")
-    try:
-        import model_loader
-        ok = model_loader._download_topiq_nr_if_needed()
-    except Exception as exc:
-        _emit(as_json, name="topiq_nr", status="fail", message=str(exc)[:120])
-        return False
-    _emit(as_json, name="topiq_nr", status="ok" if ok else "fail")
+    ok = _run_isolated("topiq_nr", (
+        "import sys; sys.path.insert(0, 'src')\n"
+        "import model_loader\n"
+        "raise SystemExit(0 if model_loader._download_topiq_nr_if_needed() else 1)\n"
+    ), as_json)
+    if ok:
+        _emit(as_json, name="topiq_nr", status="ok")
     return ok
 
 
@@ -139,14 +217,14 @@ def _fetch_detectors(as_json: bool) -> bool:
         _emit(as_json, name="detectors", status="skip", message="already installed")
         return True
     _emit(as_json, name="detectors", status="start", message="D-FINE-nano")
-    try:
-        import download_detectors
-        download_detectors.main()
-    except Exception as exc:
-        _emit(as_json, name="detectors", status="fail", message=str(exc)[:120])
-        return False
-    _emit(as_json, name="detectors", status="ok")
-    return True
+    ok = _run_isolated("detectors", (
+        "import sys; sys.path.insert(0, 'scripts')\n"
+        "import download_detectors\n"
+        "download_detectors.main()\n"
+    ), as_json)
+    if ok:
+        _emit(as_json, name="detectors", status="ok")
+    return ok
 
 
 def _fetch_gguf(key: str, as_json: bool) -> bool:
@@ -184,26 +262,26 @@ def _fetch_vision_probe(as_json: bool) -> bool:
         _emit(as_json, name="vision_probe", status="skip", message="already installed")
         return True
     _emit(as_json, name="vision_probe", status="start", message="DINOv2-S/14 (~0.1 GB)")
-    try:
-        import model_loader
-        ok = model_loader._download_vis_probe_if_needed()
-    except Exception as exc:
-        _emit(as_json, name="vision_probe", status="fail", message=str(exc)[:120])
-        return False
-    _emit(as_json, name="vision_probe", status="ok" if ok else "fail")
+    ok = _run_isolated("vision_probe", (
+        "import sys; sys.path.insert(0, 'src')\n"
+        "import model_loader\n"
+        "raise SystemExit(0 if model_loader._download_vis_probe_if_needed() else 1)\n"
+    ), as_json)
+    if ok:
+        _emit(as_json, name="vision_probe", status="ok")
     return ok
 
 
 def _fetch_deep_grade(as_json: bool) -> bool:
     """Qwen2.5-VL-3B for the opt-in Deep Grade toggle. 6.8 GB, off by default."""
     _emit(as_json, name="qwen_vlm", status="start", message="Qwen2.5-VL-3B (~6.8 GB)")
-    try:
-        import model_loader
-        ok = model_loader._download_qwen_if_needed()
-    except Exception as exc:
-        _emit(as_json, name="qwen_vlm", status="fail", message=str(exc)[:120])
-        return False
-    _emit(as_json, name="qwen_vlm", status="ok" if ok else "fail")
+    ok = _run_isolated("qwen_vlm", (
+        "import sys; sys.path.insert(0, 'src')\n"
+        "import model_loader\n"
+        "raise SystemExit(0 if model_loader._download_qwen_if_needed() else 1)\n"
+    ), as_json, timeout=3600)
+    if ok:
+        _emit(as_json, name="qwen_vlm", status="ok")
     return ok
 
 
