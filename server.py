@@ -305,6 +305,28 @@ def _get_editorial_fns():
 _MODELS_SENTINEL = Path(__file__).parent / "models" / ".models_ready"
 
 
+def _models_ready() -> bool:
+    """True when an encoder is genuinely installed — not merely claimed.
+
+    The sentinel alone is not trusted, because it was TRACKED IN GIT: a fresh
+    clone arrived carrying models/.models_ready and zero weights, so a
+    sentinel-only check short-circuited the prefetch and nothing ever downloaded.
+    The file is untracked now, but a stale or hand-copied one must not be able to
+    convince the app that a machine is provisioned when it is not — the failure is
+    silent and lands on the user, which is the worst place for it.
+
+    So the sentinel is a fast path and tier_select is the authority.
+    """
+    try:
+        import sys as _s, os as _o
+        _s.path.insert(0, _o.path.join(_o.path.dirname(__file__), "src"))
+        import tier_select
+        import run_profile
+        return any(tier_select.available(t) for t in run_profile.TIERS)
+    except Exception:
+        return _MODELS_SENTINEL.exists()      # can't verify — trust it, don't loop
+
+
 def _bg_model_prefetch():
     """Fetch what grading needs on first run, then warm the pipeline caches.
 
@@ -324,7 +346,7 @@ def _bg_model_prefetch():
     or CUDA in the server process, which is the ancestor of the grade worker.
     """
     try:
-        if _MODELS_SENTINEL.exists():
+        if _models_ready():
             return
         import subprocess
         print("[models] first run — fetching what this machine needs")

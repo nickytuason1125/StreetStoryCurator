@@ -62,3 +62,10 @@ Thumbs.db
 
 # Isolated Edge profile
 StreetStoryCurator/
+
+# Machine state, not source. models/.models_ready was TRACKED, so a fresh clone
+# arrived claiming models were installed while carrying none — the first-run
+# prefetch then short-circuited and nothing ever downloaded.
+models/.models_ready
+models/**/refs/
+models/dpo_adapter/*.db
