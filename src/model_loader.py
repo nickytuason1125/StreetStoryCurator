@@ -157,7 +157,14 @@ def _download_vis_probe_if_needed() -> bool:
         _VIS_PROBE_DIR.mkdir(parents=True, exist_ok=True)
         print(f"[model_loader] Fetching vision probe to {_VIS_PROBE_DIR} …")
         snapshot_download(
-            repo_id="facebook/dinov2-vits14",
+            # facebook/dinov2-vits14 does not exist on the Hub — it 401s as
+            # RepositoryNotFoundError. That is why models/vision_probe/ was never
+            # created, why ChiaroscuroHead reported "unavailable" in all 43 logged
+            # runs, and why its luminance fallback flagged 0 dark images every
+            # time: the fallback thresholds were never exercised because the head
+            # they back up could never load. facebook/dinov2-small is the same
+            # ViT-S/14 in transformers format, ungated.
+            repo_id="facebook/dinov2-small",
             local_dir=str(_VIS_PROBE_DIR),
             local_dir_use_symlinks=False,
             ignore_patterns=["*.msgpack", "*.h5", "flax_model*", "tf_model*", "rust_model*"],

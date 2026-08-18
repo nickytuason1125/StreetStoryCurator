@@ -230,6 +230,16 @@ def _fetch_topiq(as_json: bool) -> bool:
     happens during setup with a progress line rather than silently, mid-cull, on a
     machine the user believed was offline-ready.
     """
+    # Skip the load entirely when the weights are already cached. pyiqa has no
+    # download-without-instantiate entry point, so model_loader triggers the fetch
+    # by constructing the metric — which means a step that has nothing left to
+    # download still pays a full torch load. On this machine that load died with
+    # 0xC0000005 under memory pressure, i.e. the no-op was the crash.
+    cache = Path.home() / ".cache" / "torch" / "hub" / "pyiqa"
+    if any(cache.glob("cfanet_nr_koniq*.pth")):
+        _emit(as_json, name="topiq_nr", status="skip", message="already cached")
+        return True
+
     _emit(as_json, name="topiq_nr", status="start", message="caching quality-head weights")
     ok = _run_isolated("topiq_nr", (
         "import sys; sys.path.insert(0, 'src')\n"
@@ -272,11 +282,17 @@ def _fetch_gguf(key: str, as_json: bool) -> bool:
           message=f"{m.filename} (~{m.size_gb:.1f} GB) — {m.purpose}")
     try:
         from huggingface_hub import hf_hub_download
-        got = hf_hub_download(repo_id=m.repo, filename=m.filename)
         m.dest.parent.mkdir(parents=True, exist_ok=True)
-        # Copy rather than symlink: the app must keep working if the HF cache is
-        # cleared, and Windows symlinks need developer mode or elevation.
-        shutil.copyfile(got, m.dest)
+        # local_dir downloads straight to the destination. The first version let
+        # it land in the shared HF blob cache and then copied it out, which costs
+        # TWICE the disk per file — measured: one 1.8 GB GGUF took free space from
+        # 17.1 GB to 11.8 GB. On a machine with 17 GB free and 9 GB of models to
+        # fetch, that difference decides whether the install completes.
+        got = hf_hub_download(repo_id=m.repo, filename=m.filename,
+                              local_dir=str(m.dest.parent))
+        got = Path(got)
+        if got.resolve() != m.dest.resolve():
+            shutil.move(str(got), str(m.dest))
     except Exception as exc:
         _emit(as_json, name=f"gguf:{key}", status="fail", message=str(exc)[:120])
         return False
@@ -348,9 +364,8 @@ def build_plan(tier: str, groups: set) -> list:
 def _installed(name: str) -> bool:
     """Is this plan item already on disk?
 
-    topiq_nr and vision_probe are not listed: pyiqa owns its own cache location
-    and both fetchers are cheap no-ops when the weights are already there, so
-    they report 'skip' at run time rather than being predicted here.
+    Must agree with what each fetcher decides at run time, or --dry-run promises a
+    download that then reports 'skip' and the totals do not add up.
     """
     import model_registry
     import run_profile
@@ -361,6 +376,12 @@ def _installed(name: str) -> bool:
         return model_registry.gguf(name.split(":", 1)[1]).present()
     if name == "detectors":
         return (_ROOT / "models" / "dfine_nano" / "config.json").exists()
+    if name == "topiq_nr":
+        cache = Path.home() / ".cache" / "torch" / "hub" / "pyiqa"
+        return any(cache.glob("cfanet_nr_koniq*.pth"))
+    if name == "vision_probe":
+        d = _ROOT / "models" / "vision_probe"
+        return d.exists() and any(d.rglob("*.safetensors"))
     return False
 
 
