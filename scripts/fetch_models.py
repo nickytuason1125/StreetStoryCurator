@@ -120,6 +120,42 @@ def _free_ram_gb() -> float:
 _TORCH_MIN_RAM_GB = 1.5
 
 
+# Lines that are noise, not diagnosis. The ML stack emits a lot of these, and the
+# useful error is almost never the last one.
+_NOISE = ("futurewarning", "userwarning", "deprecationwarning", "warnings.warn",
+          "warning:", "  warnings", "tqdm", "it/s]", "b/s]")
+
+
+def _error_tail(stderr: str, stdout: str, returncode: int) -> str:
+    """The most useful line from a failed subprocess.
+
+    Taking the last stderr line looked obvious and was wrong: torch and timm emit
+    FutureWarnings on import, so a step that failed for an entirely different
+    reason reported "Importing from ... is deprecated" as its cause. That is the
+    same shape as the _emit bug — the reporter hiding the failure it exists to
+    describe — so it gets fixed the same way rather than tolerated.
+
+    Prefers a traceback's final line, then any non-noise line, and says plainly
+    when there is nothing useful instead of inventing a cause.
+    """
+    text = (stderr or "") + "\n" + (stdout or "")
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    real = [ln for ln in lines if not any(n in ln.lower() for n in _NOISE)]
+
+    for ln in reversed(real):                      # a raised exception wins
+        if ln.startswith(("Traceback", "  File ")):
+            continue
+        if ":" in ln and any(ln.startswith(p) for p in
+                             ("Error", "OSError", "RuntimeError", "ValueError",
+                              "MemoryError", "ImportError", "ModuleNotFoundError",
+                              "ConnectionError", "HTTPError", "OutOfMemoryError")):
+            return ln[:160]
+    if real:
+        return real[-1][:160]
+    return (f"exited {returncode} with no diagnosable output — usually memory "
+            f"pressure killing the child before it could report")
+
+
 def _run_isolated(label: str, code: str, as_json: bool, timeout: int = 900) -> bool:
     """Run torch-touching setup in a SUBPROCESS.
 
@@ -146,9 +182,8 @@ def _run_isolated(label: str, code: str, as_json: bool, timeout: int = 900) -> b
         r = subprocess.run([sys.executable, "-c", code], cwd=str(_ROOT),
                            capture_output=True, text=True, timeout=timeout)
         if r.returncode != 0:
-            tail = (r.stderr or r.stdout or "").strip().splitlines()
             _emit(as_json, name=label, status="fail",
-                  message=(tail[-1][:120] if tail else f"exited {r.returncode}"))
+                  message=_error_tail(r.stderr, r.stdout, r.returncode))
             return False
         return True
     except subprocess.TimeoutExpired:
