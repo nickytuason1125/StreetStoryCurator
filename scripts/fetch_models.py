@@ -115,9 +115,14 @@ def _free_ram_gb() -> float:
         return 999.0
 
 
-# Torch loads several hundred MB before it does anything useful. Below this, the
-# step is skipped rather than attempted — see _run_isolated.
-_TORCH_MIN_RAM_GB = 1.5
+# MEASURED, not estimated. 1.5 was a guess and it was wrong: the topiq step passed
+# this gate at 1.7 GB available and then died 0xC0000005 — the OS killed the child
+# mid-load, which is exactly the outcome the gate exists to prevent. Torch plus a
+# vision backbone needs real headroom, not a few hundred MB.
+#
+# 2.5 is above the observed failure and below tier_select's Pro requirement (3.0),
+# so a machine that can grade at all can also run setup.
+_TORCH_MIN_RAM_GB = 2.5
 
 
 # Lines that are noise, not diagnosis. The ML stack emits a lot of these, and the
