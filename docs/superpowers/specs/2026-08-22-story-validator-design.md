@@ -106,6 +106,15 @@ Competition:
 Thresholds reuse the constants already in `creative_director.py` rather than
 introducing parallel ones.
 
+**Fact availability at time of writing.** `framing`, `luminance`, `session`,
+`score` and `personal_score` exist in `story_facts` today. **Subject scale does
+not** — box area is the intended second framing source and is unbuilt. Every
+rule depending on it therefore returns `Unverifiable` on every photo until that
+lands. That is correct behaviour, not a bug: the rule is declared, reported as
+uncheckable, and starts working the day its fact arrives. It does mean the
+"quiet closer" and "no narrative dependence" rules are inert on delivery, and
+the validator should not be described as enforcing them until they are not.
+
 ## Repair
 
 Deterministic, no second model call. For a violated slot, take the
