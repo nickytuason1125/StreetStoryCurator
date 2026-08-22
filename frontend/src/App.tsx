@@ -2157,8 +2157,11 @@ export default function App() {
 
       {/* Engine health warning banner */}
       {engineHealth.status !== "checking" && (() => {
-        const missingOllama = engineHealth.missing.filter(m => !m.endsWith('.gguf'));
-        const missingGguf   = engineHealth.missing.filter(m => m.endsWith('.gguf'));
+        // One list. This used to split on !endsWith('.gguf') because in the
+        // Ollama era those were Ollama tags; the registry now offers nothing
+        // but .gguf, so the "ollama" half was always empty -- and it gated the
+        // Download button, which therefore never rendered.
+        const missingModels = engineHealth.missing ?? [];
         const isOffline     = engineHealth.status === "offline";
 
         // Model load state chips — gemma3:4b and qwen2.5vl:3b
@@ -2167,7 +2170,14 @@ export default function App() {
           "gemma3:4b":    "Scene reader",
           "qwen2.5vl:3b": "Photo reader",
         };
-        const modelChips = VLM_TARGETS.map(target => {
+        // Empty by design. These chips reported gpu/cpu residency per model,
+        // but /api/ollama/status sets size_vram to 0 for every entry -- with
+        // llama_cpp the offload level is decided per call, not held as a
+        // server-side fact. The chips could only ever show "absent", for models
+        // (gemma3:4b, qwen2.5vl:3b) this app stopped shipping when Ollama was
+        // removed. The JSX below is kept but never renders.
+        const modelChips: {label:string; display:string; state:"gpu"|"cpu"|"absent"; size_vram?:number}[] = [];
+        const _unusedChips = VLM_TARGETS.map(target => {
           const found = ollamaPs.find(m => m.name === target || m.name.startsWith(target.split(":")[0] + ":"));
           if (!found) return { label: target, display: MODEL_DISPLAY[target] ?? target, state: "absent" as const };
           const onGpu = found.size_vram > 0;
@@ -2175,7 +2185,7 @@ export default function App() {
         });
         const anyCpu    = modelChips.some(c => c.state === "cpu");
         const anyAbsent = modelChips.some(c => c.state === "absent");
-        const showBanner = isOffline || missingOllama.length > 0 || missingGguf.length > 0 || anyCpu;
+        const showBanner = isOffline || missingModels.length > 0;
         if (!showBanner) return null;
         if (bannerDismissed && !isOffline) return null;
 
@@ -2197,12 +2207,11 @@ export default function App() {
               <span style={{ flex:1, minWidth:0 }}>
                 <strong>The writing engine isn't running.</strong>{' '}
                 Grading still works. Written critiques, the creative director, and photo
-                annotations are unavailable until you start Ollama.
+                annotations need a local model installed.
               </span>
             ) : (
               <span style={{ flex:1, minWidth:0 }}>
-                {missingOllama.length > 0 && <>Not installed yet: <strong>{missingOllama.map(m => MODEL_DISPLAY[m] ?? m).join(", ")}</strong>{missingGguf.length > 0 ? " · " : ""}</>}
-                {missingGguf.length > 0 && <>Missing local file{missingGguf.length > 1 ? "s" : ""}: <strong>{missingGguf.join(", ")}</strong> — place manually in <code style={{ fontSize:'var(--text-xs)' }}>models/</code></>}
+                {missingModels.length > 0 && <>Optional model{missingModels.length > 1 ? "s" : ""} not installed: <strong>{missingModels.join(", ")}</strong> — grading works without {missingModels.length > 1 ? "them" : "it"}; the writing features need {missingModels.length > 1 ? "them" : "it"}.</>}
               </span>
             )}
             {/* Ollama out-of-date — overrides all other controls */}
@@ -2231,7 +2240,7 @@ export default function App() {
                   </span>
                 )}
                 {/* Download / Retry button */}
-                {missingOllama.length > 0 && !isDownloading && (
+                {missingModels.length > 0 && !isDownloading && (
                   <button
                     onClick={() => { setDownloadError(null); handleDownloadMissing(); }}
                     style={{ flexShrink:0, padding:'4px 12px', fontSize:'var(--text-sm)', fontWeight:700,
