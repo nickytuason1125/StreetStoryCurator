@@ -155,10 +155,16 @@ class TestModelIntegrity:
         import frontier_config
         import tier_select
         caplog.set_level("WARNING")
+        # Ask the registry which file this build expects, rather than naming
+        # one. Hardcoding "deepseek-r1-8b-q5.gguf" here meant the fixture went
+        # stale the moment the registry moved to another model, and the test
+        # started passing for the wrong reason.
+        import model_registry
+        _want = model_registry.text_gguf_path().name
         real_exists = Path.exists
         monkeypatch.setattr(
             Path, "exists",
-            lambda self: False if self.name == "deepseek-r1-8b-q5.gguf" else real_exists(self))
+            lambda self: False if self.name == _want else real_exists(self))
         with patch.object(tier_select, "available", lambda t: True):
             frontier_config.check_model_integrity()          # must not raise
         assert any("Jury GGUF absent" in r.message for r in caplog.records)

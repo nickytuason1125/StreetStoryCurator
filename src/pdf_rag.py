@@ -136,7 +136,13 @@ def _extract_concepts_gguf(text: str) -> list[str]:
     Returns a list of concept phrases.
     """
     from pathlib import Path as _P
-    gguf = _P(__file__).resolve().parent.parent / "models" / "deepseek-r1-8b-q5.gguf"
+    # Registry, not a filename. A third copy of the same hardcoded path is how
+    # the model swap left three modules reaching for weights that had moved.
+    try:
+        import model_registry as _mr
+        gguf = _mr.text_gguf_path()
+    except Exception:
+        gguf = _P(__file__).resolve().parent.parent / "models" / "unknown.gguf"
     if not gguf.exists():
         # Fallback: try Phi-4 mini
         gguf_alt = list((_P(__file__).resolve().parent.parent / "models").glob("*.gguf"))

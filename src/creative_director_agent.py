@@ -31,7 +31,6 @@ from pathlib import Path
 from typing import Optional
 
 _ROOT = Path(__file__).resolve().parent.parent
-_GGUF = _ROOT / "models" / "deepseek-r1-8b-q5.gguf"
 
 # Grammar-constrained decoding for the rule-set refinement call — same
 # pattern as vlm_niche_detector.py's _GRAMMAR_SRC (grammar built once,
@@ -102,80 +101,16 @@ class DirectorBrief:
 #    once per user action, not per-frame, so it should not stay resident
 #    between requests the way critique_engine's GPU model does) ─────────────
 
-_llm_singleton: Optional[object] = None
-
-# Same auto-backoff rationale as jury_engine.py: try full GPU offload, step
-# down only if it doesn't fit, land on CPU as the final fallback — never
-# worse than the old hardcoded CPU-only behavior, often much faster.
-_GPU_LAYER_LADDER = [-1, 28, 24, 20, 16, 12, 8, 4, 0]
-
-# Same DeepSeek-R1 think-skip trick as jury_engine.py — see there for why.
-_THINK_SKIP = "\n<think>\n\n</think>\n\n"
-
-
-def _load_agent_llm():
-    global _llm_singleton
-    if _llm_singleton is not None:
-        return _llm_singleton
-    if not _GGUF.exists():
-        return None
-
-    from llama_cpp import Llama
-    # NOT torch.cuda.is_available() — same reason as jury_engine._load_llm():
-    # this runs in the server process, which spawns CUDA subprocesses, and
-    # asking the question is what creates the parent's CUDA context.
-    try:
-        from tier_select import has_gpu
-        has_cuda = has_gpu()
-    except Exception:
-        has_cuda = False
-
-    ladder = _GPU_LAYER_LADDER if has_cuda else [0]
-    last_err: Optional[Exception] = None
-    for n_gpu in ladder:
-        try:
-            # Same flash_attn rationale as jury_engine.py: halves KV-cache
-            # memory and speeds up attention on GPU, gated off on the
-            # n_gpu_layers=0 fallback rung so it can't be the one thing
-            # standing between this and the last-resort CPU path working.
-            # n_ctx=768 (down from 1024) — this prompt (brief up to 200
-            # chars + short instructions) never comes close to using it;
-            # smaller n_ctx means a smaller pre-allocated KV cache.
-            _llm_singleton = Llama(
-                model_path=str(_GGUF), n_ctx=768, n_gpu_layers=n_gpu,
-                flash_attn=(n_gpu != 0), verbose=False,
-            )
-            print(f"[cda] GGUF loaded (n_gpu_layers={n_gpu}, flash_attn={n_gpu != 0})")
-            return _llm_singleton
-        except Exception as e:
-            last_err = e
-            print(f"[cda] load failed at n_gpu_layers={n_gpu} ({e}) — backing off")
-            continue
-
-    print(f"[cda] GGUF load failed on every offload level: {last_err}")
-    _llm_singleton = None
-    return _llm_singleton
-
-
 def unload_agent_model() -> None:
-    """Release the GGUF singleton. Call once per run_creative_direction()
-    invocation after Step 1 completes. Must free CUDA memory now that this
-    may be GPU-resident, not just drop the Python reference."""
-    global _llm_singleton
-    _llm_singleton = None
-    import gc
-    gc.collect()
-    try:
-        import torch
-        # is_initialized() ALONE — `is_available() and is_initialized()` is a
-        # guard that defeats itself, since is_available() creates the context
-        # and is evaluated first.
-        if torch.cuda.is_initialized():
-            torch.cuda.empty_cache()
-            torch.cuda.ipc_collect()
-    except Exception:
-        pass
+    """No-op, deliberately.
 
+    This used to free a SECOND Llama instance of the same weights this module
+    now shares with local_llm. It is called mid-pipeline, immediately before
+    ask_local_art_director needs those very weights -- so evicting them here
+    forced a multi-GB reload seconds later. Kept as a no-op because
+    creative_director calls it and the call site is not worth churning.
+    """
+    return None
 
 def _extract_json_obj(raw: str) -> Optional[dict]:
     """Brace-balanced JSON object extraction, tolerant of <think> preambles
@@ -236,37 +171,38 @@ def _keyword_rule_set(style_prompt: str) -> dict:
 _grammar_broken = False
 
 
-def _gguf_refine_rule_set(style_prompt: str) -> Optional[dict]:
-    global _grammar_broken
-    llm = _load_agent_llm()
-    if llm is None:
-        return None
+def _gguf_refine_rule_set(style_prompt: str) -> "Optional[dict]":
+    """Refine the keyword rule set with the shared text model, or None.
+
+    Uses local_llm so there is ONE model per process. The previous version
+    built its own Llama from a hardcoded path and applied a GBNF grammar.
+    Grammar went away with the shared loader, and that is an improvement:
+    measured on this task it scored 11/14 against 14/14 unconstrained,
+    biasing toward small ids. It degrades the choice, not just the format.
+    """
+    import local_llm
+    nl = chr(10)
     prompt = (
         "Analyze this street-photography style brief and answer with "
-        "compact JSON only, no explanation:\n"
-        f'Brief: "{style_prompt[:200]}"\n'
-        '{"HARD_FILTER_PEOPLE": true|false, "GEOMETRIC_PRIORITY": "High"|"Normal", '
-        '"LIGHTING_MOOD": "<=3 words"}\n'
-        "JSON:"
-    ) + _THINK_SKIP
-    base_kwargs: dict = dict(max_tokens=120, temperature=0.1, stop=["\n\n"])
-
-    if not _grammar_broken:
-        grammar = _load_rule_set_grammar()
-        if grammar is not None:
-            try:
-                out = llm(prompt, grammar=grammar, **base_kwargs)
-                return _parse_rule_set_output(out["choices"][0]["text"])
-            except Exception as _e:
-                print(f"[cda] grammar-constrained decoding failed ({_e}) — "
-                      "disabling grammar for this process, retrying unconstrained")
-                _grammar_broken = True
-
+        "compact JSON only, no explanation:" + nl
+        + 'Brief: "' + style_prompt[:200] + '"' + nl
+        + '{"HARD_FILTER_PEOPLE": true|false, '
+          '"GEOMETRIC_PRIORITY": "High"|"Normal", '
+          '"LIGHTING_MOOD": "<=3 words"}' + nl
+        + "JSON:"
+    )
+    raw = local_llm.generate(
+        prompt,
+        system="You answer with compact JSON and nothing else.",
+        max_tokens=120,
+        temperature=0.1,
+    )
+    if not raw:
+        return None
     try:
-        out = llm(prompt, **base_kwargs)
-        return _parse_rule_set_output(out["choices"][0]["text"])
+        return _parse_rule_set_output(raw)
     except Exception as _e:
-        print(f"[cda] rule-set GGUF refinement skipped: {_e}")
+        print("[cda] rule-set refinement skipped: %s" % _e)
         return None
 
 

@@ -783,7 +783,14 @@ async def model_status():
     # SpecVLM CLIP weights (fallback grader)
     spec_dir  = _P("models/specvlm")
     verify_ok = any(spec_dir.glob("*.safetensors")) if spec_dir.exists() else False
-    judge_ok  = _P("models/deepseek-r1-8b-q5.gguf").exists()
+    # Registry, not a filename. This was the FOURTH module hardcoding the
+    # same weight file; after the text model changed, a correct install
+    # reported the judge missing and a stale one reported it present.
+    try:
+        import model_registry as _mr_health
+        judge_ok = _mr_health.text_gguf_path().exists()
+    except Exception:
+        judge_ok = False
     phi4_ok   = _P("models/phi4-mini-reasoning-q4.gguf").exists()
 
     try:

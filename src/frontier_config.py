@@ -161,8 +161,16 @@ def check_model_integrity() -> None:
     logger.info(f"✓ Model integrity: encoder tiers installed — {labels}")
 
     # The GGUF jury/critique model is optional; without it those panels fall back.
-    if not (root / "models" / "deepseek-r1-8b-q5.gguf").exists():
+    # Ask the registry rather than naming a file. This said "deepseek-r1-8b-q5"
+    # for months after the registry had moved on, so a correct install reported
+    # a missing model and a stale one reported success.
+    try:
+        import model_registry as _mr
+        _text = _mr.text_gguf_path()
+    except Exception:
+        _text = root / "models" / "unknown.gguf"
+    if not _text.exists():
         logger.warning(
-            "Jury GGUF absent (models/deepseek-r1-8b-q5.gguf). "
-            "Jury critique disabled — grading is unaffected."
+            "Jury GGUF absent (%s). Jury critique disabled — "
+            "grading is unaffected." % _text.name
         )
