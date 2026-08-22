@@ -318,7 +318,8 @@ def _brief_vector(style_prompt: str, M):
     return vec
 
 
-def _focus_pool(paths, embeddings, scores, aspects, style_prompt="", k=12):
+def _focus_pool(paths, embeddings, scores, aspects, style_prompt="", k=12,
+                out=None):
     """Narrow the candidate pool to k, considering ALL of it.
 
     Replaces a funnel that took the single highest-scoring photo and kept its 40
@@ -385,6 +386,10 @@ def _focus_pool(paths, embeddings, scores, aspects, style_prompt="", k=12):
         return paths, embeddings, scores, aspects
 
     diag["excluded_bundled"] = _n_excluded
+    diag["pool_size"] = len(paths)
+    if out is not None:
+        out.update(diag)          # the design promises cohesion is REPORTED,
+                                  # not merely used, so the caller can show it
     print(f"[cd] focus: {len(idx)} of {len(paths)} | cohesion "
           f"{diag.get('cohesion_mean', 0):.3f} | excluded "
           f"{_n_excluded} bundled")
@@ -1222,6 +1227,11 @@ def run_creative_direction(
 
     _p = progress or (lambda f, d: None)
 
+    # Filled by _focus_pool. Cohesion is reported to the user rather than
+    # enforced as a threshold -- no floor could be justified without grading on
+    # a curve, so the number goes on screen for the user to judge instead.
+    _selection_diag: dict = {}
+
     if not strong_paths:
         return {"error": "No images to curate.", "outputs": [], "total": 0}
 
@@ -1260,7 +1270,8 @@ def run_creative_direction(
         if strong_paths and embeddings:
             strong_paths, embeddings, scores, aspect_scores_list = _focus_pool(
                 strong_paths, embeddings, scores, aspect_scores_list,
-                style_prompt=style_prompt, k=max(n_target * 2, 12))
+                style_prompt=style_prompt, k=max(n_target * 2, 12),
+                out=_selection_diag)
             _p(0.01, f"Pool focused to {len(strong_paths)} across the whole library")
 
     # ── Text-semantic pool rerank ─────────────────────────────────────────────
@@ -1693,4 +1704,5 @@ def run_creative_direction(
         # None when the Art Director actually chose. A sentence when this is a
         # score sort wearing a story's clothes.
         "director_fallback": director_fallback,
+        "selection": _selection_diag,
     }

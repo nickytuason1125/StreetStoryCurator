@@ -970,6 +970,10 @@ export default function App() {
   // Non-empty when the sequence was NOT art-directed: a score sort wearing a
   // story’s clothes. Shown, never swallowed.
   const [creativeFallback,    setCreativeFallback]    = useState("");
+  // How tightly the chosen set hangs together, reported by story_selector.
+  // Deliberately a readout, not a gate: no cohesion floor could be justified
+  // without grading on a curve, so the number is shown and the user judges.
+  const [creativeSelection,   setCreativeSelection]   = useState<any>(null);
   const [creativeShowOriginal,setCreativeShowOriginal]= useState(false);
   const [usedCount,           setUsedCount]           = useState(0);
   const [sequenceSaving,      setSequenceSaving]      = useState(false);
@@ -1270,6 +1274,7 @@ export default function App() {
     setCreativePrompt('');
     setCreativeOutDir('');
     setCreativeFallback('');
+    setCreativeSelection(null);
     setCreativeShowOriginal(false);
   }, [folder]);
 
@@ -1856,6 +1861,7 @@ export default function App() {
             setCreativeResults(outputs);
             setCreativeOutDir(msg.data?.output_dir ?? '');
             setCreativeFallback(msg.data?.director_fallback ?? '');
+            setCreativeSelection(msg.data?.selection ?? null);
             const ok = outputs.filter((r: any) => r.success).length;
             if (ok === 0 && outputs.length === 0) {
               notify('Creative Direction ran but produced no outputs.', 'info');
@@ -4637,6 +4643,22 @@ export default function App() {
                         <span style={{fontSize:'var(--text-xs)', color:T.gradeWeak, cursor:'default'}}
                           title={creativeResults.filter((r:any)=>!r.success).map((r:any)=>`${(r.source_path??'').split(/[\\/]/).pop()}: ${r.error??'failed'}`).join('\n')}>
                           {creativeResults.filter((r:any)=>!r.success).length} failed ⓘ
+                        </span>
+                      )}
+                      {creativeSelection?.cohesion_mean != null && (
+                        <span style={{fontSize:'var(--text-xs)', color:T.ink3, cursor:'default'}}
+                          title={`Chosen from ${creativeSelection.pool_size ?? '?'} graded photos. `
+                            + `Cohesion ${Number(creativeSelection.cohesion_mean).toFixed(2)} `
+                            + `(lowest ${Number(creativeSelection.cohesion_min ?? 0).toFixed(2)}). `
+                            + `Higher means the set hangs together more tightly; `
+                            + `too high and it is repetitive.`}>
+                          cohesion {Number(creativeSelection.cohesion_mean).toFixed(2)} ⓘ
+                        </span>
+                      )}
+                      {creativeSelection?.reason && (
+                        <span style={{fontSize:'var(--text-xs)', color:T.gradeWeak, cursor:'default'}}
+                          title={String(creativeSelection.reason)}>
+                          fewer than asked ⓘ
                         </span>
                       )}
                       {creativeFallback && (
