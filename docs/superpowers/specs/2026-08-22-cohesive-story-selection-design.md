@@ -68,23 +68,39 @@ field the API already accepts, so the backend contract is unchanged.
 library rather than 40 neighbours:
 
 ```
-value(i)  = 0.50 * brief_match(i) + 0.35 * score(i) + 0.15 * personal_score(i)
+value(i) = 0.40 * brief_match(i)
+         + 0.30 * score(i)
+         + 0.10 * personal_score(i)
+         + 0.20 * cohesion_to_selected(i)      <- preference, not a gate
 
-constraints
+constraint
   duplicate   no pair above _DUP_SIM_THRESH (0.88) -- the existing constant
-  cohesion    each frame within the band of the set's centre
 ```
+
+**Cohesion is a term in the objective, not a threshold.** This is the resolution
+of a contradiction found in spec self-review: the document argued cohesion could
+not be given a defensible floor, then listed it as a hard constraint anyway. But
+deleting it outright would throw away the one thing the old anchor step got
+right.
+
+As a weighted term it needs no magic number and has no cliff. A frame that fits
+the set is preferred; a frame that fits badly can still be chosen if it is
+strongly relevant and high quality — which is what "the striking outlier that
+earns its place" looks like. The measured failure of the floor approach was
+caused precisely by treating a smooth quantity as a boundary.
+
+Only the duplicate ceiling stays hard, because 0.88 is not a taste judgement:
+above it the two frames are the same photograph.
 
 `brief_match` is cosine to the embedded brief, min-max normalised across the
 library so it is comparable with the other terms. `score` and `personal_score`
 are already computed and stored per photo; `personal_score` is the PersonalHead
 trained on the user's own ratings, and the director currently discards it.
 
-**Cohesion becomes a readout, not a gate.** Because the floor cannot be
-calibrated without grading on a curve — a pattern this repo has removed twice —
-the selector reports the cohesion it achieved ("these 6 hang together at 0.88")
-rather than enforcing a threshold nobody can justify. Reported numbers the user
-can act on beat a magic constant.
+**Cohesion is also reported.** Beyond steering selection as a weighted term, the
+achieved cohesion is returned with the set — "these 6 hang together at 0.88" —
+so the user can judge whether the story holds rather than trusting that it does.
+A number the user can act on beats a threshold nobody can justify.
 
 **Bundled demo images are excluded by path.** 56 files under `dataset_images/`
 are the app's own assets and were being selected into user stories.
