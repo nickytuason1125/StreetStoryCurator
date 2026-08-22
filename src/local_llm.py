@@ -129,6 +129,28 @@ def required_ram_gb() -> float:
 _THINKING_MODELS = ("qwen3",)
 
 
+def _strip_thinking(text):
+    """Remove a <think>...</think> wrapper from a completion.
+
+    Even with /no_think, Qwen3 emits an EMPTY block: the first live call
+    returned "<think>\n\n</think>\n\nREADY". Three callers each carry their own
+    regex for this (written originally for DeepSeek-R1), which means every
+    future caller has to know the quirk too. This module is the one that
+    suppresses thinking, so it owes callers clean text.
+
+    An UNCLOSED tag is left alone apart from the marker itself: a truncated
+    generation still holds the only content there is, and discarding it would
+    turn a partial answer into no answer.
+    """
+    if not text:
+        return text
+    import re as _re
+    out = _re.sub("<think>.*?</think>", "", text, flags=_re.DOTALL)
+    if "<think>" in out:                      # unclosed: drop the marker only
+        out = out.replace("<think>", "")
+    return out.strip()
+
+
 def _suppress_thinking(system):
     """Append /no_think for models that reason by default.
 
@@ -253,7 +275,7 @@ def generate(prompt: str,
         if grammar is not None:
             kwargs["grammar"] = grammar
         out = llm.create_chat_completion(**kwargs)
-        return (out["choices"][0]["message"]["content"] or "").strip()
+        return _strip_thinking(out["choices"][0]["message"]["content"] or "")
     except Exception as e:
         global _last_skip
         _last_skip = f"the model failed mid-answer ({e})"

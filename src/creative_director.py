@@ -259,6 +259,34 @@ def _dominant_style(c: dict) -> str:
     return max(aspects, key=aspects.get)
 
 
+def _director_pool_size(n_target: int, pool_len: int) -> int:
+    """How many candidates the Art Director is shown.
+
+    Measured on the target laptop, same model and prompt, only this changing:
+    25 candidates 36.1s, 12 candidates 4.7s, 8 candidates 4.3s -- and the
+    opener was correct at all three. Attention is quadratic in sequence
+    length, so halving the manifest cut the time 7.7x, not 2x.
+
+    The previous rule, max(n_target * 4, 25), handed the director 28
+    candidates for a 7-image story and put one call over the budget for the
+    whole run.
+
+    This is a genuine trade: fewer candidates is less to choose from. Declared
+    as a setting so it can be raised on purpose rather than discovered.
+    """
+    want = int(_setting_pool())
+    floor = n_target + 3          # the director needs some room to reject
+    return min(max(floor, want), pool_len)
+
+
+def _setting_pool() -> int:
+    try:
+        import run_profile
+        return run_profile.setting("FRAMEGRADE_DIRECTOR_POOL") or 12
+    except Exception:
+        return 12
+
+
 def ask_local_art_director(
     system_prompt: str,
     candidate_pool: list[dict],
@@ -289,7 +317,11 @@ def ask_local_art_director(
     try:
         import local_llm
 
-        pool_slim = candidate_pool[:25]
+        # The SAME declared cap as run_creative_direction uses. This was a
+        # hardcoded [:25] -- a second, hidden cap that silently overrode the
+        # setting whenever a caller passed a larger pool, and cost 33.2s
+        # against 4.7s in a direct call.
+        pool_slim = candidate_pool[:_director_pool_size(limit, len(candidate_pool))]
         payload_items = [
             {
                 "id":      i,
@@ -1296,7 +1328,7 @@ def run_creative_direction(
     pool_sc = np.array([adjusted_scores[i] for i in pool_idx], dtype=np.float32)
     # Give the LLM at least 4× headroom: e.g. n_target=8 → manifest of 32 candidates.
     # Floor at 25 so short sequences still get a meaningful pool for the MoE.
-    top_n   = min(max(n_target * 4, 25), len(pool_idx))
+    top_n   = _director_pool_size(n_target, len(pool_idx))
     top_idx = np.argsort(-pool_sc)[:top_n].tolist()
 
     # Build candidate pool with path + score + breakdown + semantic profile

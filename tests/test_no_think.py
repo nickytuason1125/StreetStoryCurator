@@ -68,3 +68,36 @@ def test_unreadable_model_path_is_not_fatal(monkeypatch):
         raise OSError("no weights")
     monkeypatch.setattr(local_llm, "model_path", boom)
     assert local_llm._suppress_thinking("Pick one.") == "Pick one."
+
+
+# ── the think block must not reach callers ───────────────────────────────────
+
+def test_empty_think_block_is_stripped():
+    """With /no_think, Qwen3 still emits an EMPTY <think></think> wrapper.
+
+    Observed live: generate() returned '<think>\n\n</think>\n\nREADY'.
+    creative_director strips it (a regex written for DeepSeek-R1), but
+    local_llm is what suppresses thinking, so it owes callers clean text --
+    otherwise every future caller has to know this quirk.
+    """
+    assert local_llm._strip_thinking("<think>\n\n</think>\n\nREADY") == "READY"
+
+
+def test_populated_think_block_is_stripped():
+    assert local_llm._strip_thinking(
+        "<think>weighing options</think>\n[1,2,3]") == "[1,2,3]"
+
+
+def test_text_without_a_think_block_is_untouched():
+    assert local_llm._strip_thinking("[1,2,3]") == "[1,2,3]"
+
+
+def test_unclosed_think_tag_does_not_eat_the_answer():
+    """A truncated generation can leave <think> open. Dropping everything after
+    it would discard the only content we have."""
+    out = local_llm._strip_thinking("<think>ran out of tokens")
+    assert "ran out of tokens" in out
+
+
+def test_none_survives():
+    assert local_llm._strip_thinking(None) is None

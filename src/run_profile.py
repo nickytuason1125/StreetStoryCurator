@@ -135,6 +135,8 @@ SETTINGS = {
     "FRAMEGRADE_LOCAL_LLM_GGUF": Setting(str, "", "override the text GGUF path"),
     "FRAMEGRADE_LOCAL_LLM_MIN_RAM_GB": Setting(
         float, 0.0, "override the text-GGUF RAM floor; 0 = derive from weight size"),
+    "FRAMEGRADE_DIRECTOR_POOL": Setting(
+        int, 12, "candidates shown to the Art Director; prefill cost is superlinear"),
     # diagnostics
     "FRAMEGRADE_RAM_TRACE":   Setting(bool, False, "log RSS/peak per stage"),
     "FRAMEGRADE_FUSION_DUMP": Setting(bool, False, "dump per-photo fusion terms"),
