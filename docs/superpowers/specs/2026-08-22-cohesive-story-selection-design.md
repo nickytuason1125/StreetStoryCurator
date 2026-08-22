@@ -150,10 +150,15 @@ TDD. The tests that fail against `main` today:
 
 ## Risks
 
-**The weights are guesses.** 0.50/0.35/0.15 across brief, quality and taste are
-not measured — they are a starting point. They should be tuned against sets the
-user judges, and until then the split is arbitrary and should be described that
-way.
+**The weights are guesses.** 0.40 brief / 0.30 quality / 0.10 taste / 0.20
+cohesion are not measured — they are a starting point. They should be tuned
+against sets the user judges, and until then the split is arbitrary and should
+be described that way in the UI, not presented as a considered balance.
+
+The cohesion weight is the most arbitrary of the four, and the most consequential:
+it is the single dial between "a repetitive set that scores well" and "a jumble
+of individually strong frames". It is the first thing to tune against real
+output.
 
 **Cohesion may not mean what I think.** It is cosine to a set centroid in SigLIP
 space, which correlates with "looks similar", not with "belongs in the same
