@@ -1096,73 +1096,70 @@ export default function App() {
 
   useEffect(() => { fetchRagStatus(); }, [fetchRagStatus]);
 
-  /* download missing Ollama models one-by-one with live progress */
+  /* Fetch the optional GGUF models the app is missing.
+
+     This used to filter engineHealth.missing for names NOT ending in .gguf,
+     because in the Ollama era those were Ollama tags. Ollama was removed; the
+     filter survived. The registry offers nothing BUT .gguf, so the filter
+     emptied the list every time and the button silently did nothing -- leaving
+     Story mode permanently on its score-sort fallback on any fresh install.
+
+     The server takes the keyword "optional" and runs
+     scripts/fetch_models.py --with-optional --json, which streams ndjson
+     records of {name, status, message}. It is not Ollama's pull protocol, so
+     the old total/completed/status:"success" parsing never matched either. */
   const handleDownloadMissing = useCallback(async () => {
-    const ollamaModels = engineHealth.missing.filter(m => !m.endsWith('.gguf'));
-    if (ollamaModels.length === 0) return;
+    const missing = engineHealth.missing ?? [];
+    if (missing.length === 0) return;
     setIsDownloading(true);
     setDownloadError(null);
     setUpdateRequired(false);
+    let failure: string | null = null;
+    let done = 0;
     try {
-      for (const model of ollamaModels) {
-        setCurrentDownloadModel(model);
-        setDownloadProgress(0);
-        let modelError: string | null = null;
-        try {
-          const resp = await fetch(`${API}/api/models/pull`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ model_name: model }),
-          });
-          if (!resp.ok) throw new Error(`Server returned ${resp.status}`);
-          const reader  = resp.body!.getReader();
-          const decoder = new TextDecoder('utf-8');
-          let buffer = '';
-          outer: while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-            for (const line of lines) {
-              if (!line.trim()) continue;
-              try {
-                const data = JSON.parse(line);
-                if (data.error) {
-                  modelError = data.error;
-                  if (data.error.includes('newer version') || data.error.includes('412')) {
-                    console.warn('[pull] Ollama out of date:', data.error);
-                    setUpdateRequired(true);
-                  } else {
-                    console.error('[pull] Ollama error:', data.error);
-                  }
-                  reader.cancel();
-                  break outer;          // exit the while loop, not just the for loop
-                }
-                if (data.total && data.completed) {
-                  setDownloadProgress(Math.round((data.completed / data.total) * 100));
-                }
-                if (data.status === 'success') setDownloadProgress(100);
-              } catch { /* skip malformed chunk */ }
-            }
+      setCurrentDownloadModel('optional models');
+      setDownloadProgress(0);
+      const resp = await fetch(`${API}/api/models/pull`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model_name: 'optional' }),
+      });
+      if (!resp.ok) throw new Error(`Server returned ${resp.status}`);
+      const reader = resp.body!.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { done: finished, value } = await reader.read();
+        if (finished) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split(String.fromCharCode(10));
+        buf = lines.pop() ?? '';
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          let rec: any;
+          try { rec = JSON.parse(line); } catch { continue; }
+          if (rec.name) setCurrentDownloadModel(String(rec.name));
+          if (rec.status === 'fail') failure = String(rec.message ?? rec.name);
+          if (rec.status === 'ok' || rec.status === 'skip') {
+            done += 1;
+            setDownloadProgress(Math.min(99, Math.round((done / Math.max(missing.length, 1)) * 100)));
           }
-        } catch (e: any) {
-          modelError = e?.message ?? 'Could not reach the writing engine. Start Ollama, then try again.';
-        }
-        if (modelError) {
-          console.error('[pull] Error downloading', model, ':', modelError);
-          setDownloadError(`Failed to download ${model}: ${modelError}`);
-          return;   // abort remaining models, go straight to finally
         }
       }
-    } finally {
-      setIsDownloading(false);
-      setCurrentDownloadModel('');
-      setDownloadProgress(0);
-      await new Promise(r => setTimeout(r, 2000));
+      setDownloadProgress(100);
+    } catch (e: any) {
+      failure = e?.message ?? 'Could not reach the model downloader.';
+    }
+    setIsDownloading(false);
+    setCurrentDownloadModel('');
+    if (failure) {
+      setDownloadError(failure);
+      notify(`Could not download the models. ${failure}`, 'error');
+    } else {
+      notify('Models installed', 'success');
       fetchEngineHealth();
     }
-  }, [engineHealth.missing, fetchEngineHealth]);
+  }, [engineHealth.missing, fetchEngineHealth, notify]);
 
   /* fetch grader model status on startup and after each grading run */
   const isDoneForStatus = !loading && photos.length > 0 && photos.some((p:any) => p.grade !== 'Pending');
