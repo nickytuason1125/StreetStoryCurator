@@ -68,14 +68,36 @@ field the API already accepts, so the backend contract is unchanged.
 library rather than 40 neighbours:
 
 ```
-value(i) = 0.40 * brief_match(i)
-         + 0.30 * score(i)
-         + 0.10 * personal_score(i)
-         + 0.20 * cohesion_to_selected(i)      <- preference, not a gate
+taste_w(i) = 0.10 + 0.40 * conf(i),   conf(i) = |personal_score(i) - 0.5| / 0.5
+
+merit(i)   = (1 - taste_w) * score(i) + taste_w * personal_score(i)
+
+value(i)   = 0.40 * brief_match(i)
+           + 0.40 * merit(i)
+           + 0.20 * cohesion_to_selected(i)    <- preference, not a gate
 
 constraint
   duplicate   no pair above _DUP_SIM_THRESH (0.88) -- the existing constant
 ```
+
+**Taste is the baseline, scoped to where it has evidence.** A flat weight was
+wrong in both directions. Measured over 5,634 Strong photos, `personal_score`
+correlates with the aesthetic score at **0.010** — near zero. It is not a tinted
+copy of quality; it is the only term carrying information the others lack, which
+argues for weighting it well above a 0.10 afterthought.
+
+But it is trained on **124 ratings** into a 1536-256-64-1 network, and the
+project's own notes record its alignment at 0.52 against a 0.50 coin flip. Its
+spread says the same: mean 0.568, std 0.075, so for most of the library the head
+holds no strong opinion. A handful at 0.249 and 0.756 are where it speaks.
+
+So the weight follows the head's own confidence, the mechanism already proven in
+`grade_pipeline_v2` Step 5: near 0.5 it collapses to a 0.10 floor and quality
+leads; far from 0.5 it rises toward 0.50 and taste leads. It can never degrade a
+photo the head knows nothing about, and it genuinely governs the ones it does.
+
+The real lever is not this weight — it is the 124. Every genre the user rates
+widens where the head has an opinion, and therefore where it leads.
 
 **Cohesion is a term in the objective, not a threshold.** This is the resolution
 of a contradiction found in spec self-review: the document argued cohesion could
@@ -150,10 +172,18 @@ TDD. The tests that fail against `main` today:
 
 ## Risks
 
-**The weights are guesses.** 0.40 brief / 0.30 quality / 0.10 taste / 0.20
-cohesion are not measured — they are a starting point. They should be tuned
-against sets the user judges, and until then the split is arbitrary and should
-be described that way in the UI, not presented as a considered balance.
+**The weights are guesses.** 0.40 brief / 0.40 merit / 0.20 cohesion are not
+measured — they are a starting point. They should be tuned against sets the user
+judges, and until then the split is arbitrary and should be described that way in
+the UI, not presented as a considered balance.
+
+**The taste model may be measuring noise.** Its 0.010 correlation with the
+aesthetic score is the argument for including it — and is equally consistent with
+it having learned nothing, since noise is uncorrelated with everything too. 124
+ratings against that many parameters is the classic setup for memorising rather
+than generalising. The confidence weighting limits the damage (a head with no
+opinion cannot steer anything) but does not resolve the question. Resolving it
+needs held-out ratings, which do not exist yet.
 
 The cohesion weight is the most arbitrary of the four, and the most consequential:
 it is the single dial between "a repetitive set that scores well" and "a jumble
