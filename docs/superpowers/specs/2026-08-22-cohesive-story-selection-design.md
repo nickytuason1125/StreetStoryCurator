@@ -1,0 +1,151 @@
+# Cohesive story selection — design
+
+Supersedes the framing rules in `2026-08-22-story-validator-design.md`. That
+document's opener rule, detail role and Competition framing-variety rule rest on
+shot type, which measurement has since shown does not vary in this library. The
+validator's other ideas — machine-checkable constraints, Unverifiable as a
+first-class result — survive and are folded in here.
+
+## Context
+
+Story mode is handed a library of graded photographs and must return a set that
+hangs together. Today it does this:
+
+```
+5,634 graded Strong photos
+   -> top-40 NEAREST NEIGHBOURS of the single highest-scoring frame   (:1123)
+   -> dedup
+   -> manifest of 12                                                  (:1299)
+   -> model picks 7
+```
+
+Two things are wrong with the funnel. The model sees a tiny fraction of the
+library, and the fraction is chosen by **resemblance to one photograph**. If that
+top scorer is an outlier, the whole story is built inside a cul-de-sac. Worse,
+the step selects for SIMILARITY immediately before the sequencer is asked to find
+contrast.
+
+It was not pure damage: taking 40 look-alikes bought visual coherence, which a
+photo story genuinely needs. A set drawn evenly from 5,634 frames would be a
+jumble. So coherence must become an explicit criterion, not something lost by
+deleting the step that accidentally supplied it.
+
+## What measurement ruled out
+
+**Shot type is not a discriminating axis for this photographer.** Face sizes
+across 80 real Strong photos: median 0.22% of frame, largest 0.88%. The "close"
+boundary is 8%. There are no close-ups in this library — it is street work, where
+people are small in the frame. A "wide opener" rule would pass on nearly every
+frame and a "detail" role could never be filled.
+
+**Zero-shot SigLIP cannot judge framing.** Validated against 488 Strong photos
+and rejected: the "close" probe returned a waterfall, then a wide-angle sun-flare
+landscape; "portrait" won zero frames of 488, every margin negative. Rewriting
+with explicit scale words, a missing "medium" class and shared negatives did not
+fix it. CLIP-family models are strong on CONTENT and weak on FRAMING.
+
+**Automatic length has no working operating range.** Growing a set while cohesion
+stays above a floor was measured across four briefs:
+
+```
+floor 0.55  ->  10, 10, 10, 10
+floor 0.80  ->  10, 10, 10, 10
+floor 0.85  ->  10,  1,  2,  1
+floor 0.88  ->   1,  1,  1,  1
+```
+
+It is a cliff, not a curve. Cohesion is measured against a centroid that moves as
+frames are added, so with one photo it is trivially 1.0 and the second drops it
+off the edge. No floor produces lengths in the 4-10 range. Length is therefore
+the USER'S choice, not the system's.
+
+## Design
+
+**The user sets k with a slider, 4-10, default 7.** This maps onto the `n_target`
+field the API already accepts, so the backend contract is unchanged.
+
+**Selection maximises value subject to two constraints**, over the whole graded
+library rather than 40 neighbours:
+
+```
+value(i)  = 0.50 * brief_match(i) + 0.35 * score(i) + 0.15 * personal_score(i)
+
+constraints
+  duplicate   no pair above _DUP_SIM_THRESH (0.88) -- the existing constant
+  cohesion    each frame within the band of the set's centre
+```
+
+`brief_match` is cosine to the embedded brief, min-max normalised across the
+library so it is comparable with the other terms. `score` and `personal_score`
+are already computed and stored per photo; `personal_score` is the PersonalHead
+trained on the user's own ratings, and the director currently discards it.
+
+**Cohesion becomes a readout, not a gate.** Because the floor cannot be
+calibrated without grading on a curve — a pattern this repo has removed twice —
+the selector reports the cohesion it achieved ("these 6 hang together at 0.88")
+rather than enforcing a threshold nobody can justify. Reported numbers the user
+can act on beat a magic constant.
+
+**Bundled demo images are excluded by path.** 56 files under `dataset_images/`
+are the app's own assets and were being selected into user stories.
+
+## Architecture
+
+`src/story_selector.py`, pure functions over arrays, no model loaded:
+
+```
+library_matrix(rows)          -> (rows, M) normalised embeddings
+select(brief_vec, rows, M, k) -> (indices, diagnostics)
+cohesion(M, indices)          -> mean, min, max_pair
+```
+
+The LLM is not involved in selection. It receives the chosen set and writes the
+story — language, which is what it is good at. This is the inversion the whole
+investigation arrived at: the computer decides, the model narrates.
+
+## Data flow
+
+```
+brief -> embed_text_query()            (existing, creative_director.py:83)
+library -> lance_store.query_all()     (existing)
+        -> story_selector.select(k)    (new; replaces the :1123 anchor block)
+        -> story_facts.facts_for_pool  (existing, for the rationale)
+        -> prompt -> model -> narrative
+```
+
+## Error handling
+
+An empty library, a brief that embeds to nothing, or fewer than k candidates
+surviving the duplicate constraint all return what was found plus a stated
+reason, alongside `director_fallback`. Returning 4 photographs and saying why
+beats returning 7 by relaxing a constraint silently.
+
+## Testing
+
+TDD. The tests that fail against `main` today:
+
+- a library dominated by one cluster must not return k frames from that cluster
+  alone (the anchor cul-de-sac)
+- two frames above 0.88 similarity must never both appear
+- `dataset_images/` paths must never be selected
+- k is honoured exactly for every k in 4..10, or a reason is given
+- a brief with no good matches must report low cohesion rather than silently
+  returning the k highest-scoring photos regardless of the brief
+
+## Risks
+
+**The weights are guesses.** 0.50/0.35/0.15 across brief, quality and taste are
+not measured — they are a starting point. They should be tuned against sets the
+user judges, and until then the split is arbitrary and should be described that
+way.
+
+**Cohesion may not mean what I think.** It is cosine to a set centroid in SigLIP
+space, which correlates with "looks similar", not with "belongs in the same
+story". Those come apart: five photographs of one doorway score perfectly and
+make a bad edit. The duplicate ceiling catches identical frames but not
+near-repetition of subject.
+
+**No validation against user judgement yet.** Every measurement so far tests
+whether the machinery does what it claims, not whether the resulting sets are
+good. That requires the user looking at output, and nothing in this design
+substitutes for it.
