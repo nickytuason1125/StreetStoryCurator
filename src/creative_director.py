@@ -264,7 +264,7 @@ def ask_local_art_director(
     candidate_pool: list[dict],
     model_name: str,
     limit: int = 5,
-) -> list[str]:
+) -> tuple[list[str], Optional[str]]:
     """
     Phase 2 — Mixture of Experts Art Director, running the local text model.
 
@@ -272,10 +272,20 @@ def ask_local_art_director(
     and heavy float arrays.  Each item keeps only:
         id (int index), score (int 0–100), style (dominant aspect), profile (str).
 
-    Returns up to `limit` image paths selected by the model, and falls back to
-    top-limit by raw score when no model is installed. `model_name` is now a
-    label for logging only — there is one local model, not a menu of Ollama tags.
+    Returns (paths, fallback_reason). `fallback_reason` is None when the model
+    actually chose, and a human-readable sentence when this is top-limit by raw
+    score instead — "only 1.4 GB RAM free, needs ~6.6 GB for ...".
+
+    That second element is the point. The fallback itself is fine; the fallback
+    being INVISIBLE is not. A score-sorted sequence looked exactly like a
+    curated one, so a user could not tell a considered edit from a sort, and
+    neither could we when the machine was under memory pressure — which, on the
+    16 GB laptop this targets, is most of the time.
+
+    `model_name` is a label for logging only — there is one local model, not a
+    menu of Ollama tags.
     """
+    reason: Optional[str] = None
     try:
         import local_llm
 
@@ -299,8 +309,10 @@ def ask_local_art_director(
             temperature=0.25,
         )
         if not raw:
-            print(f"[cd] {model_name}: no local text model — falling back to score sort")
-            raise RuntimeError("no local text model")
+            reason = (local_llm.last_skip_reason()
+                      or "the local text model returned nothing")
+            print(f"[cd] {model_name}: {reason} — falling back to score sort")
+            raise RuntimeError(reason)
 
         # Strip DeepSeek-R1 <think> blocks before parsing JSON
         m = re.search(r"</think>\s*(.*)", raw, re.DOTALL)
@@ -323,19 +335,21 @@ def ask_local_art_director(
                     pass
             if selected:
                 print(f"[cd] {model_name}: selected {len(selected)} images")
-                return selected[:limit]
+                return selected[:limit], None
 
-        print(f"[cd] {model_name}: no parseable selection — falling back to score sort")
+        reason = reason or "the model's answer could not be read as a selection"
+        print(f"[cd] {model_name}: {reason} — falling back to score sort")
 
     except Exception as _e:
-        print(f"[cd] {model_name} failed ({_e}) — falling back to score sort")
+        reason = reason or str(_e) or f"{type(_e).__name__}"
+        print(f"[cd] {model_name} failed ({reason}) — falling back to score sort")
 
-    # Fallback: top `limit` by raw score
+    # Fallback: top `limit` by raw score — reported, not hidden.
     return [
         c.get("path", "")
         for c in sorted(candidate_pool, key=lambda x: -float(x.get("score", 0)))[:limit]
         if c.get("path")
-    ]
+    ], (reason or "the local text model was unavailable")
 
 
 def _empty_brief_detected(style_prompt: str) -> bool:
@@ -1309,6 +1323,7 @@ def run_creative_direction(
 
     # 4b: Art Director — one local model; the mode drives the system prompt
     llm_paths: list[str] = []
+    director_fallback: Optional[str] = None
     if mode == "story":
         # Build dynamic role list for the middle slots (everything between Opener and Closer)
         _n_mid    = max(0, n_target - 2)
@@ -1326,7 +1341,8 @@ def run_creative_direction(
             "e.g. [3,0,7,2,1]."
         )
         _p(0.22, f"Art Director (Story): selecting {n_target} images from top-{top_n}…")
-        llm_paths = ask_local_art_director(_story_prompt, art_pool, model_name="Story", limit=n_target)
+        llm_paths, director_fallback = ask_local_art_director(
+            _story_prompt, art_pool, model_name="Story", limit=n_target)
     elif mode == "competition":
         _comp_prompt = (
             "You are a strict LensCulture Jury Member. No <think> tags. "
@@ -1335,7 +1351,11 @@ def run_creative_direction(
             "Output ONLY a JSON array of IDs [0..N-1], nothing else."
         )
         _p(0.22, f"Art Director (Competition): selecting {n_target} images from top-{top_n}…")
-        llm_paths = ask_local_art_director(_comp_prompt, art_pool, model_name="Competition", limit=n_target)
+        llm_paths, director_fallback = ask_local_art_director(
+            _comp_prompt, art_pool, model_name="Competition", limit=n_target)
+
+    if director_fallback:
+        _p(0.28, f"No art direction — sorted by score ({director_fallback})")
 
     # 4c: Build final sequence from Art Director selection, or fall back to agent/greedy
     if llm_paths:
@@ -1489,6 +1509,9 @@ def run_creative_direction(
                 f"GEOMETRIC={rule_set['GEOMETRIC_PRIORITY']}  "
                 f"MOOD={rule_set['LIGHTING_MOOD']}\n"
             )
+            if director_fallback:
+                rlog += ("\nSELECTED BY SCORE ONLY — no art direction ran: "
+                         f"{director_fallback}.\n")
             if revision_log:
                 n_swaps = sum(1 for r in revision_log if r.get("action") == "swap")
                 rlog += f"\nSelf-revision: {len(revision_log)} pass(es), {n_swaps} swap(s).\n"
@@ -1532,4 +1555,7 @@ def run_creative_direction(
         "failed":      n - n_ok,
         "anchor_path": anchor_path,
         "rule_set":    rule_set,
+        # None when the Art Director actually chose. A sentence when this is a
+        # score sort wearing a story's clothes.
+        "director_fallback": director_fallback,
     }

@@ -64,12 +64,25 @@ GGUF_MODELS: tuple = (
         size_gb=1.4,
         purpose="the projector the vision model needs to see at all",
     ),
+    # Replaced DeepSeek-R1-Distill-Llama-8B (5.7 GB) on 2026-08-22. Measured on
+    # the 16 GB target laptop, same 6 trials with known ground truth:
+    #
+    #   DeepSeek-R1-8B   2/6 completed, 127 s/answer, and it drove free RAM to
+    #                    0.56 GB before the run had to be killed. Under the
+    #                    normal RAM floor it does not load here AT ALL, so the
+    #                    shipped behaviour was a silent score sort.
+    #   Qwen3-4B         6/6 correct, 1.7 s/answer with thinking suppressed.
+    #
+    # Also Apache-2.0 rather than MIT-plus-Llama-terms, and arch "qwen3", which
+    # the bundled llama.cpp supports. Qwen3.5 was evaluated and rejected: it
+    # fails with `missing tensor blk.24.ssm_conv1d.weight` because it is a
+    # hybrid attention+SSM architecture newer than the bundled runtime.
     ModelFile(
         key="text",
-        dest=_ROOT / "models" / "deepseek-r1-8b-q5.gguf",
-        repo="bartowski/DeepSeek-R1-Distill-Llama-8B-GGUF",
-        filename="DeepSeek-R1-Distill-Llama-8B-Q5_K_M.gguf",
-        size_gb=5.7,
+        dest=_ROOT / "models" / "Qwen_Qwen3-4B-Q4_K_M.gguf",
+        repo="bartowski/Qwen_Qwen3-4B-GGUF",
+        filename="Qwen_Qwen3-4B-Q4_K_M.gguf",
+        size_gb=2.5,
         purpose="Story Mode selection, Judge's Verdict, RAG concept extraction",
     ),
 )

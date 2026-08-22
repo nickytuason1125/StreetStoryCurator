@@ -86,9 +86,69 @@ def _free_ram_gb() -> float:
         return 999.0        # unknown → don't let the probe itself block a feature
 
 
+_last_skip: Optional[str] = None
+
+
+def last_skip_reason() -> Optional[str]:
+    """Why the text model is not answering, or None when it is.
+
+    A degraded Story run used to be a single print into a subprocess log, so a
+    score-sorted sequence was indistinguishable from a curated one. Callers
+    surface this string instead of the user guessing.
+    """
+    return _last_skip
+
+
+def required_ram_gb() -> float:
+    """Free RAM needed to load these weights, DERIVED from the weights.
+
+    This was the constant 6.0 — which is really "the DeepSeek checkpoint plus
+    headroom" frozen into a number. It refuses a 0.73 GB model exactly as
+    firmly as a 5.34 GiB one, so swapping in a smaller model would have changed
+    nothing on its own. Measured shape: 1.15x the file (weights plus the
+    n_ctx=4096 KV cache) plus 0.5 GB of allocator slack, which is what the
+    loader is observed to need.
+
+    Same class of bug as commit 3f42c7f: a threshold picked rather than
+    measured, guarding a failure it does not actually track.
+    """
+    override = float(_setting("FRAMEGRADE_LOCAL_LLM_MIN_RAM_GB", 0.0) or 0.0)
+    if override:
+        return override
+    try:
+        return model_path().stat().st_size / 2 ** 30 * 1.15 + 0.5
+    except Exception:
+        return 6.0          # weights unreadable; keep the historical floor
+
+
+# Models shipping a hybrid "thinking" mode that honour the /no_think switch.
+# Measured on Qwen3-4B, same 6 trials: thinking ON was 6/6 at 31.9 s/answer,
+# OFF was 6/6 at 1.7 s. Identical accuracy, 19x the time -- the think block is
+# pure tax on "return one id", and it would put a single Art Director call over
+# the budget for an entire Story run.
+_THINKING_MODELS = ("qwen3",)
+
+
+def _suppress_thinking(system):
+    """Append /no_think for models that reason by default.
+
+    Never raises: probing the weight filename must not be the thing that stops
+    a generation. Idempotent, so a caller that already asked for it is safe.
+    """
+    try:
+        name = model_path().name.lower()
+    except Exception:
+        return system
+    if not any(m in name for m in _THINKING_MODELS):
+        return system
+    if system and "/no_think" in system:
+        return system
+    return ((system + " ") if system else "") + "/no_think"
+
+
 def _load():
     """Load the singleton, or return None. Never raises."""
-    global _llm, _load_attempted
+    global _llm, _load_attempted, _last_skip
     if _llm is not None:
         return _llm
     with _lock:
@@ -100,21 +160,24 @@ def _load():
 
         path = model_path()
         if not path.exists():
-            print(f"[llm] no text model at {path} — text features disabled")
+            _last_skip = f"no text model installed at {path.name}"
+            print(f"[llm] {_last_skip} — text features disabled")
             return None
 
-        need = float(_setting("FRAMEGRADE_LOCAL_LLM_MIN_RAM_GB", 6.0))
+        need = required_ram_gb()
         free = _free_ram_gb()
         if free < need:
-            print(f"[llm] only {free:.1f} GB free, need ~{need:.1f} GB — "
-                  f"skipping the text model rather than pushing this machine "
-                  f"into swap")
+            _last_skip = (f"only {free:.1f} GB RAM free, needs ~{need:.1f} GB "
+                          f"for {path.name}")
+            print(f"[llm] {_last_skip} — skipping the text model rather than "
+                  f"pushing this machine into swap")
             return None
 
         try:
             from llama_cpp import Llama
         except Exception as e:
-            print(f"[llm] llama_cpp unavailable ({e}) — text features disabled")
+            _last_skip = f"llama_cpp unavailable ({e})"
+            print(f"[llm] {_last_skip} — text features disabled")
             return None
 
         try:
@@ -139,10 +202,12 @@ def _load():
                     verbose=False,
                 )
                 print(f"[llm] {path.name} loaded (n_gpu_layers={n_gpu})")
+                _last_skip = None
                 return _llm
             except Exception as e:
                 last_err = e
                 print(f"[llm] load failed at n_gpu_layers={n_gpu} ({e}) — backing off")
+        _last_skip = f"the model failed to load ({last_err})"
         print(f"[llm] load failed on every offload level: {last_err}")
         _llm = None
         return None
@@ -179,6 +244,7 @@ def generate(prompt: str,
         except Exception as e:
             print(f"[llm] grammar build failed ({e}) — unconstrained decoding")
 
+    system = _suppress_thinking(system)
     messages = ([{"role": "system", "content": system}] if system else []) + \
                [{"role": "user", "content": prompt}]
     try:
@@ -189,6 +255,8 @@ def generate(prompt: str,
         out = llm.create_chat_completion(**kwargs)
         return (out["choices"][0]["message"]["content"] or "").strip()
     except Exception as e:
+        global _last_skip
+        _last_skip = f"the model failed mid-answer ({e})"
         print(f"[llm] generation failed: {e}")
         return None
 

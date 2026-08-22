@@ -965,6 +965,9 @@ export default function App() {
   const [creativeStage,    setCreativeStage]    = useState("");
   const [creativeResults,     setCreativeResults]     = useState<any[]>([]);
   const [creativeOutDir,      setCreativeOutDir]      = useState("");
+  // Non-empty when the sequence was NOT art-directed: a score sort wearing a
+  // story’s clothes. Shown, never swallowed.
+  const [creativeFallback,    setCreativeFallback]    = useState("");
   const [creativeShowOriginal,setCreativeShowOriginal]= useState(false);
   const [usedCount,           setUsedCount]           = useState(0);
   const [sequenceSaving,      setSequenceSaving]      = useState(false);
@@ -1267,6 +1270,7 @@ export default function App() {
     setCreativeAnchor(null);
     setCreativePrompt('');
     setCreativeOutDir('');
+    setCreativeFallback('');
     setCreativeShowOriginal(false);
   }, [folder]);
 
@@ -1852,9 +1856,12 @@ export default function App() {
             const outputs = msg.data?.outputs ?? [];
             setCreativeResults(outputs);
             setCreativeOutDir(msg.data?.output_dir ?? '');
+            setCreativeFallback(msg.data?.director_fallback ?? '');
             const ok = outputs.filter((r: any) => r.success).length;
             if (ok === 0 && outputs.length === 0) {
               notify('Creative Direction ran but produced no outputs.', 'info');
+            } else if (msg.data?.director_fallback) {
+              notify(`Picked the ${ok} highest-scoring photos — no art direction ran`, 'info');
             } else {
               notify(`Styled ${ok} of ${outputs.length} photos`, 'success');
             }
@@ -4620,6 +4627,12 @@ export default function App() {
                         <span style={{fontSize:'var(--text-xs)', color:T.gradeWeak, cursor:'default'}}
                           title={creativeResults.filter((r:any)=>!r.success).map((r:any)=>`${(r.source_path??'').split(/[\\/]/).pop()}: ${r.error??'failed'}`).join('\n')}>
                           {creativeResults.filter((r:any)=>!r.success).length} failed ⓘ
+                        </span>
+                      )}
+                      {creativeFallback && (
+                        <span style={{fontSize:'var(--text-xs)', color:T.gradeWeak, cursor:'default'}}
+                          title={`No art direction ran — ${creativeFallback}. These are the highest-scoring frames in score order, not a curated sequence.`}>
+                          sorted by score ⓘ
                         </span>
                       )}
                     </div>

@@ -134,7 +134,7 @@ SETTINGS = {
     # local LLM (replaces the Ollama HTTP dependency)
     "FRAMEGRADE_LOCAL_LLM_GGUF": Setting(str, "", "override the text GGUF path"),
     "FRAMEGRADE_LOCAL_LLM_MIN_RAM_GB": Setting(
-        float, 6.0, "refuse to load the text GGUF below this much free RAM"),
+        float, 0.0, "override the text-GGUF RAM floor; 0 = derive from weight size"),
     # diagnostics
     "FRAMEGRADE_RAM_TRACE":   Setting(bool, False, "log RSS/peak per stage"),
     "FRAMEGRADE_FUSION_DUMP": Setting(bool, False, "dump per-photo fusion terms"),
