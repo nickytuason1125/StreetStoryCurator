@@ -48,6 +48,19 @@ MEDIUM_MAX_MM = 70.0
 # them are where a photographer moved on to somewhere else.
 SESSION_GAP_S = 1800.0
 
+# Fraction of frame AREA covered by the largest detected face.
+#
+# Subject scale outranks focal length when the two disagree, because a face
+# filling the frame is narratively a close-up whatever lens shot it -- a 24mm
+# portrait at arm's length is optically wide and editorially close, and the
+# story cares about the second reading.
+#
+# It also covers the gap that killed the focal-only design: 68% of Strong
+# photos in this library are Lightroom exports with the lens data stripped,
+# but a face is measurable in any pixels.
+CLOSE_FACE_FRAC = 0.08
+MEDIUM_FACE_FRAC = 0.01
+
 _NUM = re.compile(r"[0-9]+(?:[.][0-9]+)?")
 
 
@@ -70,6 +83,25 @@ def _to_mm(value: Any) -> Optional[float]:
     except ValueError:
         return None
     return mm if mm > 0 else None
+
+
+def framing_from_subject(frac: Any) -> Optional[str]:
+    """Framing from how much of the frame the subject occupies, or None.
+
+    None when there is no subject to measure -- absence of a face is not
+    evidence of a wide shot, it is absence of evidence.
+    """
+    try:
+        f = float(frac)
+    except (TypeError, ValueError):
+        return None
+    if f <= 0.0:
+        return None
+    if f >= CLOSE_FACE_FRAC:
+        return "close"
+    if f >= MEDIUM_FACE_FRAC:
+        return "medium"
+    return "wide"
 
 
 def framing_from_focal(value: Any) -> Optional[str]:
@@ -122,6 +154,8 @@ class PhotoFacts:
     shot_at: Optional[float] = None
     session: Optional[int] = None
     luminance: Optional[float] = None
+    subject_scale: Optional[float] = None
+    framing_source: Optional[str] = None
     score: Optional[float] = None
     personal_score: Optional[float] = None
     reason: Optional[str] = None
@@ -170,13 +204,21 @@ def facts_for_pool(rows: "list[dict]") -> "list[PhotoFacts]":
         # focal_35mm first: it is the crop-corrected number, and 24mm on APS-C
         # is not a wide shot.
         raw_focal = _first(r, "focal_35mm", "focal")
-        framing = framing_from_focal(raw_focal)
         mm = _to_mm(raw_focal)
+
+        # Subject scale first, lens second. When they disagree the subject
+        # wins; when there is no subject the lens is all we have.
+        frac = r.get("largest_face_frac")
+        framing = framing_from_subject(frac)
+        source = "subject" if framing else None
+        if framing is None:
+            framing = framing_from_focal(raw_focal)
+            source = "focal" if framing else None
         ts = float(r.get("exif_ts") or 0.0)
 
         missing = []
         if framing is None:
-            missing.append("no focal length in EXIF")
+            missing.append("no subject detected and no focal length in EXIF")
         if not ts:
             missing.append("no capture time")
 
@@ -187,6 +229,8 @@ def facts_for_pool(rows: "list[dict]") -> "list[PhotoFacts]":
             shot_at=ts or None,
             session=sess,
             luminance=r.get("luminance"),
+            subject_scale=(float(frac) if frac not in (None, "") else None),
+            framing_source=source,
             score=r.get("score"),
             personal_score=r.get("personal_score"),
             reason="; ".join(missing) if missing else None,

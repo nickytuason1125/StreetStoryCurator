@@ -118,3 +118,47 @@ def test_missing_everything_is_survivable_and_explained():
     f = facts[0]
     assert f.framing is None
     assert f.reason, "an absent fact needs a stated reason"
+
+
+# ── framing from subject scale, where EXIF has no lens ───────────────────────
+
+def test_subject_scale_beats_focal_when_they_disagree():
+    """A face filling the frame is narratively a CLOSE-UP whatever lens shot
+    it. A 24mm portrait at arm's length is optically wide and editorially
+    close, and the story cares about the second one."""
+    f = sf.facts_for_pool([{"path": "/a.jpg", "focal_35mm": "24mm",
+                            "largest_face_frac": 0.30}])[0]
+    assert f.framing == "close"
+    assert f.subject_scale == 0.30
+
+
+def test_tiny_face_in_frame_reads_as_wide():
+    f = sf.facts_for_pool([{"path": "/a.jpg", "largest_face_frac": 0.002}])[0]
+    assert f.framing == "wide"
+
+
+def test_mid_sized_subject_is_medium():
+    f = sf.facts_for_pool([{"path": "/a.jpg", "largest_face_frac": 0.04}])[0]
+    assert f.framing == "medium"
+
+
+def test_no_subject_falls_back_to_the_lens():
+    """68% of Strong photos here carry no focal length, but the ones that do
+    should still be used when there is no subject to measure."""
+    f = sf.facts_for_pool([{"path": "/a.jpg", "focal_35mm": "24mm",
+                            "largest_face_frac": 0.0}])[0]
+    assert f.framing == "wide"
+
+
+def test_no_subject_and_no_lens_stays_unknown():
+    f = sf.facts_for_pool([{"path": "/a.jpg", "largest_face_frac": 0.0}])[0]
+    assert f.framing is None
+    assert f.reason
+
+
+def test_framing_source_is_recorded():
+    """Which signal decided this matters when a sequence looks wrong."""
+    a = sf.facts_for_pool([{"path": "/a.jpg", "largest_face_frac": 0.30}])[0]
+    b = sf.facts_for_pool([{"path": "/b.jpg", "focal_35mm": "24mm"}])[0]
+    assert a.framing_source == "subject"
+    assert b.framing_source == "focal"
