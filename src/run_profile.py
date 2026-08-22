@@ -137,6 +137,8 @@ SETTINGS = {
         float, 0.0, "override the text-GGUF RAM floor; 0 = derive from weight size"),
     "FRAMEGRADE_DIRECTOR_POOL": Setting(
         int, 12, "candidates shown to the Art Director; prefill cost is superlinear"),
+    "FRAMEGRADE_USE_RAG_CONCEPTS": Setting(
+        bool, False, "inject book-derived RAG phrases into prompts; off by default"),
     # diagnostics
     "FRAMEGRADE_RAM_TRACE":   Setting(bool, False, "log RSS/peak per stage"),
     "FRAMEGRADE_FUSION_DUMP": Setting(bool, False, "dump per-photo fusion terms"),

@@ -4534,7 +4534,9 @@ async def rag_upload(file: UploadFile = File(...)):
 async def rag_concepts():
     """Return all stored concept phrases and PDF metadata."""
     from pdf_rag import load_concepts as _lc, list_pdfs as _lp
-    return JSONResponse({"phrases": _lc(), "pdfs": _lp()})
+    # for_display: show what is stored even when injection is off, so the
+    # store is unused rather than invisible.
+    return JSONResponse({"phrases": _lc(for_display=True), "pdfs": _lp()})
 
 
 @app.delete("/api/rag/clear")

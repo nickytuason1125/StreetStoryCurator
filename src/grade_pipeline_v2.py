@@ -1331,12 +1331,14 @@ def run_v2(
                 # Augment positive prompts with any PDF reference phrases already ingested
                 _pos_prompts_augmented = list(_POS_PROMPTS)
                 try:
-                    _rag_path = Path(__file__).resolve().parent.parent / "cache" / "rag_concepts.json"
-                    if _rag_path.exists():
-                        _rag_phrases = json.loads(_rag_path.read_text(encoding="utf-8")).get("phrases", [])
-                        if _rag_phrases:
-                            _pos_prompts_augmented = _pos_prompts_augmented + _rag_phrases
-                            print(f"[v2] RAG: added {len(_rag_phrases)} PDF concept phrases to positive rubric")
+                    # Was a DIRECT file read, which bypassed the opt-in gate in
+                    # pdf_rag.load_concepts() entirely -- book-derived phrases
+                    # would still have reached the positive rubric.
+                    from pdf_rag import load_concepts as _load_rag_pos
+                    _rag_phrases = _load_rag_pos()
+                    if _rag_phrases:
+                        _pos_prompts_augmented = _pos_prompts_augmented + _rag_phrases
+                        print(f"[v2] RAG: added {len(_rag_phrases)} PDF concept phrases to positive rubric")
                 except Exception as _e_rag:
                     print(f"[v2] RAG load skipped: {_e_rag}")
 

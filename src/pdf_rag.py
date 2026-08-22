@@ -32,8 +32,8 @@ _PDF_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── Concept store ─────────────────────────────────────────────────────────────
 
-def load_concepts() -> list[str]:
-    """Return all saved concept phrases across all uploaded PDFs."""
+def _read_concepts_file() -> list:
+    """Raw read of the concept store. No policy, just bytes."""
     if not _CONCEPTS_FILE.exists():
         return []
     try:
@@ -41,6 +41,33 @@ def load_concepts() -> list[str]:
         return data.get("phrases", [])
     except Exception:
         return []
+
+
+def load_concepts(for_display: bool = False) -> list:
+    """Saved concept phrases, or [] unless the user has opted in.
+
+    These phrases are EXTRACTED from copyrighted PDFs the user uploaded, and
+    six code paths injected them into prompts -- the Qwen scoring prompt, three
+    places in grade_pipeline_v2, and the Story text rerank. The source books
+    were moved off the repo in August over exactly this concern, and an earlier
+    audit found roughly 25 of 62 phrases were biography prose rather than
+    photographic criteria: a licensing question and a quality one in the same
+    file.
+
+    The feature is not deleted, only defaulted off, at the one place every
+    consumer already passes through. `for_display` bypasses the gate so the UI
+    can still show what is stored -- making the store invisible would be worse
+    than making it unused.
+    """
+    if for_display:
+        return _read_concepts_file()
+    try:
+        import run_profile
+        if not run_profile.setting("FRAMEGRADE_USE_RAG_CONCEPTS"):
+            return []
+    except Exception:
+        return []          # cannot confirm opt-in -> do not inject
+    return _read_concepts_file()
 
 
 def _save_concepts(phrases: list[str], pdf_meta: list[dict]) -> None:
