@@ -959,7 +959,9 @@ export default function App() {
   const [creativeAnchor,   setCreativeAnchor]   = useState<string | null>(null);
   const [creativePrompt,   setCreativePrompt]   = useState("");
   const [creativeMode,     setCreativeMode]     = useState<"canny"|"depth">("canny");
-  const [creativeCount,    setCreativeCount]    = useState(5);
+  // 4-10. Below 4 there is no sequence to speak of; above 10 the set stops
+  // holding together. Default 7. Maps straight onto the API's n_target.
+  const [creativeCount,    setCreativeCount]    = useState(7);
   const [creativeLoading,  setCreativeLoading]  = useState(false);
   const [creativeProgress, setCreativeProgress] = useState(0);
   const [creativeStage,    setCreativeStage]    = useState("");
@@ -4482,14 +4484,16 @@ export default function App() {
                   <label className="t-label mb-2 block">
                     Sequence length
                   </label>
-                  <select value={creativeCount} onChange={e => setCreativeCount(Number(e.target.value))}
-                    style={{ width:'100%', height:36, borderRadius:'var(--r-md)', fontSize:'var(--text-sm)', fontWeight:600, cursor:'pointer',
-                      background:T.raised, border:`1px solid ${T.lineStrong}`, color:T.ink2, padding:'0 10px',
-                      appearance:'auto', outline:'none' }}>
-                    {[3,4,5,6,7,8,9,10].map(n => (
-                      <option key={n} value={n}>{n} photos</option>
-                    ))}
-                  </select>
+                  <div style={{display:'flex', alignItems:'center', gap:12}}>
+                    <input type="range" min={4} max={10} step={1} value={creativeCount}
+                      onChange={e => setCreativeCount(Number(e.target.value))}
+                      aria-label="Sequence length"
+                      style={{ flex:1, accentColor:T.ink2, cursor:'pointer' }} />
+                    <span style={{ minWidth:64, textAlign:'right', fontSize:'var(--text-sm)',
+                      fontWeight:700, color:T.ink2, fontVariantNumeric:'tabular-nums' }}>
+                      {creativeCount} photos
+                    </span>
+                  </div>
                 </div>
 
                 {/* Reference photo */}

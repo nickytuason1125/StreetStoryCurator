@@ -287,6 +287,72 @@ def _setting_pool() -> int:
         return 12
 
 
+def _focus_pool(paths, embeddings, scores, aspects, style_prompt="", k=12):
+    """Narrow the candidate pool to k, considering ALL of it.
+
+    Replaces a funnel that took the single highest-scoring photo and kept its 40
+    nearest neighbours. Everything downstream then worked inside whatever corner
+    that one frame occupied -- and it selected for SIMILARITY immediately before
+    the sequencer was asked to find contrast. An outlier top scorer built the
+    entire story in a cul-de-sac.
+
+    story_selector weighs brief match, quality, the user's own taste score and
+    cohesion with what is already chosen, over the whole pool. Coherence, which
+    the old funnel bought by accident, is now an explicit term.
+
+    Positional alignment matters: paths, embeddings, scores and aspects are
+    parallel arrays, and a misaligned aspect dict silently attaches one photo's
+    breakdown to another.
+    """
+    import story_selector as _sel
+
+    if not paths or not embeddings:
+        return paths, embeddings, scores, aspects
+
+    M = np.stack([np.asarray(e, dtype=np.float32) for e in embeddings])
+    M /= np.linalg.norm(M, axis=1, keepdims=True) + 1e-9
+
+    sc = list(scores or [0.5] * len(paths))
+    rows = [{"path": p, "score": sc[i] if i < len(sc) else 0.5}
+            for i, p in enumerate(paths)]
+
+    # personal_score is stored, not passed in. Absent, merit falls back to the
+    # aesthetic score alone, which is the honest degradation.
+    try:
+        import lance_store as _ls
+        stored = {r["path"]: r for r in _ls.query_by_paths(list(paths))}
+        for r in rows:
+            hit = stored.get(r["path"])
+            if hit is not None and hit.get("personal_score") is not None:
+                r["personal_score"] = hit["personal_score"]
+    except Exception as _e_ps:
+        print(f"[cd] personal_score lookup skipped: {_e_ps}")
+
+    try:
+        qvec = (embed_text_query(style_prompt) if style_prompt.strip()
+                else M.mean(axis=0))
+    except Exception as _e_q:
+        print(f"[cd] brief embedding failed ({_e_q}) — using pool centroid")
+        qvec = M.mean(axis=0)
+
+    idx, diag = _sel.select(qvec, rows, M, k=min(k, len(paths)))
+    if not idx:
+        return paths, embeddings, scores, aspects
+
+    print(f"[cd] focus: {len(idx)} of {len(paths)} | cohesion "
+          f"{diag.get('cohesion_mean', 0):.3f} | excluded "
+          f"{diag.get('excluded_bundled', 0)} bundled")
+
+    keep_aspects = None
+    if aspects and len(aspects) == len(paths):
+        keep_aspects = [aspects[i] for i in idx]
+
+    return ([paths[i] for i in idx],
+            [embeddings[i] for i in idx],
+            [float(sc[i]) if i < len(sc) else 0.5 for i in idx],
+            keep_aspects if keep_aspects is not None else aspects)
+
+
 def ask_local_art_director(
     system_prompt: str,
     candidate_pool: list[dict],
@@ -1146,19 +1212,10 @@ def run_creative_direction(
     else:
         # Global best: focus pool on top-40 most similar to the #1 scoring image
         if strong_paths and embeddings:
-            _sc_arr = np.array(scores or [0.5] * len(strong_paths), dtype=np.float32)
-            _best   = int(np.argmax(_sc_arr))
-            _anchor = np.asarray(embeddings[_best], dtype=np.float32)
-            _anchor /= np.linalg.norm(_anchor) + 1e-9
-            _stk    = np.stack([np.asarray(e, dtype=np.float32) for e in embeddings])
-            _stk   /= np.linalg.norm(_stk, axis=1, keepdims=True) + 1e-9
-            _top40  = np.argsort(-(_stk @ _anchor))[:40].tolist()
-            strong_paths       = [strong_paths[i]  for i in _top40]
-            embeddings         = [embeddings[i]     for i in _top40]
-            scores             = [float(_sc_arr[i]) for i in _top40]
-            if aspect_scores_list and len(aspect_scores_list) == len(_sc_arr):
-                aspect_scores_list = [aspect_scores_list[i] for i in _top40]
-            _p(0.01, f"Global anchor: pool focused on top-40 similar to best-scoring image")
+            strong_paths, embeddings, scores, aspect_scores_list = _focus_pool(
+                strong_paths, embeddings, scores, aspect_scores_list,
+                style_prompt=style_prompt, k=max(n_target * 2, 12))
+            _p(0.01, f"Pool focused to {len(strong_paths)} across the whole library")
 
     # ── Text-semantic pool rerank ─────────────────────────────────────────────
     # Embed the style brief with SigLIP-2's text tower and re-rank the candidate
