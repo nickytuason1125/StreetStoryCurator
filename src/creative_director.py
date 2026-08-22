@@ -287,6 +287,37 @@ def _setting_pool() -> int:
         return 12
 
 
+# Taste is fetched for a shortlist, not the library. Profiled on 5,634 photos:
+# query_by_paths for every path cost 4.28s, while the greedy selection it feeds
+# cost 0.04s. 300 gives a 10-image story ample room to reorder.
+_TASTE_LOOKUP_N = 300
+
+# Embedding one sentence costs 4.67s, because it spins up the SigLIP text tower.
+# Briefs repeat constantly during a session of trying variations.
+_BRIEF_VECS: dict = {}
+
+
+def _brief_cache_clear() -> None:
+    _BRIEF_VECS.clear()
+
+
+def _brief_vector(style_prompt: str, M):
+    """Embedded brief, cached per process. Falls back to the pool centroid."""
+    key = (style_prompt or "").strip()
+    if not key:
+        return M.mean(axis=0)
+    hit = _BRIEF_VECS.get(key)
+    if hit is not None:
+        return hit
+    try:
+        vec = embed_text_query(key)
+    except Exception as _e_q:
+        print(f"[cd] brief embedding failed ({_e_q}) — using pool centroid")
+        return M.mean(axis=0)
+    _BRIEF_VECS[key] = vec
+    return vec
+
+
 def _focus_pool(paths, embeddings, scores, aspects, style_prompt="", k=12):
     """Narrow the candidate pool to k, considering ALL of it.
 
@@ -316,32 +347,47 @@ def _focus_pool(paths, embeddings, scores, aspects, style_prompt="", k=12):
     rows = [{"path": p, "score": sc[i] if i < len(sc) else 0.5}
             for i, p in enumerate(paths)]
 
+    qvec = _brief_vector(style_prompt, M)
+
+    # Rank the WHOLE pool on brief match and quality, then shortlist. This is
+    # not the old anchor funnel: the cut is by relevance and quality across the
+    # library, not by resemblance to one frame, so nothing is trapped in a
+    # neighbourhood. Taste can only reorder within the shortlist.
+    q = np.asarray(qvec, dtype=np.float32)
+    q = q / (np.linalg.norm(q) + 1e-9)
+    _rel = _sel._normalise((M @ q).clip(-1.0, 1.0))
+    _sc = np.array([r["score"] for r in rows], dtype=np.float32)
+    prelim = _sel.W_BRIEF * _rel + _sel.W_MERIT * _sel._normalise(_sc)
+    _keep = _sel._eligible(rows)
+    _n_excluded = int((~_keep).sum())        # counted HERE: they never reach
+    prelim = np.where(_keep, prelim, -np.inf)  # select(), so it cannot count them
+
+    n_short = min(max(_TASTE_LOOKUP_N, k * 4), len(rows))
+    short = np.argsort(-prelim)[:n_short].tolist()
+
     # personal_score is stored, not passed in. Absent, merit falls back to the
     # aesthetic score alone, which is the honest degradation.
     try:
         import lance_store as _ls
-        stored = {r["path"]: r for r in _ls.query_by_paths(list(paths))}
-        for r in rows:
-            hit = stored.get(r["path"])
+        _short_paths = [rows[i]["path"] for i in short]
+        stored = {r["path"]: r for r in _ls.query_by_paths(_short_paths)}
+        for i in short:
+            hit = stored.get(rows[i]["path"])
             if hit is not None and hit.get("personal_score") is not None:
-                r["personal_score"] = hit["personal_score"]
+                rows[i]["personal_score"] = hit["personal_score"]
     except Exception as _e_ps:
         print(f"[cd] personal_score lookup skipped: {_e_ps}")
 
-    try:
-        qvec = (embed_text_query(style_prompt) if style_prompt.strip()
-                else M.mean(axis=0))
-    except Exception as _e_q:
-        print(f"[cd] brief embedding failed ({_e_q}) — using pool centroid")
-        qvec = M.mean(axis=0)
-
-    idx, diag = _sel.select(qvec, rows, M, k=min(k, len(paths)))
+    sub_rows = [rows[i] for i in short]
+    sel_idx, diag = _sel.select(qvec, sub_rows, M[short], k=min(k, len(short)))
+    idx = [short[j] for j in sel_idx]
     if not idx:
         return paths, embeddings, scores, aspects
 
+    diag["excluded_bundled"] = _n_excluded
     print(f"[cd] focus: {len(idx)} of {len(paths)} | cohesion "
           f"{diag.get('cohesion_mean', 0):.3f} | excluded "
-          f"{diag.get('excluded_bundled', 0)} bundled")
+          f"{_n_excluded} bundled")
 
     keep_aspects = None
     if aspects and len(aspects) == len(paths):
