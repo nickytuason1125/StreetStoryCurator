@@ -77,12 +77,22 @@ GGUF_MODELS: tuple = (
     # the bundled llama.cpp supports. Qwen3.5 was evaluated and rejected: it
     # fails with `missing tensor blk.24.ssm_conv1d.weight` because it is a
     # hybrid attention+SSM architecture newer than the bundled runtime.
+    # Qwen3-4B held this slot for one day. It is more accurate (6/6 against 5/6
+    # on the same trials) but measured end-to-end on the 16 GB target it cost
+    # 258.6s and drove free RAM to 0.66 GB; LFM2.5-VL-1.6B did the same run in
+    # 155.8s and left 2.36 GB. Identical cohesion, 0.891. A model that makes the
+    # machine unusable while it thinks is not the more accurate choice in
+    # practice. Qwen3-4B remains a good pick on a machine with real headroom --
+    # set FRAMEGRADE_LOCAL_LLM_GGUF to switch back.
+    #
+    # Licence is a real trade: LFM Open v1.0 is Apache-like but caps commercial
+    # use at $10M annual revenue, where Qwen3 is plain Apache-2.0.
     ModelFile(
         key="text",
-        dest=_ROOT / "models" / "Qwen_Qwen3-4B-Q4_K_M.gguf",
-        repo="bartowski/Qwen_Qwen3-4B-GGUF",
-        filename="Qwen_Qwen3-4B-Q4_K_M.gguf",
-        size_gb=2.5,
+        dest=_ROOT / "models" / "LFM2.5-VL-1.6B-Q4_K_M.gguf",
+        repo="LiquidAI/LFM2.5-VL-1.6B-GGUF",
+        filename="LFM2.5-VL-1.6B-Q4_K_M.gguf",
+        size_gb=0.73,
         purpose="Story Mode selection, Judge's Verdict, RAG concept extraction",
     ),
 )

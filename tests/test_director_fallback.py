@@ -145,3 +145,59 @@ def test_no_reason_when_the_model_actually_chose(monkeypatch):
 
     assert paths == ["/img/2.jpg", "/img/0.jpg"], "model's order, not score order"
     assert reason is None, f"a real selection must not claim a fallback: {reason!r}"
+
+
+# ── a transient refusal must not latch for the process lifetime ──────────────
+
+def test_ram_refusal_is_retried_when_memory_frees_up(monkeypatch):
+    r"""Observed live: a Story run reported "only 2.0 GB RAM free" while 4.04 GB
+    was actually free, and returned in 9.9s without loading anything.
+
+    _load() sets _load_attempted before the RAM check and then returns None on
+    every later call, so ONE refusal while Chrome was open disabled the text
+    model for the life of the server. Closing Chrome does not help; only
+    restarting the app does. That is indistinguishable, to a user, from the
+    feature being broken.
+
+    A missing file or an unloadable build is permanent and should latch.
+    Free memory is not.
+    """
+    weights = _FakeWeights(0.73)
+    monkeypatch.setattr(local_llm, "model_path", lambda: weights)
+    monkeypatch.setattr(local_llm, "_setting", lambda n, d: 0.0)
+    monkeypatch.setattr(local_llm, "_llm", None)
+    monkeypatch.setattr(local_llm, "_load_attempted", False)
+
+    monkeypatch.setattr(local_llm, "_free_ram_gb", lambda: 0.2)
+    assert local_llm._load() is None, "should refuse when memory is short"
+
+    # memory frees up; the next call must try again rather than stay latched
+    loaded = {}
+
+    class _FakeLlama:
+        def __init__(self, **kw):
+            loaded["yes"] = True
+
+    import types
+    fake = types.ModuleType("llama_cpp")
+    fake.Llama = _FakeLlama
+    monkeypatch.setitem(sys.modules, "llama_cpp", fake)
+    monkeypatch.setattr(local_llm, "_free_ram_gb", lambda: 8.0)
+
+    assert local_llm._load() is not None, "a RAM refusal must not latch"
+    assert loaded.get("yes"), "it never even tried to construct the model"
+    assert local_llm.last_skip_reason() is None
+
+
+def test_missing_weights_still_latch(monkeypatch):
+    """A file that is not there will not appear between calls; retrying that
+    on every generate would spam the log for no reason."""
+    class _Absent:
+        name = "gone.gguf"
+        def exists(self):
+            return False
+    monkeypatch.setattr(local_llm, "model_path", lambda: _Absent())
+    monkeypatch.setattr(local_llm, "_llm", None)
+    monkeypatch.setattr(local_llm, "_load_attempted", False)
+    assert local_llm._load() is None
+    assert local_llm._load_attempted is True

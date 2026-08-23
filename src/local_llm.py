@@ -178,17 +178,23 @@ def _load():
             return _llm
         if _load_attempted:
             return None                      # already failed; don't retry per call
-        _load_attempted = True
 
         path = model_path()
         if not path.exists():
             _last_skip = f"no text model installed at {path.name}"
+            _load_attempted = True
             print(f"[llm] {_last_skip} — text features disabled")
             return None
 
         need = required_ram_gb()
         free = _free_ram_gb()
         if free < need:
+            # Deliberately does NOT set _load_attempted. Free memory is
+            # transient: observed live, a Story run reported "only 2.0 GB free"
+            # while 4.04 GB actually was, because a single refusal while Chrome
+            # was open had latched the model off for the life of the server.
+            # Closing Chrome did not help; only restarting the app did, which
+            # to a user is indistinguishable from the feature being broken.
             _last_skip = (f"only {free:.1f} GB RAM free, needs ~{need:.1f} GB "
                           f"for {path.name}")
             print(f"[llm] {_last_skip} — skipping the text model rather than "
@@ -199,6 +205,7 @@ def _load():
             from llama_cpp import Llama
         except Exception as e:
             _last_skip = f"llama_cpp unavailable ({e})"
+            _load_attempted = True
             print(f"[llm] {_last_skip} — text features disabled")
             return None
 
@@ -229,6 +236,7 @@ def _load():
             except Exception as e:
                 last_err = e
                 print(f"[llm] load failed at n_gpu_layers={n_gpu} ({e}) — backing off")
+        _load_attempted = True          # this build cannot load these weights
         _last_skip = f"the model failed to load ({last_err})"
         print(f"[llm] load failed on every offload level: {last_err}")
         _llm = None

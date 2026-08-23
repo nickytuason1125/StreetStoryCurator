@@ -60,7 +60,7 @@ does not remove the obligation to be accurate about what the app requires.
 | YuNet face detector | face and subject-focus signals | OpenCV Zoo | MIT |
 | YOLO11s / YOLO26n | detection and audit heads | Ultralytics | **AGPL-3.0 — see above** |
 | Qwen2.5-VL-3B-Instruct | opt-in Deep Grade, annotations | Alibaba | **VERIFY** |
-| Qwen3-4B (GGUF) | Story/Competition selection, Judge's Verdict, RAG extraction | Alibaba, via `bartowski/Qwen_Qwen3-4B-GGUF` | Apache-2.0 |
+| LFM2.5-VL-1.6B (GGUF) | Story/Competition selection, Judge's Verdict, RAG extraction | Liquid AI, `LiquidAI/LFM2.5-VL-1.6B-GGUF` | **LFM Open v1.0 — commercial use capped at $10M revenue** |
 | TOPIQ NR (via `pyiqa`) | technical quality head | `chaofengc/IQA-PyTorch` | **VERIFY** |
 | DINOv2-ViT-S/14 | ChiaroscuroHead vision probe | Meta | **VERIFY** |
 
@@ -72,6 +72,19 @@ for a specific reason:
   Apache-2.0. Confirm which applies to the 3B Instruct checkpoint specifically.
   If it is research-only, Deep Grade cannot ship as a commercial feature; grading
   is unaffected, because SigLIP zero-shot is the default path and Qwen is opt-in.
+- **LFM Open Licence v1.0** is Apache-2.0 in structure with one addition:
+  Section 5 permits commercial use only while the licensee's annual revenue is
+  under **$10,000,000**. Redistribution terms are otherwise standard Apache —
+  ship the licence, mark modified files, retain notices. This is a real
+  condition, not a formality: it is fine today and becomes a problem exactly if
+  FrameGrade succeeds, which is the worst moment to discover it.
+
+  The alternative already tested is **Qwen3-4B** (`bartowski/Qwen_Qwen3-4B-GGUF`,
+  plain Apache-2.0, no cap). It is more accurate — 6/6 against 5/6 on the same
+  trials — but measured end to end on the 16 GB target it took 258.6s and left
+  0.66 GB of RAM free, against 155.8s and 2.36 GB for LFM. Switching back is one
+  environment variable: `FRAMEGRADE_LOCAL_LLM_GGUF`.
+
 - **DeepSeek-R1-Distill was REMOVED on 2026-08-22** and its weights deleted, so
   this row is gone rather than resolved. It was replaced by Qwen3-4B, which is
   cleanly Apache-2.0 and needs no verification — one fewer licence question at
