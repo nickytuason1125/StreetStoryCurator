@@ -1136,7 +1136,7 @@ export default function App() {
         const { done: finished, value } = await reader.read();
         if (finished) break;
         buf += decoder.decode(value, { stream: true });
-        const lines = buf.split(String.fromCharCode(10));
+        const lines = buf.split('\n');
         buf = lines.pop() ?? '';
         for (const line of lines) {
           if (!line.trim()) continue;
@@ -2171,11 +2171,6 @@ export default function App() {
         const isOffline     = engineHealth.status === "offline";
 
         // Model load state chips — gemma3:4b and qwen2.5vl:3b
-        const VLM_TARGETS = ["gemma3:4b", "qwen2.5vl:3b"] as const;
-        const MODEL_DISPLAY: Record<string, string> = {
-          "gemma3:4b":    "Scene reader",
-          "qwen2.5vl:3b": "Photo reader",
-        };
         // Empty by design. These chips reported gpu/cpu residency per model,
         // but /api/ollama/status sets size_vram to 0 for every entry -- with
         // llama_cpp the offload level is decided per call, not held as a
@@ -2183,14 +2178,7 @@ export default function App() {
         // (gemma3:4b, qwen2.5vl:3b) this app stopped shipping when Ollama was
         // removed. The JSX below is kept but never renders.
         const modelChips: {label:string; display:string; state:"gpu"|"cpu"|"absent"; size_vram?:number}[] = [];
-        const _unusedChips = VLM_TARGETS.map(target => {
-          const found = ollamaPs.find(m => m.name === target || m.name.startsWith(target.split(":")[0] + ":"));
-          if (!found) return { label: target, display: MODEL_DISPLAY[target] ?? target, state: "absent" as const };
-          const onGpu = found.size_vram > 0;
-          return { label: target, display: MODEL_DISPLAY[target] ?? target, state: onGpu ? "gpu" as const : "cpu" as const, size_vram: found.size_vram };
-        });
-        const anyCpu    = modelChips.some(c => c.state === "cpu");
-        const anyAbsent = modelChips.some(c => c.state === "absent");
+        const anyCpu = false, anyAbsent = false;   // no residency signal exists
         const showBanner = isOffline || missingModels.length > 0;
         if (!showBanner) return null;
         if (bannerDismissed && !isOffline) return null;
@@ -4496,13 +4484,13 @@ export default function App() {
                   <label className="t-label mb-2 block">
                     Sequence length
                   </label>
-                  <div style={{display:'flex', alignItems:'center', gap:12}}>
+                  <div className="flex items-center gap-3">
                     <input type="range" min={4} max={10} step={1} value={creativeCount}
                       onChange={e => setCreativeCount(Number(e.target.value))}
                       aria-label="Sequence length"
-                      style={{ flex:1, accentColor:T.ink2, cursor:'pointer' }} />
-                    <span style={{ minWidth:64, textAlign:'right', fontSize:'var(--text-sm)',
-                      fontWeight:700, color:T.ink2, fontVariantNumeric:'tabular-nums' }}>
+                      aria-valuetext={`${creativeCount} photos`}
+                      className="range-token flex-1" />
+                    <span className="shrink-0 text-right text-sm font-bold text-ink-2 tabular-nums">
                       {creativeCount} photos
                     </span>
                   </div>

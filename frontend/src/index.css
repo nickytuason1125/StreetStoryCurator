@@ -80,3 +80,52 @@ body {
   background-clip: content-box;
 }
 *::-webkit-scrollbar-thumb:hover { background-clip: content-box; background-color: var(--ink-4); }
+
+/* Range input, styled to the token scale.
+
+   A native <input type="range"> renders the OS control -- a light-grey track
+   and a blue thumb -- which is visibly foreign inside this dark, custom UI.
+   accentColor alone only recolours the thumb and leaves the track and sizing
+   untouched, so it still reads as a browser default dropped into the page.
+   Track and thumb both need pseudo-elements, which cannot be expressed
+   inline, so they live here alongside the scrollbar rules. */
+.range-token {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 20px;
+  background: transparent;
+  cursor: pointer;
+}
+.range-token::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: var(--r-sm);
+  background: var(--line-strong);
+}
+.range-token::-moz-range-track {
+  height: 4px;
+  border-radius: var(--r-sm);
+  background: var(--line-strong);
+}
+.range-token::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  margin-top: -5px;                 /* centre a 14px thumb on a 4px track */
+  height: 14px;
+  width: 14px;
+  border-radius: 50%;
+  background: var(--ink-2);
+  border: 1px solid var(--line-strong);
+  transition: background-color 120ms ease, transform 120ms ease;
+}
+.range-token::-moz-range-thumb {
+  height: 14px;
+  width: 14px;
+  border-radius: 50%;
+  background: var(--ink-2);
+  border: 1px solid var(--line-strong);
+}
+.range-token:hover::-webkit-slider-thumb { background: var(--ink); }
+.range-token:hover::-moz-range-thumb     { background: var(--ink); }
+.range-token:focus-visible { outline: none; }
+.range-token:focus-visible::-webkit-slider-thumb { transform: scale(1.15); }
+.range-token:focus-visible::-moz-range-thumb     { transform: scale(1.15); }
