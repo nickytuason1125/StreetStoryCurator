@@ -139,6 +139,10 @@ SETTINGS = {
         int, 12, "candidates shown to the Art Director; prefill cost is superlinear"),
     "FRAMEGRADE_USE_RAG_CONCEPTS": Setting(
         bool, False, "inject book-derived RAG phrases into prompts; off by default"),
+    "FRAMEGRADE_STORY_REVISION": Setting(
+        bool, False, "contact-sheet critique pass; ~200s per iteration on CPU"),
+    "FRAMEGRADE_STORY_VERDICT": Setting(
+        bool, False, "Judge's Verdict narrative; ~92s on CPU"),
     # diagnostics
     "FRAMEGRADE_RAM_TRACE":   Setting(bool, False, "log RSS/peak per stage"),
     "FRAMEGRADE_FUSION_DUMP": Setting(bool, False, "dump per-photo fusion terms"),

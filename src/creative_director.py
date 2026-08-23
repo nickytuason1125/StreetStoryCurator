@@ -318,6 +318,26 @@ def _brief_vector(style_prompt: str, M):
     return vec
 
 
+def _revision_enabled() -> bool:
+    """Is the contact-sheet critique pass switched on?
+
+    Off by default. Measured through the real endpoint on a real folder: the
+    request did not return in ten minutes, and the server log showed the cause
+    --  rendering the set as one contact sheet and encoding it through a vision
+    model on CPU took 170s for the image slice alone, plus ~32s decoding, per
+    iteration, for a feature that proposes at most one slot swap.
+
+    Every other stage of a Story run is now single-digit seconds, so this one
+    decided whether the product was usable at all. Kept, not deleted: it works,
+    and on a GPU it is cheap. Same shape as deep_grade -- opt-in.
+    """
+    try:
+        import run_profile
+        return bool(run_profile.setting("FRAMEGRADE_STORY_REVISION"))
+    except Exception:
+        return False
+
+
 def _focus_pool(paths, embeddings, scores, aspects, style_prompt="", k=12,
                 out=None):
     """Narrow the candidate pool to k, considering ALL of it.
@@ -1583,7 +1603,9 @@ def run_creative_direction(
     # iterations. Competition Mode's brief is about independent standout
     # images, not narrative pacing, so its single-pass flow is untouched.
     revision_log: list[dict] = []
-    if mode == "story":
+    if mode == "story" and not _revision_enabled():
+        _p(0.35, "Sequence review skipped (set FRAMEGRADE_STORY_REVISION=1 to enable)")
+    elif mode == "story":
         _p(0.33, "Reviewing sequence (contact-sheet critique)…")
         try:
             from contact_sheet import run_revision_loop
@@ -1604,26 +1626,41 @@ def run_creative_direction(
     # DeepSeek-R1-Distill-Llama-8B (INT4) generates the official competition
     # narrative. VRAM is purged by the caller via purge_vram() after this step.
     # Skipped gracefully if 8B weights absent.
-    _p(0.36, "Generating Judge's Verdict…")
     seq_narrative: Optional[str] = None
+    _want_verdict = False
     try:
-        from jury_engine import generate_judges_verdict_8b
-        seq_narrative = generate_judges_verdict_8b(
-            selected_images=[
-                {"filename": p, **(seq_aspects[i] if seq_aspects else {})}
-                for i, p in enumerate(seq_paths)
-            ],
-            style_prompt=style_prompt,
-            roles=roles,
-            director_brief=_director_brief,
-            scores=seq_scores,
-        )
-    except Exception as _e_verdict:
-        _p(0.38, f"Judge's Verdict skipped ({_e_verdict})")
-    if seq_narrative:
-        _p(0.40, "Judge's Verdict complete")
+        import run_profile as _rp
+        _want_verdict = bool(_rp.setting("FRAMEGRADE_STORY_VERDICT"))
+    except Exception:
+        _want_verdict = False
+    if not _want_verdict:
+        # Measured through the real endpoint: 92s of a 153.8s Story run, for a
+        # 200-token narrative -- about 2 tokens/second. /no_think does not help
+        # here because jury_engine uses RAW completion and that switch is a
+        # chat-template convention. The proper fix is routing it through
+        # local_llm.generate (chat completion, shared instance); until then it
+        # is opt-in rather than a silent two-minute wait.
+        _p(0.40, "Judge's Verdict skipped (set FRAMEGRADE_STORY_VERDICT=1 to enable)")
     else:
-        _p(0.40, "8B Judge unavailable — verdict skipped")
+      _p(0.36, "Generating Judge's Verdict…")
+      try:
+          from jury_engine import generate_judges_verdict_8b
+          seq_narrative = generate_judges_verdict_8b(
+              selected_images=[
+                  {"filename": p, **(seq_aspects[i] if seq_aspects else {})}
+                  for i, p in enumerate(seq_paths)
+              ],
+              style_prompt=style_prompt,
+              roles=roles,
+              director_brief=_director_brief,
+              scores=seq_scores,
+          )
+      except Exception as _e_verdict:
+          _p(0.38, f"Judge's Verdict skipped ({_e_verdict})")
+      if seq_narrative:
+          _p(0.40, "Judge's Verdict complete")
+      else:
+          _p(0.40, "8B Judge unavailable — verdict skipped")
 
     # ── Step 6: Copy Originals to Final_Portfolio/ ────────────────────────────
     out_dir = Path(output_dir) / "Final_Portfolio"

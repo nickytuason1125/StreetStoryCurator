@@ -341,6 +341,33 @@ def _run_persona(
     return _complete(llm, prompt, base_kwargs, persona["name"], grammar=grammar)
 
 
+def _maybe_no_think(prompt: str) -> str:
+    """Append /no_think when the loaded text model reasons by default.
+
+    This module builds its OWN Llama via _load_llm(), so local_llm's
+    suppression never reached it. Measured through the real endpoint: the
+    Judge's Verdict took 104s of a 169.8s Story run, for max_tokens=200 --
+    about 2 tokens/second, which is a reasoning model thinking first. On the
+    same model and task, thinking off was 1.7s against 31.9s at identical
+    accuracy.
+    """
+    try:
+        import local_llm as _ll
+        return _ll._suppress_thinking(prompt) or prompt
+    except Exception:
+        return prompt
+
+
+def _clean(text):
+    """Strip a <think> wrapper. The verdict is shown to the user verbatim, and
+    even suppressed, Qwen3 emits an empty one."""
+    try:
+        import local_llm as _ll
+        return _ll._strip_thinking(text)
+    except Exception:
+        return text
+
+
 def _complete(llm, prompt: str, kwargs: dict, label: str, grammar=None) -> Optional[dict]:
     """Grammar-constrained completion, falling back to unconstrained ONCE.
 
@@ -356,6 +383,7 @@ def _complete(llm, prompt: str, kwargs: dict, label: str, grammar=None) -> Optio
     grammar" from "one call went wrong", and every call still logs.
     """
     global _grammar_fails
+    prompt = _maybe_no_think(prompt)
     if _grammar_fails >= _GRAMMAR_FAIL_LIMIT:
         grammar = None
     elif grammar is None:
