@@ -174,3 +174,55 @@ def test_scratchpad_and_temp_images_are_excluded():
     for i in idx:
         q = rows[i]["path"].lower().replace(bs, "/")
         assert "scratchpad" not in q and "/temp/" not in q, rows[i]["path"]
+
+
+# ── tonal consistency, the axis SigLIP does not carry ────────────────────────
+
+def test_a_tonally_matching_frame_beats_a_clashing_one():
+    """The failure this fixes, reproduced: a real run returned warm night
+    colour, black-and-white and a bright daytime frame in one sequence, all at
+    0.891 cohesion, because every frame matched the SUBJECT.
+
+    Here two candidates are equally relevant and equally good. One shares the
+    set's tonality; the other is bright and monochrome. Tone must break the tie.
+    """
+    # Orthogonal directions, not near-copies: at cosine 0.98 the duplicate
+    # guard (0.88) would correctly reject both candidates and the test would
+    # measure that instead of tone.
+    seed = np.eye(8)[0]
+    warm = np.eye(8)[1]
+    mono = np.eye(8)[2]
+    rows, M = _library([
+        ("/seed.jpg", seed, 0.90, 0.5),
+        ("/warm.jpg", warm, 0.80, 0.5),
+        ("/mono.jpg", mono, 0.80, 0.5),
+    ])
+    tone = np.array([[0.20, 0.45],    # seed: dark, colourful
+                     [0.22, 0.43],    # warm: matches
+                     [0.78, 0.01]],   # mono: bright, no colour
+                    dtype=np.float32)
+    idx, _ = ss.select(_unit(seed), rows, M, k=2, tone=tone)
+    chosen = {rows[i]["path"] for i in idx}
+    assert "/warm.jpg" in chosen, "the tonally consistent frame should win"
+    assert "/mono.jpg" not in chosen
+
+
+def test_selection_is_unchanged_when_no_tone_is_supplied():
+    """Tone is optional. Callers that cannot measure it must behave exactly as
+    before rather than silently getting a different edit."""
+    specs = [("/p%d.jpg" % i, np.eye(8)[i % 8], 0.6 + i * 0.01, 0.5) for i in range(16)]
+    rows, M = _library(specs)
+    q = _unit(np.ones(8))
+    a, _ = ss.select(q, rows, M, k=5)
+    b, _ = ss.select(q, rows, M, k=5, tone=None)
+    assert a == b
+
+
+def test_unmeasured_tone_does_not_exclude_a_photo():
+    """A frame with no thumbnail scores neutral, not badly."""
+    seed = np.eye(8)[0]
+    other = np.eye(8)[3]        # distinct, so the duplicate guard stays out of it
+    rows, M = _library([("/a.jpg", seed, 0.9, 0.5), ("/b.jpg", other, 0.9, 0.5)])
+    tone = np.array([[0.2, 0.4], [np.nan, np.nan]], dtype=np.float32)
+    idx, _ = ss.select(_unit(seed), rows, M, k=2, tone=tone)
+    assert len(idx) == 2, "an unmeasured frame must still be selectable"

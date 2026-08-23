@@ -53,6 +53,10 @@ import numpy as np
 # creative_director._DUP_SIM_THRESH — not a taste judgement, so it stays hard.
 DUP_SIM_THRESH = 0.88
 
+# What an unmeasured frame scores on tone. Mid-scale on purpose: it competes on
+# its other merits instead of being penalised for a missing thumbnail.
+NEUTRAL_TONE = 0.5
+
 # Taste weight rides its own confidence. Floor: a head sitting at 0.5 knows
 # nothing about this photo and must not steer it. Ceiling: a head at 0.0 or 1.0
 # is as sure as it gets, and taste leads.
@@ -62,9 +66,16 @@ TASTE_CEIL = 0.50
 # Objective weights. NOT measured — a starting point, to be tuned against sets
 # the user judges. The cohesion weight is the consequential one: it is the dial
 # between a repetitive set that scores well and a jumble of strong frames.
-W_BRIEF = 0.40
-W_MERIT = 0.40
-W_COHESION = 0.20
+W_BRIEF = 0.35
+W_MERIT = 0.35
+W_COHESION = 0.15
+# Tonality: brightness and saturation agreement with the frames already chosen.
+# Added after a real run returned warm night colour, black-and-white and a
+# bright daytime frame in one six-image sequence, all at 0.891 cohesion --
+# every frame matched the SUBJECT, because that is what SigLIP encodes. Tone is
+# most of what makes photographs read as one body of work, and none of it was
+# being measured.
+W_TONE = 0.15
 
 # Not the user's photographs. Two sources were found in the live library:
 #   100 rows under the repo's own dataset_images/ (bundled demo assets)
@@ -140,7 +151,7 @@ def cohesion_stats(M: np.ndarray, indices: "list[int]") -> dict:
 
 
 def select(brief_vec: np.ndarray, rows: "list[dict]", M: np.ndarray,
-           k: int = 7) -> "tuple[list[int], dict]":
+           k: int = 7, tone: "Optional[np.ndarray]" = None) -> "tuple[list[int], dict]":
     """Choose k photographs. Returns (indices into rows, diagnostics).
 
     Greedy: each step adds the frame with the highest value given what is
@@ -171,6 +182,12 @@ def select(brief_vec: np.ndarray, rows: "list[dict]", M: np.ndarray,
     base = W_BRIEF * brief + W_MERIT * mer
     base = np.where(keep, base, -np.inf)
 
+    T = None
+    if tone is not None:
+        T = np.asarray(tone, dtype=np.float32)
+        if T.ndim != 2 or T.shape[0] != n or T.shape[1] < 2:
+            T = None          # wrong shape is not worth guessing about
+
     chosen: "list[int]" = []
     while len(chosen) < k:
         if not chosen:
@@ -181,6 +198,17 @@ def select(brief_vec: np.ndarray, rows: "list[dict]", M: np.ndarray,
             centre /= np.linalg.norm(centre) + 1e-9
             coh = (M @ centre).clip(-1.0, 1.0)
             value = base + W_COHESION * coh
+            if T is not None:
+                ref = T[chosen]
+                ref = ref[np.all(np.isfinite(ref), axis=1)]
+                if ref.shape[0]:
+                    centre = ref.mean(axis=0)
+                    fit = 1.0 - np.abs(T - centre).mean(axis=1)
+                    # Unmeasured frames score neutral: no thumbnail is not a
+                    # reason to drop a photograph from a set.
+                    fit = np.where(np.all(np.isfinite(T), axis=1),
+                                   np.clip(fit, 0.0, 1.0), NEUTRAL_TONE)
+                    value = value + W_TONE * fit
             # hard: never the same photograph twice
             too_close = (sub @ M.T).max(axis=0) > DUP_SIM_THRESH
             value = np.where(too_close, -np.inf, value)

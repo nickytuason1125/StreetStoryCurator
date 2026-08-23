@@ -43,6 +43,7 @@ Cinematic pacing constraints:
 from __future__ import annotations
 
 import itertools
+import time
 import json
 import re
 import shutil
@@ -400,7 +401,27 @@ def _focus_pool(paths, embeddings, scores, aspects, style_prompt="", k=12,
         print(f"[cd] personal_score lookup skipped: {_e_ps}")
 
     sub_rows = [rows[i] for i in short]
-    sel_idx, diag = _sel.select(qvec, sub_rows, M[short], k=min(k, len(short)))
+
+    # Tonality for the shortlist only. Read from cache/thumbs (4 KB webp each),
+    # never from the originals -- some of these are 40-megapixel frames and this
+    # runs on every Story request. Added after a real run returned warm night
+    # colour, black-and-white and a bright daytime frame in one sequence at
+    # 0.891 cohesion: SigLIP encodes subject, not tone.
+    _tone = None
+    try:
+        import tonal_stats as _tn
+        _t0 = time.perf_counter()
+        # budget caps first-run decoding; cached entries are free, so a
+        # second Story on the same library measures everything.
+        _tone = _tn.stats_for_paths([r["path"] for r in sub_rows], budget=40)
+        _known = int(np.all(np.isfinite(_tone), axis=1).sum())
+        print(f"[cd] tone: {_known}/{len(sub_rows)} measured in "
+              f"{time.perf_counter() - _t0:.2f}s")
+    except Exception as _e_tone:
+        print(f"[cd] tonal stats skipped ({_e_tone})")
+
+    sel_idx, diag = _sel.select(qvec, sub_rows, M[short],
+                                k=min(k, len(short)), tone=_tone)
     idx = [short[j] for j in sel_idx]
     if not idx:
         return paths, embeddings, scores, aspects
