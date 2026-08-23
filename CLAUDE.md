@@ -14,10 +14,22 @@
 
 **Hard constraint: MAX 5.5 GB VRAM peak. Models never run concurrently.**
 
-> **Note:** DeepSeek-R1-Distill GGUF entries have been removed — those weights were
-> never downloaded and the code paths were dead. The primary grader is now
-> Qwen2.5-VL-3B (transformers INT4, cached to `models/qwen_vlm/`). If that cache
-> is absent the pipeline falls back to SpecVLM CLIP cosine similarity automatically.
+> **Note (corrected 2026-08-23):** the claim that DeepSeek entries "have been
+> removed" was WRONG when written — `model_registry` still listed
+> `deepseek-r1-8b-q5.gguf` as the text model and the 5.73 GB file was on disk.
+> It is true now: DeepSeek was deleted on 2026-08-22 and replaced by
+> **Qwen3-4B** (`bartowski/Qwen_Qwen3-4B-GGUF`, 2.5 GB, Apache-2.0) for Story
+> and Competition selection, the Judge's Verdict and RAG extraction. On the
+> 16 GB target the 8B never loaded at all — it needs ~6.6 GB free and 2.3-4.0 GB
+> was measured — so Story mode had been silently score-sorting.
+>
+> The primary grader is unchanged: Qwen2.5-VL-3B on the opt-in Deep Grade path,
+> falling back to SpecVLM CLIP.
+>
+> **Never name a weight file in code.** Ask `model_registry`. Five modules
+> hardcoded `deepseek-r1-8b-q5.gguf` and a sixth hardcoded a `2b` vision
+> filename the registry never shipped; after the swap a correct install reported
+> models missing and a stale one reported success.
 
 ## VRAM Sequential Protocol
 
@@ -126,6 +138,33 @@ Runtime enforcement (`src/frontier_config.py`):
 `GET /api/config` returns `{"force_frontier": bool}` for the frontend to read.
 
 Tests: `tests/test_frontier_lock.py` covers all enforcement paths.
+
+## Story / Competition (2026-08-23)
+
+Selection runs over the WHOLE graded pool via `src/story_selector.py`, not the
+40 nearest neighbours of the top-scoring frame. Length is the user's choice,
+4-10, via the existing `n_target`. Cohesion is REPORTED, never gated: measured
+floors were a cliff (0.55 and 0.80 both returned 10 every time; 0.85 and 0.88
+returned 1), and no floor survives without grading on a curve.
+
+Two stages are OPT-IN because they were measured, not guessed:
+
+| Setting | Default | Cost when on |
+|---|---|---|
+| `FRAMEGRADE_STORY_REVISION` | off | ~200s per iteration (170s to encode one contact sheet on CPU) |
+| `FRAMEGRADE_STORY_VERDICT` | off | ~92s for a 200-token narrative |
+
+With both off a Story run is **57.5s** end to end. With them on it did not
+return in ten minutes.
+
+Also measured, and load-bearing:
+- Grammar-constrained decoding DEGRADES selection: 11/14 against 14/14
+  unconstrained, biasing toward small ids. Do not add it back.
+- Manifest size drives latency superlinearly: 25 candidates 36.1s, 12 candidates
+  4.7s. `FRAMEGRADE_DIRECTOR_POOL` defaults to 12.
+- Shot type does NOT discriminate in a street library: largest face measured was
+  0.88% of frame against an 8% "close" boundary. Do not build narrative roles on
+  camera distance.
 
 ## Rules for New Code
 

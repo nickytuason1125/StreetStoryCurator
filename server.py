@@ -1339,8 +1339,16 @@ async def ollama_status():
             import critique_engine as _ce
 
             models = []
-            for _p in (_llm.model_path(),
-                       Path("models/qwen2.5-vl-2b-instruct-q4_k_m.gguf")):
+            # Registry for BOTH. This hardcoded a "2b" filename while the
+            # registry shipped the 3B checkpoint, so the vision model always
+            # read as absent -- the fifth module in this repo to name a weight
+            # file instead of asking.
+            try:
+                import model_registry as _mr_st
+                _paths = (_llm.model_path(), _mr_st.gguf("vision").dest)
+            except Exception:
+                _paths = (_llm.model_path(),)
+            for _p in _paths:
                 if _p.exists():
                     models.append({"name": _p.name, "size_vram": 0,
                                    "size_total": _p.stat().st_size, "until": ""})

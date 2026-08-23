@@ -60,7 +60,7 @@ does not remove the obligation to be accurate about what the app requires.
 | YuNet face detector | face and subject-focus signals | OpenCV Zoo | MIT |
 | YOLO11s / YOLO26n | detection and audit heads | Ultralytics | **AGPL-3.0 — see above** |
 | Qwen2.5-VL-3B-Instruct | opt-in Deep Grade, annotations | Alibaba | **VERIFY** |
-| DeepSeek-R1-Distill 8B (GGUF) | jury critique, Story Mode | DeepSeek | **VERIFY** |
+| Qwen3-4B (GGUF) | Story/Competition selection, Judge's Verdict, RAG extraction | Alibaba, via `bartowski/Qwen_Qwen3-4B-GGUF` | Apache-2.0 |
 | TOPIQ NR (via `pyiqa`) | technical quality head | `chaofengc/IQA-PyTorch` | **VERIFY** |
 | DINOv2-ViT-S/14 | ChiaroscuroHead vision probe | Meta | **VERIFY** |
 
@@ -72,9 +72,12 @@ for a specific reason:
   Apache-2.0. Confirm which applies to the 3B Instruct checkpoint specifically.
   If it is research-only, Deep Grade cannot ship as a commercial feature; grading
   is unaffected, because SigLIP zero-shot is the default path and Qwen is opt-in.
-- **DeepSeek-R1-Distill** — the distilled checkpoints carry DeepSeek's own terms
-  *and* inherit obligations from the base model they were distilled from. Both
-  need checking, not just the DeepSeek repo.
+- **DeepSeek-R1-Distill was REMOVED on 2026-08-22** and its weights deleted, so
+  this row is gone rather than resolved. It was replaced by Qwen3-4B, which is
+  cleanly Apache-2.0 and needs no verification — one fewer licence question at
+  release. The reason for the swap was not licensing: on the 16 GB target laptop
+  the 8B never loaded at all (needs ~6.6 GB free; 2.3-4.0 GB was measured), so
+  Story mode had been silently falling back to a score sort.
 - **TOPIQ / pyiqa** — the `pyiqa` package and the pre-trained IQA weights it
   downloads are licensed separately, and several IQA checkpoints in that ecosystem
   are non-commercial. TOPIQ is on the default grading path, so this one is not
