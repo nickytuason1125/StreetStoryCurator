@@ -791,7 +791,10 @@ async def model_status():
         judge_ok = _mr_health.text_gguf_path().exists()
     except Exception:
         judge_ok = False
-    phi4_ok   = _P("models/phi4-mini-reasoning-q4.gguf").exists()
+    # phi4-mini-reasoning is not in model_registry and never ships, so this
+    # reported a permanently-missing model. Retired rather than fixed: the
+    # field stays for API compatibility and is simply False.
+    phi4_ok   = False
 
     try:
         import sys, os

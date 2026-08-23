@@ -301,11 +301,11 @@ def _brief_cache_clear() -> None:
     _BRIEF_VECS.clear()
 
 
-def _brief_vector(style_prompt: str, M):
+def _brief_vector(style_prompt: str, M=None):
     """Embedded brief, cached per process. Falls back to the pool centroid."""
     key = (style_prompt or "").strip()
     if not key:
-        return M.mean(axis=0)
+        return None if M is None else M.mean(axis=0)
     hit = _BRIEF_VECS.get(key)
     if hit is not None:
         return hit
@@ -313,7 +313,7 @@ def _brief_vector(style_prompt: str, M):
         vec = embed_text_query(key)
     except Exception as _e_q:
         print(f"[cd] brief embedding failed ({_e_q}) — using pool centroid")
-        return M.mean(axis=0)
+        return None if M is None else M.mean(axis=0)
     _BRIEF_VECS[key] = vec
     return vec
 
@@ -1309,7 +1309,10 @@ def run_creative_direction(
     # Similarity is re-normalised from [−1, 1] → [0, 1] before blending.
     if style_prompt.strip():
         try:
-            _text_vec = embed_text_query(style_prompt)           # (1536,)
+            # Cache, not a second embed. _focus_pool has already embedded this
+            # exact brief moments earlier; calling embed_text_query again paid
+            # the text-tower cost twice per run.
+            _text_vec = _brief_vector(style_prompt)                  # (1536,)
 
             # Reference-book ensemble: blend the RAG phrases most relevant to
             # this brief into the query vector, so selection is anchored to the
