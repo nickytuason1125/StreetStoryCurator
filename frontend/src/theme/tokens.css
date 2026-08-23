@@ -115,6 +115,7 @@
    * magic numbers creeping back into the markup. ── */
   --w-panel: 288px;    /* creative config column */
   --w-sidebar: 144px;  /* folder-browser quick access */
+  --w-stage: 460px;    /* centred stage panel: empty state, import */
   --h-thumb: 64px;     /* browser image preview row */
 
   /* ── Motion: one curve, two durations. ── */

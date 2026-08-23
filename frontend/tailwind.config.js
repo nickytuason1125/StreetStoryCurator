@@ -86,7 +86,7 @@ export default {
     extend: {
       // Structural dimensions, named. Keeps w-72 / h-16 magic numbers out of
       // the markup now that the numeric spacing scale is deliberately sparse.
-      width:  { panel: "var(--w-panel)", sidebar: "var(--w-sidebar)" },
+      width:  { panel: "var(--w-panel)", sidebar: "var(--w-sidebar)", stage: "var(--w-stage)" },
       height: { thumb: "var(--h-thumb)" },
       borderWidth: { DEFAULT: "1px", 0: "0", 2: "2px" },
       opacity: { reject: "var(--dim-reject)" },

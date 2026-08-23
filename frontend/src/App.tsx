@@ -2912,46 +2912,58 @@ export default function App() {
                 would wash out the image being judged. */}
             <div className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden bg-well">
               {photos.length === 0 ? (
-                <div className="flex flex-col items-center gap-6">
-                  {/* No dashed rectangle. The drop target is the whole window --
-                      handleDrop is bound to the root element -- so a box drawn
-                      here was decoration pretending to be a target, and the
-                      dashed-border upload widget is the one shape that makes a
-                      photographer's tool look like a web form.
+                <div className="w-stage overflow-hidden rounded-md border border-line bg-surface">
+                  {/* A panel, not a floating cluster. Lifted off bg-well by one
+                      surface step and bounded by a SOLID border -- dashed reads
+                      as an HTML upload widget, solid reads as a workspace
+                      region, which is what an import panel looks like in a
+                      photo application.
 
-                      Nor a large icon: the drag overlay already shows one at
-                      48px over the whole screen. Here the icon earns its place
-                      on the button, where it labels an action.
+                      The drop target itself is still the whole window
+                      (handleDrop is bound to the root), so this panel signals
+                      "something happens here" rather than fencing off where you
+                      are allowed to let go.
 
-                      Emphasis is luminance and weight, per Button.tsx -- the
-                      mark colour belongs to the photographer's judgements, not
-                      to chrome. */}
-                  <div className="flex flex-col items-center gap-2">
-                    <span className="text-xl text-ink-2">Drop a folder of photos</span>
-                    <span className="text-sm text-ink-3">
-                      Every photo gets graded, then you build the story
-                    </span>
+                      Left-aligned: centred body copy reads as a marketing page.
+                      Tools align their labels. */}
+                  <div className="flex flex-col gap-6 px-8 py-8">
+                    <div className="flex flex-col gap-2">
+                      <span className="text-xl text-ink-2">Drop a folder of photos</span>
+                      <span className="text-sm text-ink-3">
+                        Every photo gets graded, then you build the story
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <Button variant="solid" size="md" onClick={openBrowser}
+                        icon={<FolderOpen size={14} strokeWidth={1.5}/>}>
+                        Open folder
+                      </Button>
+                      <span className="text-xs text-ink-3">
+                        or drag one onto the window
+                      </span>
+                    </div>
                   </div>
 
-                  <Button variant="solid" size="md" onClick={openBrowser}
-                    icon={<FolderOpen size={14} strokeWidth={1.5}/>}>
-                    Open folder
-                  </Button>
-
-                  <span className="text-xs text-ink-3">
-                    50 to 100 photos is a good first run
-                  </span>
-
-                  {catalogBanner && (
-                    <div className="mt-6 flex items-center gap-3 rounded-sm border border-line bg-surface px-4 py-2">
-                      <span className="text-sm text-ink-3">Pick up where you left off?</span>
-                      <Button variant="default" size="sm" onClick={handleResume}>Resume</Button>
-                      <Button size="sm" variant="quiet"
-                        onClick={() => { axios.post(`${API}/api/catalog/clear`); setCatalogBanner(false); }}>
-                        Start fresh
-                      </Button>
-                    </div>
-                  )}
+                  {/* A full-width rule works now that the panel has a width.
+                      The earlier version drew this on a shrink-to-fit column,
+                      where it rendered as a short line floating under the text. */}
+                  <div className="flex items-center gap-3 border-t border-line px-8 py-3">
+                    {catalogBanner ? (
+                      <>
+                        <span className="flex-1 text-sm text-ink-3">Pick up where you left off?</span>
+                        <Button variant="default" size="sm" onClick={handleResume}>Resume</Button>
+                        <Button size="sm" variant="quiet"
+                          onClick={() => { axios.post(`${API}/api/catalog/clear`); setCatalogBanner(false); }}>
+                          Start fresh
+                        </Button>
+                      </>
+                    ) : (
+                      <span className="text-xs text-ink-3">
+                        50 to 100 photos is a good first run
+                      </span>
+                    )}
+                  </div>
                 </div>
               ) : sel ? (
                 <>
