@@ -2912,21 +2912,41 @@ export default function App() {
                 would wash out the image being judged. */}
             <div className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden bg-well">
               {photos.length === 0 ? (
-                <div className="flex flex-col items-center gap-3">
+                <div className="flex flex-col items-center gap-8">
+                  {/* The empty state is the whole screen on first run, so it
+                      should own the space rather than float in it. Three tiers:
+                      what to do, how else to do it, and what will happen. The
+                      last one matters most — the old version told a new user to
+                      drop photos but never said what the app would do with
+                      them. */}
                   <button
                     onClick={openBrowser}
                     className={cn(
-                      'flex cursor-pointer flex-col items-center gap-4 rounded-md border-2 border-dashed',
-                      'bg-transparent px-8 py-8 transition-colors duration-slow ease',
-                      dragOver ? 'border-ink text-ink' : 'border-line-strong text-ink-3 hover:border-ink-4',
+                      'flex cursor-pointer flex-col items-center gap-6 rounded-md border-2 border-dashed',
+                      'px-12 py-12 transition-colors duration-slow ease',
+                      dragOver
+                        ? 'border-ink bg-surface text-ink'
+                        : 'border-line-strong bg-transparent text-ink-3 hover:border-ink-4 hover:bg-surface',
                     )}>
-                    <FolderOpen size={40} strokeWidth={1.25} className="text-current"/>
-                    <span className={cn('text-lg', dragOver ? 'text-ink' : 'text-ink-2')}>
-                      Drop a folder of photos here
-                    </span>
-                    <span className="text-sm text-ink-3">
-                      50 to 100 photos is a good first run
-                    </span>
+                    <FolderOpen size={52} strokeWidth={1} className="text-current"/>
+                    <div className="flex flex-col items-center gap-1">
+                      <span className={cn('text-xl', dragOver ? 'text-ink' : 'text-ink-2')}>
+                        {dragOver ? 'Release to open' : 'Drop a folder of photos here'}
+                      </span>
+                      <span className="text-sm text-ink-3">or click to browse</span>
+                    </div>
+                    {/* No rule here. A border-t on a shrink-to-fit column drew a
+                        short line floating under the text, which read as an
+                        artifact rather than a divider. Spacing separates the
+                        tiers well enough. */}
+                    <div className="flex flex-col items-center gap-1">
+                      <span className="text-sm text-ink-3">
+                        Every photo gets graded, then you build the story
+                      </span>
+                      <span className="text-xs text-ink-3">
+                        50 to 100 photos is a good first run
+                      </span>
+                    </div>
                   </button>
                   {catalogBanner && (
                     <div className="flex items-center gap-3 rounded-sm border border-line-strong bg-surface px-4 py-2">
