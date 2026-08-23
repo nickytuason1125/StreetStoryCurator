@@ -66,6 +66,31 @@ def test_ram_floor_scales_with_weight_size(monkeypatch):
     assert need > 0.73, "must still leave headroom above the weights themselves"
 
 
+def test_floor_matches_what_loading_actually_costs(monkeypatch):
+    r"""MEASURED, not chosen. Peak RSS while loading at n_ctx=4096, on a machine
+    with headroom:
+
+        LFM2.5-VL-1.6B   file 0.68 GiB -> peak 1.25 GiB   (1.84x)
+        Qwen3-4B         file 2.33 GiB -> peak 4.56 GiB   (1.96x)
+
+    The first version of this floor was file x 1.15 + 0.5, which I invented and
+    shipped as though measured -- the exact mistake commit 3f42c7f documents.
+    It gave 3.17 GB for Qwen3-4B, so at 3.58 GB free the gate PASSED and the
+    load then drove the machine to 0.00 GB available.
+
+    A floor that admits the failure it exists to prevent is not a floor.
+    """
+    monkeypatch.setattr(local_llm, "_setting", lambda n, d: 0.0)
+
+    monkeypatch.setattr(local_llm, "model_path", lambda: _FakeWeights(0.68))
+    assert local_llm.required_ram_gb() >= 1.25, "must cover the measured LFM peak"
+
+    monkeypatch.setattr(local_llm, "model_path", lambda: _FakeWeights(2.33))
+    need = local_llm.required_ram_gb()
+    assert need >= 4.56, f"must cover the measured Qwen peak, got {need:.2f}"
+    assert need < 6.0, "but not so conservative that nothing ever loads"
+
+
 def test_ram_floor_is_higher_for_a_bigger_model(monkeypatch):
     big = _FakeWeights(5.34)                       # DeepSeek-R1-8B Q5, in GiB
     monkeypatch.setattr(local_llm, "model_path", lambda: big)

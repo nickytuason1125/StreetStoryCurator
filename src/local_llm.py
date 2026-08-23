@@ -100,23 +100,33 @@ def last_skip_reason() -> Optional[str]:
 
 
 def required_ram_gb() -> float:
-    """Free RAM needed to load these weights, DERIVED from the weights.
+    """Free RAM needed to load these weights, MEASURED against the weights.
 
-    This was the constant 6.0 — which is really "the DeepSeek checkpoint plus
-    headroom" frozen into a number. It refuses a 0.73 GB model exactly as
-    firmly as a 5.34 GiB one, so swapping in a smaller model would have changed
-    nothing on its own. Measured shape: 1.15x the file (weights plus the
-    n_ctx=4096 KV cache) plus 0.5 GB of allocator slack, which is what the
-    loader is observed to need.
+    Peak RSS while loading at n_ctx=4096, on a machine with headroom:
 
-    Same class of bug as commit 3f42c7f: a threshold picked rather than
-    measured, guarding a failure it does not actually track.
+        LFM2.5-VL-1.6B   file 0.68 GiB -> peak 1.25 GiB   (1.84x)
+        Qwen3-4B         file 2.33 GiB -> peak 4.56 GiB   (1.96x)
+
+    So roughly TWICE the file: weights, the KV cache at n_ctx=4096, and the
+    allocator's working set during load.
+
+    Two earlier versions were both wrong. A flat 6.0 was "the DeepSeek
+    checkpoint plus headroom" frozen into a constant, refusing a 0.73 GB model
+    as firmly as a 5.34 GiB one. Its replacement, `file x 1.15 + 0.5`, I
+    invented and shipped as though measured -- the exact mistake commit 3f42c7f
+    exists to document. It returned 3.17 GB for Qwen3-4B, so at 3.58 GB free the
+    gate PASSED and the load then drove the machine to 0.00 GB available. A
+    floor that admits the failure it exists to prevent is not a floor.
+
+    Two data points is thin. It is two more than the last version had, and it
+    errs high, which is the safe direction: refusing costs a fallback that is
+    now reported, while admitting costs the user their machine.
     """
     override = float(_setting("FRAMEGRADE_LOCAL_LLM_MIN_RAM_GB", 0.0) or 0.0)
     if override:
         return override
     try:
-        return model_path().stat().st_size / 2 ** 30 * 1.15 + 0.5
+        return model_path().stat().st_size / 2 ** 30 * 2.0
     except Exception:
         return 6.0          # weights unreadable; keep the historical floor
 
