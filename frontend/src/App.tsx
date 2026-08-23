@@ -4524,10 +4524,11 @@ export default function App() {
 
                 {/* Reference photo */}
                 <div>
-                  <label style={{ display:'block', fontSize:'var(--text-xs)', fontWeight:700, letterSpacing:'.07em', textTransform:'uppercase', color:T.ink2, marginBottom:4 }}>
-                    Reference Photo <span style={{ fontWeight:400, textTransform:'none', letterSpacing:0, fontSize:'var(--text-xs)', color:T.ink3 }}>optional</span>
+                  <label className="t-label mb-1 block">
+                    Reference Photo{' '}
+                    <span className="text-xs font-normal normal-case tracking-normal text-ink-3">optional</span>
                   </label>
-                  <p style={{ fontSize:'var(--text-xs)', color:T.ink3, lineHeight:1.4, marginBottom:10 }}>Sets the visual style anchor for the sequence.</p>
+                  <p className="mb-3 text-xs text-ink-3">Sets the visual style anchor for the sequence.</p>
                   {creativeAnchor ? (
                     <div style={{ position:'relative', borderRadius:'var(--r-md)', overflow:'hidden', border:`2px solid ${T.mark}`, cursor:'pointer', boxShadow:`0 0 0 3px ${T.markDim}` }}
                       onClick={()=>setCreativeAnchor(null)} title="Click to remove">
@@ -4536,7 +4537,7 @@ export default function App() {
                       <div style={{ position:'absolute', top:6, right:6, background:T.scrim, backdropFilter:'blur(4px)', borderRadius:'var(--r-sm)', padding:'3px 8px', fontSize:'var(--text-xs)', color:T.ink, fontWeight:600 }}>✕ remove</div>
                     </div>
                   ) : (
-                    <div style={{ height:72, border:`2px dashed ${T.lineStrong}`, borderRadius:'var(--r-md)', display:'flex', alignItems:'center', justifyContent:'center', gap:7, color:T.ink3, fontSize:'var(--text-sm)' }}>
+                    <div className="flex items-center justify-center gap-2 rounded-md border border-line-strong bg-well py-6 text-sm text-ink-3">
                       <Wand2 size={14} strokeWidth={1.5}/>
                       <span>Click a photo below to set anchor</span>
                     </div>
@@ -4546,8 +4547,8 @@ export default function App() {
                 {/* Photo picker grid */}
                 {sortedPhotos.length > 0 && (
                   <div>
-                    <p style={{ fontSize:'var(--text-xs)', color:T.ink3, marginBottom:8 }}>{sortedPhotos.length} photos · sorted by grade · click to anchor</p>
-                    <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:4 }}>
+                    <p className="mb-2 text-xs text-ink-3">{sortedPhotos.length} photos · sorted by grade · click to anchor</p>
+                    <div className="grid grid-cols-3 gap-1">
                       {sortedPhotos.map(p => {
                         const isAnchor = p.path===creativeAnchor;
                         const dc = gc(p.grade);
@@ -4558,7 +4559,7 @@ export default function App() {
                               transform:isAnchor?'scale(1.05)':'scale(1)', transition:'transform .12s, outline .12s' }}>
                             <img src={thumbUrl(p.path)} alt="" loading="eager" style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
                             <div style={{ position:'absolute', bottom:0, left:0, right:0, height:14, background:`linear-gradient(transparent, ${T.scrim})`, display:'flex', alignItems:'center', justifyContent:'flex-end', padding:'0 4px' }}>
-                              <span style={{ fontSize:'var(--text-xs)', fontWeight:700, color:T.ink, fontVariantNumeric:'tabular-nums' }}>{Math.round(p.score*100)}</span>
+                              <span className="text-xs font-bold text-ink tabular-nums">{Math.round(p.score*100)}</span>
                             </div>
                             {isAnchor && (
                               <div style={{ position:'absolute', inset:0, background:T.markDim, display:'flex', alignItems:'center', justifyContent:'center' }}>
