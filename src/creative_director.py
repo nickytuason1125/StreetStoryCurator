@@ -524,6 +524,27 @@ def ask_local_art_director(
                 except (ValueError, TypeError):
                     pass
             if selected:
+                # The pick list is not trusted on faith. Observed live: three
+                # IDENTICAL Story requests returned 6, then 4, then 1 image,
+                # because a small model loses count and nothing checked it. The
+                # user sees a sequence either way, so nothing distinguishes a
+                # judgement from a miscount.
+                #
+                # Duplicates and out-of-range ids are already dropped above.
+                # What remains is a list that may simply be SHORT.
+                n_model = len(selected)
+                if n_model < limit:
+                    for c in sorted(candidate_pool,
+                                    key=lambda x: -float(x.get("score", 0))):
+                        if len(selected) >= limit:
+                            break
+                        cp = c.get("path", "")
+                        if cp and cp not in selected:
+                            selected.append(cp)
+                    reason = (f"the model chose {n_model} of {limit}; the rest "
+                              f"were filled from the highest-scoring candidates")
+                    print(f"[cd] {model_name}: {reason}")
+                    return selected[:limit], reason
                 print(f"[cd] {model_name}: selected {len(selected)} images")
                 return selected[:limit], None
 

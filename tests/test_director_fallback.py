@@ -226,3 +226,80 @@ def test_missing_weights_still_latch(monkeypatch):
     monkeypatch.setattr(local_llm, "_load_attempted", False)
     assert local_llm._load() is None
     assert local_llm._load_attempted is True
+
+
+# ── the model's pick list is not trusted on faith ────────────────────────────
+
+class _ShortList:
+    """The model returns fewer ids than asked for. Observed live: three
+    IDENTICAL Story requests returned 6, then 4, then 1 photograph."""
+    @staticmethod
+    def generate(*a, **k):
+        return "[1]"
+
+    @staticmethod
+    def last_skip_reason():
+        return None
+
+
+class _DirtyList:
+    """Duplicates and out-of-range ids in one answer."""
+    @staticmethod
+    def generate(*a, **k):
+        return "[2, 2, 99, -4, 0]"
+
+    @staticmethod
+    def last_skip_reason():
+        return None
+
+
+def _pool5():
+    return [{"id": i, "path": f"/img/{i}.jpg", "score": s, "breakdown": {}}
+            for i, s in enumerate([0.10, 0.90, 0.80, 0.70, 0.60])]
+
+
+def test_a_short_pick_list_is_topped_up(monkeypatch):
+    """Asking for 4 and getting 1 is not a curatorial judgement, it is a small
+    model losing count. The user sees a sequence, not a parse error, so nothing
+    tells them the difference."""
+    monkeypatch.setitem(sys.modules, "local_llm", _ShortList)
+    paths, reason = cd.ask_local_art_director("sys", _pool5(), "Story", limit=4)
+
+    assert len(paths) == 4, f"asked for 4, got {len(paths)}: {paths}"
+    assert paths[0] == "/img/1.jpg", "the model's own pick must stay first"
+    assert len(set(paths)) == 4, "topping up must not repeat a photo"
+    assert reason and "1" in reason, f"the top-up must be reported: {reason!r}"
+
+
+def test_duplicates_and_out_of_range_are_dropped_then_topped_up(monkeypatch):
+    monkeypatch.setitem(sys.modules, "local_llm", _DirtyList)
+    paths, reason = cd.ask_local_art_director("sys", _pool5(), "Story", limit=4)
+
+    assert len(paths) == 4
+    assert len(set(paths)) == 4
+    assert "/img/2.jpg" in paths and "/img/0.jpg" in paths
+    assert reason, "a repaired answer is not a clean one; say so"
+
+
+def test_a_complete_answer_is_left_alone(monkeypatch):
+    """No top-up, no note, when the model did its job."""
+    class _Good:
+        @staticmethod
+        def generate(*a, **k):
+            return "[3,1,4,2]"
+
+        @staticmethod
+        def last_skip_reason():
+            return None
+
+    monkeypatch.setitem(sys.modules, "local_llm", _Good)
+    paths, reason = cd.ask_local_art_director("sys", _pool5(), "Story", limit=4)
+    assert paths == ["/img/3.jpg", "/img/1.jpg", "/img/4.jpg", "/img/2.jpg"]
+    assert reason is None
+
+
+def test_top_up_cannot_exceed_the_pool(monkeypatch):
+    monkeypatch.setitem(sys.modules, "local_llm", _ShortList)
+    paths, reason = cd.ask_local_art_director("sys", _pool5(), "Story", limit=9)
+    assert len(paths) == 5, "only five candidates exist"
+    assert reason
