@@ -2,7 +2,7 @@
 setlocal
 
 echo ============================================================
-echo  Street Story Curator — Tauri v2 Build
+echo  FrameGrade — Tauri v2 Build
 echo ============================================================
 
 :: Set up MSVC linker environment (puts the correct link.exe first in PATH)
@@ -49,6 +49,6 @@ echo.
 echo ============================================================
 echo  BUILD COMPLETE
 echo  Installer: frontend\src-tauri\target\release\bundle\nsis\
-echo  Portable exe: frontend\src-tauri\target\release\street-story-curator.exe
+echo  Portable exe: frontend\src-tauri\target\release\framegrade.exe
 echo ============================================================
 pause

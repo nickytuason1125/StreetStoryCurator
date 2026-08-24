@@ -24,14 +24,24 @@
  * ────────────────────────────────────────────────────────────────────────────*/
 
 :root {
-  /* ── Ground: dead neutral. Any hue here contaminates the read of a photo. ── */
-  --well:         #0b0b0b;  /* loupe stage, image backdrop                     */
-  --ground:       #1a1a1a;  /* app background, gallery field                   */
-  --surface:      #212121;  /* panels, header, filmstrip rail, modals          */
-  --raised:       #2b2b2b;  /* controls, inputs, chips                         */
-  --raised-hover: #343434;  /* THE hover token: +9 luminance, no hue           */
-  --line:         #2e2e2e;  /* hairline dividers                               */
-  --line-strong:  #3a3a3a;  /* panel edges, active control borders             */
+  /* ── Ground: dead neutral. Any hue here contaminates the read of a photo. ──
+   * 2026 premium pass: the ramp was re-stepped so distance reads at a glance —
+   * a deeper well and ground push photographs forward, panels sit clearly
+   * above them, and the hover step (+11 luminance) is unmistakable under the
+   * cursor. Still strictly R=G=B. */
+  --well:         #080808;  /* loupe stage, image backdrop                     */
+  --ground:       #141414;  /* app background, gallery field                   */
+  --surface:      #1d1d1d;  /* panels, header, filmstrip rail, modals          */
+  --raised:       #282828;  /* controls, inputs, chips                         */
+  --raised-hover: #333333;  /* THE hover token: +11 luminance, no hue          */
+  --line:         #262626;  /* hairline dividers                               */
+  --line-strong:  #3f3f3f;  /* panel edges, active control borders             */
+
+  /* Chrome that floats ABOVE the artwork (filmstrip scrubber, loupe chrome,
+   * floating toolbars). Translucent + blurred so the photograph stays present
+   * behind the control without competing with it. Never used behind body text
+   * over a busy image — pairs with --scrim for those cases. */
+  --glass:        rgb(22 22 22 / .72);
 
   /* Dialog scrim. A ground wash at 88%, not a backdrop blur: blurring a
    * screenful of decoded photographs is expensive, and it smears the very
@@ -40,14 +50,19 @@
 
   /* Loupe surround — user-toggleable. The ONLY place the ISO mid-grey argument
    * applies, because it is the only place tonal judgement actually happens. */
-  --surround-dark:  #0b0b0b;
+  --surround-dark:  #080808;
   --surround-grey:  #6e6e6e;
   --surround-light: #e0e0e0;
 
-  /* ── Ink: neutral, never warm. Contrast ratios are against --ground. ── */
-  --ink:   #ededed;  /* 14.9:1                                                 */
-  --ink-2: #a1a1a1;  /*  6.7:1 — AA body text                                  */
-  --ink-3: #6b6b6b;  /*  3.2:1 — UI components and large text ONLY, never body */
+  /* ── Ink: neutral, never warm. Contrast ratios are against --ground.
+   * 2026 premium pass: primary ink lifted to #f5f5f5 and the secondary step
+   * to #b4b4b4 so body text reads crisper on the deepened ground; --ink-3
+   * rose to 4.1:1 so section eyebrows survive the darker surfaces.
+   * Hue untouched. ── */
+  --ink:   #f5f5f5;  /* 16.4:1                                                */
+  --ink-2: #b4b4b4;  /*  8.1:1 — AA body text, comfortably                     */
+  --ink-3: #7a7a7a;  /*  4.1:1 — labels and large text; lifted for the deeper
+                        surfaces so eyebrows don't sink into the chrome       */
   --ink-4: #4d4d4d;  /*  non-text only (hairlines, disabled glyphs)            */
 
   /* ── Machine judgement: cold, or silent. Never warm — the machine did not
@@ -78,10 +93,14 @@
   --focus:       #ededed;
   --focus-inset: #0b0b0b;
 
-  /* ── Type. Two variable families; labels come from Archivo's width axis
-   * rather than a third family. ── */
-  --font-sans: 'Archivo Variable', 'Archivo', system-ui, -apple-system, sans-serif;
-  --font-mono: 'Martian Mono Variable', 'Martian Mono', ui-monospace, monospace;
+  /* ── Type. Three voices, one job each: Space Grotesk for the few display
+   * surfaces (brand, hero, big numbers-as-titles) — its engineered, slightly
+   * technical letterforms are the premium register; Geist for everything
+   * readable; Geist Mono for every number. Inter stays as a fallback name
+   * only. ── */
+  --font-sans: 'Geist Variable', 'Geist', 'Inter', system-ui, -apple-system, sans-serif;
+  --font-display: 'Space Grotesk Variable', 'Space Grotesk', 'Geist Variable', 'Geist', system-ui, sans-serif;
+  --font-mono: 'Geist Mono Variable', 'Geist Mono', ui-monospace, monospace;
 
   --text-xs: 11px;  /* frame numbers, EXIF keys, eyebrows                      */
   --text-sm: 13px;  /* THE workhorse — body, labels, most UI                   */
@@ -92,10 +111,11 @@
   --leading-body:    1.35;
   --leading-display: 1.1;
 
-  /* ── Geometry. Two radii, both small: a contact sheet has square corners.
-   * 4/8/12 is Tailwind/shadcn default furniture and reads as generic. ── */
-  --r-sm: 2px;  /* default: cells, inputs, buttons                             */
-  --r-md: 6px;  /* modals, pills. There is no third radius.                    */
+  /* ── Geometry. A cell stays square — a contact sheet has square corners.
+   * Controls and dialogs carry the modern radii: 3px reads machined rather
+   * than default-browser, 8px gives dialogs and pills their soft edge. ── */
+  --r-sm: 3px;  /* default: cells, inputs, buttons                             */
+  --r-md: 8px;  /* modals, pills. There is no third radius.                    */
 
   /* Not a third step — a shape. Dots, spinners and avatars are circles, and a
    * circle is 50% rather than a large radius. Named so the guard can tell the
@@ -116,21 +136,40 @@
   --w-panel: 288px;    /* creative config column */
   --w-sidebar: 144px;  /* folder-browser quick access */
   --w-stage: 460px;    /* centred stage panel: empty state, import */
-  --h-thumb: 64px;     /* browser image preview row */
+  --w-hero: 640px;     /* welcome hero: brand moment on the empty stage */
+  --h-thumb: 64px;     /* browser image preview row                   */
+  --h-toolbar: 36px;   /* floating header pill — one step above h-8 chrome */
 
   /* ── Motion: one curve, two durations. ── */
   --ease: cubic-bezier(.2, 0, 0, 1);
   --t-fast: 120ms;  /* hover, focus, press                                     */
   --t-slow: 220ms;  /* panel open, grid → loupe                                */
+
+  /* ── Display type ─────────────────────────────────────────────────────── */
+  --text-2xl: 40px;      /* hero moments: empty-state numbers, verdict page   */
+  --leading-display: 1.05;
+  --track-tight: -0.02em; /* large text only — optical correction, not style  */
+  --track-brand: -.01em;  /* wordmark only — Space Grotesk 650 runs loose small */
+  --track-label: .1em;    /* uppercase micro-labels                            */
+
+  /* ── Elevation: layered, hueless, soft. Three steps because depth needs
+   *   at least three readable distances (chrome / popover / dialog). Pure
+   *   black only — a coloured shadow violates the neutral-chrome rule.
+   *   Premium pass: longer falloffs so surfaces float instead of sitting in
+   *   a hole; the top-light edge keeps panels from melting into the ground. */
+  --shadow-1: 0 1px 2px rgb(0 0 0 / .40);
+  --shadow-2: 0 3px 10px rgb(0 0 0 / .38), 0 1px 3px rgb(0 0 0 / .32);
+  --shadow-3: 0 18px 56px rgb(0 0 0 / .52), 0 6px 16px rgb(0 0 0 / .40),
+              0 0 0 1px rgb(255 255 255 / .05);  /* hairline top-light edge   */
 }
 
 /* ── Type roles ──────────────────────────────────────────────────────────────
- * `.label` uses Archivo's width axis (wdth 85) instead of pulling in a
- * condensed family. One file, two voices. */
+ * Labels are Geist at 600, uppercase, tracked +.08em — no second family
+ * needed. Numbers go to Geist Mono via .t-num. */
 
 .t-label {
   font-family: var(--font-sans);
-  font-variation-settings: 'wdth' 85, 'wght' 600;
+  font-weight: 600;
   text-transform: uppercase;
   letter-spacing: .08em;
   font-size: var(--text-xs);
@@ -139,7 +178,6 @@
 
 .t-body {
   font-family: var(--font-sans);
-  font-variation-settings: 'wdth' 100, 'wght' 400;
   font-size: var(--text-sm);
   line-height: var(--leading-body);
 }

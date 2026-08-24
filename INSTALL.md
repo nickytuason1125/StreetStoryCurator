@@ -1,6 +1,6 @@
-# Street Story Curator — Installation Guide
+# FrameGrade — Installation Guide
 
-Street Story Curator is a desktop app for grading, sequencing, and curating street photography. It runs fully offline on your computer — no internet required after setup.
+FrameGrade is a desktop app for grading, sequencing, and curating street photography. It runs fully offline on your computer — no internet required after setup.
 
 ---
 
@@ -36,11 +36,11 @@ Before installing the app, make sure these two programs are on your computer. Bo
 
 ## Windows — Installation
 
-1. Download and unzip the `street-story-curator` folder anywhere on your computer (Desktop is fine)
+1. Download and unzip the `framegrade` folder anywhere on your computer (Desktop is fine)
 2. Open the folder
 3. Double-click **`Install Shortcut.bat`**
-   - This places a **Street Story Curator** shortcut on your Desktop
-4. Double-click the **Street Story Curator** shortcut on your Desktop
+   - This places a **FrameGrade** shortcut on your Desktop
+4. Double-click the **FrameGrade** shortcut on your Desktop
 
 **On first launch only**, the app will automatically download and install its libraries (~1.5 GB). This takes about 5–10 minutes depending on your internet speed. A window will show the progress. Once it finishes, the app opens and every launch after this is instant.
 
@@ -48,14 +48,14 @@ Before installing the app, make sure these two programs are on your computer. Bo
 
 ## Mac — Installation
 
-1. Download and unzip the `street-story-curator` folder anywhere on your computer
+1. Download and unzip the `framegrade` folder anywhere on your computer
 2. Open **Terminal** (search for it in Spotlight with `Cmd + Space`)
 3. Run this command to make the launcher executable (do this once only):
    ```
-   chmod +x ~/Desktop/street-story-curator/Start.command
+   chmod +x ~/Desktop/framegrade/Start.command
    ```
-   Replace `~/Desktop/street-story-curator/` with the actual path if you put it somewhere else.
-4. In Finder, open the `street-story-curator` folder and double-click **`Start.command`**
+   Replace `~/Desktop/framegrade/` with the actual path if you put it somewhere else.
+4. In Finder, open the `framegrade` folder and double-click **`Start.command`**
 
 **On first launch only**, the app installs its libraries (~1.5 GB). This takes about 5–10 minutes. The Terminal window shows the progress. Once it finishes, the app opens. Every launch after this is instant.
 
@@ -65,7 +65,7 @@ Before installing the app, make sure these two programs are on your computer. Bo
 
 ## After Installation
 
-- **Windows:** Double-click the **Street Story Curator** shortcut on your Desktop
+- **Windows:** Double-click the **FrameGrade** shortcut on your Desktop
 - **Mac:** Double-click **`Start.command`** inside the project folder (or drag it to your Dock)
 
 The app opens a window with a dark interface. From there:
@@ -99,6 +99,6 @@ The app opens a window with a dark interface. From there:
 
 ## Uninstalling
 
-1. Delete the `street-story-curator` folder
-2. Delete the **Street Story Curator** shortcut from your Desktop (Windows)
+1. Delete the `framegrade` folder
+2. Delete the **FrameGrade** shortcut from your Desktop (Windows)
 3. That's it — nothing is installed system-wide

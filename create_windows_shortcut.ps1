@@ -1,8 +1,8 @@
-# Creates a one-click desktop shortcut for Street Story Curator.
+# Creates a one-click desktop shortcut for FrameGrade.
 # Usage: right-click and run in PowerShell, or run from an elevated PowerShell prompt if required.
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$shortcutName = 'Street Story Curator.lnk'
+$shortcutName = 'FrameGrade.lnk'
 $desktopPath = [Environment]::GetFolderPath('Desktop')
 $shortcutPath = Join-Path $desktopPath $shortcutName
 
@@ -15,7 +15,7 @@ $shortcut.TargetPath = $targetPath
 $shortcut.Arguments = $arguments
 $shortcut.WorkingDirectory = $scriptDir
 $shortcut.IconLocation = "$targetPath,0"
-$shortcut.Description = 'Launch Street Story Curator locally with embedded pywebview'
+$shortcut.Description = 'Launch FrameGrade locally with embedded pywebview'
 $shortcut.Save()
 
 Write-Host "Created desktop shortcut: $shortcutPath"

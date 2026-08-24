@@ -13,33 +13,15 @@ first public build.
 
 ---
 
-## Blocking issue — resolve before any public release
+## RESOLVED — Ultralytics YOLO (AGPL-3.0) removed
 
-### Ultralytics YOLO is AGPL-3.0
-
-`ultralytics` is imported by five modules:
-
-- `src/dfine_detector.py`
-- `src/iqa_worker.py`
-- `src/vision_grading_heads.py`
-- `src/yolo_auditor.py`
-- `src/vision_composition_heads.py`
-
-AGPL-3.0 is a strong copyleft licence. Distributing a closed-source application
-that links it obliges you to offer the complete corresponding source of the whole
-work under the same terms. This is not a formality that a notices file discharges.
-
-Three ways out, in the order I would consider them:
-
-1. **Drop YOLO for D-FINE.** `models/dfine_nano` is already installed and
-   `src/dfine_detector.py` already wraps it. D-FINE is Apache-2.0. This is the
-   cheapest exit if the YOLO paths are refinements rather than load-bearing.
-2. **Buy an Ultralytics Enterprise licence.** Keeps the code as-is; costs money.
-3. **Open-source FrameGrade under AGPL-3.0.** Free, and forecloses a closed
-   commercial release later.
-
-This is a business decision, not an engineering one, so it is flagged rather than
-resolved here.
+All detection now runs on **D-FINE-nano (Apache-2.0)** via `src/dfine_detector.py`.
+The `ultralytics` package is no longer imported by any module and has been removed
+from `requirements.txt`. The former AGPL-3.0 copyleft blocker for a closed-source
+release is therefore closed. (Historical note: YOLO was previously imported by
+`src/vision_grading_heads.py`, `src/vision_composition_heads.py`,
+`src/yolo_auditor.py` and `src/iqa_worker.py`; all five call sites were migrated
+to the shared D-FINE wrapper.)
 
 ---
 
@@ -58,7 +40,6 @@ does not remove the obligation to be accurate about what the app requires.
 | CLIP ViT-B/32 | niche auto-detect, Story/Competition vectors | `openai/CLIP` | MIT |
 | D-FINE nano | person / subject detection | D-FINE authors | Apache-2.0 |
 | YuNet face detector | face and subject-focus signals | OpenCV Zoo | MIT |
-| YOLO11s / YOLO26n | detection and audit heads | Ultralytics | **AGPL-3.0 — see above** |
 | Qwen2.5-VL-3B-Instruct | opt-in Deep Grade, annotations | Alibaba | **VERIFY** |
 | LFM2.5-VL-1.6B (GGUF) | Story/Competition selection, Judge's Verdict, RAG extraction | Liquid AI, `LiquidAI/LFM2.5-VL-1.6B-GGUF` | **LFM Open v1.0 — commercial use capped at $10M revenue** |
 | TOPIQ NR (via `pyiqa`) | technical quality head | `chaofengc/IQA-PyTorch` | **VERIFY** |
@@ -139,9 +120,16 @@ AGPL-3.0/commercial dual licence. Keep it that way.
 
 `dataset_images/` contains 100 JPEGs used by `scripts/build_lean_checkpoint.py`
 and `scripts/setup_siglip2_hf.py` to validate a converted checkpoint against
-known-good reference embeddings, and as the default input for
-`curator_pipeline.py` and `essay_selector.py`.
+known-good reference embeddings.
 
 These appear to be the maintainer's own photographs. **Publishing the repository
 or shipping the release zip publishes them.** If that is not intended, replace
 them with a handful of licence-clear images — the validators need only eight.
+
+---
+
+## Removed third-party-derived modules
+
+`curator_pipeline.py`, `essay_selector.py` and `safe_essay_selector.py` (the
+in-memory photo-essay experiment) were deleted from the repository on 2026-08-23
+as dead code. They are no longer part of the distribution.

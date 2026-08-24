@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>FrameGrade — 2026 Premium Frontend Pass: Full Walkthrough</title>
+<style>
+  :root {
+    --ink: #171717; --ink2: #444; --ink3: #6e6e6e; --ink4: #9a9a9a;
+    --line: #e4e4e4; --line2: #d0d0d0; --bg-soft: #f6f6f5; --bg-code: #1d1d1d;
+    --mark: #e0592f; --grade: #48b89c; --warn: #c8862a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  @page { size: A4; margin: 18mm 16mm; }
+  body { font-family: 'Geist', 'Inter', 'Segoe UI', system-ui, sans-serif; color: var(--ink); font-size: 10.5pt; line-height: 1.55; }
+  code { font-family: 'Geist Mono', 'Cascadia Code', Consolas, monospace; }
+  .cover { page-break-after: always; padding-top: 42mm; }
+  .cover .eyebrow { text-transform: uppercase; letter-spacing: .18em; font-size: 8.5pt; font-weight: 600; color: var(--ink3); margin-bottom: 10mm; }
+  .dot { color: var(--mark); }
+  .cover h1 { font-size: 34pt; font-weight: 700; letter-spacing: -0.02em; line-height: 1.05; }
+  .cover .sub { margin-top: 6mm; font-size: 12.5pt; color: var(--ink2); max-width: 130mm; }
+  .cover .meta { margin-top: 24mm; padding-top: 5mm; border-top: 1px solid var(--line2); display: flex; gap: 14mm; font-size: 8.5pt; color: var(--ink3); }
+  .cover .meta b { display: block; color: var(--ink); font-weight: 600; margin-bottom: 1mm; }
+  h2 { font-size: 15pt; font-weight: 700; letter-spacing: -0.01em; margin: 0 0 4mm; padding-bottom: 2mm; border-bottom: 2px solid var(--ink); page-break-after: avoid; }
+  h2 .no { color: var(--mark); margin-right: 3mm; }
+  h3 { font-size: 11pt; font-weight: 650; margin: 6mm 0 2mm; page-break-after: avoid; }
+  p { margin-bottom: 3mm; color: var(--ink2); }
+  p strong, li strong { color: var(--ink); }
+  section { page-break-inside: auto; margin-bottom: 9mm; }
+  ul, ol { margin: 0 0 3mm 5mm; color: var(--ink2); }
+  li { margin-bottom: 1.6mm; }
+  .callout { background: var(--bg-soft); border-left: 3px solid var(--mark); padding: 3.5mm 4.5mm; margin: 3mm 0 4mm; font-size: 9.5pt; color: var(--ink2); page-break-inside: avoid; }
+  .callout b { color: var(--ink); }
+  table { width: 100%; border-collapse: collapse; margin: 3mm 0 4mm; font-size: 9pt; page-break-inside: avoid; }
+  th { text-align: left; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; font-size: 7.5pt; color: var(--ink3); padding: 2mm 2.5mm; border-bottom: 1.5px solid var(--ink); }
+  td { padding: 2mm 2.5mm; border-bottom: 1px solid var(--line); vertical-align: top; color: var(--ink2); }
+  td:first-child { white-space: nowrap; }
+  .sw { display: inline-block; width: 3.2mm; height: 3.2mm; border-radius: 1px; border: 1px solid rgb(0 0 0 / .18); vertical-align: -0.5mm; margin-right: 1.6mm; }
+  pre { background: var(--bg-code); color: #e8e8e8; border-radius: 2mm; padding: 4mm 5mm; font-size: 8.5pt; line-height: 1.5; margin: 3mm 0 4mm; page-break-inside: avoid; white-space: pre-wrap; }
+  pre .c { color: #8a8a8a; } pre .k { color: #f08a5f; } pre .s { color: #48b89c; }
+  code { background: var(--bg-soft); padding: 0.3mm 1.2mm; border-radius: 1mm; font-size: 9pt; color: var(--ink); }
+  .check { color: var(--grade); font-weight: 700; }
+  .before-after { display: flex; gap: 4mm; margin: 3mm 0 4mm; page-break-inside: avoid; }
+  .ba { flex: 1; border: 1px solid var(--line2); border-radius: 2mm; overflow: hidden; }
+  .ba .tag { font-size: 7.5pt; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; padding: 1.6mm 3mm; color: #fff; }
+  .ba.before .tag { background: #6e6e6e; } .ba.after .tag { background: var(--mark); }
+  .ba .body { padding: 3mm 3.5mm; font-size: 9pt; color: var(--ink2); }
+  .footer-note { margin-top: 6mm; padding-top: 3mm; border-top: 1px solid var(--line2); font-size: 8pt; color: var(--ink4); }
+</style>
+</head>
+<body>
+<div class="cover">
+  <div class="eyebrow">AI photo culler <span style="color:var(--line2)">/</span> engineering walkthrough<span class="dot">.</span></div>
+  <h1>FrameGrade<span class="dot">.</span></h1>
+  <div class="sub" style="font-weight:600; color:var(--ink); margin-top:3mm;">The 2026 Premium Frontend Pass — Full Walkthrough</div>
+  <p class="sub">How the frontend was rebuilt from a two-palette accretion into a single-source, mechanically-guarded design system — and why every value in it is the way it is.</p>
+  <div class="meta">
+    <div><b>Project</b>FrameGrade (street-story-curator/frontend)</div>
+    <div><b>Stack</b>React 18 · TypeScript · Vite · Tailwind 3 · Tauri 2</div>
+    <div><b>Type</b>Design-system overhaul</div>
+    <div><b>Status</b><span class="check">●</span> Verified — lint, tsc, build</div>
+  </div>
+</div>
+
+<section>
+  <h2><span class="no">01</span>What changed, in one page</h2>
+  <p>The frontend reached its old state by accretion: <strong>539 inline style blocks, 15 font sizes, 13 border radii, 41 stray hex colours</strong>, and <strong>two live palettes at once</strong> — a blue-black one in <code>App.tsx</code> and a neutral one in <code>tokens.css</code>, fighting over the same pixels. Roughly 98% of controls did not react to the cursor at all, because inline styles cannot express <code>:hover</code>. That accumulation is what read as "dated" — not any single bad screen.</p>
+  <p>The premium pass replaced accretion with a system:</p>
+  <table>
+    <tr><th>Layer</th><th>Before</th><th>After</th></tr>
+    <tr><td>Colour</td><td>41 stray hex values, two competing palettes</td><td>One token file; a token linter fails the build on any hex outside it</td></tr>
+    <tr><td>Type</td><td>15 ad-hoc font sizes</td><td>5-step scale + display role; Geist / Geist Mono, tabular numerals everywhere</td></tr>
+    <tr><td>Depth</td><td>Flat panels, no elevation logic</td><td>3-step pure-black shadow ramp + translucent glass chrome</td></tr>
+    <tr><td>Interaction</td><td>~98% of controls inert</td><td>One Button primitive; hover/focus/press defined once</td></tr>
+    <tr><td>Welcome screen</td><td>Plain flat card</td><td>Hero with brand mark, feature strip, inverted-ink CTA, ambient glow</td></tr>
+    <tr><td>Guardrails</td><td>None</td><td><code>lint:tokens</code> + <code>lint:tdz</code> run inside <code>npm run build</code></td></tr>
+  </table>
+  <div class="callout"><b>The governing rule:</b> chrome and text are dead neutral (R&nbsp;=&nbsp;G&nbsp;=&nbsp;B). Machine judgements are cold or absent. Warm colour — the grease-pencil orange — appears <b>only</b> where the photographer put it: his stars, his selects, his rejects. A tool whose job is judging light may not tint its own chrome.</div>
+</section>
+<section>
+  <h2><span class="no">02</span>The token system — single source of truth</h2>
+  <p><code>src/theme/tokens.css</code> is the <strong>only</strong> file permitted to contain a raw hex or raw px size. Tailwind's config maps every utility (<code>bg-surface</code>, <code>text-ink-2</code>, <code>rounded-md</code>…) to a custom property, so runtime values flow through the same names — and the linter keeps it that way mechanically.</p>
+  <h3>Ground ramp — strictly neutral, re-stepped for depth</h3>
+  <table>
+    <tr><th>Token</th><th>Value</th><th>Role</th></tr>
+    <tr><td><span class="sw" style="background:#080808"></span><code>--well</code></td><td>#080808</td><td>Loupe stage, image backdrop — the one place near-black is correct</td></tr>
+    <tr><td><span class="sw" style="background:#141414"></span><code>--ground</code></td><td>#141414</td><td>App background, gallery field</td></tr>
+    <tr><td><span class="sw" style="background:#1d1d1d"></span><code>--surface</code></td><td>#1d1d1d</td><td>Panels, header, filmstrip rail, modals</td></tr>
+    <tr><td><span class="sw" style="background:#282828"></span><code>--raised</code></td><td>#282828</td><td>Controls, inputs, chips</td></tr>
+    <tr><td><span class="sw" style="background:#333333"></span><code>--raised-hover</code></td><td>#333333</td><td>THE hover token — +11 luminance, unmistakable under the cursor</td></tr>
+    <tr><td><span class="sw" style="background:#262626"></span><code>--line</code> / <code>--line-strong</code></td><td>#262626 / #3f3f3f</td><td>Hairline dividers / panel edges, active borders</td></tr>
+  </table>
+  <h3>Ink ramp</h3>
+  <table>
+    <tr><th>Token</th><th>Value</th><th>Notes</th></tr>
+    <tr><td><code>--ink</code></td><td>#f5f5f5</td><td>16.4:1 vs ground — primary text, lifted for crispness on the deepened ground</td></tr>
+    <tr><td><code>--ink-2</code></td><td>#b4b4b4</td><td>Body copy, secondary labels</td></tr>
+    <tr><td><code>--ink-3</code></td><td>4.1:1</td><td>Section eyebrows, hints — survives the darker surfaces</td></tr>
+  </table>
+  <h3>The only non-neutral colours in the entire app</h3>
+  <table>
+    <tr><th>Token</th><th>Value</th><th>Reservation</th></tr>
+    <tr><td><span class="sw" style="background:#e0592f"></span><code>--mark</code></td><td>#e0592f</td><td>Grease pencil — the photographer's own judgements ONLY. Never on focus rings, active tabs, primary buttons, or progress fills</td></tr>
+    <tr><td><span class="sw" style="background:#48b89c"></span><code>--grade-strong</code></td><td>#48b89c</td><td>Teal — instrument reading, not a success toast</td></tr>
+    <tr><td><span class="sw" style="background:#c4452f"></span><code>--alarm-crit</code> / <span class="sw" style="background:#c8862a"></span><code>--alarm-warn</code></td><td>#c4452f / #c8862a</td><td>Status chrome only, when something actually needs the user</td></tr>
+  </table>
+  <h3>Type, radius, motion</h3>
+  <table>
+    <tr><th>Scale</th><th>Steps</th><th>Notes</th></tr>
+    <tr><td>Type</td><td>11 / 13 / 16 / 20 / 30 / 40 px</td><td><code>.t-label</code> (600, uppercase, +.08em) · <code>.t-num</code> (mono, tabular, slashed zero) · <code>.t-display</code> (40px, −0.02em)</td></tr>
+    <tr><td>Radius</td><td>3 px / 8 px / 50%</td><td>Cells &amp; buttons / modals &amp; pills / circles. There is no fourth radius.</td></tr>
+    <tr><td>Motion</td><td>120 / 220 ms · cubic-bezier(.2,0,0,1)</td><td>One curve, two durations. Never transition layout properties on elements holding a photograph.</td></tr>
+    <tr><td>Elevation</td><td><code>--shadow-1/2/3</code></td><td>Pure black only; shadow-3 carries a hairline top-light edge so panels don't melt into the ground</td></tr>
+  </table>
+</section>
+<section>
+  <h2><span class="no">03</span>The welcome hero — anatomy of the redesign</h2>
+  <p>The welcome screen is the app's first impression and its only photograph-free surface — which makes it the one place the warm mark colour may breathe as ambience.</p>
+  <div class="before-after">
+    <div class="ba before">
+      <div class="tag">Before</div>
+      <div class="body">Flat grey card floating on flat black. Version chip, one outline button, no hierarchy beyond size. Nothing reacted to the cursor.</div>
+    </div>
+    <div class="ba after">
+      <div class="tag">After</div>
+      <div class="body">Elev-3 card with top-light hairline edge, aperture-mark brand row, display headline with a mark-coloured full stop, three-verb feature strip between hairlines, inverted-ink CTA, resume strip on ground, two soft ambient glows behind.</div>
+    </div>
+  </div>
+  <img src="../../cdp-shots/hero_ink_cta.png" alt="FrameGrade welcome hero, live render"
+       style="width:100%; border:1px solid var(--line2); border-radius:2mm; margin:2mm 0 1mm; page-break-inside:avoid;">
+  <p style="font-size:8pt; color:var(--ink4); margin-bottom:4mm;">Live render, localhost:5173 — headless-Chrome capture after the ink-CTA pass.</p>
+  <h3>Design decisions worth naming</h3>
+  <ul>
+    <li><strong>The full stop is the signature.</strong> <code>FrameGrade<span class="dot">.</span></code> — small, confident, and the only warm glyph on the entire stage.</li>
+    <li><strong>Three verbs, not three paragraphs.</strong> Graded / Culled / Sequenced — the product described in six words of body copy, separated by hairlines rather than cards-in-cards.</li>
+    <li><strong>Ambient glows stay hue-safe.</strong> A <code>--mark-dim</code> radial (15% tint, 48px blur) over a raised-grey radial — present depth, zero contamination, and always behind the card, never behind photographs.</li>
+    <li><strong>The resume strip is honest chrome.</strong> Ground-coloured, hairline-separated; session continuity ("Pick up where you left off?") is a first-class citizen of the layout, not a toast.</li>
+    <li><strong>Entrance is one motion.</strong> A single <code>dialogIn</code> rise-and-settle on the shared 220ms curve — no staggered children, no bounce.</li>
+  </ul>
+</section>
+
+<section>
+  <h2><span class="no">04</span>The button system — and the new <code>ink</code> variant</h2>
+  <p>One primitive, <code>src/components/ui/Button.tsx</code>, owns hover, focus, press and disabled states once. Deliberately absent: an accent-coloured primary. Emphasis is carried by <strong>luminance and border weight</strong>, never hue.</p>
+  <table>
+    <tr><th>Variant</th><th>Recipe</th><th>Used for</th></tr>
+    <tr><td><code>default</code></td><td>Transparent + line-strong border, ink-2 label</td><td>Toolbar actions</td></tr>
+    <tr><td><code>quiet</code></td><td>No border, ink-3 label</td><td>Dense clusters where borders would add noise</td></tr>
+    <tr><td><code>solid</code></td><td>Raised fill + line-strong border</td><td>Emphasised actions (header "Grade")</td></tr>
+    <tr><td><code>ink</code> <span style="color:var(--mark); font-weight:700">★ new</span></td><td><code>bg-ink text-well</code> — inverted, full-luminance white fill</td><td>The ONE primary action on a screen (hero "Open folder")</td></tr>
+    <tr><td><code>danger</code></td><td>Neutral until hover, then alarm-crit border/label</td><td>Destructive actions</td></tr>
+  </table>
+  <pre><span class="c">// The 2026 addition — strongest step the chrome may take, still strictly neutral.</span>
+<span class="k">ink:</span> <span class="s">'bg-ink border border-ink text-well hover:opacity-90 active:opacity-85'</span>,</pre>
+  <p>Why inverted ink instead of a coloured primary: on a dark, neutral tool, a <em>white</em> button is the highest-contrast statement available — the Linear/Vercel pattern — and it cannot leak warmth into photo judgement. Hover dims the fill (opacity) rather than swapping tokens, so the inversion survives the cursor; <code>active:scale(.98)</code> gives press feedback without layout cost.</p>
+</section>
+<section>
+  <h2><span class="no">05</span>Guardrails — how this stays premium</h2>
+  <ul>
+    <li><strong><code>npm run lint:tokens</code></strong> — fails the build on any raw hex or bare <code>fontSize:</code> in managed code. Legacy literals are baselined at 0. This is the point: only a mechanical check keeps 41 stray hexes from drifting back.</li>
+    <li><strong><code>npm run lint:tdz</code></strong> — temporal-dead-zone check; the token refactor moved declarations, and this class of bug is now mechanical to catch.</li>
+    <li><strong>Keyframes live in <code>index.css</code>, not the Tailwind config</strong> — Tailwind only emits <code>@keyframes</code> it can see referenced by utilities in source, so config-only keyframes silently killed 11 spinners and every skeleton. Plain-CSS declaration makes emission unconditional; the linter enforces the pairing.</li>
+    <li><strong>Reduced-motion policy</strong> — opacity fades (they carry the Weak/reject meaning) survive; every transform is dropped.</li>
+    <li><strong>Focus is neutral, two-ring</strong> — light outer + dark inset, so the indicator survives both on chrome and on top of a blown highlight in a photograph.</li>
+    <li><strong>Scrollbars and range inputs are themed</strong> — native OS controls read as foreign objects in a custom dark UI, so they're rebuilt on the token scale.</li>
+  </ul>
+</section>
+
+<section>
+  <h2><span class="no">06</span>Verification — what was actually run</h2>
+  <table>
+    <tr><th>Check</th><th>Command</th><th>Result</th></tr>
+    <tr><td>Token guard</td><td><code>npm run lint:tokens</code></td><td><span class="check">PASS</span> — managed code clean, legacy literals 0 (baseline 0)</td></tr>
+    <tr><td>Type check</td><td><code>tsc --noEmit</code></td><td><span class="check">PASS</span></td></tr>
+    <tr><td>TDZ guard</td><td><code>npm run lint:tdz</code></td><td><span class="check">PASS</span> (runs inside build)</td></tr>
+    <tr><td>Production build</td><td><code>npm run build</code></td><td><span class="check">PASS</span> — 423.67 kB JS (135.49 gzip) · 26.70 kB CSS · <code>dist/</code> regenerated</td></tr>
+    <tr><td>Visual</td><td>Headless-Chrome capture of <code>localhost:5173</code></td><td><span class="check">PASS</span> — hero renders with inverted-ink CTA (<code>cdp-shots/hero_ink_cta.png</code>)</td></tr>
+  </table>
+  <h3>File map</h3>
+  <table>
+    <tr><th>File</th><th>Role</th></tr>
+    <tr><td><code>src/theme/tokens.css</code></td><td>Every colour, size, radius, shadow, duration — the only place a literal lives</td></tr>
+    <tr><td><code>src/theme/tokens.ts</code></td><td><code>T.*</code> runtime accessor returning <code>var(--x)</code></td></tr>
+    <tr><td><code>tailwind.config.js</code></td><td>Maps utilities to tokens; defaults replaced, not extended</td></tr>
+    <tr><td><code>src/index.css</code></td><td>Elevation/glass utilities, keyframes, scrollbars, range inputs, focus rings</td></tr>
+    <tr><td><code>src/components/ui/Button.tsx</code></td><td>The single button primitive (5 variants incl. <code>ink</code>)</td></tr>
+    <tr><td><code>src/App.tsx</code> · welcome hero</td><td>Brand row, display headline, feature strip, ink CTA, resume strip (~line 2900)</td></tr>
+    <tr><td><code>scripts/lint-tokens.mjs</code> · <code>check-tdz.mjs</code></td><td>The mechanical guardrails wired into <code>npm run build</code></td></tr>
+  </table>
+  <div class="callout"><b>To run it:</b> <code>cd street-story-curator/frontend &amp;&amp; npm run dev:full</code> — Vite on <code>:5173</code> with the Python API alongside. <code>npm run build</code> re-ships <code>dist/</code> for the Tauri shell; <code>npm run tauri:build</code> packages the desktop app.</div>
+  <div class="footer-note">FrameGrade · 2026 premium frontend pass · generated walkthrough · all values quoted from src/theme/tokens.css at time of writing</div>
+</section>
+
+
+
+
+</body>
+</html>

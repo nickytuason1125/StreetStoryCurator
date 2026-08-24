@@ -1,4 +1,4 @@
-# Building Street Story Curator for Distribution
+# Building FrameGrade for Distribution
 
 ## Prerequisites (all platforms)
 
@@ -33,7 +33,7 @@ pip install pyinstaller
 pyinstaller \
   --onefile \
   --windowed \
-  --name StreetStoryCurator \
+  --name FrameGrade \
   --icon assets/icon.ico \
   --distpath dist \
   --workpath build \
@@ -72,7 +72,7 @@ pyinstaller \
   src/desktop_app.py
 ```
 
-Output: `dist/StreetStoryCurator.exe`
+Output: `dist/FrameGrade.exe`
 
 ### VS Code shortcut
 
@@ -87,7 +87,7 @@ in `.vscode/tasks.json`.
 pyinstaller \
   --onefile \
   --windowed \
-  --name StreetStoryCurator \
+  --name FrameGrade \
   --icon assets/icon.icns \
   --distpath dist \
   --workpath build \
@@ -125,13 +125,13 @@ pyinstaller \
   src/desktop_app.py
 ```
 
-Output: `dist/StreetStoryCurator` (single binary) or `dist/StreetStoryCurator.app`
+Output: `dist/FrameGrade` (single binary) or `dist/FrameGrade.app`
 (app bundle — omit `--onefile` to produce the `.app` directory).
 
 > macOS Gatekeeper will quarantine unsigned binaries. To let users run them:
 > ```bash
-> xattr -cr dist/StreetStoryCurator.app
-> codesign --force --deep --sign - dist/StreetStoryCurator.app
+> xattr -cr dist/FrameGrade.app
+> codesign --force --deep --sign - dist/FrameGrade.app
 > ```
 > For distribution outside the App Store an Apple Developer ID is required.
 
@@ -143,7 +143,7 @@ Output: `dist/StreetStoryCurator` (single binary) or `dist/StreetStoryCurator.ap
 pyinstaller \
   --onefile \
   --windowed \
-  --name StreetStoryCurator \
+  --name FrameGrade \
   --distpath dist \
   --workpath build \
   --specpath build \
@@ -180,7 +180,7 @@ pyinstaller \
   src/desktop_app.py
 ```
 
-Output: `dist/StreetStoryCurator` (ELF binary, no extension)
+Output: `dist/FrameGrade` (ELF binary, no extension)
 
 > Linux builds require `python3-gi`, `gir1.2-webkit2-4.0`, and `libgtk-3-dev` for
 > pywebview's GTK backend. Install with:
@@ -200,8 +200,8 @@ git tag v1.0.0
 git push origin v1.0.0
 
 # Create the release and attach the binary in one command
-gh release create v1.0.0 dist/StreetStoryCurator.exe \
-  --title "Street Story Curator v1.0.0" \
+gh release create v1.0.0 dist/FrameGrade.exe \
+  --title "FrameGrade v1.0.0" \
   --notes "First public release. Offline street photo grading & sequencing."
 ```
 
@@ -210,13 +210,13 @@ To attach multiple platform binaries to the **same** release
 
 ```bash
 # From Windows — attach .exe
-gh release upload v1.0.0 dist/StreetStoryCurator.exe
+gh release upload v1.0.0 dist/FrameGrade.exe
 
 # From macOS — attach macOS binary
-gh release upload v1.0.0 "dist/StreetStoryCurator-macos"
+gh release upload v1.0.0 "dist/FrameGrade-macos"
 
 # From Linux — attach Linux binary
-gh release upload v1.0.0 "dist/StreetStoryCurator-linux"
+gh release upload v1.0.0 "dist/FrameGrade-linux"
 ```
 
 ### Option B — GitHub Actions (automated, recommended)
@@ -234,7 +234,7 @@ upload assets automatically when a tag is pushed. Each job runs:
 - run: pyinstaller --onefile --windowed ... src/desktop_app.py
 - uses: actions/upload-release-asset@v1
   with:
-    asset_path: dist/StreetStoryCurator${{ matrix.ext }}
+    asset_path: dist/FrameGrade${{ matrix.ext }}
 ```
 
 ---

@@ -1,18 +1,15 @@
 r"""
-Book-derived phrases must not enter a prompt unless the user opts in.
+Book-derived phrase injection policy.
 
-cache/rag_concepts.json holds phrases EXTRACTED from copyrighted PDFs the user
-uploaded. Six code paths injected them into prompts: the Qwen scoring prompt,
-three places in grade_pipeline_v2, and the Story text rerank. The source books
-were already moved off the repo in August over exactly this concern, and a
-prior audit found roughly 25 of 62 phrases were biography prose rather than
-photographic criteria -- so the store was carrying both a licensing question
-and a quality one.
+cache/rag_concepts.json holds phrases EXTRACTED from reference PDFs the user
+uploaded on their own machine. History: an August 2026 audit found ~25 of 62
+phrases were biography prose rather than photographic criteria, so the feature
+was made OPT-IN (off by default) as a quality/licence precaution.
 
-This does not delete the feature. It makes it OFF by default at the one place
-every consumer already passes through, so nothing derived from a book reaches a
-prompt in a shipped build, while a user who wants it locally can still turn it
-on.
+Policy reversed 2026-08-23 by maintainer direction: RAG now powers grading
+rubrics AND Story/Competition selection, so it is ON by default.
+FRAMEGRADE_USE_RAG_CONCEPTS=0 restores the old silent behaviour, and
+load_concepts(for_display=True) always shows what is stored regardless.
 
 Run:  venv\Scripts\python.exe -m pytest tests/test_rag_off_by_default.py -v
 """
@@ -32,21 +29,22 @@ def test_setting_is_declared():
     assert "FRAMEGRADE_USE_RAG_CONCEPTS" in run_profile.SETTINGS
 
 
-def test_off_by_default(monkeypatch):
-    """The default build injects nothing book-derived."""
+def test_on_by_default(monkeypatch):
+    """The default build feeds uploaded book phrases into selection."""
     monkeypatch.delenv("FRAMEGRADE_USE_RAG_CONCEPTS", raising=False)
-    monkeypatch.setattr(pdf_rag, "_read_concepts_file", lambda: ["a phrase from a book"])
-    assert pdf_rag.load_concepts() == []
-
-
-def test_opt_in_restores_them(monkeypatch):
-    monkeypatch.setenv("FRAMEGRADE_USE_RAG_CONCEPTS", "1")
     monkeypatch.setattr(pdf_rag, "_read_concepts_file", lambda: ["a phrase from a book"])
     assert pdf_rag.load_concepts() == ["a phrase from a book"]
 
 
+def test_opt_out_disables(monkeypatch):
+    """Users can still silence every book-derived injection with one env var."""
+    monkeypatch.setenv("FRAMEGRADE_USE_RAG_CONCEPTS", "0")
+    monkeypatch.setattr(pdf_rag, "_read_concepts_file", lambda: ["a phrase from a book"])
+    assert pdf_rag.load_concepts() == []
+
+
 def test_raw_read_still_works_for_display(monkeypatch):
-    """The UI must still be able to SHOW what is stored -- hiding it would make
+    """The UI must always be able to SHOW what is stored -- hiding it would make
     the store invisible rather than unused."""
     monkeypatch.delenv("FRAMEGRADE_USE_RAG_CONCEPTS", raising=False)
     monkeypatch.setattr(pdf_rag, "_read_concepts_file", lambda: ["a phrase from a book"])

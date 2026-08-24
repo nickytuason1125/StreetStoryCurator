@@ -16,6 +16,36 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+/* Text selection is part of chrome: inverted ink, no accent bleed. */
+::selection { background: var(--ink); color: var(--well); }
+input, textarea { caret-color: var(--ink); }
+
+/* Elevation utilities — consume the token ramp; shadow-lg etc. stay unused. */
+.elev-1 { box-shadow: var(--shadow-1); }
+.elev-2 { box-shadow: var(--shadow-2); }
+.elev-3 { box-shadow: var(--shadow-3); }
+
+/* Glass — chrome that floats above artwork. Translucent token surface plus a
+   blur; saturate(1.1) keeps the photo's colour alive behind the control
+   instead of going grey through it. Chrome-only: never wrap body text sitting
+   on a photograph in this — use the opaque scrim for that. */
+.glass {
+  background: var(--glass);
+  -webkit-backdrop-filter: blur(16px) saturate(1.1);
+  backdrop-filter: blur(16px) saturate(1.1);
+}
+
+/* Display role — for the few large numbers/titles the app has. Optical
+ * tracking tightens as size grows; this is correction, not styling. */
+.t-display {
+  font-family: var(--font-display);
+  letter-spacing: -0.025em;
+  font-size: var(--text-2xl);
+  line-height: var(--leading-display);
+  letter-spacing: var(--track-tight);
+  font-weight: 650;
+}
+
 /* Keyboard focus is neutral, never the accent — the warm mark colour is
  * reserved for the photographer's own judgements. Two rings so the indicator
  * survives on chrome AND on top of a photograph, where a single light ring
@@ -42,6 +72,39 @@ body {
 @keyframes slideUp  { from { opacity: 0; transform: translateY(7px) } to { opacity: 1; transform: translateY(0) } }
 @keyframes fadeIn   { from { opacity: 0 } to { opacity: 1 } }
 @keyframes sweep    { from { left: -45%; width: 45% } to { left: 110%; width: 45% } }
+
+/* Dialog entrance: rise + settle, driven by the shared ease. Declared here so
+ * emission is unconditional (see the Tailwind keyframes note above). */
+@keyframes dialogIn {
+  from { opacity: 0; transform: translateY(6px) scale(.985) }
+  to   { opacity: 1; transform: translateY(0)   scale(1) }
+}
+
+/* Aurora drift: a slow conic-gradient sweep behind the welcome hero. Rotates
+ * and breathes scale so the light reads as moving, not spinning like a loader.
+ * Declared here (not tailwind.config.js) — see the keyframes note above. */
+@keyframes auroraDrift {
+  0%   { transform: rotate(0deg)   scale(1) }
+  33%  { transform: rotate(120deg) scale(1.08) }
+  66%  { transform: rotate(240deg) scale(.96) }
+  100% { transform: rotate(360deg) scale(1) }
+}
+
+/* Scan sweep: a faint light band traverses the hero card top-to-bottom, the
+ * way an imaging sensor reads a frame. Long period so it reads as ambient
+ * instrumentation, not feedback. Declared here — see the note above. */
+@keyframes scanSweep {
+  0%   { transform: translateY(-120%); opacity: 0 }
+  12%  { opacity: 1 }
+  88%  { opacity: 1 }
+  100% { transform: translateY(1000%); opacity: 0 }
+}
+
+/* Pulse dot: the live-status heartbeat next to the mono READY readout. */
+@keyframes pulseDot {
+  0%, 100% { opacity: 1 }
+  50%      { opacity: .2 }
+}
 
 @layer utilities {
   .scrollbar-hide::-webkit-scrollbar { display: none; }

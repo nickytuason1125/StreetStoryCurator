@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>FrameGrade — Workspace</title>
+<style>
+:root{
+  --chrome:#2b2b2b; --chrome2:#333; --chrome3:#242424;
+  --stage:#191919; --line:#1f1f1f; --linehi:#3d3d3d;
+  --ink:#d6d6d6; --ink2:#9e9e9e; --ink3:#6e6e6e;
+  --sel:#4a4a4a; --good:#7fb069;
+  --font:'Segoe UI',Inter,system-ui,sans-serif;
+  --mono:Consolas,ui-monospace,monospace;
+}
+*{box-sizing:border-box;margin:0}
+body{background:#111;font-family:var(--font);color:var(--ink);
+     -webkit-font-smoothing:antialiased;padding:32px}
+.board-head{max-width:1500px;margin:0 auto 18px;display:flex;justify-content:space-between}
+.board-head h1{font-size:15px;font-weight:600;color:#bbb}
+.board-head span{font-size:12px;color:#666}
+.wrap{max-width:1500px;margin:0 auto;border:1px solid #000;border-radius:4px;overflow:hidden}
+.workspace{display:flex;flex-direction:column;height:860px;background:var(--stage)}
+.hdr{font-size:10px;letter-spacing:.12em;color:var(--ink3);font-weight:600;padding:8px 12px}
+.row{display:flex;justify-content:space-between;padding:5px 14px;font-size:12px}
+.row:hover{background:var(--chrome2)}
+.row .cnt{font-family:var(--mono);font-size:11px;color:var(--ink3)}
+.tb{font-size:12px;color:var(--ink2)}
+.tb.on{color:#fff}
+.tag{position:absolute;font-family:var(--mono);font-size:11px;color:#ddd;opacity:.85}
+.fs{width:60px;height:72px;border-radius:2px;position:relative;flex-shrink:0;
+    outline:2px solid transparent;outline-offset:-2px}
+.fs.on{outline-color:#fff}
+.fs .r{position:absolute;bottom:10px;left:0;height:2px;width:100%}
+.fs .n{position:absolute;bottom:1px;left:3px;font-family:var(--mono);font-size:10px;color:var(--ink3)}
+.sl{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink2)}
+.sl b{width:78px;font-weight:400}
+.tr{flex:1;height:3px;background:var(--linehi);border-radius:2px;position:relative}
+.tr i{position:absolute;left:0;top:0;height:3px;border-radius:2px;background:var(--good)}
+.t-a{width:60px;height:72px;border-radius:2px;position:relative;flex-shrink:0;
+     background:linear-gradient(135deg,#4a4640,#2c2a27 60%,#3a3733)}
+.t-b{background:linear-gradient(150deg,#33383d,#22262b)}
+.t-c{background:linear-gradient(160deg,#57503f,#39352b)}
+.t-d{background:linear-gradient(120deg,#3d4a44,#262d29);opacity:.5}
+</style>
+</head>
+<body>
+<div class="board-head"><h1>FrameGrade — Develop-style workspace</h1><span>flat chrome · dense panels · photos own the colour</span></div>
+<div class="wrap">
+<div class="workspace">
+
+<div style="height:44px;background:var(--chrome);border-bottom:1px solid var(--line);
+     display:flex;align-items:center;padding:0 14px;gap:20px">
+  <span style="font-weight:600;font-size:13px;color:#e6e6e6">FrameGrade</span>
+  <div style="display:flex;gap:22px;margin-left:auto;font-size:12px">
+    <span style="color:#fff;font-weight:600;border-bottom:2px solid var(--good);
+          padding-bottom:4px">Cull</span>
+    <span style="color:var(--ink2)">Story</span>
+    <span style="color:var(--ink2)">Competition</span>
+    <span style="color:var(--ink2)">Export</span>
+  </div>
+  <span style="margin-left:16px;background:var(--chrome2);border-radius:3px;padding:4px 8px;
+        font-family:var(--mono);font-size:11px;color:var(--ink2)">RAM 62% · GPU RTX 3060</span>
+</div>
+
+<div style="flex:1;display:flex;min-height:0">
+
+<div style="width:210px;background:var(--chrome);border-right:1px solid var(--line);
+     padding:10px 0;flex-shrink:0">
+  <div class="hdr">CATALOG</div>
+  <div class="row" style="background:var(--sel)">All Photographs<span class="cnt">478</span></div>
+  <div class="row">Flagged<span class="cnt">37</span></div>
+  <div class="hdr" style="margin-top:14px">FOLDERS</div>
+  <div class="row" style="background:var(--sel)">2026-08-23 Street Walk<span class="cnt">214</span></div>
+  <div class="row" style="padding-left:28px;color:var(--ink2)">Raw</div>
+  <div class="row" style="padding-left:28px;color:var(--ink2)">Edits</div>
+  <div class="row">2026-08-09 Market<span class="cnt">96</span></div>
+  <div class="row">2026-07-27 Night Bus<span class="cnt">168</span></div>
+  <div class="hdr" style="margin-top:14px">PRESETS</div>
+  <div class="row" style="color:var(--ink2)">Classic Street</div>
+  <div class="row" style="color:var(--ink2)">Night Documentary</div>
+</div>
+
+<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+  <div style="height:34px;display:flex;align-items:center;gap:14px;padding:0 10px;
+       border-bottom:1px solid var(--line);background:var(--chrome3)">
+    <span class="tb">Grid</span><span class="tb on">Loupe</span>
+    <span style="flex:1"></span><span class="tb">Sort: Grade ▾</span>
+  </div>
+
+  <div style="flex:1;display:flex;align-items:center;justify-content:center;
+       position:relative;background:var(--stage)">
+    <div style="width:74%;aspect-ratio:3/2;border-radius:2px;position:relative;
+         background:linear-gradient(140deg,#4c473f,#23211e 55%,#3b382f);
+         box-shadow:0 6px 30px rgb(0 0 0/.55)">
+      <span class="tag" style="position:absolute;top:8px;left:10px">0001 · f/8 · 1/500 · ISO 400</span>
+      <div style="position:absolute;left:15%;top:20%;width:32%;height:42%;
+           border:1px solid #e5484d;opacity:.9"></div>
+      <span class="tag" style="position:absolute;left:15%;top:66%;color:#e5484d">
+        Highlights clipped</span>
+    </div>
+    <div style="position:absolute;right:14px;top:14px;width:190px;background:rgb(36 36 36/.92);
+         border:1px solid var(--linehi);border-radius:3px;padding:12px">
+      <div style="display:flex;align-items:baseline;gap:6px">
+        <span class="mono" style="font-size:22px;color:var(--good)">0.84</span>
+        <span style="font-size:11px;color:var(--ink2)">Strong ✓</span>
+      </div>
+      <svg width="100%" height="86" style="margin-top:8px">
+        <polygon points="95,8 178,52 148,80 42,80 12,52" fill="none" stroke="#3d3d3d"/>
+        <polygon points="95,20 158,58 136,72 54,72 28,58"
+                 fill="rgb(127 176 105/.15)" stroke="#7fb069"/>
+      </svg>
+    </div>
+  </div>
+
+  <div style="height:88px;background:var(--chrome);border-top:1px solid var(--line);
+       display:flex;align-items:center;gap:4px;padding:0 10px">
+    <div class="fs on t-a"><span class="r" style="background:var(--good)"></span><span class="n">0001</span></div>
+    <div class="fs t-b"><span class="r" style="background:var(--good)"></span><span class="n">0002</span></div>
+    <div class="fs t-c"><span class="n">0003</span></div>
+    <div class="fs t-d"><span class="r" style="background:var(--weak)"></span><span class="n">0004</span></div>
+    <div class="fs t-c"><span class="r" style="background:var(--good)"></span><span class="n">0005</span></div>
+    <div class="fs t-a"><span class="n">0006</span></div>
+    <div class="fs t-b" style="opacity:.5"><span class="r" style="background:var(--weak)"></span><span class="n">0007</span></div>
+    <div class="fs t-c"><span class="n">0008</span></div>
+    <div class="fs t-a"><span class="r" style="background:var(--good)"></span><span class="n">0009</span></div>
+    <div class="fs t-b"><span class="n">0010</span></div>
+  </div>
+</div>
+
+<div style="width:250px;background:var(--chrome);border-left:1px solid var(--line);
+     flex-shrink:0">
+  <div class="hdr">HISTOGRAM</div>
+  <svg viewBox="0 0 230 110" style="width:calc(100% - 16px);margin:0 8px;
+       background:var(--stage);border-radius:2px;display:block">
+    <path d="M0 90 C30 70 50 30 78 34 S120 78 150 62 S200 20 230 44 L230 110 0 110Z"
+          fill="rgb(127 176 105/.25)" stroke="#7fb069" stroke-width="1"/>
+  </svg>
+  <div class="hdr" style="margin-top:10px;padding-bottom:4px">GRADE BREAKDOWN</div>
+  <div style="padding:0 12px;display:flex;flex-direction:column;gap:7px">
+    <div class="sl"><b>Composition</b><span class="tr"><i style="width:88%"></i></span><span class="mono">88</span></div>
+    <div class="sl"><b>Technical</b><span class="tr"><i style="width:81%"></i></span><span class="mono">81</span></div>
+    <div class="sl"><b>Lighting</b><span class="tr"><i style="width:74%"></i></span><span class="mono">74</span></div>
+    <div class="sl"><b>Narrative</b><span class="tr"><i style="width:68%"></i></span><span class="mono">68</span></div>
+    <div class="sl"><b>Human</b><span class="tr"><i style="width:55%"></i></span><span class="mono">55</span></div>
+  </div>
+  <div class="hdr" style="margin-top:14px;padding-bottom:4px">QUICK ACTIONS</div>
+  <div style="padding:0 8px;display:flex;flex-direction:column;font-size:12px;color:var(--ink2)">
+    <div class="row" style="padding:5px 6px">✓ Mark as Strong</div>
+    <div class="row" style="padding:5px 6px">Add to Story sequence</div>
+    <div class="row" style="padding:5px 6px">Request deep analysis</div>
+  </div>
+</div>
+
+</div><!-- main row -->
+</div><!-- workspace -->
+</div>
+</body>
+</html>
+
+

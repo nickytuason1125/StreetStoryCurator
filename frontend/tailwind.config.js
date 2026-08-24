@@ -87,7 +87,7 @@ export default {
       // Structural dimensions, named. Keeps w-72 / h-16 magic numbers out of
       // the markup now that the numeric spacing scale is deliberately sparse.
       width:  { panel: "var(--w-panel)", sidebar: "var(--w-sidebar)", stage: "var(--w-stage)" },
-      height: { thumb: "var(--h-thumb)" },
+      height: { thumb: "var(--h-thumb)", toolbar: "var(--h-toolbar)" },
       borderWidth: { DEFAULT: "1px", 0: "0", 2: "2px" },
       opacity: { reject: "var(--dim-reject)" },
       // No `keyframes` block here on purpose. Every @keyframes lives in
@@ -99,6 +99,7 @@ export default {
       animation: {
         shimmer: "shimmer 1.5s linear infinite",
         "fade-in": "fadeIn var(--t-slow) var(--ease)",
+        "dialog-in": "dialogIn var(--t-slow) var(--ease)",
         sweep: "sweep 1.2s ease-in-out infinite",
       },
     },

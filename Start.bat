@@ -1,15 +1,24 @@
 @echo off
 setlocal EnableDelayedExpansion
-title Street Story Curator — Setup
+title FrameGrade
 cd /d "%~dp0"
 
 echo.
 echo  ================================================================
-echo   Street Story Curator
+echo   FrameGrade
 echo  ================================================================
 echo.
 
-:: ── Python 3.12 check ─────────────────────────────────────────────
+:: ── ONE-CLICK FAST PATH ───────────────────────────────────────────
+:: Setup already completed? Launch immediately. A finished install needs
+:: neither Python-on-PATH nor Node.js — the venv and the built UI carry
+:: everything. The old version checked the toolchain unconditionally, so
+:: an end user who later uninstalled Node got an error screen instead of
+:: their app. Toolchain checks now live ONLY in the first-run branch.
+if exist "venv\.setup_ok" goto :launch
+if exist "venv\Scripts\pythonw.exe" goto :repair_check
+
+:: ── Python 3.12 check (first run only) ────────────────────────────
 py -3.12 --version >nul 2>&1
 if %ERRORLEVEL% neq 0 (
     echo  ERROR: Python 3.12 is required but was not found.
@@ -21,7 +30,7 @@ if %ERRORLEVEL% neq 0 (
     pause & exit /b 1
 )
 
-:: ── Node.js check ─────────────────────────────────────────────────
+:: ── Node.js check (first run only) ────────────────────────────────
 where npm >nul 2>&1
 if %ERRORLEVEL% neq 0 (
     echo  ERROR: Node.js is required but was not found.
@@ -31,13 +40,41 @@ if %ERRORLEVEL% neq 0 (
     pause & exit /b 1
 )
 
-:: ── Skip setup if already done ────────────────────────────────────
-if exist "venv\.setup_ok" goto :launch
+goto :install_full
+
+:: ── REPAIR PATH ───────────────────────────────────────────────────
+:: A venv exists but the .setup_ok stamp is missing (interrupted setup).
+:: If the UI build survived, the app is fully usable — just launch it.
+:: Only demand Node.js when something actually needs rebuilding.
+:repair_check
+if exist "venv\Scripts\pythonw.exe" (
+    if exist "frontend\dist\index.html" goto :launch
+)
+if exist "venv\Scripts\pythonw.exe" (
+    echo  Previous setup did not finish — repairing...
+    where npm >nul 2>&1
+    if %ERRORLEVEL% neq 0 (
+        echo  ERROR: Node.js is needed once to finish building the UI.
+        echo  Download from: https://nodejs.org  (LTS version^)
+        pause & exit /b 1
+    )
+    cd frontend
+    call npm install --silent 2>nul
+    call npm run build --silent 2>nul
+    cd ..
+    if exist "frontend\dist\index.html" (
+        echo setup_ok > venv\.setup_ok
+        goto :launch
+    )
+    echo  Repair failed — running full setup instead...
+    rmdir /s /q venv
+)
 
 :: ──────────────────────────────────────────────────────────────────
+:install_full
 ::  FIRST-RUN INSTALL
 :: ──────────────────────────────────────────────────────────────────
-echo  First launch — installing Street Story Curator.
+echo  First launch — installing FrameGrade.
 echo  This takes 10-20 minutes depending on your connection.
 echo  Do not close this window.
 echo.
@@ -116,12 +153,12 @@ set APP_DIR=%~dp0
 set APP_DIR=!APP_DIR:~0,-1!
 powershell -NoProfile -NonInteractive -Command ^
     "$ws = New-Object -ComObject WScript.Shell; " ^
-    "$lnk = $ws.CreateShortcut([Environment]::GetFolderPath('Desktop') + '\Street Story Curator.lnk'); " ^
+    "$lnk = $ws.CreateShortcut([Environment]::GetFolderPath('Desktop') + '\FrameGrade.lnk'); " ^
     "$lnk.TargetPath = 'wscript.exe'; " ^
     "$lnk.Arguments = '/b \"!APP_DIR!\launch_hidden.vbs\"'; " ^
     "$lnk.WorkingDirectory = '!APP_DIR!'; " ^
     "$lnk.IconLocation = '!APP_DIR!\icon.ico'; " ^
-    "$lnk.Description = 'Street Story Curator — AI Photo Culler'; " ^
+    "$lnk.Description = 'FrameGrade — AI Photo Culler'; " ^
     "$lnk.Save(); Write-Host 'Shortcut created.'" 2>nul
 
 echo setup_ok > venv\.setup_ok

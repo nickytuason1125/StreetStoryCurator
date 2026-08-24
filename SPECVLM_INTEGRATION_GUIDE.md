@@ -1,8 +1,8 @@
-# SpecVLM Integration Guide
+ye# SpecVLM Integration Guide
 
 ## Overview
 
-This guide shows how to integrate the new SpecVLM pipeline into the Street Story Curator codebase while maintaining backward compatibility with existing code.
+This guide shows how to integrate the new SpecVLM pipeline into the FrameGrade codebase while maintaining backward compatibility with existing code.
 
 ## New Modules Created
 

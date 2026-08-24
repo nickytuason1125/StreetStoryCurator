@@ -29,9 +29,13 @@ export interface ChipProps {
 }
 
 const TONES: Record<ChipTone, string> = {
-  neutral: 'border-line-strong text-ink-3',
-  warn: 'border-alarm-warn text-alarm-warn',
-  crit: 'border-alarm-crit text-alarm-crit',
+  /* Neutral chips are unboxed — dot + label + value floating directly on the
+   * toolbar (index-readout style, à la fontsinuse.com). Boxing is reserved
+   * for the alarm tones: a visible container is itself a signal, so "all
+   * clear" must not have one. */
+  neutral: 'border-transparent bg-transparent text-ink-3',
+  warn: 'border-alarm-warn bg-surface text-alarm-warn',
+  crit: 'border-alarm-crit bg-surface text-alarm-crit',
 };
 
 const DOT: Record<ChipTone, string> = {
@@ -45,7 +49,7 @@ export function Chip({ label, value, tone = 'neutral', numeric, title, className
     <span
       title={title}
       className={cn(
-        'inline-flex h-6 shrink-0 items-center gap-1 rounded-sm border bg-surface px-2',
+        'inline-flex h-6 shrink-0 items-center gap-1 rounded-sm border px-2',
         'transition-colors duration-fast ease',
         TONES[tone],
         className,

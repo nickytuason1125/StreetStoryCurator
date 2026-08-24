@@ -102,7 +102,7 @@ fn start_python_server(project_root: &std::path::Path) -> Option<Child> {
 ///
 /// We set:
 ///   CWD          → the bundle dir  (so models/ and frontend/dist/ resolve)
-///   CURATOR_DATA_DIR → user's AppData/StreetStoryCurator (writable cache)
+///   CURATOR_DATA_DIR → user's AppData/FrameGrade (writable cache)
 fn start_sidecar(app: &tauri::AppHandle) -> Option<Child> {
     let resource_dir = app.path().resource_dir()
         .map_err(|e| eprintln!("[tauri] resource_dir error: {}", e))
@@ -121,9 +121,9 @@ fn start_sidecar(app: &tauri::AppHandle) -> Option<Child> {
         return None;
     }
 
-    // Resolve the writable data directory (AppData\Roaming\StreetStoryCurator on Windows)
+    // Resolve the writable data directory (AppData\Roaming\FrameGrade on Windows)
     let data_dir = app.path().data_dir()
-        .map(|d| d.join("StreetStoryCurator"))
+        .map(|d| d.join("FrameGrade"))
         .unwrap_or_else(|_| bundle_dir.clone());
 
     eprintln!("[tauri] CURATOR_DATA_DIR: {:?}", data_dir);
@@ -195,7 +195,7 @@ pub fn run() {
                 "main",
                 webview_url,
             )
-            .title("Street Story Curator")
+            .title("FrameGrade")
             .inner_size(1400.0, 900.0)
             .min_inner_size(960.0, 640.0)
             .resizable(true)

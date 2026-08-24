@@ -59,8 +59,8 @@ export function Modal({
         aria-label={title}
         tabIndex={-1}
         className={cn(
-          'animate-fade-in flex max-h-[80vh] flex-col overflow-hidden outline-none',
-          'rounded-md border border-line-strong bg-surface shadow-lg',
+          'animate-dialog-in flex max-h-[80vh] flex-col overflow-hidden outline-none',
+          'rounded-md border border-line-strong bg-surface elev-3',
         )}
         style={{ width, maxWidth: 'calc(100vw - 2rem)' }}
       >

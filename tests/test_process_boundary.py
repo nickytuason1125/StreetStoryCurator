@@ -37,7 +37,7 @@ _SRC = _ROOT / "src"
 PARENT_SIDE = [
     "run_profile.py", "tier_select.py", "lance_store.py", "catalog_store.py",
     "raw_support.py", "face_signals.py", "personal_head_np.py",
-    "xmp_sidecar.py", "grade_pipeline_v2.py", "siglip2_encoder.py",
+    "grade_pipeline_v2.py", "siglip2_encoder.py",
     # The jury/creative path runs INSIDE the server process, which also spawns
     # grade_runner.py as a CUDA subprocess:
     #   server.py:2070 -> creative_director.run_creative_direction

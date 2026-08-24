@@ -59,7 +59,8 @@ torchao==0.10.0
 peft==0.19.1                       # QLoRA rank-4 adapters (online DPO)
 
 # ── Detection / IQA ───────────────────────────────────────────────────────────
-ultralytics==8.4.51                # YOLO. NOTE: AGPL-3.0 — see THIRD_PARTY_NOTICES.md
+# Detection runs on D-FINE-nano (Apache-2.0, src/dfine_detector.py). The former
+# ultralytics/YOLO dependency (AGPL-3.0) was removed — no module imports it.
 pyiqa==0.1.15.post2                # TOPIQ NR quality head
 
 # ── Competition Mode ──────────────────────────────────────────────────────────

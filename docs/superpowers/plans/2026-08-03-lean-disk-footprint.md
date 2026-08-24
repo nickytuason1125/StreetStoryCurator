@@ -18,7 +18,7 @@
 - **Verification bar for any pipeline change:** 169 tests pass, AND a real Pro-tier LX3 cull yields `Strong=62 Mid=324 Weak=128` with **zero** per-photo score/grade drift.
 - **Tier pinning for verification runs:** `SIGLIP_TIER=high SIGLIP_MIN_FREE_RAM_GB=1.2 SIGLIP_HARD_MIN_RAM_GB=1.0`. Below 3 GB free the ladder silently drops to Balanced, which changes every score.
 - **Leave `cache/encoder_source.txt` at its live value** during verification so embeddings are reused from LanceDB.
-- Python interpreter is `venv/Scripts/python.exe`. Working directory is `street-story-curator/`.
+- Python interpreter is `venv/Scripts/python.exe`. Working directory is `framegrade/`.
 
 ---
 

@@ -2321,12 +2321,15 @@ def run_v2(
     # -0.15 to their fused score before Anchor Floor evaluation.
     #
     # Creative Director Anchor Floor: if UniQA quality ≥ 0.611 OR fine-art normalised
-    # similarity ≥ 0.75 → enforce overall_score = max(score, 0.65).
+    # similarity ≥ 0.75 → enforce overall_score = max(score, _ANCHOR_FLOOR).
     # This guarantees compositionally elite or fine-art-aligned photos can never drop
     # below the Strong bucket threshold due to IQA penalties.
     _AES_VLP_THRESHOLD    = 0.556   # TOPIQ NR threshold for VLP trigger
     _AES_ANCHOR_THRESHOLD = 0.72    # TOPIQ NR threshold for Anchor Floor (raised from 0.611 — old value was calibrated for broken UniQA that always returned 0.5)
-    _ANCHOR_FLOOR         = 0.65
+    _ANCHOR_FLOOR         = 0.58   # BELOW STRONG_THRESH 0.60 — see note at the
+                              # Anchor Floor step: a protective floor must
+                              # never mint a Strong by itself (same rationale
+                              # as the archetype floors in step 7).
     _FA_ANCHOR_THRESHOLD  = 0.75                 # normalised fine-art sim threshold
 
     _p(0.86, "Combining scores…")
@@ -2483,7 +2486,13 @@ def run_v2(
     yolo_pen_mask = arr_yolo_soft & ~arr_is_chiaroscuro
     fused = np.where(yolo_pen_mask, np.maximum(0.0, fused - 0.15), fused)
 
-    # 3. Anchor Floor — elite photos cannot fall below 0.65
+    # 3. Anchor Floor — genre-matched frames with elite deep-model scores cannot
+    # be dragged below 0.58 by the penalty gates. The floor sits BELOW
+    # STRONG_THRESH deliberately (mirrors step 7): the old 0.65 floor sat above
+    # the Strong threshold, so a single high VLM aesthetic reading minted a
+    # guaranteed Strong even when technical quality / composition had failed —
+    # a recurring Strong-bucket false positive. Elite frames now survive the
+    # gates as high-Mid and reach Strong only when their fused quality agrees.
     doc_strong  = (arr_hc >= 0.70) & (arr_narr >= 0.60)
     anchor_mask = (arr_a >= _AES_ANCHOR_THRESHOLD) | (arr_fa >= _FA_ANCHOR_THRESHOLD) | doc_strong
     fused       = np.where(anchor_mask & (fused < _ANCHOR_FLOOR), _ANCHOR_FLOOR, fused)
@@ -2562,7 +2571,7 @@ def run_v2(
     # ── Fusion input dump (opt-in, for offline ablation) ─────────────────────
     # FRAMEGRADE_FUSION_DUMP=<path.npz> writes every per-photo signal that feeds
     # Step 4d plus the resulting score. That lets the scoring formula's many
-    # hand-tuned constants (archetype weights, VLP 0.556, anchor floor 0.65,
+    # hand-tuned constants (archetype weights, VLP 0.556, anchor floor 0.58,
     # soft-focus +0.15, street ±0.06, the penalty gates) be ablated against real
     # user ratings OFFLINE — one grade run, many experiments — instead of
     # re-grading for each variant. Off by default; pure instrumentation.
@@ -3370,7 +3379,7 @@ if __name__ == "__main__":
     import argparse, sys, time as _cli_time
 
     _parser = argparse.ArgumentParser(
-        description="Street Story Curator — vision grading pipeline",
+        description="FrameGrade — vision grading pipeline",
         formatter_class=argparse.RawTextHelpFormatter,
     )
     _parser.add_argument(
@@ -3395,7 +3404,7 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
     print("=" * 62)
-    print(f"  Street Story Curator — pipeline test run")
+    print(f"  FrameGrade — pipeline test run")
     print(f"  input_dir : {_args.input_dir}")
     print(f"  mode      : {_args.mode}")
     print("=" * 62)

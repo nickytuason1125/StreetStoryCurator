@@ -10,7 +10,7 @@ inst
 
 
 """
-Street Story Curator — native desktop launcher.
+FrameGrade — native desktop launcher.
 Starts FastAPI, then opens Microsoft Edge in --app mode (no address bar, no tabs).
 Errors are written to crash.log in the project root.
 """
@@ -140,7 +140,7 @@ def main():
                     return None
 
             kwargs = dict(
-                title="Street Story Curator",
+                title="FrameGrade",
                 url=url,
                 width=1400, height=900,
                 min_size=(960, 640),
@@ -169,7 +169,7 @@ def main():
         if browser_path:
             if browser_type == "edge":
                 # Isolated Edge profile so the app window is always separate
-                profile_dir = Path(os.environ.get("LOCALAPPDATA", _ROOT)) / "StreetStoryCurator" / "EdgeProfile"
+                profile_dir = Path(os.environ.get("LOCALAPPDATA", _ROOT)) / "FrameGrade" / "EdgeProfile"
                 profile_dir.mkdir(parents=True, exist_ok=True)
 
                 cmd = [
@@ -184,7 +184,7 @@ def main():
                 _log(f"Opening Edge app mode: {url}")
             elif browser_type == "chrome":
                 # Chrome app mode
-                profile_dir = Path(os.environ.get("LOCALAPPDATA", _ROOT)) / "StreetStoryCurator" / "ChromeProfile"
+                profile_dir = Path(os.environ.get("LOCALAPPDATA", _ROOT)) / "FrameGrade" / "ChromeProfile"
                 profile_dir.mkdir(parents=True, exist_ok=True)
 
                 cmd = [
@@ -199,7 +199,7 @@ def main():
                 _log(f"Opening Chrome app mode: {url}")
             elif browser_type == "firefox":
                 # Firefox app mode
-                profile_dir = Path(os.environ.get("LOCALAPPDATA", _ROOT)) / "StreetStoryCurator" / "FirefoxProfile"
+                profile_dir = Path(os.environ.get("LOCALAPPDATA", _ROOT)) / "FrameGrade" / "FirefoxProfile"
                 profile_dir.mkdir(parents=True, exist_ok=True)
 
                 cmd = [
@@ -235,7 +235,7 @@ def main():
                     return None
 
             webview.create_window(
-                title="Street Story Curator",
+                title="FrameGrade",
                 url=url,
                 width=1400, height=900,
                 min_size=(960, 640),

@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>FrameGrade — Screenshot Report</title>
+<style>
+  :root {
+    --ink:#171717; --ink2:#444; --ink3:#6e6e6e; --ink4:#9a9a9a;
+    --line:#e4e4e4; --line2:#d0d0d0; --bg-soft:#f6f6f5; --mark:#e0592f; --grade:#48b89c;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  @page { size:A4; margin:14mm; }
+  body { font-family:'Geist','Inter','Segoe UI',system-ui,sans-serif; color:var(--ink); font-size:10pt; line-height:1.5; }
+  code { font-family:'Geist Mono',Consolas,monospace; font-size:8.5pt; background:var(--bg-soft); padding:0.3mm 1.2mm; border-radius:1mm; }
+  .cover { page-break-after:always; padding-top:50mm; }
+  .eyebrow { text-transform:uppercase; letter-spacing:.18em; font-size:8.5pt; font-weight:600; color:var(--ink3); margin-bottom:10mm; }
+  .dot { color:var(--mark); }
+  .cover h1 { font-size:34pt; font-weight:700; letter-spacing:-0.02em; line-height:1.05; }
+  .cover .sub { margin-top:5mm; font-size:12pt; color:var(--ink2); max-width:130mm; }
+  .cover .meta { margin-top:22mm; padding-top:5mm; border-top:1px solid var(--line2); display:flex; gap:14mm; font-size:8.5pt; color:var(--ink3); }
+  .cover .meta b { display:block; color:var(--ink); font-weight:600; margin-bottom:1mm; }
+  h2 { font-size:14pt; font-weight:700; margin:0 0 3mm; padding-bottom:2mm; border-bottom:2px solid var(--ink); page-break-after:avoid; }
+  h2 .no { color:var(--mark); margin-right:3mm; }
+  section.part { page-break-before:always; }
+  .intro { color:var(--ink2); margin-bottom:5mm; }
+  figure { page-break-inside:avoid; margin-bottom:8mm; }
+  figure .head { display:flex; align-items:baseline; gap:3mm; margin-bottom:1.5mm; }
+  figure .fig { color:var(--mark); font-weight:700; font-size:9pt; white-space:nowrap; }
+  figure .title { font-weight:650; font-size:11pt; }
+  figure .meta { font-size:7.5pt; color:var(--ink4); margin-bottom:2mm; }
+  figure img { width:100%; border:1px solid var(--line2); border-radius:1.5mm; display:block; }
+  figure figcaption { font-size:9pt; color:var(--ink2); margin-top:2mm; }
+  figure figcaption b { color:var(--ink); }
+  .badge { display:inline-block; font-size:7pt; font-weight:700; text-transform:uppercase; letter-spacing:.08em;
+           padding:0.6mm 2mm; border-radius:1mm; color:#fff; vertical-align:1px; }
+  .b-before { background:#6e6e6e; } .b-explore { background:#c8862a; } .b-after { background:var(--mark); }
+  .footer-note { margin-top:6mm; padding-top:3mm; border-top:1px solid var(--line2); font-size:8pt; color:var(--ink4); }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <div class="eyebrow">AI photo culler <span style="color:var(--line2)">/</span> visual record<span class="dot">.</span></div>
+  <h1>Screenshot Report<span class="dot">.</span></h1>
+  <div class="sub" style="font-weight:600; color:var(--ink); margin-top:3mm;">Every capture from the 2026 premium frontend pass — before, during, and after.</div>
+  <p class="sub">Ten captures in chronological order: the flat welcome card the pass started from, the design explorations that set direction, and the shipped result across welcome, gallery and loupe.</p>
+  <div class="meta">
+    <div><b>Project</b>FrameGrade (street-story-curator/frontend)</div>
+    <div><b>Captures</b>10 · 24 Aug 2026, 11:22 – 15:01</div>
+    <div><b>Companion</b>Premium Frontend Walkthrough (PDF)</div>
+    <div><b>Status</b><span style="color:var(--grade); font-weight:700;">●</span> All verified</div>
+  </div>
+</div>
+<section class="part">
+  <h2><span class="no">A</span>Where we started — the "before" captures</h2>
+  <p class="intro">Three captures from the morning session, before the premium pass landed. The pattern across all three: flat surfaces, no elevation, no hover language, and a welcome card doing nothing but existing.</p>
+
+  <figure>
+    <div class="head"><span class="fig">Fig. 1</span><span class="title">Welcome card — browser <span class="badge b-before">before</span></span></div>
+    <div class="meta">../../app_screenshot2.png · captured 13:31 · 1600×900</div>
+    <img src="../../app_screenshot2.png" alt="Old welcome card in the browser">
+    <figcaption><b>What to notice:</b> the original flat card — version chip, one outline CTA, resume strip. Nothing is wrong individually; collectively there is no hierarchy, no depth, and no brand moment. This is the frame the user's "hackjob" reaction came from.</figcaption>
+  </figure>
+
+  <figure>
+    <div class="head"><span class="fig">Fig. 2</span><span class="title">Welcome card — in-app capture <span class="badge b-before">before</span></span></div>
+    <div class="meta">../screenshots/live-app-home.png · captured 11:22 · 1660×1024</div>
+    <img src="../screenshots/live-app-home.png" alt="Old welcome card, in-app capture">
+    <figcaption><b>What to notice:</b> same card from the app's own screenshot path. The ground is a lighter grey (#1a1a1a era) and the card barely separates from it — the elevation ramp re-step later fixed exactly this distance problem.</figcaption>
+  </figure>
+
+  <figure>
+    <div class="head"><span class="fig">Fig. 3</span><span class="title">Working session context <span class="badge b-before">before</span></span></div>
+    <div class="meta">../../app_screenshot.png · captured 13:29 · dual IDE + terminal</div>
+    <img src="../../app_screenshot.png" alt="Working session, IDE and terminal">
+    <figcaption><b>What to notice:</b> the session this pass came out of — the audit conversation and a backend connection error in the terminal. Included for provenance: the premium pass started as a frontend reaction, but the same session surfaced the backend issue visible here.</figcaption>
+  </figure>
+</section>
+<section class="part">
+  <h2><span class="no">B</span>Design exploration — setting the direction</h2>
+  <p class="intro">Two design-board mocks from the late-morning exploration. These established the vocabulary the pass later implemented: dense develop-style panels, hairline dividers, and the rule that photos own all the colour.</p>
+
+  <figure>
+    <div class="head"><span class="fig">Fig. 4</span><span class="title">Develop-style workspace mock <span class="badge b-explore">exploration</span></span></div>
+    <div class="meta">../screenshots/demo-workspace.png · captured 11:22 · 1660×1024</div>
+    <img src="../screenshots/demo-workspace.png" alt="Develop-style workspace mock">
+    <figcaption><b>What to notice:</b> the exploration that defined the three-zone layout — catalog sidebar, loupe stage, verdict rail. The green grade breakdown bars here evolved into the colder teal (<code>--grade-strong</code>); the warm photo against neutral chrome is the governing rule working as intended.</figcaption>
+  </figure>
+
+  <figure>
+    <div class="head"><span class="fig">Fig. 5</span><span class="title">Design board — full canvas <span class="badge b-explore">exploration</span></span></div>
+    <div class="meta">../screenshots/design-board.png · captured 11:40 · tall canvas</div>
+    <img src="../screenshots/design-board.png" alt="Design board canvas">
+    <figcaption><b>What to notice:</b> the full design-board artifact with the workspace mock at top. Its header tagline — "flat chrome · dense panels · photos own the colour" — became the literal acceptance criteria for the token system documented in the companion walkthrough.</figcaption>
+  </figure>
+</section>
+<section class="part">
+  <h2><span class="no">C</span>The shipped result — after the premium pass</h2>
+  <p class="intro">Five captures of the redesigned UI. The hero evolves across three of them (intermediate → final); the gallery and loupe show the token system holding up under real load — 4,151 photos in the catalog.</p>
+
+  <figure>
+    <div class="head"><span class="fig">Fig. 6</span><span class="title">Welcome hero — first redesign <span class="badge b-after">after</span></span></div>
+    <div class="meta">cdp-shots/1_welcome.png · captured 14:06 · 1600×900</div>
+    <img src="../../cdp-shots/1_welcome.png" alt="Redesigned welcome hero, first pass">
+    <figcaption><b>What to notice:</b> the new hero structure in place — aperture brand row, <code>FrameGrade.</code> display headline with the mark-coloured full stop, three-verb feature strip, resume strip. The CTA is still the old weak <code>solid</code> variant at this point.</figcaption>
+  </figure>
+
+  <figure>
+    <div class="head"><span class="fig">Fig. 7</span><span class="title">Welcome hero — token re-step verified <span class="badge b-after">after</span></span></div>
+    <div class="meta">cdp-shots/hero_check.png · captured 14:40 · 1600×900</div>
+    <img src="../../cdp-shots/hero_check.png" alt="Hero after token re-step">
+    <figcaption><b>What to notice:</b> same layout after the ground/ink re-step — deeper well, crisper ink, ambient glows reading behind the card. RAM alarm chip (top right, amber <code>--alarm-warn</code>) demonstrates the status-chrome exception working.</figcaption>
+  </figure>
+
+  <figure>
+    <div class="head"><span class="fig">Fig. 8</span><span class="title">Welcome hero — final, inverted-ink CTA <span class="badge b-after">after · final</span></span></div>
+    <div class="meta">cdp-shots/hero_ink_cta.png · captured 15:01 · 1600×900</div>
+    <img src="../../cdp-shots/hero_ink_cta.png" alt="Final hero with inverted-ink CTA">
+    <figcaption><b>What to notice:</b> the shipped state. The <code>ink</code> variant — full-luminance white fill, well-coloured label — gives the one primary action unmistakable weight while staying strictly neutral. This capture is the reference for the hero in the companion walkthrough.</figcaption>
+  </figure>
+
+  <figure>
+    <div class="head"><span class="fig">Fig. 9</span><span class="title">Gallery grid — 4,151 photos under load <span class="badge b-after">after</span></span></div>
+    <div class="meta">cdp-shots/2_gallery.png · captured 14:06 · 1600×900</div>
+    <img src="../../cdp-shots/2_gallery.png" alt="Gallery grid under load">
+    <figcaption><b>What to notice:</b> the rating filter bar (star tiers, Unrated 21,292, Dupes 17,265), score-sorted mono numerals, teal strong-grade rules under cells, and the selection outline on the first cell. Cell thumbnails were still decoding in this headless capture — the chrome is the subject here.</figcaption>
+  </figure>
+
+  <figure>
+    <div class="head"><span class="fig">Fig. 10</span><span class="title">Loupe + verdict rail <span class="badge b-after">after</span></span></div>
+    <div class="meta">cdp-shots/3_loupe.png · captured 14:06 · 1600×900</div>
+    <img src="../../cdp-shots/3_loupe.png" alt="Loupe view with verdict rail">
+    <figcaption><b>What to notice:</b> the full judgement surface — photo on the near-black well, Mid verdict chip, tabular <code>.520</code> score, plain-English verdict copy, Judge's Eye coaching notes (Focus / Exposure), and the filmstrip rail along the bottom with per-frame grade rules. Warm colour appears only inside the photographs — the chrome stays out of the way.</figcaption>
+  </figure>
+
+  <div class="footer-note">FrameGrade · screenshot report · 10 captures, 24 Aug 2026 · companion document: FrameGrade_Premium_Frontend_Walkthrough.pdf · source captures: cdp-shots/, screenshots/, project root</div>
+</section>
+
+
+
+</body>
+</html>

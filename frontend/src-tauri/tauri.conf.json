@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "FrameGrade",
   "version": "1.0.0",
-  "identifier": "com.streetstory.curator",
+  "identifier": "com.framegrade.app",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://127.0.0.1:8000",

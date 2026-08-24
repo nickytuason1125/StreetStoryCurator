@@ -34,7 +34,7 @@ def run_gradio(port):
 def main():
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     port = find_free_port()
-    _log.info("Street Story Curator — starting on port %s...", port)
+    _log.info("FrameGrade — starting on port %s...", port)
 
     # Add src/ to sys.path and anchor cwd at project root before the thread starts
     _src = Path(__file__).resolve().parent

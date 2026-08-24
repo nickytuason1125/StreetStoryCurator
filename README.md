@@ -1,4 +1,4 @@
-# Street Story Curator
+# FrameGrade
 
 AI-powered street photography editor. Grades, sequences, and curates your photos using a local vision pipeline — no cloud, no subscription, fully offline after setup.
 
@@ -48,7 +48,7 @@ Install these three free programs before running Setup:
 
 ## After Install
 
-- Launch via the **Street Story Curator** shortcut on your Desktop
+- Launch via the **FrameGrade** shortcut on your Desktop
 - Or double-click `run_local.bat` inside the folder
 
 ---
@@ -72,7 +72,7 @@ All models run locally. Model weights are downloaded on first launch via Hugging
 ## Folder Layout
 
 ```
-street-story-curator/
+framegrade/
 ├── Setup.bat              ← run this to install
 ├── run_local.bat          ← launch after install
 ├── server.py              ← FastAPI backend

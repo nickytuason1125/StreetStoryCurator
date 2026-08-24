@@ -1,11 +1,11 @@
 #!/bin/bash
-# Street Story Curator — Mac launcher (double-click in Finder)
+# FrameGrade — Mac launcher (double-click in Finder)
 
 cd "$(dirname "$0")"
 VENV="$(pwd)/venv"
 
 alert() {
-    osascript -e "display alert \"Street Story Curator\" message \"$1\" buttons {\"OK\"}" 2>/dev/null || echo "$1"
+    osascript -e "display alert \"FrameGrade\" message \"$1\" buttons {\"OK\"}" 2>/dev/null || echo "$1"
 }
 
 # ── Python check ──────────────────────────────────────────────────

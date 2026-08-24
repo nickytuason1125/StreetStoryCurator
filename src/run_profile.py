@@ -138,7 +138,8 @@ SETTINGS = {
     "FRAMEGRADE_DIRECTOR_POOL": Setting(
         int, 12, "candidates shown to the Art Director; prefill cost is superlinear"),
     "FRAMEGRADE_USE_RAG_CONCEPTS": Setting(
-        bool, False, "inject book-derived RAG phrases into prompts; off by default"),
+        bool, True, "inject book-derived RAG phrases into prompts and "
+        "Story/Competition selection; set FRAMEGRADE_USE_RAG_CONCEPTS=0 to disable"),
     "FRAMEGRADE_STORY_REVISION": Setting(
         bool, False, "contact-sheet critique pass; ~200s per iteration on CPU"),
     "FRAMEGRADE_STORY_VERDICT": Setting(

@@ -1349,6 +1349,8 @@ def run_creative_direction(
     #
     # Blend: 60% aesthetic score + 40% cosine similarity to text embedding.
     # Similarity is re-normalised from [−1, 1] → [0, 1] before blending.
+    _rag_selected: list[str] = []      # declared at function scope: an empty
+                                       # brief must still reach generate_rule_set
     if style_prompt.strip():
         try:
             # Cache, not a second embed. _focus_pool has already embedded this
@@ -1359,20 +1361,48 @@ def run_creative_direction(
             # Reference-book ensemble: blend the RAG phrases most relevant to
             # this brief into the query vector, so selection is anchored to the
             # uploaded books' standards (story-mode counterpart of the grading
-            # rubric). 70% brief / 30% top-5 phrase centroid — the brief stays
+            # rubric). 70% brief / 30% phrase centroid - the brief stays
             # in charge; the books refine what "matching" means.
+            #
+            # v2 improvements over the original top-5 flat-mean:
+            #   * ALL stored phrases are embedded (the text tower costs
+            #     milliseconds on short phrases - capping at 35 threw away
+            #     most of a multi-book library)
+            #   * selection is greedy MMR, so the chosen phrases cover
+            #     DISTINCT concepts instead of five paraphrases of one
+            #   * the centroid is similarity-softmax-weighted, so a phrase
+            #     that really matches the brief dominates one that merely
+            #     appeared in the same book
             try:
                 from pdf_rag import load_concepts as _rag_load
                 _rag_phrases = _rag_load()
                 if _rag_phrases:
-                    _ph_vecs  = _embed_texts(_rag_phrases[:35]).astype(np.float32)
+                    _ph_vecs  = _embed_texts(_rag_phrases).astype(np.float32)
                     _ph_vecs /= np.linalg.norm(_ph_vecs, axis=1, keepdims=True) + 1e-9
-                    _ph_topk  = np.argsort(-(_ph_vecs @ _text_vec))[:5]
-                    _ens      = _ph_vecs[_ph_topk].mean(axis=0)
-                    _ens     /= np.linalg.norm(_ens) + 1e-9
-                    _text_vec = 0.70 * _text_vec + 0.30 * _ens
+                    _sims     = _ph_vecs @ _text_vec                       # (P,)
+
+                    # Greedy MMR: relevance first, then penalise near-duplicates
+                    _K, _lam   = 8, 0.72
+                    _order_cand = list(np.argsort(-_sims))
+                    _picked    = [_order_cand[0]]
+                    while len(_picked) < min(_K, len(_order_cand)):
+                        _rest   = [i for i in _order_cand if i not in _picked]
+                        _redun  = (_ph_vecs[_rest] @ _ph_vecs[_picked].T).max(axis=1)
+                        _mmr    = _lam * _sims[_rest] - (1.0 - _lam) * _redun
+                        _picked.append(_rest[int(np.argmax(_mmr))])
+
+                    # Similarity-softmax weights (temperature keeps one phrase
+                    # from flattening the others entirely)
+                    _sel_sims  = _sims[_picked]
+                    _w         = np.exp((_sel_sims - _sel_sims.max()) / 0.10)
+                    _w        /= _w.sum()
+                    _ens       = (_w[:, None] * _ph_vecs[_picked]).sum(axis=0)
+                    _ens      /= np.linalg.norm(_ens) + 1e-9
+                    _text_vec  = 0.70 * _text_vec + 0.30 * _ens
                     _text_vec /= np.linalg.norm(_text_vec) + 1e-9
-                    print(f"[cd] RAG ensemble: top-{len(_ph_topk)} book phrases blended into brief vector")
+                    _rag_selected = [_rag_phrases[i] for i in _picked]
+                    print(f"[cd] RAG ensemble: {len(_rag_selected)} diverse book phrases "
+                          f"(of {len(_rag_phrases)}) weighted into brief vector")
             except Exception as _e_rag:
                 print(f"[cd] RAG ensemble skipped: {_e_rag}")
 
@@ -1400,7 +1430,13 @@ def run_creative_direction(
 
     # ── Step 1: Rule Set + Director Brief from Brief ──────────────────────────
     _p(0.02, "Agent: generating Rule Set from Style Brief…")
-    rule_set = generate_rule_set(style_prompt)
+    # Book phrases matched to this brief travel with it: when the GGUF
+    # refinement fires (keyword-ambiguous brief), the model sees the reference
+    # vocabulary, so HARD_FILTER_PEOPLE / GEOMETRIC / LIGHTING_MOOD reflect the
+    # uploaded books' standards rather than only the user's one-line prompt.
+    rule_set = generate_rule_set(style_prompt, rag_phrases=_rag_selected)
+    if _rag_selected:
+        _p(0.06, f"Rule Set informed by {len(_rag_selected)} book concepts")
     _p(0.06, f"Rule Set: HARD_FILTER_PEOPLE={rule_set['HARD_FILTER_PEOPLE']}  "
              f"GEOMETRIC={rule_set['GEOMETRIC_PRIORITY']}  "
              f"MOOD={rule_set['LIGHTING_MOOD']}")

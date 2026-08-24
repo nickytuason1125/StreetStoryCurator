@@ -1,0 +1,1 @@
+C:\Users\Nicky\ Tuason\Desktop\StreetPhotoEditor\street-story-curator\native\framegrade-rs\target\release\framegrade-rs.exe: C:\Users\Nicky\ Tuason\Desktop\StreetPhotoEditor\street-story-curator\native\framegrade-rs\src\main.rs

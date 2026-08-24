@@ -1,4 +1,4 @@
-# Enhancement Opportunities for Street Story Curator
+# Enhancement Opportunities for FrameGrade
 
 ## Current Limitations and Enhancement Strategies
 
@@ -126,6 +126,6 @@ The system can sort by EXIF timestamps but lacks sophisticated temporal narrativ
 
 ## Conclusion
 
-While Street Story Curator currently has limitations in understanding abstract content, cultural context, personal connections, and temporal nuances, there are numerous enhancement opportunities that can significantly improve its storytelling capabilities. The integration of vision-language models, cultural databases, personalization features, and advanced temporal analysis can transform it from a technical evaluation tool into a sophisticated narrative intelligence system.
+While FrameGrade currently has limitations in understanding abstract content, cultural context, personal connections, and temporal nuances, there are numerous enhancement opportunities that can significantly improve its storytelling capabilities. The integration of vision-language models, cultural databases, personalization features, and advanced temporal analysis can transform it from a technical evaluation tool into a sophisticated narrative intelligence system.
 
 The key is implementing these enhancements incrementally while maintaining the system's core strengths in technical analysis and visual quality assessment. The recent integration of YuNet and NIMA models demonstrates the feasibility of enhancing the system with additional AI capabilities.

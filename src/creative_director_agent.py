@@ -171,7 +171,8 @@ def _keyword_rule_set(style_prompt: str) -> dict:
 _grammar_broken = False
 
 
-def _gguf_refine_rule_set(style_prompt: str) -> "Optional[dict]":
+def _gguf_refine_rule_set(style_prompt: str,
+                          rag_phrases: "Optional[list[str]]" = None) -> "Optional[dict]":
     """Refine the keyword rule set with the shared text model, or None.
 
     Uses local_llm so there is ONE model per process. The previous version
@@ -179,6 +180,11 @@ def _gguf_refine_rule_set(style_prompt: str) -> "Optional[dict]":
     Grammar went away with the shared loader, and that is an improvement:
     measured on this task it scored 11/14 against 14/14 unconstrained,
     biasing toward small ids. It degrades the choice, not just the format.
+
+    rag_phrases: reference-book concepts matched to this brief (Story/
+    Competition RAG). They are appended to the prompt as context ONLY —
+    the keyword path never sees them, so book vocabulary cannot
+    accidentally trip the hardcoded keyword matchers.
     """
     import local_llm
     nl = chr(10)
@@ -186,9 +192,14 @@ def _gguf_refine_rule_set(style_prompt: str) -> "Optional[dict]":
         "Analyze this street-photography style brief and answer with "
         "compact JSON only, no explanation:" + nl
         + 'Brief: "' + style_prompt[:200] + '"' + nl
-        + '{"HARD_FILTER_PEOPLE": true|false, '
-          '"GEOMETRIC_PRIORITY": "High"|"Normal", '
-          '"LIGHTING_MOOD": "<=3 words"}' + nl
+    )
+    if rag_phrases:
+        prompt += ("Reference-book concepts the brief should honor: "
+                   + "; ".join(p[:80] for p in rag_phrases[:6]) + nl)
+    prompt += (
+        '{"HARD_FILTER_PEOPLE": true|false, '
+        '"GEOMETRIC_PRIORITY": "High"|"Normal", '
+        '"LIGHTING_MOOD": "<=3 words"}' + nl
         + "JSON:"
     )
     raw = local_llm.generate(
@@ -217,7 +228,8 @@ def _parse_rule_set_output(raw: str) -> Optional[dict]:
     }
 
 
-def generate_rule_set(style_prompt: str) -> dict:
+def generate_rule_set(style_prompt: str,
+                      rag_phrases: "Optional[list[str]]" = None) -> dict:
     """
     Returns a fully-populated dict:
       {HARD_FILTER_PEOPLE: bool, GEOMETRIC_PRIORITY: "High"|"Normal",
@@ -229,10 +241,13 @@ def generate_rule_set(style_prompt: str) -> dict:
     pipeline. A CPU GGUF refinement pass only fires when the keyword pass
     finds nothing at all (a fully ambiguous brief) and never blocks or
     overrides a confident keyword match.
+
+    rag_phrases: optional reference-book concepts (Story/Competition RAG).
+    They enrich the GGUF refinement prompt only — see _gguf_refine_rule_set.
     """
     rule_set = _keyword_rule_set(style_prompt)
     if not rule_set["BRIEF_KEYWORDS"] and style_prompt.strip():
-        refined = _gguf_refine_rule_set(style_prompt)
+        refined = _gguf_refine_rule_set(style_prompt, rag_phrases=rag_phrases)
         if refined:
             rule_set.update(refined)
     return rule_set

@@ -16,7 +16,7 @@ import { cn } from '../../lib/cn';
  * read as "dated".
  */
 
-type Variant = 'default' | 'quiet' | 'solid' | 'danger';
+type Variant = 'default' | 'quiet' | 'solid' | 'ink' | 'danger';
 type Size = 'sm' | 'md';
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -32,6 +32,12 @@ const VARIANTS: Record<Variant, string> = {
   quiet: 'bg-transparent border border-transparent text-ink-3 hover:bg-raised hover:text-ink active:bg-raised-hover',
   // Filled. Emphasis via luminance, not hue.
   solid: 'bg-raised border border-line-strong text-ink hover:bg-raised-hover active:bg-raised',
+  // Inverted ink — the strongest step the chrome may take. Full-luminance fill,
+  // well-coloured label: a white button on the dark ground. Reserved for the
+  // one primary action on a screen (the welcome hero's CTA); still strictly
+  // neutral, so the mark-colour reservation holds. Hover dims the fill rather
+  // than swapping tokens, so the inversion survives the cursor.
+  ink: 'bg-ink border border-ink text-well hover:opacity-90 active:opacity-85',
   // The one place chrome may take a hue: a destructive action.
   danger: 'bg-transparent border border-line-strong text-ink-2 hover:border-alarm-crit hover:text-alarm-crit active:bg-raised',
 };
@@ -51,7 +57,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       className={cn(
         'inline-flex items-center justify-center rounded-sm font-sans font-medium',
         'cursor-pointer select-none whitespace-nowrap',
-        'transition-colors duration-fast ease',
+        'transition duration-fast ease active:scale-[.98]',
         'disabled:opacity-reject disabled:cursor-not-allowed disabled:hover:bg-transparent',
         VARIANTS[variant],
         SIZES[size],

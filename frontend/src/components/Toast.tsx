@@ -37,7 +37,7 @@ export function Toast({
       aria-live={type === "error" ? "assertive" : "polite"}
       className={cn(
         "animate-fade-in fixed right-4 top-4 z-50 flex min-w-[280px] max-w-[420px]",
-        "items-start gap-3 rounded-md border bg-surface px-4 py-3 shadow-lg",
+        "items-start gap-3 rounded-md border bg-surface px-4 py-3 elev-3",
         type === "error" ? "border-alarm-crit" : "border-line-strong",
       )}
     >

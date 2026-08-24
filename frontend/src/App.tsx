@@ -14,7 +14,7 @@ import {
   ImageOff, X, Sparkles, Copy, Flag,
   LayoutGrid, RectangleHorizontal, SlidersHorizontal,
   Download, CheckSquare, ArrowUpDown, ArrowUp, ArrowDown,
-  Wand2, Zap, Eye, EyeOff, Upload, Search,
+  Wand2, Zap, Eye, EyeOff, Upload, Search, Aperture,
 } from "lucide-react";
 import { Button } from "./components/ui/Button";
 import { Chip } from "./components/ui/Chip";
@@ -24,74 +24,19 @@ import { Modal } from "./components/ui/Modal";
 import { Field, TextArea } from "./components/ui/Field";
 import { StarRating } from "./components/ui/StarRating";
 import { ExifPanel } from "./components/ExifPanel";
+import { Thumb } from "./components/photo/Thumb";
+import { Filmstrip, GridView } from "./components/views/GridView";
+import { AnchorPicker } from "./components/views/AnchorPicker";
+import { ExportModal } from "./components/views/ExportModal";
+import { SimilarShots } from "./components/views/SimilarShots";
+import { FolderBrowser } from "./components/views/FolderBrowser";
 import { T, gradeRule, gradeKey, gradeLabel, formatScore } from "./theme/tokens";
 import { cn } from "./lib/cn";
-
-const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-
-// Block any accidental external analytics / tracking calls — this is a fully offline app.
-if (typeof window !== "undefined") {
-  const _origFetch = window.fetch.bind(window);
-  const _BLOCKED   = ["googleapis.com", "analytics", "sentry.io", "segment.io", "mixpanel", "hotjar"];
-  window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = input.toString();
-    if (_BLOCKED.some(h => url.includes(h))) return Promise.reject(new Error(`Blocked external request: ${url}`));
-    return _origFetch(input, init);
-  };
-}
-
-const API = import.meta.env.VITE_API_URL || (isTauri() ? "http://127.0.0.1:8000" : "http://127.0.0.1:8000");
-const thumbUrl = (p: string) => `${API}/api/thumb?path=${encodeURIComponent(p)}`;
-const photoUrl = (p: string) => `${API}/api/photo?path=${encodeURIComponent(p)}`;
-
-/** Classify free system RAM into a readiness level for grading. `min` is the
- *  server's hard gate (below it a grade is refused); a +1.2 GB margin above that
- *  is treated as "tight" (grades, but may drop to lighter CLIP scoring). */
-function ramReadiness(gs: any): {
-  level: 'clear' | 'tight' | 'critical' | 'unknown';
-  free: number | null; total: number | null; percent: number | null; readout: string; tip: string;
-} {
-  const free    = gs?.ram_free_gb ?? null;
-  const total   = gs?.ram_total_gb ?? null;
-  const percent = gs?.ram_percent ?? null;
-  const min     = gs?.ram_min_gb ?? 1.8;
-  if (free == null) return { level: 'unknown', free, total, percent, readout: '', tip: 'System memory unknown' };
-  // Compact readout that mirrors Task Manager: % in use + GB available.
-  const readout = percent != null
-    ? `${percent.toFixed(0)}% · ${free.toFixed(1)} GB free`
-    : `${free.toFixed(1)}${total != null ? ` / ${total.toFixed(1)}` : ''} GB`;
-  const usedTip = percent != null ? ` (${percent.toFixed(0)}% in use — matches Task Manager)` : '';
-  // "clear" requires at least 5 GB free: the SigLIP encode subprocess needs
-  // ~2 GB RAM during model load plus the grade worker's baseline ~1 GB, leaving
-  // 2 GB breathing room on a 5 GB machine. Below 5 GB is genuinely risky.
-  const clearThresh = Math.max(min + 1.2, 5.0);
-  if (free < min)           return { level: 'critical', free, total, percent, readout, tip: `Only ${free.toFixed(1)} GB free${usedTip} — grading needs ~${min} GB. Close some apps before grading.` };
-  if (free < clearThresh)   return { level: 'tight',    free, total, percent, readout, tip: `${free.toFixed(1)} GB free${usedTip} — enough to grade, but close Chrome or other heavy apps first for a stable cull.` };
-  return { level: 'clear', free, total, percent, readout, tip: `${free.toFixed(1)} GB free${usedTip} — clear to grade.` };
-}
-
-/** A setInterval that runs `fn` immediately, skips ticks while the tab is hidden,
- *  and refreshes once when the tab becomes visible again. Keeps background polling
- *  from running (and flooding the server log) when the app isn't on screen. */
-function useGuardedInterval(fn: () => void, ms: number, deps: any[]) {
-  useEffect(() => {
-    fn();
-    const id = setInterval(() => { if (!document.hidden) fn(); }, ms);
-    const onVis = () => { if (!document.hidden) fn(); };
-    document.addEventListener("visibilitychange", onVis);
-    return () => { clearInterval(id); document.removeEventListener("visibilitychange", onVis); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps);
-}
-
-/** Strip traversal sequences and normalise separators before sending paths to the API. */
-const sanitizePath = (raw: string): string =>
-  raw.trim()
-    .replace(/[\/\\]+/g, "/")   // normalise separators
-    .split("/")
-    .filter(seg => seg !== "..")  // drop traversal segments
-    .join("/")
-    .replace(/^\//, match => match); // preserve leading slash (absolute paths)
+import { API, photoUrl, sanitizePath, thumbUrl } from "./lib/api";
+import { APP_VERSION } from "./lib/version";
+import { useGuardedInterval } from "./hooks/useGuardedInterval";
+import { useWindowedGrid } from "./hooks/useWindowedGrid";
+import { gc, ramReadiness } from "./lib/grading";
 
 /* The second palette that used to live here is gone.
  *
@@ -111,13 +56,16 @@ const sanitizePath = (raw: string): string =>
  * Mid is deliberately silent. It is the majority bucket, so an amber badge on
  * every Mid frame put colour on most of the grid and made the machine's least
  * confident verdict its loudest. Neutral ink and no rule instead. */
-function gc(g: string) {
-  const k = gradeKey(g);
-  if (k === 'strong') return T.gradeStrong;
-  if (k === 'weak')   return T.gradeWeak;
-  if (k === 'mid')    return T.ink2;   // silent — neutral, never amber
-  return T.ink3;
-}
+
+/* Stable photo identity. IDs used to be `p-${index}`, so re-grading or
+ * restoring the catalog re-indexed every photo mid-session — any selection
+ * state keyed by id pointed at the wrong frame afterwards. Deriving the id
+ * from the path keeps identity stable across reloads, re-grades and merges. */
+const photoId = (path: string): string => {
+  let h = 5381;
+  for (let i = 0; i < path.length; i++) h = ((h << 5) + h + path.charCodeAt(i)) | 0;
+  return `p-${(h >>> 0).toString(36)}`;
+};
 
 /* ── Vision-critique region guide ───────────────────────────────────────────
  * One teacher vocabulary shared by every overlay (heatmap glow, box callouts,
@@ -190,293 +138,24 @@ function SortableItem({ id, children }: { id: string; children: React.ReactNode 
   return <div ref={setNodeRef} style={style} {...attributes} {...listeners}>{children}</div>;
 }
 
-
-const FilmThumb = memo(function FilmThumb({
-  p, isSel, onSelect, isUsed, isSelected, h = 84, showFn = true,
-}: { p: any; isSel: boolean; onSelect: (id: string) => void; isUsed: boolean; isSelected: boolean; h?: number; showFn?: boolean }) {
-  // Frames keep their real proportions here too — a fixed row height with
-  // natural width, so a vertical reads as a vertical while scrubbing.
-  const imgH = h - 4;
-  const isWeak = gradeKey(p.grade) === 'weak';
-  const rule = gradeRule(p.grade);
-  return (
-    <button
-      data-sel={isSel ? '1' : '0'}
-      onClick={() => onSelect(p.id)}
-      className={cn(
-        'flex shrink-0 cursor-pointer flex-col gap-px border-0 p-px',
-        'rounded-sm outline outline-2 transition-colors duration-fast ease',
-        isSel ? 'bg-raised' : 'bg-transparent hover:bg-surface',
-        isSelected ? 'outline-mark' : isSel ? 'outline-ink' : 'outline-transparent',
-      )}
-    >
-      <span className="relative block shrink-0 overflow-hidden bg-well" style={{ height: imgH }}>
-        <img src={thumbUrl(p.path)} alt="" decoding="async" loading="lazy"
-          className={cn('block h-full w-auto max-w-none', isWeak && 'opacity-reject')}/>
-        {isUsed && (
-          <span className="absolute left-px top-px rounded-sm bg-well px-px">
-            <Flag size={7} className="text-ink-2"/>
-          </span>
-        )}
-        {isSelected && (
-          <span className="absolute right-px top-px flex h-3 w-3 items-center justify-center rounded-sm bg-mark">
-            <svg width="7" height="7" viewBox="0 0 24 24" fill="none" stroke={T.well} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20,6 9,17 4,12"/></svg>
-          </span>
-        )}
-      </span>
-
-      {/* Same rule as the contact sheet, so both views speak one language. */}
-      <span aria-hidden className="block w-full" style={{ height: 'var(--rule)', background: rule ?? undefined }}/>
-
-      {showFn && (
-        <span className="flex w-full items-center gap-px">
-          <span className={cn('t-num flex-1 truncate text-left text-xs',
-                              isSel ? 'text-ink-2' : 'text-ink-3')}>
-            {(p.path.split(/[\\/]/).pop() ?? '').replace(/\.[^.]+$/, '')}
-          </span>
-          {p.has_annotations && <AnnotatedMark/>}
-          {p.stars > 0 && (
-            <svg width="6" height="6" viewBox="0 0 24 24" fill={T.mark} stroke={T.mark} strokeWidth="2" className="shrink-0">
-              <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26"/>
-            </svg>
-          )}
-        </span>
-      )}
-    </button>
-  );
-});
-
-/* StarRating moved to components/ui/StarRating.tsx. The copy that lived here
- * shadowed it, so the shared component sat imported by nobody while this one
- * painted stars in oklch(70% .18 72) — an amber about ten degrees in hue from
- * the old grade accent. At 11px over a photograph the two were the same colour,
- * carrying two unrelated meanings inside one cell. Stars are the photographer's
- * judgement, so they belong to --mark; the machine's grade gives up colour. */
+/* RevealSentinel moved to components/views/SimilarShots.tsx with its only
+ * consumer. FilmThumb and GridView moved to components/views/GridView.tsx —
+ * see that file. StarRating moved to components/ui/StarRating.tsx. The copy
+ * that lived here shadowed it, so the shared component sat imported by nobody
+ * while this one painted stars in oklch(70% .18 72) — an amber about ten
+ * degrees in hue from the old grade accent. At 11px over a photograph the two
+ * were the same colour, carrying two unrelated meanings inside one cell.
+ * Stars are the photographer's judgement, so they belong to --mark; the
+ * machine's grade gives up colour. */
 
 /* ExifBlock moved to components/ExifPanel.tsx — see that file for why it is
  * grouped now. It was the last component still setting its values in
  * 'SF Mono', a macOS font that does not exist on this machine, so the one
  * panel that is entirely numbers was the one not set in the app's mono face. */
 
-/* ── Export Modal ────────────────────────────────────────────────── */
-function ExportModal({ photos, filterGrade, onClose }: { photos: any[]; filterGrade: string | null; onClose: () => void }) {
-  const [xmpState, setXmpState] = useState<'idle'|'busy'|'done'|'error'>('idle');
-  const [xmpCount, setXmpCount] = useState(0);
+/* ExportModal moved to components/views/ExportModal.tsx. */
 
-  const handleDownload = (p: any) => {
-    const a = document.createElement('a');
-    a.href = photoUrl(p.path); a.download = p.path.split(/[\\/]/).pop() || 'photo.jpg';
-    a.click();
-  };
-  const handleDownloadAll = () => photos.forEach((p, i) => setTimeout(() => handleDownload(p), i * 200));
-
-  const handleExportXmp = async () => {
-    setXmpState('busy');
-    try {
-      const res = await fetch(`${API}/api/export/metadata`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ photos: photos.map(p => ({
-          path: p.path, grade: p.grade, score: p.score,
-          critique: p.critique, breakdown: p.breakdown, nima_score: p.nima_score,
-        })) }),
-      });
-      const data = await res.json();
-      setXmpCount(data.exported ?? 0);
-      setXmpState('done');
-    } catch {
-      setXmpState('error');
-    }
-  };
-
-  return (
-    <Modal
-      title="Export photos"
-      subtitle={<><span className="t-num">{photos.length}</span> photo{photos.length !== 1 ? 's' : ''}{filterGrade ? ` · ${filterGrade} only` : ''}</>}
-      onClose={onClose}
-      footer={
-        <>
-          <Button onClick={onClose}>Cancel</Button>
-          <Button variant="solid" onClick={handleDownloadAll} icon={<Download size={11}/>}>
-            Download all (<span className="t-num">{photos.length}</span>)
-          </Button>
-        </>
-      }
-    >
-      {photos.map(p => (
-        <div key={p.id} className="flex items-center gap-3 border-b border-line py-2 last:border-0">
-          <img src={thumbUrl(p.path)} alt="" loading="lazy"
-            className="block h-8 w-auto max-w-none shrink-0 rounded-sm bg-well"/>
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-sm text-ink">{p.path.split(/[\\/]/).pop()}</p>
-            <p className="t-num mt-px truncate text-xs text-ink-3">
-              {[p.exif?.camera, p.exif?.aperture, p.exif?.shutter, p.exif?.iso ? `ISO ${p.exif.iso}` : null].filter(Boolean).join(' · ')}
-            </p>
-          </div>
-          <Button size="sm" variant="quiet" onClick={() => handleDownload(p)}
-            title={`Download ${p.path.split(/[\\/]/).pop()}`} icon={<Download size={10}/>}/>
-        </div>
-      ))}
-
-      {/* XMP sidecars. State is carried by the words, not by a colour change —
-          "Written" is unambiguous without turning the control green. */}
-      <div className="sticky bottom-0 -mx-4 mt-2 flex items-center justify-between gap-3 border-t border-line bg-raised px-4 py-3">
-        <div className="min-w-0">
-          <p className="text-sm text-ink-2">XMP sidecars</p>
-          <p className="mt-px text-xs text-ink-3">
-            {xmpState === 'idle'  && 'Write .xmp files beside each photo — Lightroom and Capture One read them'}
-            {xmpState === 'busy'  && 'Writing sidecars…'}
-            {xmpState === 'done'  && <><span className="t-num">{xmpCount}</span> sidecar{xmpCount !== 1 ? 's' : ''} written beside your photos</>}
-            {xmpState === 'error' && 'Export failed. Check the server log for the cause.'}
-          </p>
-        </div>
-        <Button onClick={handleExportXmp} disabled={xmpState === 'busy'}
-          variant={xmpState === 'error' ? 'danger' : 'solid'}>
-          {xmpState === 'busy' ? 'Writing…' : xmpState === 'done' ? 'Written' : 'Export XMP'}
-        </Button>
-      </div>
-    </Modal>
-  );
-}
-
-/* ── Grid View ──────────────────────────────────────────────────── */
-function GridView({
-  photos, selId, onSelect, usedPaths, selectMode, setSelectMode, selectedIds, setSelectedIds, onCreateSequence, onAutoSequence,
-}: {
-  photos: any[]; selId: string | null; onSelect: (id: string) => void; usedPaths: Set<string>;
-  selectMode: boolean; setSelectMode: (v: boolean) => void;
-  selectedIds: Set<string>; setSelectedIds: React.Dispatch<React.SetStateAction<Set<string>>>;
-  onCreateSequence: () => void; onAutoSequence: () => void;
-}) {
-  const toggleSelect = (id: string) => {
-    setSelectedIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; });
-  };
-  return (
-    <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden', position:'relative' }}>
-      <div className="flex h-8 shrink-0 items-center justify-between border-b border-line bg-surface px-3">
-        <div className="flex items-center gap-2">
-          <Button size="sm" variant={selectMode ? 'solid' : 'quiet'}
-            onClick={() => { setSelectMode(!selectMode); setSelectedIds(new Set()); }}
-            icon={<CheckSquare size={11}/>}>
-            {selectMode ? `Select (${selectedIds.size})` : 'Select'}
-          </Button>
-          {selectMode && selectedIds.size > 0 && (
-            <Button size="sm" variant="quiet" onClick={() => setSelectedIds(new Set())}>
-              Clear
-            </Button>
-          )}
-        </div>
-        <span className="t-num text-xs text-ink-3">{photos.length} photos</span>
-      </div>
-
-      {/* Contact sheet.
-       *
-       * Rows are a fixed height with each frame taking its NATURAL width. The
-       * previous grid forced `aspectRatio:'3/2'` with `objectFit:'cover'`, which
-       * silently re-cropped every vertical, 4:3 and in-camera square in the
-       * library — so the composition being judged was not the one that was shot.
-       * In a tool whose entire job is judging composition that is a correctness
-       * bug, not a style one.
-       *
-       * The right edge is ragged rather than flush: true justification needs each
-       * image's dimensions to solve row widths, and the client doesn't have them
-       * without a load pass. Preserving aspect is the part that matters. */}
-      <div className="flex-1 overflow-auto bg-ground p-2">
-        <div className="flex flex-wrap gap-1">
-          {photos.map(p => {
-            const isChecked = selectedIds.has(p.id);
-            const isUsed    = usedPaths.has(p.path);
-            const isCurrent = p.id === selId && !selectMode;
-            const rule      = gradeRule(p.grade);
-            const isWeak    = gradeKey(p.grade) === 'weak';
-            const isPending = gradeKey(p.grade) === 'pending';
-            return (
-              <button key={p.id} onClick={() => selectMode ? toggleSelect(p.id) : onSelect(p.id)}
-                className={cn(
-                  'group relative flex cursor-pointer flex-col border-0 bg-transparent p-0',
-                  'rounded-sm outline outline-2 outline-offset-1 transition-[outline-color] duration-fast ease',
-                  isChecked ? 'outline-mark' : isCurrent ? 'outline-ink' : 'outline-transparent',
-                )}
-                style={{ contentVisibility: 'auto', containIntrinsicSize: '180px 150px' }}>
-                <span className="relative block overflow-hidden bg-well" style={{ height: 132 }}>
-                  <img src={thumbUrl(p.path)} alt="" decoding="async" loading="lazy"
-                    className={cn(
-                      'block h-full w-auto max-w-none transition-opacity duration-fast ease',
-                      // Weak frames physically sink — the cheapest high-value
-                      // scanning affordance in the whole design.
-                      isWeak && 'opacity-reject',
-                      selectMode && !isChecked && 'opacity-reject',
-                    )}/>
-                  {selectMode && (
-                    <span className={cn(
-                      'absolute left-1 top-1 flex h-4 w-4 items-center justify-center rounded-sm border',
-                      'transition-colors duration-fast ease',
-                      isChecked ? 'border-mark bg-mark' : 'border-ink-2 bg-well',
-                    )}>
-                      {isChecked && <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke={T.well} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20,6 9,17 4,12"/></svg>}
-                    </span>
-                  )}
-                  {isUsed && (
-                    <span className="t-label absolute right-1 top-1 rounded-sm bg-well px-1 !text-ink-2">
-                      Used
-                    </span>
-                  )}
-                </span>
-
-                {/* The machine's verdict: a rule in a fixed position, so runs of
-                    Strong align into bands down the sheet and read without being
-                    read. Mid shows nothing — silence is "no opinion". */}
-                <span aria-hidden className={cn('block w-full', isPending && 'hatch-pending')}
-                      style={{ height: 'var(--rule)', background: rule ?? undefined }}/>
-
-                <span className={cn(
-                  'flex items-center gap-1 px-1 py-px',
-                  isCurrent ? 'bg-raised' : 'bg-surface',
-                )}>
-                  <span className={cn('t-num flex-1 truncate text-left text-xs',
-                                      isWeak ? 'text-ink-4' : 'text-ink-3')}>
-                    {(p.path.split(/[\\/]/).pop() ?? '').replace(/\.[^.]+$/, '')}
-                  </span>
-                  {p.stars > 0 && (
-                    <span className="shrink-0 leading-none" title={`${p.stars} of 5`}>
-                      <svg width="8" height="8" viewBox="0 0 24 24" fill={T.mark} stroke={T.mark} strokeWidth="2">
-                        <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26"/>
-                      </svg>
-                    </span>
-                  )}
-                  {p.stars > 0 && <span className="t-num shrink-0 text-xs text-mark-ink">{p.stars}</span>}
-                  {p.has_annotations && <AnnotatedMark/>}
-                  {!isPending && p.score > 0 && (
-                    <span className={cn('t-num shrink-0 text-xs', isWeak ? 'text-ink-4' : 'text-ink-2')}>
-                      {formatScore(p.score)}
-                    </span>
-                  )}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Selection actions. Floats over the sheet, so it is the one surface that
-          earns real elevation rather than a border. */}
-      {selectMode && selectedIds.size > 0 && (
-        <div className="animate-fade-in absolute bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 whitespace-nowrap rounded-md border border-line-strong bg-surface px-4 py-2 shadow-lg">
-          <span className="text-sm text-ink">
-            <span className="t-num">{selectedIds.size}</span> selected
-          </span>
-          <div className="h-4 w-px bg-line-strong"/>
-          <Button variant="solid" onClick={onCreateSequence} icon={<Layers size={11}/>}>
-            Start sequence
-          </Button>
-          <Button onClick={onAutoSequence} icon={<RefreshCw size={11}/>}>
-            Auto
-          </Button>
-        </div>
-      )}
-    </div>
-  );
-}
+/* GridView moved to components/views/GridView.tsx. */
 
 /* ── Critique trigger parser ────────────────────────────────────── */
 // Parses <trigger type="blur|heatmap|grid">text</trigger> tags emitted by the
@@ -656,7 +335,7 @@ const FACTOR_COLORS: Record<string, string> = {
 
 const _INK  = T.ink;
 const _SH   = `0 0 8px ${T.well}, 0 1px 3px ${T.well}`;
-const _MONO = "'Courier New', monospace";
+const _MONO = "var(--font-mono)";
 
 function FactorAnnotations({ factors }: { factors: any[] }) {
   if (!factors || factors.length === 0) return null;
@@ -730,7 +409,7 @@ function FactorAnnotations({ factors }: { factors: any[] }) {
             {/* Label: glyph + name + badge, inside region */}
             <text x={`${lx}%`} y={`${ly}%`}
               fill={color} fontSize="12" fontWeight="700"
-              fontFamily="'Courier New', monospace"
+              fontFamily="var(--font-mono)"
               filter="url(#fa-txt)">
               {glyph} {f.label}{badge ? ` ${badge}` : ''}
             </text>
@@ -739,7 +418,7 @@ function FactorAnnotations({ factors }: { factors: any[] }) {
             {f.note && (
               <text x={`${lx}%`} y={`${Math.min(ly + 4, ry2 - 2)}%`}
                 fill={color} fontSize="10" fillOpacity="0.75"
-                fontFamily="'Courier New', monospace"
+                fontFamily="var(--font-mono)"
                 filter="url(#fa-txt)">
                 {f.note}
               </text>
@@ -763,10 +442,10 @@ function AnalysisHUD({ grade, score, breakdown }: { grade: string; score: number
     <div style={{ position:'absolute', bottom:62, left:20, pointerEvents:'none', zIndex:2 }}>
       {/* Score + grade written directly on the photo */}
       <div style={{ display:'flex', alignItems:'baseline', gap:6, marginBottom:10 }}>
-        <span style={{ fontFamily:_MONO, fontSize:'var(--text-xl)', fontWeight:700, lineHeight:1,
+        <span style={{ fontFamily:_MONO, fontSize:'var(--text-xl)', fontWeight:500, lineHeight:1,
           color:gradeColor, textShadow:_SH, letterSpacing:'-.01em' }}>{pct}</span>
         <span style={{ fontFamily:_MONO, fontSize:'var(--text-xs)', color:_INK, textShadow:_SH, opacity:.45 }}>/100</span>
-        <span style={{ fontFamily:_MONO, fontSize:'var(--text-xs)', fontWeight:700, letterSpacing:'.1em',
+        <span style={{ fontFamily:_MONO, fontSize:'var(--text-xs)', fontWeight:500, letterSpacing:'.1em',
           color:gradeColor, textShadow:_SH, marginLeft:4 }}>{gradeLabel(grade).toUpperCase()}</span>
       </div>
       {/* Aspect scores as pen-ruled tick lines */}
@@ -788,7 +467,7 @@ function AnalysisHUD({ grade, score, breakdown }: { grade: string; score: number
                 <line x1="0" y1="4.5" x2={filled} y2="4.5" stroke={col} strokeWidth="1.5" strokeLinecap="round"/>
                 <line x1={filled} y1="1" x2={filled} y2="8" stroke={col} strokeWidth="1.5" strokeLinecap="round"/>
               </svg>
-              <span style={{ fontFamily:_MONO, fontSize:'var(--text-xs)', fontWeight:700, color:col,
+              <span style={{ fontFamily:_MONO, fontSize:'var(--text-xs)', fontWeight:500, color:col,
                 textShadow:_SH, flexShrink:0, width:22 }}>{vpct}</span>
             </div>
           );
@@ -857,6 +536,13 @@ export default function App() {
   const [deepGrade,  setDeepGrade]  = useState(false);   // OFF = fast SigLIP zero-shot; ON = Qwen VLM (slower, GPU)
   const [graderUsed, setGraderUsed] = useState<'fast'|'deep'|'scan'|null>(null);  // which grader actually ran (transparency badge)
   const [mainTab,    setMainTab]    = useState<"gallery"|"duplicates"|"creative">("gallery");
+  /* Duplicates view: groups render incrementally (4 at a time via a scroll
+   * sentinel) so 119 groups × ~150 thumbs never mount at once. */
+  const [dupGroupsShown, setDupGroupsShown] = useState(4);
+  useEffect(() => { setDupGroupsShown(4); }, [mainTab]);
+  const revealMoreDupGroups = useCallback(() => setDupGroupsShown(n => n + 4), []);
+  /* RAM chip popover — the crit chip must offer an action, not just an alarm. */
+  const [ramPopoverOpen, setRamPopoverOpen] = useState(false);
   const [seqMode,    setSeqMode]    = useState<'auto'|'director'|'story'|'competition'>('story');
   const [directorPrompt,  setDirectorPrompt]  = useState('');
   const [directorResult,  setDirectorResult]  = useState<any>(null);
@@ -988,8 +674,15 @@ export default function App() {
   const [photoNatDims,          setPhotoNatDims]          = useState<{w:number;h:number}|null>(null);
   const [deepCritique,          setDeepCritique]          = useState<{narrative_arc:string;geometry_composition:string}|null>(null);
   const [deepCritiqueLoading,   setDeepCritiqueLoading]   = useState(false);
+  /* Loupe full-preview failure. /api/photo falls back to a RAW full decode;
+   * when even that fails the stage used to go silently black. Now the loupe
+   * degrades to the thumbnail with an honest note and a real retry. */
+  const [loupePreviewFailed,    setLoupePreviewFailed]    = useState(false);
+  const [loupeRetry,            setLoupeRetry]            = useState(0);
+  useEffect(() => { setLoupePreviewFailed(false); setLoupeRetry(0); }, [selId]);
 
-  const filmRef    = useRef<HTMLDivElement>(null);
+  /* filmRef removed — the filmstrip is extracted to <Filmstrip>, which owns
+   * its own ref and index-based auto-scroll. */
   const dragCounter = useRef(0);
 
   const sensors = useSensors(
@@ -1036,7 +729,12 @@ export default function App() {
         return;
       }
       fetch(`${API}/`)
-        .then(r => { if (r.ok && !cancelled) setBackendReady(true); })
+        .then(r => {
+          // Retry on ANY non-ready outcome — a non-OK response used to stop the
+          // loop silently and leave the app on "Starting…" forever.
+          if (r.ok && !cancelled) setBackendReady(true);
+          else if (!cancelled && attempts <= 100) timerId = setTimeout(check, 600);
+        })
         .catch(() => {
           if (!cancelled) timerId = setTimeout(check, 600);
         });
@@ -1198,6 +896,25 @@ export default function App() {
 
   const sel = useMemo(() => photos.find(p => p.id === selId) ?? photos[0] ?? null, [photos, selId]);
 
+  /* Duplicate group stats — the single source for both the Duplicates tab
+   * count and the Similar Shots header, so the two numbers always agree.
+   * (They used to be computed two different ways and disagreed by ~340.) */
+  const dupStats = useMemo(() => {
+    const byCluster: Record<number, any[]> = {};
+    for (const p of photos) {
+      if (p.cluster_id < 0) continue;
+      (byCluster[p.cluster_id] ??= []).push(p);
+    }
+    const groups = Object.values(byCluster)
+      .map(g => {
+        const best = g.find(p => (p.sim_flag||'').includes('Best')) ?? g[0];
+        const rest = g.filter(p => p !== best).sort((a,b) => b.score - a.score);
+        return { best, rest, all: [best, ...rest] };
+      })
+      .sort((a, b) => b.all.length - a.all.length);
+    return { groups, totalDups: groups.reduce((s, g) => s + g.rest.length, 0) };
+  }, [photos]);
+
   useEffect(() => {
     if (photos.length > 0 && !selId) setSelId(photos[0].id);
   }, [photos]);
@@ -1224,14 +941,8 @@ export default function App() {
     return () => ctrl.abort();
   }, [sel?.id]);
 
-  /* auto-scroll filmstrip to selected thumb */
-  useEffect(() => {
-    const el = filmRef.current; if (!el) return;
-    const btn = el.querySelector('[data-sel="1"]') as HTMLElement | null; if (!btn) return;
-    const er = el.getBoundingClientRect(), br = btn.getBoundingClientRect();
-    if (br.left < er.left || br.right > er.right)
-      el.scrollLeft += (br.left + br.width / 2) - (er.left + er.width / 2);
-  }, [selId]);
+  /* auto-scroll filmstrip to selected thumb — moved into <Filmstrip> (index-based,
+   * works when the selection sits outside the rendered window) */
 
 
   const filteredPhotos = useMemo(() => {
@@ -1248,7 +959,43 @@ export default function App() {
     return [...base].sort((a, b) => sortScore === 'desc' ? b.score - a.score : a.score - b.score);
   }, [photos, filterGrade, filterStars, redacted, showDuplicates, sortScore, carousel, searchResults]);
 
-  /* keyboard nav */
+  /* Star rating — declared BEFORE the keyboard effect below: that effect lists
+   * handleSetStars in its dependency array, and deps arrays evaluate during
+   * render. A const declared later would throw "Cannot access 'handleSetStars'
+   * before initialization" (TDZ) the moment this view mounts. */
+  const handleSetStars = useCallback((id: string, stars: number) => {
+    setPhotos(prev => prev.map(p => p.id === id ? { ...p, stars } : p));
+    // Fire-and-forget: train PersonalHead + queue DPO event
+    const path = photos.find(p => p.id === id)?.path;
+    if (path) {
+      axios.post(`${API}/api/personal/star`, { path, stars }).catch(() => {});
+    }
+  }, [photos]);
+
+  /* keyboard nav — full culling flow, no mouse required.
+   *
+   *   ←/→ or h/l   move selection          g / e   grid ⇄ loupe
+   *   1–5          star (repeat = clear)   0       clear stars
+   *   x            toggle "used" (persisted to photo_flags.json)
+   *
+   * The used-toggle posts to /api/flags/used so the mark survives restarts,
+   * matching how the flags are loaded at boot. Deps include handleSetStars and
+   * sel: both were previously captured stale by this effect's closure. */
+  const handleToggleUsedKb = useCallback((id: string) => {
+    const path = photos.find(p => p.id === id)?.path;
+    if (!path) return;
+    let nextUsed: Set<string> | null = null;
+    setUsed(prev => {
+      nextUsed = new Set(prev);
+      nextUsed.has(path) ? nextUsed.delete(path) : nextUsed.add(path);
+      return nextUsed;
+    });
+    // Persist after the state update resolves; fire-and-forget like the other flags.
+    setTimeout(() => {
+      axios.post(`${API}/api/flags/used`, { path }).catch(() => {});
+    }, 0);
+  }, [photos]);
+
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
       if (['INPUT','SELECT','TEXTAREA'].includes((document.activeElement as HTMLElement)?.tagName)) return;
@@ -1260,12 +1007,14 @@ export default function App() {
         const n = parseInt(e.key);
         if (selId) handleSetStars(selId, sel?.stars === n ? 0 : n);
       }
+      if (e.key === '0' && selId) handleSetStars(selId, 0);
+      if ((e.key === 'x' || e.key === 'X') && selId) handleToggleUsedKb(selId);
       if (e.key === 'g' || e.key === 'G') setLoupeMode('grid');
       if ((e.key === 'e' || e.key === 'E') && isDone) setLoupeMode('loupe');
     };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
-  }, [photos, selId, filteredPhotos]);
+  }, [photos, selId, filteredPhotos, sel, handleSetStars, handleToggleUsedKb]);
 
   /* clear creative state when folder changes */
   useEffect(() => {
@@ -1302,7 +1051,7 @@ export default function App() {
         const res = await axios.post(`${API}/api/list-folder`, { folder_path: sanitizePath(folder) });
         const rawPhotos: {path:string;exif:any}[] = res.data.photos || res.data.paths?.map((p: string) => ({path:p,exif:{}})) || [];
         if (!rawPhotos.length) notify("That folder has no images in it", "info");
-        const ps = rawPhotos.map((p, i) => ({ id:`p-${i}`, path:p.path, grade:'Pending', score:0, breakdown:{}, critique:'', reasoning_log:'', is_verified:false, stars:0, exif:p.exif||{} }));
+        const ps = rawPhotos.map(p => ({ id:photoId(p.path), path:p.path, grade:'Pending', score:0, breakdown:{}, critique:'', reasoning_log:'', is_verified:false, stars:0, exif:p.exif||{} }));
         setPhotos(ps);
         setFolders([folder]);
         setSelId(ps[0]?.id ?? null);
@@ -1363,6 +1112,7 @@ export default function App() {
   useEffect(() => {
     if (!sel || (sel.has_annotations && sel.eye_overlay_url !== undefined)) return;
     let cancelled = false;
+    let misses = 0;
     const check = async () => {
       if (cancelled || document.hidden) return;
       try {
@@ -1385,6 +1135,10 @@ export default function App() {
                 }
               : p
           ));
+        } else if (++misses >= 15) {
+          // 15 misses (~2 min): this photo is never getting annotations — stop
+          // polling instead of hammering the endpoint every 8 s forever.
+          cancelled = true;
         }
       } catch { /* silent */ }
     };
@@ -1565,7 +1319,7 @@ export default function App() {
   // Shared by Resume and by grade-failure recovery. Returns the photo count.
   const applyCatalog = useCallback((data: any): number => {
     if (!data?.exists || !data?.photos?.length) return 0;
-    const ps = data.photos.map((p: any, i: number) => ({ ...p, id: `p-${i}` }));
+    const ps = data.photos.map((p: any) => ({ ...p, id: photoId(p.path) }));
     // Apply same auto-redact logic as grading so duplicates are hidden in the gallery
     const autoRedacted = new Set<string>(
       ps.filter((p: any) => p.cluster_id >= 0 && !(p.sim_flag || '').startsWith('★'))
@@ -1604,12 +1358,12 @@ export default function App() {
         const existing = new Set(prev.map(p => p.path));
         const added = rawPhotos
           .filter(p => !existing.has(p.path))
-          .map((p, i) => ({ id:`p-${prev.length + i}`, path:p.path, grade:'Pending', score:0, breakdown:{}, critique:'', reasoning_log:'', is_verified:false, stars:0, exif:p.exif||{} }));
+          .map(p => ({ id:photoId(p.path), path:p.path, grade:'Pending', score:0, breakdown:{}, critique:'', reasoning_log:'', is_verified:false, stars:0, exif:p.exif||{} }));
         return [...prev, ...added];
       });
       setFolders(prev => prev.includes(newFolder) ? prev : [...prev, newFolder]);
       notify(`Added ${rawPhotos.length} photos from ${newFolder.split(/[\\/]/).pop()}`, 'success');
-    } catch { notify('❌ Failed to add folder', 'error'); }
+    } catch { notify('Failed to add folder', 'error'); }
     finally { setListLoading(false); }
   }, [notify]);
 
@@ -1672,15 +1426,18 @@ export default function App() {
       const decoder = new TextDecoder();
       let buf = '';
       const _readWithTimeout = (): Promise<ReadableStreamReadResult<Uint8Array>> =>
-        Promise.race([
-          reader.read(),
-          new Promise<never>((_, reject) =>
-            setTimeout(
-              () => reject(new Error('No response from server for 45 s — the grader may have crashed. Check the server log and click Grade to retry.')),
-              45_000,
-            )
-          ),
-        ]);
+        // The losing timer used to keep running after a successful read,
+        // accumulating one dead 45 s timer per chunk on long grades.
+        new Promise((resolve, reject) => {
+          const t = setTimeout(
+            () => reject(new Error('No response from server for 45 s — the grader may have crashed. Check the server log and click Grade to retry.')),
+            45_000,
+          );
+          reader.read().then(
+            v => { clearTimeout(t); resolve(v); },
+            e => { clearTimeout(t); reject(e); },
+          );
+        });
       outer: while (true) {
         const { done, value } = await _readWithTimeout();
         if (done) break;
@@ -1701,7 +1458,7 @@ export default function App() {
           if (msg.quality) setGradeQuality(String(msg.quality));
           if (msg.error) throw new Error(msg.error);
           if (msg.done) {
-            const ps = msg.data.map((p: any, i: number) => ({ ...p, id: `p-${i}` }));
+            const ps = msg.data.map((p: any) => ({ ...p, id: photoId(p.path) }));
             setPhotos(ps);
             setRedacted(new Set<string>(
               ps.filter((p: any) => p.cluster_id >= 0 && !(p.sim_flag || '').startsWith('★'))
@@ -1737,7 +1494,7 @@ export default function App() {
             const _usedDeep = _graders.has('qwen');
             setGraderUsed(scanMode ? 'scan' : _usedDeep ? 'deep' : 'fast');
             if (deepGrade && !scanMode && !_usedDeep) {
-              notify('⚠️ Deep Grade fell back to Fast — not enough free memory for the deep analysis. Close some apps and re-grade for full accuracy.', 'error');
+              notify('Deep Grade fell back to Fast — not enough free memory for the deep analysis. Close some apps and re-grade for full accuracy.', 'error');
             }
             notify(`Graded ${msg.total} images${mogcoNote}${mogcoErr}`, 'success');
             axios.post(`${API}/api/recommend`, { photos: msg.data })
@@ -1763,7 +1520,7 @@ export default function App() {
           setLoupeMode('grid');
           notify(`Grading stopped early — recovered ${n} graded photo${n !== 1 ? 's' : ''} from the last checkpoint.`, 'error');
         } else {
-          notify(isStall ? '❌ No response from the grader — it may be stalled. Check the server log and retry.' : `❌ ${msg}`, 'error');
+          notify(isStall ? 'No response from the grader — it may be stalled. Check the server log and retry.' : `${msg}`, 'error');
         }
       } catch {
         notify(`${msg}`, 'error');
@@ -1787,10 +1544,10 @@ export default function App() {
       setCarousel(Array.isArray(d) ? d : d.sequence);
       setSubjType(d.subject_type ?? null);
       setMainTab('gallery');
-      notify('✅ Sequence generated', 'success');
+      notify('Sequence generated', 'success');
     } catch (err: any) { notify(`${err.response?.data?.detail || "Could not build the sequence"}`, "error"); }
     setLoading(false);
-  }, [photos, carousel, notify]);
+  }, [photos, carousel, notify, seqMinStars]);
 
   const handleExport = async () => {
     if (carousel.length < 5) return;
@@ -1938,15 +1695,17 @@ export default function App() {
   }, [notify]);
 
   const handleDragEnd = (e: any) => {
-    if (e.active.id !== e.over?.id) {
-      setCarousel(prev => {
-        const a = [...prev];
-        const oi = a.findIndex(i => i.path === e.active.id);
-        const ni = a.findIndex(i => i.path === e.over.id);
-        const [m] = a.splice(oi, 1); a.splice(ni, 0, m);
-        return a;
-      });
-    }
+    // `over` is null when the drop lands outside every droppable — dnd-kit
+    // still fires onDragEnd. Guard first or the reorder below throws.
+    if (!e.over || e.active.id === e.over.id) return;
+    setCarousel(prev => {
+      const a = [...prev];
+      const oi = a.findIndex(i => i.path === e.active.id);
+      const ni = a.findIndex(i => i.path === e.over.id);
+      if (oi === -1 || ni === -1) return prev;
+      const [m] = a.splice(oi, 1); a.splice(ni, 0, m);
+      return a;
+    });
   };
 
   const handleCopyPath = useCallback(() => {
@@ -1987,15 +1746,6 @@ export default function App() {
     if (dragCounter.current === 0) setDragOver(false);
   }, []);
 
-  const handleSetStars = useCallback((id: string, stars: number) => {
-    setPhotos(prev => prev.map(p => p.id === id ? { ...p, stars } : p));
-    // Fire-and-forget: train PersonalHead + queue DPO event
-    const path = photos.find(p => p.id === id)?.path;
-    if (path) {
-      axios.post(`${API}/api/personal/star`, { path, stars }).catch(() => {});
-    }
-  }, [photos]);
-
   const handleCreateFromSelection = useCallback(() => {
     if (!selectedIds.size) { notify('Select photos first', 'error'); return; }
     const sel = photos.filter(p => selectedIds.has(p.id));
@@ -2003,7 +1753,7 @@ export default function App() {
     setSelectedIds(new Set());
     setSelectMode(false);
     setMainTab('sequence');
-    notify('✅ Sequence created from selection', 'success');
+    notify('Sequence created from selection', 'success');
   }, [photos, selectedIds, notify]);
 
   const onResizeDown = useCallback((e: React.MouseEvent) => {
@@ -2129,7 +1879,7 @@ export default function App() {
   return (
     <div
       style={{ display:'flex', flexDirection:'column', height:'100vh', background:T.ground, overflow:'hidden',
-        fontFamily:"'Helvetica Neue',-apple-system,BlinkMacSystemFont,system-ui,sans-serif", fontSize:'var(--text-md)', color:T.ink }}
+        fontFamily:"var(--font-sans)", fontSize:'var(--text-md)', color:T.ink }}
       onDrop={handleDrop} onDragOver={e => { e.preventDefault(); e.stopPropagation(); }} onDragEnter={handleDragEnter} onDragLeave={handleDragLeave}
     >
 
@@ -2218,7 +1968,7 @@ export default function App() {
                   href="https://ollama.com/download"
                   target="_blank"
                   rel="noopener noreferrer"
-                  style={{ flexShrink:0, padding:'4px 12px', fontSize:'var(--text-sm)', fontWeight:700,
+                  style={{ flexShrink:0, padding:'4px 12px', fontSize:'var(--text-sm)', fontWeight:600,
                     background:T.raised, color:T.ink,
                     border:`1px solid ${T.lineStrong}`, borderRadius:'var(--r-md)', cursor:'pointer',
                     whiteSpace:'nowrap', textDecoration:'none' }}>
@@ -2237,7 +1987,7 @@ export default function App() {
                 {missingModels.length > 0 && !isDownloading && (
                   <button
                     onClick={() => { setDownloadError(null); handleDownloadMissing(); }}
-                    style={{ flexShrink:0, padding:'4px 12px', fontSize:'var(--text-sm)', fontWeight:700,
+                    style={{ flexShrink:0, padding:'4px 12px', fontSize:'var(--text-sm)', fontWeight:600,
                       background: T.raised,
                       color:T.ink, border:`1px solid ${downloadError ? T.alarmCrit : T.lineStrong}`,
                       borderRadius:'var(--r-md)', cursor:'pointer', whiteSpace:'nowrap' }}>
@@ -2255,7 +2005,7 @@ export default function App() {
                   return (
                     <span key={chip.label} title={isGpu ? `${chip.display} loaded in VRAM` : isCpu ? `${chip.display} running on CPU — VRAM headroom low` : `${chip.display} not loaded`}
                       style={{
-                        padding:'2px 8px', borderRadius:'var(--r-sm)', fontSize:'var(--text-xs)', fontWeight:700, whiteSpace:'nowrap',
+                        padding:'2px 8px', borderRadius:'var(--r-sm)', fontSize:'var(--text-xs)', fontWeight:600, whiteSpace:'nowrap',
                         // A model sitting in VRAM is the expected case, so it is
                         // silent. Only CPU fallback — the case with a real cost
                         // the user can act on — reaches for the alarm token.
@@ -2303,72 +2053,84 @@ export default function App() {
           <div ref={preGradeDialogRef} style={{ background:T.surface1, border:`1px solid ${T.lineStrong}`, borderRadius:'var(--r-md)', padding:'28px 32px', maxWidth:420, width:'90%', display:'flex', flexDirection:'column', gap:16 }}
             role="dialog" aria-modal="true" aria-labelledby="pregrade-title"
             onClick={e => e.stopPropagation()}>
-            <div id="pregrade-title" style={{ fontSize:'var(--text-md)', fontWeight:700, color:T.ink }}>Before you start</div>
+            {/* Header: eyebrow + quiet photo count (moved out of the body so it
+                doesn't float alone between sections) */}
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
+              <div className="t-label">Before you start</div>
+              {preGradeModal.photoCount > 0 && (
+                <span className="t-num" style={{ fontSize:'var(--text-xs)', color:T.ink3 }}>
+                  {preGradeModal.photoCount.toLocaleString()} photo{preGradeModal.photoCount !== 1 ? 's' : ''}
+                </span>
+              )}
+            </div>
 
-            {/* Vision Engine status */}
-            <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+            {/* Readiness — one quiet list instead of stacked cards. Expected
+                states are plain rows; only states the user can act on (low
+                memory, downloads) carry colour. */}
+            <div style={{ display:'flex', flexDirection:'column' }}>
               {!graderStatus?.draft_available ? (
-                <div className="rounded-sm border border-line-strong bg-raised px-3 py-2">
-                  <div style={{ fontSize:'var(--text-sm)', fontWeight:700, color:T.ink, marginBottom:4 }}>
-                    {graderStatus?.qwen_download_pct != null
-                      ? `Downloading Vision Engine — ${graderStatus.qwen_download_pct}%`
-                      : 'Vision Engine: downloading in background…'}
-                  </div>
-                  {graderStatus?.qwen_download_pct != null && (
-                    <div style={{ height:4, background:T.raisedHover, borderRadius:'var(--r-sm)', overflow:'hidden', marginBottom:8 }}>
-                      <div style={{ height:'100%', width:`${graderStatus.qwen_download_pct}%`,
-                        background:T.ink3, borderRadius:'var(--r-sm)',
-                        transition:'width .8s cubic-bezier(.2,0,0,1)' }}/>
+                <div style={{ display:'flex', gap:10, padding:'10px 0', borderBottom:`1px solid ${T.line}` }}>
+                  <div style={{ width:6, height:6, borderRadius:'var(--r-round)', background:T.alarmWarn, flexShrink:0, marginTop:6 }}/>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ fontSize:'var(--text-sm)', color:T.ink }}>
+                      {graderStatus?.qwen_download_pct != null
+                        ? `Downloading Vision Engine — ${graderStatus.qwen_download_pct}%`
+                        : 'Vision Engine: downloading in background…'}
                     </div>
-                  )}
-                  <div style={{ fontSize:'var(--text-sm)', color:T.ink2, lineHeight:1.5 }}>
-                    ~6 GB one-time download — runs automatically in the background.
-                    {graderStatus?.qwen_download_pct != null
-                      ? ' Grading will start automatically once complete.'
-                      : ' You can start grading now; it will begin once the download finishes.'}
+                    {graderStatus?.qwen_download_pct != null && (
+                      <div style={{ height:3, background:T.raisedHover, borderRadius:'var(--r-sm)', overflow:'hidden', margin:'6px 0 4px' }}>
+                        <div style={{ height:'100%', width:`${graderStatus.qwen_download_pct}%`,
+                          background:T.ink3, transition:'width .8s cubic-bezier(.2,0,0,1)' }}/>
+                      </div>
+                    )}
+                    <div style={{ fontSize:'var(--text-xs)', color:T.ink3, lineHeight:1.5, marginTop:2 }}>
+                      ~6 GB one-time download, runs in the background. You can start grading now — it begins once complete.
+                    </div>
                   </div>
                 </div>
               ) : graderStatus?.qwen_warm ? (
-                <div className="rounded-sm border border-line-strong bg-raised px-3 py-2">
-                  <div style={{ fontSize:'var(--text-sm)', fontWeight:700, color:T.ink, marginBottom:4 }}>Vision Engine: warm and ready</div>
-                  <div style={{ fontSize:'var(--text-sm)', color:T.ink2 }}>Already loaded in VRAM. Grading will start immediately.</div>
+                <div style={{ display:'flex', gap:10, padding:'10px 0', borderBottom:`1px solid ${T.line}` }}>
+                  <div style={{ width:6, height:6, borderRadius:'var(--r-round)', background:T.ink3, flexShrink:0, marginTop:6 }}/>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ fontSize:'var(--text-sm)', color:T.ink }}>Vision Engine ready</div>
+                    <div style={{ fontSize:'var(--text-xs)', color:T.ink3, lineHeight:1.5, marginTop:2 }}>Loaded in VRAM — grading starts immediately.</div>
+                  </div>
                 </div>
               ) : graderStatus?.qwen_loading ? (
-                <div className="rounded-sm border border-line-strong bg-raised px-3 py-2">
-                  <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6 }}>
-                    <div style={{ width:10, height:10, borderRadius:'var(--r-round)', border:`2px solid ${T.ink3}`, borderTopColor:'transparent', animation:'spin .8s linear infinite', flexShrink:0 }}/>
-                    <span className="text-sm text-ink">Vision Engine: loading into VRAM…</span>
-                  </div>
-                  <div style={{ fontSize:'var(--text-sm)', color:T.ink2 }}>
-                    Loading model weights from disk. Takes <strong>~30–60 seconds</strong> — Start Culling will unlock automatically.
+                <div style={{ display:'flex', gap:10, padding:'10px 0', borderBottom:`1px solid ${T.line}` }}>
+                  <div style={{ width:9, height:9, borderRadius:'var(--r-round)', border:`2px solid ${T.ink3}`, borderTopColor:'transparent', animation:'spin .8s linear infinite', flexShrink:0, marginTop:4 }}/>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ fontSize:'var(--text-sm)', color:T.ink }}>Loading Vision Engine…</div>
+                    <div style={{ fontSize:'var(--text-xs)', color:T.ink3, lineHeight:1.5, marginTop:2 }}>~30–60 seconds — Start Culling unlocks automatically.</div>
                   </div>
                 </div>
               ) : (
-                <div className="rounded-sm border border-line-strong bg-raised px-3 py-2">
-                  <div className="mb-1 text-sm text-ink">Vision Engine: ready to load</div>
-                  <div style={{ fontSize:'var(--text-sm)', color:T.ink2 }}>
-                    Model is cached on disk. Loading starts now — will be ready in <strong>~30–60 seconds</strong>.
+                <div style={{ display:'flex', gap:10, padding:'10px 0', borderBottom:`1px solid ${T.line}` }}>
+                  <div style={{ width:6, height:6, borderRadius:'var(--r-round)', background:T.ink3, flexShrink:0, marginTop:6 }}/>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ fontSize:'var(--text-sm)', color:T.ink }}>Vision Engine ready</div>
+                    <div style={{ fontSize:'var(--text-xs)', color:T.ink3, lineHeight:1.5, marginTop:2 }}>Model cached on disk — first load takes ~30–60 seconds.</div>
                   </div>
                 </div>
               )}
 
-              {/* System-RAM readiness — is it clear to grade? (live, polled every 2 s) */}
+              {/* System-RAM readiness — is it clear to grade? (live, polled every 2 s).
+                  clear / tight / critical maps onto quiet / warn / crit: "clear" is
+                  the expected state and stays neutral; only the two states the user
+                  can act on carry a colour. */}
               {(sysRam || graderStatus) && (() => {
                 const r = ramReadiness(sysRam ?? graderStatus);
                 if (r.level === 'unknown') return null;
-                // clear / tight / critical maps exactly onto silent / warn / crit.
-                // "Clear to grade" needs no green tick: nothing being wrong is the
-                // expected state, so it reads as neutral and only the two states
-                // the user can act on carry a colour.
-                const card = {
-                  clear:    { accent:T.ink,       edge:T.lineStrong, title:`System memory: clear to grade`, body:`${r.free?.toFixed(1)} GB free — plenty of headroom for a full cull.` },
-                  tight:    { accent:T.alarmWarn, edge:T.alarmWarn,  title:`System memory: tight but OK`,   body:`${r.free?.toFixed(1)} GB free. Grading will run, but may drop to lighter CLIP scoring. Closing a few apps gives the best results.` },
-                  critical: { accent:T.alarmCrit, edge:T.alarmCrit,  title:`Low system memory`,             body:`Only ${r.free?.toFixed(1)} GB free — below the ~${(sysRam?.ram_min_gb ?? graderStatus?.ram_min_gb ?? 1.8)} GB needed. Close some apps before grading or the cull may be refused.` },
+                const row = {
+                  clear:    { col:T.ink3,      text:`System memory clear — ${r.free?.toFixed(1)} GB free, plenty of headroom for a full cull.` },
+                  tight:    { col:T.alarmWarn, text:`System memory tight — ${r.free?.toFixed(1)} GB free. Grading will run, but closing a few apps gives the best results.` },
+                  critical: { col:T.alarmCrit, text:`Low system memory — only ${r.free?.toFixed(1)} GB free, below the ~${(sysRam?.ram_min_gb ?? graderStatus?.ram_min_gb ?? 1.8)} GB needed. Close some apps before grading.` },
                 }[r.level]!;
                 return (
-                  <div className="rounded-sm border bg-raised px-3 py-2" style={{ borderColor:card.edge }}>
-                    <div style={{ fontSize:'var(--text-sm)', fontWeight:700, color:card.accent, marginBottom:4 }}>{card.title}</div>
-                    <div style={{ fontSize:'var(--text-sm)', color:T.ink2, lineHeight:1.5 }}>{card.body}</div>
+                  <div style={{ display:'flex', gap:10, padding:'10px 0', borderBottom:`1px solid ${T.line}` }}>
+                    <div style={{ width:6, height:6, borderRadius:'var(--r-round)', background:row.col, flexShrink:0, marginTop:6 }}/>
+                    <div style={{ flex:1, minWidth:0, fontSize:'var(--text-sm)', lineHeight:1.5,
+                      color: r.level === 'clear' ? T.ink2 : row.col }}>{row.text}</div>
                   </div>
                 );
               })()}
@@ -2376,63 +2138,70 @@ export default function App() {
               {/* One-time INT4 quantisation disclaimer — only until the
                   pre-quantised cache exists on disk */}
               {graderStatus?.draft_available && !graderStatus?.qwen_int4_cached && !graderStatus?.qwen_warm && (
-                <div className="rounded-sm border border-line-strong bg-raised px-3 py-2">
-                  <div style={{ fontSize:'var(--text-sm)', fontWeight:700, color:T.ink, marginBottom:4 }}>
-                    First cull: one-time engine optimisation
-                  </div>
-                  <div style={{ fontSize:'var(--text-sm)', color:T.ink2, lineHeight:1.5 }}>
-                    The Vision Engine will be compressed for your GPU on this run — expect a
-                    pause of <strong>a few minutes around 52%</strong>. The result is saved,
-                    so every cull after this one skips it and starts in seconds.
+                <div style={{ display:'flex', gap:10, padding:'10px 0', borderBottom:`1px solid ${T.line}` }}>
+                  <div style={{ width:6, height:6, borderRadius:'var(--r-round)', background:T.ink3, flexShrink:0, marginTop:6 }}/>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ fontSize:'var(--text-sm)', color:T.ink }}>First cull: one-time engine optimisation</div>
+                    <div style={{ fontSize:'var(--text-xs)', color:T.ink3, lineHeight:1.5, marginTop:2 }}>
+                      The engine compresses for your GPU on this run — expect a pause of a few minutes around 52%. Saved afterwards, so every later cull skips it.
+                    </div>
                   </div>
                 </div>
               )}
 
               {/* Pipeline calibration warmup status */}
               {graderStatus?.warmup_running && (
-                <div className="rounded-sm border border-line-strong bg-raised px-3 py-2">
-                  <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}>
-                    <div style={{ width:9, height:9, borderRadius:'var(--r-round)', border:`2px solid ${T.ink3}`, borderTopColor:'transparent', animation:'spin .8s linear infinite', flexShrink:0 }}/>
-                    <span style={{ fontSize:'var(--text-sm)', fontWeight:700, color:T.ink }}>Calibrating pipeline…</span>
+                <div style={{ display:'flex', gap:10, padding:'10px 0', borderBottom:`1px solid ${T.line}` }}>
+                  <div style={{ width:9, height:9, borderRadius:'var(--r-round)', border:`2px solid ${T.ink3}`, borderTopColor:'transparent', animation:'spin .8s linear infinite', flexShrink:0, marginTop:4 }}/>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ fontSize:'var(--text-sm)', color:T.ink }}>Calibrating pipeline…</div>
+                    <div style={{ fontSize:'var(--text-xs)', color:T.ink3, lineHeight:1.5, marginTop:2 }}>Warming CUDA kernels on your best photos — Start Culling unlocks when done.</div>
                   </div>
-                  <div style={{ fontSize:'var(--text-sm)', color:T.ink2 }}>Running your best photos through the engine to warm up CUDA kernels. Start Culling will unlock when done.</div>
                 </div>
               )}
               {graderStatus?.warmup_done && !graderStatus?.warmup_running && (
-                <div className="flex items-center gap-2 rounded-sm border border-line-strong bg-raised px-3 py-2">
-                  <div style={{ width:7, height:7, borderRadius:'var(--r-round)', background:T.ink3, flexShrink:0 }}/>
-                  <span style={{ fontSize:'var(--text-sm)', color:T.ink2 }}>Pipeline calibrated — first cull of this session will be fast</span>
+                <div style={{ display:'flex', gap:10, padding:'10px 0', borderBottom:`1px solid ${T.line}` }}>
+                  <div style={{ width:6, height:6, borderRadius:'var(--r-round)', background:T.ink3, flexShrink:0, marginTop:6 }}/>
+                  <div style={{ flex:1, minWidth:0, fontSize:'var(--text-sm)', color:T.ink3, lineHeight:1.5 }}>
+                    Pipeline calibrated — first cull of this session will be fast.
+                  </div>
                 </div>
               )}
+            </div>
 
-              {/* Re-grade toggle */}
-              <Segmented
-                value={rescanAll ? 'all' : 'new'}
-                onChange={v => setRescanAll(v === 'all')}
-                options={[
-                  { value: 'all', label: 'Re-grade everything' },
-                  { value: 'new', label: 'New photos only' },
-                ]}
-              />
-              <p className="text-xs text-ink-3">
-                {rescanAll
-                  ? 'Every photo runs through the full pipeline.'
-                  : 'Already-graded photos are skipped — only new additions are scored.'}
-              </p>
+            {/* Options — re-grade scope + niche, one consistent label/value rhythm */}
+            <div style={{ display:'flex', flexDirection:'column', gap:16 }}>
+              {/* Re-grade scope */}
+              <div>
+                <div className="t-label" style={{ marginBottom:6 }}>Re-grade</div>
+                <Segmented
+                  value={rescanAll ? 'all' : 'new'}
+                  onChange={v => setRescanAll(v === 'all')}
+                  options={[
+                    { value: 'all', label: 'Re-grade everything' },
+                    { value: 'new', label: 'New photos only' },
+                  ]}
+                />
+                <p className="text-xs text-ink-3" style={{ marginTop:6 }}>
+                  {rescanAll
+                    ? 'Every photo runs through the full pipeline.'
+                    : 'Already-graded photos are skipped — only new additions are scored.'}
+                </p>
+              </div>
 
               {/* Niche picker */}
-              <div className="flex flex-col gap-1">
-                <div className="t-label flex items-center gap-2">
-                  Photography Niche
+              <div>
+                <div className="t-label flex items-center" style={{ marginBottom:6 }}>
+                  <span>Photography niche</span>
                   {nicheDetecting && (
-                    <span className="flex items-center gap-1 normal-case tracking-normal text-ink-3">
+                    <span className="flex items-center gap-1 normal-case tracking-normal text-ink-3" style={{ marginLeft:'auto' }}>
                       <span style={{ width:9, height:9, borderRadius:'var(--r-round)', border:'2px solid currentColor', borderTopColor:'transparent', animation:'spin .8s linear infinite' }}/>
                       Detecting ideal niche…
                     </span>
                   )}
                   {!nicheDetecting && nicheRec?.detected && nicheRec?.preset === preset && (
-                    <span className="normal-case tracking-normal text-ink-2">
-                      ✓ auto-selected
+                    <span className="normal-case tracking-normal text-ink-3" style={{ marginLeft:'auto' }}>
+                      auto-selected
                     </span>
                   )}
                 </div>
@@ -2452,24 +2221,19 @@ export default function App() {
                   ))}
                 </select>
               </div>
-
-              {/* Photo count */}
-              {preGradeModal.photoCount > 0 && (
-                <p className="text-xs text-ink-3">
-                  <span className="t-num">{preGradeModal.photoCount}</span> photo{preGradeModal.photoCount !== 1 ? 's' : ''} in folder
-                </p>
-              )}
             </div>
 
-            {/* Deep Grade toggle — default OFF = fast SigLIP zero-shot; ON = Qwen VLM */}
-            <label className="mt-1 flex cursor-pointer items-start gap-2 rounded-sm border border-line-strong bg-raised p-2">
+            {/* Deep Grade toggle — default OFF = fast SigLIP zero-shot; ON = Qwen VLM.
+                Unboxed: a plain row separated by a hairline, long detail on hover. */}
+            <label className="flex cursor-pointer items-start gap-2"
+              style={{ paddingTop:12, borderTop:`1px solid ${T.line}` }}
+              title="Off: fast grading — light on memory, recommended. On: each photo is read in detail (more nuanced, slower, heavier on memory).">
               <input type="checkbox" checked={deepGrade} onChange={e => setDeepGrade(e.target.checked)}
                 className="mt-px cursor-pointer" style={{ accentColor: T.ink }} />
               <div>
                 <div className="text-sm text-ink">Deep grade</div>
-                <div className="mt-px text-xs text-ink-3">
-                  Off: fast grading — light on memory, recommended.
-                  On: each photo is read in detail (more nuanced, slower, heavier on memory).
+                <div className="text-xs text-ink-3" style={{ marginTop:2 }}>
+                  Off: fast and light on memory (recommended). On: each photo is read in detail — slower, heavier.
                 </div>
               </div>
             </label>
@@ -2512,7 +2276,26 @@ export default function App() {
       )}
 
       {/* ── Header ─────────────────────────────────────────────── */}
-      <header className="flex h-8 shrink-0 items-center gap-2 border-b border-line bg-surface px-3">
+      {/* overflow-x-auto keeps the toolbar's minimum width from stretching the
+          whole app: on a narrow window the bar scrolls internally instead of
+          pushing every full-width section (sheet, count, panels) past the
+          viewport edge — the bug that clipped Grade and the photo count. */}
+      <header className="shrink-0 px-3 pt-2">
+        {/* Detached chrome: a floating glass pill inset to the grid gutter,
+            elevated one step above the sheet rather than a surface strip
+            bolted to the window edge. min-w-0 lets the row scroll instead of
+            stretching its parent (see note above). */}
+        <div className="glass elev-1 flex h-toolbar min-w-0 items-center gap-2 overflow-x-auto rounded-md border border-line-strong px-2 scrollbar-hide">
+
+        {/* Brand — aperture mark in the grease-pencil colour. The one warm
+            pixel in the chrome: it is the product's signature, the same
+            reservation a physical camera brand earns on its dial. */}
+        <div className="flex shrink-0 items-center gap-1 pr-1" title={`FrameGrade v${APP_VERSION}`}>
+          <Aperture size={15} strokeWidth={1.8} style={{ color: T.mark }}/>
+          <span className="text-md text-ink"
+                style={{ fontFamily: 'var(--font-display)', fontWeight: 650, letterSpacing: 'var(--track-brand)' }}>FrameGrade</span>
+        </div>
+        <div className="h-4 w-px shrink-0 bg-line-strong"/>
 
         <Button onClick={openBrowser} title="Open folder" icon={<FolderOpen size={13}/>}>
           {photos.length > 0 ? (folders.length > 1 ? `${folders.length} folders` : folder.split(/[\\/]/).pop()) : 'Open folder'}
@@ -2559,6 +2342,13 @@ export default function App() {
           return <Chip label={label} title={tip} />;
         })()}
 
+        {/* Cold judge — informational only. A cold Qwen judge adds a one-time
+            warm-up to the first grade; without this chip that latency reads as
+            a hang. Neutral tone: nothing is wrong, something is pending. */}
+        {graderStatus && graderStatus.qwen_warm === false && (
+          <Chip label="Judge" title="Vision judge is cold — the first grade includes a one-time warm-up. Later batches run at full speed." />
+        )}
+
         {/* GPU / CPU compute chip */}
         {graderStatus && (() => {
           const dev = graderStatus.compute_device;
@@ -2586,7 +2376,9 @@ export default function App() {
           );
         })()}
 
-        {/* System RAM chip — live (polled every 2 s), tells the user whether it's clear to grade */}
+        {/* System RAM chip — live (polled every 2 s), tells the user whether it's clear to grade.
+            Non-neutral states are clickable: the popover says what to DO, not just that
+            something is wrong. Silence (clear) needs no popover. */}
         {(sysRam || graderStatus) && (() => {
           const r = ramReadiness(sysRam ?? graderStatus);
           if (r.level === 'unknown') return null;
@@ -2594,7 +2386,32 @@ export default function App() {
           // two culls died tonight when free memory fell under the encoder's
           // load floor. Clear stays neutral so tight and critical actually read.
           const tone = ({ clear: 'neutral', tight: 'warn', critical: 'crit' } as const)[r.level];
-          return <Chip label="RAM" title={r.tip} tone={tone} numeric value={r.readout} />;
+          const guidance = r.level === 'critical'
+            ? 'Browsing the library is safe. Scan and Re-grade will be refused until ~1.8 GB is free — close browser tabs or other apps, then retry.'
+            : r.level === 'tight'
+            ? 'Grading will run, but a long cull may drop to Scout Mode (CLIP-only scoring). Closing heavy apps first keeps the full vision pipeline alive.'
+            : 'Clear to grade — the full vision pipeline will run.';
+          return (
+            <span className="relative inline-flex shrink-0">
+              <button
+                onClick={() => r.level !== 'clear' && setRamPopoverOpen(v => !v)}
+                className={cn('border-0 bg-transparent p-0', r.level !== 'clear' && 'cursor-pointer')}
+                title={r.level !== 'clear' ? 'What should I do?' : undefined}>
+                <Chip label="RAM" title={r.tip} tone={tone} numeric value={r.readout} />
+              </button>
+              {ramPopoverOpen && r.level !== 'clear' && (
+                <div className="glass absolute left-0 top-8 z-50 w-panel rounded-md border border-line-strong p-3 elev-2 animate-fade-in">
+                  <p className="t-label mb-2">Memory</p>
+                  <p className="t-num mb-2 text-sm text-ink">
+                    {r.free?.toFixed(1)} GB free{r.total != null ? <> of <span className="t-num">{r.total?.toFixed(1)}</span> GB</> : null}
+                    {r.percent != null && <> · <span className="t-num">{r.percent.toFixed(0)}%</span> in use</>}
+                  </p>
+                  <p className="mb-2 text-xs leading-relaxed text-ink-2">{guidance}</p>
+                  <p className="text-xs text-ink-4">Polled live every 2 s. The grade floor is <span className="t-num">1.8 GB</span> free.</p>
+                </div>
+              )}
+            </span>
+          );
         })()}
 
         {/* Grade filters. Mid carries a neutral dot rather than its own hue,
@@ -2642,9 +2459,9 @@ export default function App() {
             string, so they render in tabular figures and the tab stops resizing
             as duplicates are resolved. */}
         {isDone && (() => {
-          const dupCount = redacted.size > 0
-            ? redacted.size
-            : photos.filter(p => p.cluster_id >= 0 && !(p.sim_flag||'').includes('Best')).length;
+          /* One number per concept: the tab and the duplicates header both
+             read dupStats.totalDups, so they can never disagree. */
+          const dupCount = dupStats.totalDups;
           const madeCount = creativeResults.filter((r:any)=>r.success).length;
           return (
             <Segmented
@@ -2747,19 +2564,20 @@ export default function App() {
             {isDone ? (scanMode ? 'Re-scan' : 'Re-grade') : (scanMode ? 'Scan' : 'Grade')}
           </Button>
         )}
+        </div>
       </header>
 
       {/* Progress. A plain ink bar — no gradient. A two-stop gradient sweeping
           across a progress bar is decoration that says nothing the width isn't
           already saying, and it sits directly above the photographs. */}
-      <div className="shrink-0"
+      <div className="shrink-0 px-3"
         role={isGrading ? "progressbar" : undefined}
         aria-label={isGrading ? "Grading progress" : undefined}
         aria-valuenow={isGrading ? Math.round(gradeProgress * 100) : undefined}
         aria-valuemin={isGrading ? 0 : undefined}
         aria-valuemax={isGrading ? 100 : undefined}
         aria-valuetext={isGrading && gradeDesc ? gradeDesc : undefined}>
-        <div className="relative overflow-hidden bg-line" style={{ height: 'var(--rule)' }}>
+        <div className="relative overflow-hidden rounded-full bg-line" style={{ height: 'var(--rule)' }}>
           {listLoading && (
             <div className="absolute top-0 h-full animate-sweep bg-ink-3"/>
           )}
@@ -2788,11 +2606,11 @@ export default function App() {
                   <span title={`Analysis quality for this run: ${gradeQuality}`}
                         style={{ fontStyle:'normal', fontSize:'var(--text-xs)', letterSpacing:.4, textTransform:'uppercase',
                                  color:T.ink2, border:`1px solid ${T.line}`, borderRadius:'var(--r-sm)',
-                                 padding:'1px 5px', fontWeight:700 }}>
+                                 padding:'1px 5px', fontWeight:600 }}>
                     {gradeQuality}
                   </span>
                 )}
-                {_count && <span style={{ fontStyle:'normal', fontVariantNumeric:'tabular-nums', color:T.ink2, fontWeight:700 }}>{_count}</span>}
+                {_count && <span style={{ fontStyle:'normal', fontVariantNumeric:'tabular-nums', color:T.ink2 }}>{_count}</span>}
               </span>
             </div>
           );
@@ -2820,7 +2638,7 @@ export default function App() {
        * Star ratings are the photographer's own judgement, so this is one of
        * the few bars allowed to show the warm mark colour. */}
       {mainTab === 'gallery' && isDone && (
-        <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line bg-surface px-3">
+        <div className="flex h-8 shrink-0 items-center gap-2 px-3">
           <span className="t-label shrink-0">Rating</span>
           <div className="flex gap-1">
             {[1,2,3,4,5].map(n => {
@@ -2912,43 +2730,119 @@ export default function App() {
                 would wash out the image being judged. */}
             <div className="relative flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden bg-well">
               {photos.length === 0 ? (
-                <div className="w-stage overflow-hidden rounded-md border border-line bg-surface">
-                  {/* A panel, not a floating cluster. Lifted off bg-well by one
-                      surface step and bounded by a SOLID border -- dashed reads
-                      as an HTML upload widget, solid reads as a workspace
-                      region, which is what an import panel looks like in a
-                      photo application.
+                <div className="relative flex w-full items-center justify-center">
+                  {/* Blueprint grid — fine engineering lines under everything,
+                      fading out radially so it reads as depth, not wallpaper. */}
+                  <div aria-hidden className="pointer-events-none absolute inset-0"
+                    style={{
+                      backgroundImage: `linear-gradient(var(--line) 1px, transparent 1px),
+                        linear-gradient(90deg, var(--line) 1px, transparent 1px)`,
+                      backgroundSize: '36px 36px',
+                      maskImage: 'radial-gradient(circle at 50% 45%, black 0%, transparent 68%)',
+                      WebkitMaskImage: 'radial-gradient(circle at 50% 45%, black 0%, transparent 68%)',
+                      opacity: .45 }}/>
+                  {/* Ambient backdrop — two soft glows, warm over cool. This is
+                      the one screen with no photographs on it, so the mark
+                      colour may breathe here without contaminating a read. */}
+                  <div aria-hidden className="pointer-events-none absolute"
+                    style={{ width: 760, height: 760, borderRadius: 'var(--r-round)',
+                      background: `radial-gradient(circle, ${T.markDim} 0%, transparent 60%)`,
+                      filter: 'blur(48px)', opacity: .8 }}/>
+                  <div aria-hidden className="pointer-events-none absolute"
+                    style={{ width: 900, height: 900, borderRadius: 'var(--r-round)',
+                      background: `radial-gradient(circle, ${T.raised} 0%, transparent 55%)`,
+                      filter: 'blur(64px)', opacity: .5 }}/>
+                  {/* Live gradient — a conic aurora drifting slowly behind the card.
+                      Stops are token-only (mark-dim / raised / a whisper of ink) so
+                      the light stays hue-safe; 26 s per revolution reads as ambient
+                      weather, not a spinner. */}
+                  <div aria-hidden className="pointer-events-none absolute"
+                    style={{ width: 1100, height: 1100, borderRadius: 'var(--r-round)',
+                      background: `conic-gradient(from 0deg,
+                        transparent 0deg,
+                        ${T.markDim} 55deg,
+                        transparent 125deg,
+                        ${T.raised} 195deg,
+                        transparent 265deg,
+                        color-mix(in srgb, ${T.ink} 6%, transparent) 320deg,
+                        transparent 360deg)`,
+                      filter: 'blur(72px)', opacity: .55,
+                      animation: 'auroraDrift 26s linear infinite' }}/>
 
-                      The drop target itself is still the whole window
-                      (handleDrop is bound to the root), so this panel signals
-                      "something happens here" rather than fencing off where you
-                      are allowed to let go.
-
-                      Left-aligned: centred body copy reads as a marketing page.
-                      Tools align their labels. */}
+                  <div className="relative elev-3 w-full rounded-md border border-line bg-surface"
+                    style={{ maxWidth: 'var(--w-hero)', animation: 'dialogIn .5s var(--ease)' }}>
+                  {/* Gradient hairline — one light seam along the card's top edge,
+                      brightest at centre. Gives the flat surface a machined edge. */}
+                  <div aria-hidden className="pointer-events-none absolute inset-x-6 top-0 h-px"
+                    style={{ background: `linear-gradient(90deg, transparent 0%,
+                      color-mix(in srgb, ${T.ink} 30%, transparent) 50%, transparent 100%)` }}/>
+                  {/* Scan sweep — a faint band crossing the card like a sensor
+                      reading a frame. Clipped to the card's rounded corners. */}
+                  <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden rounded-md">
+                    <div style={{ position: 'absolute', left: 0, right: 0, top: 0, height: 72,
+                      background: `linear-gradient(180deg, transparent,
+                        color-mix(in srgb, ${T.ink} 5%, transparent), transparent)`,
+                      opacity: .6, animation: 'scanSweep 7s linear infinite' }}/>
+                  </div>
+                  {/* Viewfinder brackets — HUD reticle ticks at the four corners. */}
+                  {([
+                    { top: -1, left: -1 }, { top: -1, right: -1 },
+                    { bottom: -1, left: -1 }, { bottom: -1, right: -1 },
+                  ] as Array<{ top?: number; right?: number; bottom?: number; left?: number }>).map((c, i) => {
+                    const edge = '1px solid var(--line-strong)';
+                    return (
+                      <div key={i} aria-hidden className="pointer-events-none absolute"
+                        style={{ width: 14, height: 14,
+                          ...(c.top !== undefined ? { top: c.top } : {}),
+                          ...(c.right !== undefined ? { right: c.right } : {}),
+                          ...(c.bottom !== undefined ? { bottom: c.bottom } : {}),
+                          ...(c.left !== undefined ? { left: c.left } : {}),
+                          borderTop:    c.top !== undefined    ? edge : undefined,
+                          borderRight:  c.right !== undefined  ? edge : undefined,
+                          borderBottom: c.bottom !== undefined ? edge : undefined,
+                          borderLeft:   c.left !== undefined   ? edge : undefined }}/>
+                    );
+                  })}
                   <div className="flex flex-col gap-6 px-8 py-8">
-                    <div className="flex flex-col gap-2">
-                      <span className="text-xl text-ink-2">Drop a folder of photos</span>
-                      <span className="text-sm text-ink-3">
-                        Every photo gets graded, then you build the story
+
+                    {/* Brand row: aperture mark + engine label, with a live-
+                        status readout on the right — mono, tabular, pulsing. */}
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Aperture size={16} strokeWidth={2} style={{ color: T.mark }}/>
+                        <span className="t-label">Photo culling engine</span>
+                      </div>
+                      <span className="t-num flex items-center gap-2 text-xs text-ink-3">
+                        <span aria-hidden className="rounded-full"
+                          style={{ width: 6, height: 6, background: T.mark,
+                            animation: 'pulseDot 2.4s ease-in-out infinite' }}/>
+                        READY
                       </span>
                     </div>
 
+                    {/* Headline — the mark-coloured full stop is the signature:
+                        small, confident, the only warm glyph on the stage. */}
+                    <div className="flex flex-col gap-2">
+                      <h1 className="t-display text-ink">
+                        FrameGrade<span style={{ color: T.mark }}>.</span>
+                      </h1>
+                      <p className="text-md text-ink-2" style={{ maxWidth: '46ch' }}>
+                        Open a folder of photos and get straight to your
+                        best shots.
+                      </p>
+                    </div>
+
+                    {/* CTA */}
                     <div className="flex items-center gap-3">
-                      <Button variant="solid" size="md" onClick={openBrowser}
+                      <Button variant="ink" size="md" onClick={openBrowser}
                         icon={<FolderOpen size={14} strokeWidth={1.5}/>}>
                         Open folder
                       </Button>
-                      <span className="text-xs text-ink-3">
-                        or drag one onto the window
-                      </span>
                     </div>
                   </div>
 
-                  {/* A full-width rule works now that the panel has a width.
-                      The earlier version drew this on a shrink-to-fit column,
-                      where it rendered as a short line floating under the text. */}
-                  <div className="flex items-center gap-3 border-t border-line px-8 py-3">
+                  {/* Resume strip */}
+                  <div className="flex items-center gap-3 border-t border-line bg-ground px-8 py-3">
                     {catalogBanner ? (
                       <>
                         <span className="flex-1 text-sm text-ink-3">Pick up where you left off?</span>
@@ -2964,21 +2858,38 @@ export default function App() {
                       </span>
                     )}
                   </div>
+                  </div>
                 </div>
               ) : sel ? (
                 <>
-                  {/* Base photo — always rendered; eye overlay crossfades on top */}
-                  <img
-                    key={sel.path}
-                    src={photoUrl(sel.path)}
-                    alt=""
-                    onLoad={e => setPhotoNatDims({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })}
-                    style={{ maxWidth:'100%', maxHeight:'100%', objectFit:'contain', display:'block', userSelect:'none',
-                      animation:'fadeIn .35s cubic-bezier(.2,0,0,1)',
-                      outline: selectedIds.has(selId ?? '') ? `3px solid ${T.mark}` : 'none',
-                      outlineOffset:'-3px', transition:'outline .22s ease',
-                    }}
-                  />
+                  {/* Base photo — always rendered; eye overlay crossfades on top.
+                      On failure: degrade to the thumbnail, never a black stage. */}
+                  {!loupePreviewFailed ? (
+                    <img
+                      key={sel.path}
+                      src={photoUrl(sel.path) + (loupeRetry ? `&_r=${loupeRetry}` : '')}
+                      alt=""
+                      onError={() => setLoupePreviewFailed(true)}
+                      onLoad={e => setPhotoNatDims({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })}
+                      style={{ maxWidth:'100%', maxHeight:'100%', objectFit:'contain', display:'block', userSelect:'none',
+                        boxShadow:'var(--shadow-2)',
+                        animation:'fadeIn .35s cubic-bezier(.2,0,0,1)',
+                        outline: selectedIds.has(selId ?? '') ? `3px solid ${T.mark}` : 'none',
+                        outlineOffset:'-3px', transition:'outline .22s ease',
+                      }}
+                    />
+                  ) : (
+                    <div className="flex flex-col items-center gap-3" style={{ maxWidth:'100%', maxHeight:'100%' }}>
+                      <Thumb key={`loupe-fallback-${sel.path}`} path={sel.path} eager
+                        className="block max-h-full w-auto max-w-none object-contain"
+                        style={{ maxWidth:'100%', maxHeight:'100%', objectFit:'contain', boxShadow:'var(--shadow-2)' }}/>
+                      <span className="t-label">Full preview unavailable — showing thumbnail</span>
+                      <Button size="sm" variant="quiet" icon={<RefreshCw size={11}/>}
+                        onClick={() => setLoupeRetry(n => n + 1)}>
+                        Retry full preview
+                      </Button>
+                    </div>
+                  )}
                   {/* Eye overlay — crossfades in when showEyeOverlay is true */}
                   {sel.eye_overlay_url && (
                     <img
@@ -3001,9 +2912,10 @@ export default function App() {
                         position:'absolute', top:10, right:10, zIndex:20,
                         width:34, height:34, borderRadius:'var(--r-md)',
                         display:'flex', alignItems:'center', justifyContent:'center',
-                        background: showEyeOverlay ? T.raisedHover : T.well,
+                        background: showEyeOverlay ? T.raisedHover : T.glass,
                         border: `1px solid ${showEyeOverlay ? T.ink : T.lineStrong}`,
-                        backdropFilter:'blur(8px)',
+                        backdropFilter:'blur(16px) saturate(1.1)',
+                        WebkitBackdropFilter:'blur(16px) saturate(1.1)',
                         cursor:'pointer',
                         transition:'background .2s ease, border-color .2s ease, box-shadow .2s ease',
                         boxShadow: showEyeOverlay ? `0 0 0 2px ${T.lineStrong}` : 'none',
@@ -3308,8 +3220,10 @@ export default function App() {
                     return (
                       <div style={{ position:'absolute', bottom:16, right:16, zIndex:20,
                         display:'flex', flexDirection:'column', gap:5, padding:'9px 12px',
-                        background:T.scrim, border:`1px solid ${T.lineStrong}`,
-                        borderRadius:'var(--r-md)', backdropFilter:'blur(10px)', pointerEvents:'none' }}>
+                        background:T.glass, border:`1px solid ${T.lineStrong}`,
+                        borderRadius:'var(--r-md)', backdropFilter:'blur(16px) saturate(1.1)',
+                        WebkitBackdropFilter:'blur(16px) saturate(1.1)', boxShadow:'var(--shadow-2)',
+                        pointerEvents:'none' }}>
                         <div className="t-label" style={{ marginBottom:1 }}>Critique map</div>
                         {_present.map(([t, l]) => {
                           const c = tierHeat(t);
@@ -3327,9 +3241,9 @@ export default function App() {
                     );
                   })()}
                   <button onClick={() => hasPrev && setSelId(filteredPhotos[selIdx-1].id)} disabled={!hasPrev}
-                    style={{ position:'absolute', left:12, top:'50%', transform:'translateY(-50%)', width:34, height:34, borderRadius:'var(--r-round)', display:'flex', alignItems:'center', justifyContent:'center', background:T.scrim, backdropFilter:'blur(12px)', color:hasPrev?T.ink:T.ink3, opacity:hasPrev?1:0, border:`1px solid ${T.lineStrong}`, pointerEvents:hasPrev?'auto':'none', cursor:'pointer', fontSize:'var(--text-md)' }}>‹</button>
+                    style={{ position:'absolute', left:12, top:'50%', transform:'translateY(-50%)', width:34, height:34, borderRadius:'var(--r-round)', display:'flex', alignItems:'center', justifyContent:'center', background:T.glass, backdropFilter:'blur(16px) saturate(1.1)', WebkitBackdropFilter:'blur(16px) saturate(1.1)', color:hasPrev?T.ink:T.ink3, opacity:hasPrev?1:0, border:`1px solid ${T.lineStrong}`, boxShadow:'var(--shadow-2)', pointerEvents:hasPrev?'auto':'none', cursor:'pointer', fontSize:'var(--text-md)' }}>‹</button>
                   <button onClick={() => hasNext && setSelId(filteredPhotos[selIdx+1].id)} disabled={!hasNext}
-                    style={{ position:'absolute', right:12, top:'50%', transform:'translateY(-50%)', width:34, height:34, borderRadius:'var(--r-round)', display:'flex', alignItems:'center', justifyContent:'center', background:T.scrim, backdropFilter:'blur(12px)', color:hasNext?T.ink:T.ink3, opacity:hasNext?1:0, border:`1px solid ${T.lineStrong}`, pointerEvents:hasNext?'auto':'none', cursor:'pointer', fontSize:'var(--text-md)' }}>›</button>
+                    style={{ position:'absolute', right:12, top:'50%', transform:'translateY(-50%)', width:34, height:34, borderRadius:'var(--r-round)', display:'flex', alignItems:'center', justifyContent:'center', background:T.glass, backdropFilter:'blur(16px) saturate(1.1)', WebkitBackdropFilter:'blur(16px) saturate(1.1)', color:hasNext?T.ink:T.ink3, opacity:hasNext?1:0, border:`1px solid ${T.lineStrong}`, boxShadow:'var(--shadow-2)', pointerEvents:hasNext?'auto':'none', cursor:'pointer', fontSize:'var(--text-md)' }}>›</button>
                   {/* Select toggle */}
                   {selId && (() => {
                     const isSel = selectedIds.has(selId);
@@ -3348,7 +3262,7 @@ export default function App() {
                   {/* Floating action bar */}
                   {selectedIds.size > 0 && (
                     <div style={{ position:'absolute', bottom:16, left:'50%', transform:'translateX(-50%) translateX(40px)', display:'flex', alignItems:'center', gap:10, background:T.surface, border:`1px solid ${T.lineStrong}`, borderRadius:'var(--r-md)', padding:'10px 18px', boxShadow:`0 8px 40px ${T.well}`, backdropFilter:'blur(12px)', zIndex:50, whiteSpace:'nowrap', animation:'slideUp .3s cubic-bezier(.2,0,0,1)' }}>
-                      <span style={{ fontSize:'var(--text-sm)', fontWeight:700, color:T.ink }}>{selectedIds.size} selected</span>
+                      <span style={{ fontSize:'var(--text-sm)', fontWeight:500, color:T.ink }}>{selectedIds.size} selected</span>
                       <div style={{ width:1, height:16, background:T.lineStrong }}/>
                       <Button variant="solid" onClick={handleCreateFromSelection} icon={<Layers size={11}/>}>
                         Start Sequence
@@ -3379,13 +3293,13 @@ export default function App() {
               {/* Thumbnail */}
               {sel && (
                 <div style={{ flexShrink:0, position:'relative', aspectRatio:'3/2', background:T.ground, overflow:'hidden' }}>
-                  <img key={sel.path} src={thumbUrl(sel.path)} alt=""
-                    style={{ width:'100%', height:'100%', objectFit:'cover', display:'block', animation:'fadeIn .32s cubic-bezier(.2,0,0,1)' }}/>
+                  <Thumb key={sel.path} path={sel.path} eager
+                    style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
                   {isGraded && (
                     <div style={{ position:'absolute', inset:0, background:`linear-gradient(to top,${T.scrim} 0%,transparent 55%)`, display:'flex', alignItems:'flex-end', padding:'10px 12px' }}>
                       <div style={{ display:'flex', alignItems:'center', gap:6, background:T.scrim, backdropFilter:'blur(8px)', borderRadius:'var(--r-md)', padding:'6px 12px', border:`1px solid ${gc(sel.grade)}` }}>
                         <div style={{ width:8, height:8, borderRadius:'var(--r-round)', background:gc(sel.grade), flexShrink:0 }}/>
-                        <span style={{ fontSize:'var(--text-md)', fontWeight:700, color:T.ink }}>{gradeLabel(sel.grade)}</span>
+                        <span style={{ fontSize:'var(--text-md)', fontWeight:500, color:T.ink }}>{gradeLabel(sel.grade)}</span>
                       </div>
                     </div>
                   )}
@@ -3408,14 +3322,14 @@ export default function App() {
                   {/* Grade display — read-only */}
                   {isDone && (
                     <div style={{ display:'flex', gap:4, marginTop:8 }}>
-                      {(['Strong ✅','Mid ⚠️','Weak ❌'] as const).map(g => {
+                      {(['Strong','Mid','Weak'] as const).map(g => {
                         const _sc = sel.score ?? 0;
-                        const derivedGrade = _sc >= 0.60 ? 'Strong ✅' : _sc >= 0.41 ? 'Mid ⚠️' : 'Weak ❌';
+                        const derivedGrade = gradeLabel(_sc >= 0.60 ? 'Strong' : _sc >= 0.41 ? 'Mid' : 'Weak');
                         const isActive = derivedGrade === g;
                         const col = g.includes('Strong') ? T.gradeStrong : g.includes('Mid') ? T.ink2 : T.gradeWeak;
                         return (
                           <div key={g}
-                            style={{ flex:1, padding:'3px 0', borderRadius:'var(--r-sm)', fontSize:'var(--text-xs)', fontWeight:700,
+                            style={{ flex:1, padding:'3px 0', borderRadius:'var(--r-sm)', fontSize:'var(--text-xs)', fontWeight:600,
                               textAlign:'center', userSelect:'none', pointerEvents:'none',
                               background: isActive ? T.raisedHover : 'transparent',
                               border: `1px solid ${isActive ? col : T.lineStrong}`,
@@ -3523,7 +3437,7 @@ export default function App() {
                           title={isAuditModeActive ? 'Hide annotation overlay' : 'Show critique overlay and narrative analysis'}
                           style={{ display:'flex', alignItems:'center', gap:7, padding:'7px 13px',
                             borderRadius:'var(--r-md)', alignSelf:'flex-start', cursor:'pointer',
-                            fontWeight:700, fontSize:'var(--text-xs)', letterSpacing:'.03em',
+                            fontWeight:600, fontSize:'var(--text-xs)', letterSpacing:'.03em',
                             border:`1px solid ${isAuditModeActive ? T.lineStrong : T.line}`,
                             background: isAuditModeActive ? T.raisedHover : T.raised,
                             color: isAuditModeActive ? T.ink : T.ink2,
@@ -3551,7 +3465,7 @@ export default function App() {
                         {tierWord && (
                           <div style={{ display:'flex', alignItems:'center', gap:8 }}>
                             <div style={{ width:10, height:10, borderRadius:'var(--r-round)', background:gradeCol, flexShrink:0 }}/>
-                            <span style={{ fontSize:'var(--text-lg)', fontWeight:800, letterSpacing:'.08em', color:gradeCol }}>{tierWord.toUpperCase()}</span>
+                            <span style={{ fontSize:'var(--text-sm)', fontWeight:600, letterSpacing:'.08em', color:gradeCol }}>{tierWord.toUpperCase()}</span>
                           </div>
                         )}
                         {/* Verdict */}
@@ -3582,7 +3496,7 @@ export default function App() {
                                   <div style={{ display:'flex', justifyContent:'space-between',
                                     alignItems:'center', marginBottom: v !== null ? 5 : 0 }}>
                                     {label && (
-                                      <span style={{ fontSize:'var(--text-xs)', fontWeight:700,
+                                      <span style={{ fontSize:'var(--text-xs)', fontWeight:500,
                                         letterSpacing:'.08em', color:bc }}>{label.toUpperCase()}</span>
                                     )}
                                     {vpct !== null && (
@@ -3629,13 +3543,13 @@ export default function App() {
                               </div>
                               {_dnarr && (
                                 <div style={{ animation:'fadeIn .4s cubic-bezier(.2,0,0,1)' }}>
-                                  <span style={{ fontSize:'var(--text-xs)', fontWeight:700, letterSpacing:'.08em', color:T.ink3 }}>NARRATIVE</span>
+                                  <span style={{ fontSize:'var(--text-xs)', fontWeight:500, letterSpacing:'.08em', color:T.ink3 }}>NARRATIVE</span>
                                   <p style={{ fontSize:'var(--text-xs)', color:T.ink2, lineHeight:1.65, margin:'4px 0 0' }}>{_dnarr}</p>
                                 </div>
                               )}
                               {_dgeo && (
                                 <div style={{ animation:'fadeIn .4s cubic-bezier(.2,0,0,1)' }}>
-                                  <span style={{ fontSize:'var(--text-xs)', fontWeight:700, letterSpacing:'.08em', color:T.ink3 }}>GEOMETRY</span>
+                                  <span style={{ fontSize:'var(--text-xs)', fontWeight:500, letterSpacing:'.08em', color:T.ink3 }}>GEOMETRY</span>
                                   <p style={{ fontSize:'var(--text-xs)', color:T.ink2, lineHeight:1.65, margin:'4px 0 0' }}>{_dgeo}</p>
                                 </div>
                               )}
@@ -3648,7 +3562,7 @@ export default function App() {
                               )}
                               {_vbboxes.length > 0 && (
                                 <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
-                                  <span style={{ fontSize:'var(--text-xs)', fontWeight:700, letterSpacing:'.08em', color:T.ink3 }}>SPATIAL ANCHORS</span>
+                                  <span style={{ fontSize:'var(--text-xs)', fontWeight:500, letterSpacing:'.08em', color:T.ink3 }}>SPATIAL ANCHORS</span>
                                   {_vbboxes.map((b, bi) => {
                                     const guide  = regionGuide(b.label);
                                     const dotCol = tierColor(guide.tier);
@@ -3660,7 +3574,7 @@ export default function App() {
                                         <div style={{ width:6, height:6, borderRadius:'var(--r-round)',
                                           background:dotCol, flexShrink:0, marginTop:4 }}/>
                                         <div style={{ flex:1, minWidth:0 }}>
-                                          <span style={{ fontSize:'var(--text-xs)', fontWeight:700, letterSpacing:'.06em',
+                                          <span style={{ fontSize:'var(--text-xs)', fontWeight:500, letterSpacing:'.06em',
                                             color:dotCol }}>{`${tierIcon(guide.tier)} ${guide.title}`.toUpperCase()}</span>
                                           {coach && (
                                             <p style={{ fontSize:'var(--text-xs)', color:T.ink2, lineHeight:1.6, margin:'2px 0 0' }}>
@@ -3688,7 +3602,7 @@ export default function App() {
                             <button
                               onClick={() => sel && handleJuryCritique(sel.path)}
                               disabled={juryLoading}
-                              style={{ display:'flex', alignItems:'center', gap:6, padding:'7px 14px', borderRadius:'var(--r-md)', background:T.raised, border:`1px solid ${T.lineStrong}`, color:T.ink2, fontSize:'var(--text-sm)', fontWeight:700, cursor: juryLoading ? 'wait' : 'pointer', alignSelf:'flex-start' }}>
+                              style={{ display:'flex', alignItems:'center', gap:6, padding:'7px 14px', borderRadius:'var(--r-md)', background:T.raised, border:`1px solid ${T.lineStrong}`, color:T.ink2, fontSize:'var(--text-sm)', fontWeight:600, cursor: juryLoading ? 'wait' : 'pointer', alignSelf:'flex-start' }}>
                               {juryLoading
                                 ? <><span style={{ width:10, height:10, borderRadius:'var(--r-round)', border:`1.5px solid ${T.ink3}`, borderTopColor:'transparent', animation:'spin .8s linear infinite', display:'inline-block' }}/> Generating…</>
                                 : <><Wand2 size={11}/> Write a critique</>}
@@ -4072,8 +3986,8 @@ export default function App() {
                             <div className="rounded-sm border border-line bg-surface p-3">
                               <p className="t-label mb-1">Burst selection</p>
                               <div className="mb-1 flex items-baseline gap-2">
-                                <span className={cn('text-sm font-semibold',
-                                                    _isPrimary ? 'text-ink' : 'text-ink-2')}>
+                                <span className={cn('text-sm',
+                                                    _isPrimary ? 'text-ink' : 'text-ink-3')}>
                                   {_isPrimary ? 'Primary pick' : 'Alternate'}
                                 </span>
                                 {_isPrimary && _burstCnt > 0 && (
@@ -4123,7 +4037,7 @@ export default function App() {
                           {_checks.length > 0 && (
                             <div>
                               <div style={{ display:'flex', alignItems:'baseline', gap:8, marginBottom:8 }}>
-                                <span style={{ fontSize:'var(--text-xs)', fontWeight:700, letterSpacing:'.09em',
+                                <span style={{ fontSize:'var(--text-xs)', fontWeight:500, letterSpacing:'.09em',
                                   textTransform:'uppercase', color:T.ink3 }}>Judge's Eye</span>
                                 <span style={{ fontSize:'var(--text-xs)', color:T.ink3, opacity:.6 }}>— what's working and what to fix</span>
                               </div>
@@ -4143,11 +4057,11 @@ export default function App() {
                                       <div style={{ display:'flex', alignItems:'center', gap:10 }}>
                                         <div style={{ width:6, height:6, borderRadius:'var(--r-round)',
                                           background:col, flexShrink:0 }}/>
-                                        <span style={{ fontSize:'var(--text-xs)', fontWeight:700, letterSpacing:'.07em',
+                                        <span style={{ fontSize:'var(--text-xs)', fontWeight:500, letterSpacing:'.07em',
                                           color:T.ink3, minWidth:62, textTransform:'uppercase' }}>{label}</span>
                                         <span style={{ fontSize:'var(--text-xs)', fontWeight:600, color:col }}>{value}</span>
                                         {isLimit && (
-                                          <span style={{ marginLeft:'auto', fontSize:'var(--text-xs)', fontWeight:800,
+                                          <span style={{ marginLeft:'auto', fontSize:'var(--text-xs)', fontWeight:600,
                                             letterSpacing:'.08em', color: _tier === 'weak' ? T.gradeWeak : T.ink2,
                                             textTransform:'uppercase' }}>
                                             {_tier === 'weak' ? '↑ WHAT FAILED' : '↑ WHAT TO FIX'}
@@ -4256,143 +4170,25 @@ export default function App() {
                 </div>
               </div>
             )}
-            <div ref={filmRef} style={{ height: filmThumbH + (showFilename ? 18 : 0) + 12, overflowX:'auto', overflowY:'hidden', display:'flex', alignItems:'center', padding:'0 6px', gap:4 }}>
-              {filteredPhotos.map(p => (
-                <FilmThumb key={p.id} p={p} isSel={p.id === selId} onSelect={setSelId} isUsed={allUsedPaths.has(p.path)} isSelected={selectedIds.has(p.id)} h={filmThumbH} showFn={showFilename}/>
-              ))}
+            <div style={{ height: filmThumbH + (showFilename ? 18 : 0) + 12, flexShrink: 0 }}>
+              <Filmstrip photos={filteredPhotos} selId={selId} onSelect={setSelId}
+                usedPaths={allUsedPaths} selectedIds={selectedIds}
+                h={filmThumbH} showFn={showFilename}/>
             </div>
           </div>
           )}
         </div>
 
       ) : mainTab === 'duplicates' ? (
-        /* ── Duplicates grid view ──────────────────────────────── */
-        (() => {
-          const byCluster: Record<number, any[]> = {};
-          for (const p of photos) {
-            if (p.cluster_id < 0) continue;
-            (byCluster[p.cluster_id] ??= []).push(p);
-          }
-          const groups = Object.values(byCluster)
-            .map(g => {
-              const best = g.find(p => (p.sim_flag||'').includes('Best')) ?? g[0];
-              const rest = g.filter(p => p !== best).sort((a,b) => b.score - a.score);
-              return { best, rest, all: [best, ...rest] };
-            })
-            .sort((a, b) => b.all.length - a.all.length);
-          const totalDups = groups.reduce((s, g) => s + g.rest.length, 0);
-
-          return (
-            <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-ground">
-              <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line bg-surface px-4">
-                <span className="text-md font-semibold text-ink">Similar shots</span>
-                <span className="text-xs text-ink-3">
-                  <span className="t-num">{groups.length}</span> group{groups.length!==1?'s':''}
-                  {' · '}<span className="t-num">{totalDups}</span> alternates
-                </span>
-                <div className="ml-auto">
-                  <Button size="sm" onClick={() => setExportModal(true)} icon={<Download size={11}/>}>
-                    Export
-                  </Button>
-                </div>
-              </div>
-
-              <div className="min-h-0 flex-1 overflow-y-auto p-3">
-                {groups.map((g, gi) => {
-                  const bestRule = gradeRule(g.best.grade);
-                  return (
-                    <div key={gi} className={cn(gi < groups.length - 1 && 'mb-6')}>
-
-                      {/* Group label. The rule colour matches the winner's grade,
-                          so a burst whose best frame is only Mid reads as such
-                          before you look at a single thumbnail. */}
-                      <div className="mb-2 flex items-center gap-2">
-                        <span aria-hidden className="w-4 shrink-0"
-                              style={{ height: 'var(--rule)', background: bestRule ?? T.line }}/>
-                        <span className="t-label !text-ink-2">
-                          <span className="t-num">{g.all.length}</span> similar
-                        </span>
-                        <span className="text-xs text-ink-3">
-                          best <span className="t-num text-ink">{formatScore(g.best.score)}</span>
-                        </span>
-                        <div className="h-px flex-1 bg-line"/>
-                        <Button size="sm" variant="quiet"
-                          onClick={() => { setMainTab('gallery'); setSelId(g.best.id); setLoupeMode('loupe'); }}>
-                          Open best
-                        </Button>
-                      </div>
-
-                      {/* Frames keep native aspect here too. Comparing near-identical
-                          frames is the ENTIRE job of this screen, so cropping them all
-                          to the same rectangle destroyed the one difference — framing —
-                          you are here to judge. */}
-                      <div className="flex flex-wrap gap-1">
-                        {g.all.map((p: any, pi: number) => {
-                          const isBest = pi === 0;
-                          const delta  = isBest ? null : p.score - g.best.score;
-                          const fname  = (p.path.split(/[\\/]/).pop() ?? '').replace(/\.[^.]+$/, '');
-                          return (
-                            <button key={p.id}
-                              onClick={() => { setMainTab('gallery'); setSelId(p.id); setLoupeMode('loupe'); }}
-                              className={cn(
-                                'flex cursor-pointer flex-col border-0 bg-surface p-0',
-                                'rounded-sm outline outline-2 outline-offset-1',
-                                'transition-[outline-color] duration-fast ease',
-                                isBest ? 'outline-ink' : 'outline-transparent hover:outline-line-strong',
-                              )}>
-
-                              <span className="relative block overflow-hidden bg-well" style={{ height: 116 }}>
-                                <img src={thumbUrl(p.path)} alt="" loading="lazy"
-                                  className={cn('block h-full w-auto max-w-none',
-                                                !isBest && 'opacity-reject')}/>
-                              </span>
-
-                              {/* Best is marked by a rule, matching the contact sheet.
-                                  No scrim, no floating badges — nothing covers a frame
-                                  you are trying to compare. */}
-                              <span aria-hidden className="block w-full"
-                                    style={{ height: 'var(--rule)',
-                                             background: isBest ? (bestRule ?? T.ink3) : 'transparent' }}/>
-
-                              <span className="flex items-center gap-1 px-1 py-px">
-                                <span className={cn('t-num flex-1 truncate text-left text-xs',
-                                                    isBest ? 'text-ink-2' : 'text-ink-4')}>
-                                  {fname}
-                                </span>
-                                {delta !== null && (
-                                  <span className="t-num shrink-0 text-xs text-ink-4"
-                                        title="Score difference from the best frame">
-                                    {delta > 0 ? '+' : '−'}{formatScore(Math.abs(delta))}
-                                  </span>
-                                )}
-                                <span className={cn('t-num shrink-0 text-xs',
-                                                    isBest ? 'text-ink' : 'text-ink-3')}>
-                                  {formatScore(p.score)}
-                                </span>
-                              </span>
-
-                            </button>
-                          );
-                        })}
-                      </div>
-
-                    </div>
-                  );
-                })}
-
-                {groups.length === 0 && (
-                  <div className="flex flex-col items-center justify-center gap-3 pt-12 text-ink-3">
-                    <ImageOff size={28} strokeWidth={1}/>
-                    <p className="text-sm">No similar shots found.</p>
-                    <p className="max-w-[36ch] text-center text-xs text-ink-4">
-                      Bursts and near-duplicates appear here once a folder has been graded.
-                    </p>
-                  </div>
-                )}
-              </div>
-            </div>
-          );
-        })()
+        /* ── Duplicates grid view — see components/views/SimilarShots.tsx ── */
+        <SimilarShots
+          groups={dupStats.groups}
+          totalDups={dupStats.totalDups}
+          shownCount={dupGroupsShown}
+          onRevealMore={revealMoreDupGroups}
+          onOpenPhoto={(id) => { setMainTab('gallery'); setSelId(id); setLoupeMode('loupe'); }}
+          onExport={() => setExportModal(true)}
+        />
 
       ) : mainTab === 'creative' ? (
         /* ── Creative Direction view ───────────────────────────── */
@@ -4432,14 +4228,15 @@ export default function App() {
               <div className="shrink-0 border-b border-line px-4 py-3">
                 <div className="mb-1 flex items-center gap-2">
                   <Wand2 size={14} className="text-ink-3"/>
-                  <span className="text-md font-semibold text-ink">Creative director</span>
+                  <span className="t-label">Creative director</span>
                 </div>
                 <p className="text-xs text-ink-3">
                   Builds a story arc from five visually distinct frames.
                 </p>
               </div>
 
-              <div className="flex flex-1 flex-col gap-6 overflow-y-auto px-4 py-4">
+              <div className="flex flex-col gap-6 overflow-y-auto px-4 py-4"
+                style={sortedPhotos.length > 0 ? { flex:'0 1 auto', minHeight:0 } : undefined}>
 
                 <Field label="Mood / story brief">
                   <TextArea
@@ -4516,7 +4313,7 @@ export default function App() {
                       aria-label="Sequence length"
                       aria-valuetext={`${creativeCount} photos`}
                       className="range-token flex-1" />
-                    <span className="shrink-0 text-right text-sm font-bold text-ink-2 tabular-nums">
+                    <span className="shrink-0 text-right text-sm text-ink-2 tabular-nums">
                       {creativeCount} photos
                     </span>
                   </div>
@@ -4532,7 +4329,7 @@ export default function App() {
                   {creativeAnchor ? (
                     <div style={{ position:'relative', borderRadius:'var(--r-md)', overflow:'hidden', border:`2px solid ${T.mark}`, cursor:'pointer', boxShadow:`0 0 0 3px ${T.markDim}` }}
                       onClick={()=>setCreativeAnchor(null)} title="Click to remove">
-                      <img src={thumbUrl(creativeAnchor)} alt="" style={{ width:'100%', aspectRatio:'3/2', objectFit:'cover', display:'block' }}/>
+                      <Thumb path={creativeAnchor} eager style={{ width:'100%', aspectRatio:'3/2', objectFit:'cover', display:'block' }}/>
                       <div className="t-label absolute left-1 top-1 rounded-sm px-1" style={{ background:T.mark, color:T.well }}>ANCHOR</div>
                       <div style={{ position:'absolute', top:6, right:6, background:T.scrim, backdropFilter:'blur(4px)', borderRadius:'var(--r-sm)', padding:'3px 8px', fontSize:'var(--text-xs)', color:T.ink, fontWeight:600 }}>✕ remove</div>
                     </div>
@@ -4543,37 +4340,18 @@ export default function App() {
                     </div>
                   )}
                 </div>
-
-                {/* Photo picker grid */}
-                {sortedPhotos.length > 0 && (
-                  <div>
-                    <p className="mb-2 text-xs text-ink-3">{sortedPhotos.length} photos · sorted by grade · click to anchor</p>
-                    <div className="grid grid-cols-3 gap-1">
-                      {sortedPhotos.map(p => {
-                        const isAnchor = p.path===creativeAnchor;
-                        const dc = gc(p.grade);
-                        return (
-                          <button key={p.id} onClick={()=>setCreativeAnchor(isAnchor?null:p.path)}
-                            style={{ position:'relative', aspectRatio:'3/2', padding:0, border:'none', borderRadius:'var(--r-sm)', overflow:'hidden', cursor:'pointer',
-                              outline: isAnchor?`2px solid ${T.mark}`:`1px solid ${T.line}`, outlineOffset:isAnchor?2:0,
-                              transform:isAnchor?'scale(1.05)':'scale(1)', transition:'transform .12s, outline .12s' }}>
-                            <img src={thumbUrl(p.path)} alt="" loading="eager" style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
-                            <div style={{ position:'absolute', bottom:0, left:0, right:0, height:14, background:`linear-gradient(transparent, ${T.scrim})`, display:'flex', alignItems:'center', justifyContent:'flex-end', padding:'0 4px' }}>
-                              <span className="text-xs font-bold text-ink tabular-nums">{Math.round(p.score*100)}</span>
-                            </div>
-                            {isAnchor && (
-                              <div style={{ position:'absolute', inset:0, background:T.markDim, display:'flex', alignItems:'center', justifyContent:'center' }}>
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={T.ink} strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20,6 9,17 4,12"/></svg>
-                              </div>
-                            )}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
               </div>
+
+              {/* Photo picker — own scroll viewport, windowed rows. Extracted to
+                  AnchorPicker: it used to sit inside the panel's scroll region and
+                  mount one eager <img> per library photo (21,416 on the live
+                  catalog). Now only the visible rows exist. */}
+              {sortedPhotos.length > 0 && (
+                <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
+                  <p className="mb-2 text-xs text-ink-3">{sortedPhotos.length} photos · sorted by grade · click to anchor</p>
+                  <AnchorPicker photos={sortedPhotos} anchorPath={creativeAnchor} onPick={setCreativeAnchor}/>
+                </div>
+              )}
 
               {/* Build controls — pinned to the bottom of the config column. */}
               <div className="shrink-0 border-t border-line px-4 py-3">
@@ -4652,7 +4430,7 @@ export default function App() {
                   {/* Results toolbar */}
                   <div style={{flexShrink:0, display:'flex', alignItems:'center', justifyContent:'space-between', padding:'10px 20px', borderBottom:`1px solid ${T.line}`, background:T.surface}}>
                     <div style={{display:'flex', alignItems:'center', gap:10}}>
-                      <span style={{fontSize:'var(--text-sm)', fontWeight:700}}>Story sequence</span>
+                      <span style={{fontSize:'var(--text-sm)', fontWeight:500}}>Story sequence</span>
                       <span style={{fontSize:'var(--text-xs)', color:T.ink3, background:T.raised, borderRadius:'var(--r-sm)', padding:'2px 8px'}}>{successResults.length} images</span>
                       {creativeResults.some((r:any)=>!r.success) && (
                         <span style={{fontSize:'var(--text-xs)', color:T.gradeWeak, cursor:'default'}}
@@ -4706,7 +4484,7 @@ export default function App() {
                           <div key={i} style={{borderRadius:'var(--r-md)', overflow:'hidden', border:`1px solid ${T.line}`, background:T.surface, display:'flex', flexDirection:'column', boxShadow:`0 2px 12px ${T.well}`}}>
                             {/* Slot header */}
                             <div style={{padding:'8px 12px', background:T.raised, borderBottom:`2px solid ${sc}`, display:'flex', alignItems:'center', gap:8}}>
-                              <span style={{fontSize:'var(--text-xs)', fontWeight:800, letterSpacing:'.12em', color:sc, textTransform:'uppercase', flex:1}}>{slot}</span>
+                              <span style={{fontSize:'var(--text-xs)', fontWeight:600, letterSpacing:'.12em', color:sc, textTransform:'uppercase', flex:1}}>{slot}</span>
                               <span style={{fontSize:'var(--text-xs)', color:T.ink3, fontWeight:600, background:T.raisedHover, borderRadius:'var(--r-sm)', padding:'1px 6px'}}>
                                 {i+1}/{successResults.length}
                               </span>
@@ -4725,7 +4503,7 @@ export default function App() {
                                 <div style={{position:'absolute', bottom:8, right:10, display:'flex', alignItems:'center', gap:3,
                                   background:T.scrim, backdropFilter:'blur(6px)', borderRadius:'var(--r-sm)', padding:'2px 8px'}}>
                                   <div style={{width:5, height:5, borderRadius:'var(--r-round)', background:sc}}/>
-                                  <span style={{fontSize:'var(--text-sm)', fontWeight:800, color:T.ink, fontVariantNumeric:'tabular-nums'}}>{Math.round(photoScore*100)}</span>
+                                  <span style={{fontSize:'var(--text-sm)', color:T.ink, fontVariantNumeric:'tabular-nums'}}>{Math.round(photoScore*100)}</span>
                                 </div>
                               )}
                             </div>
@@ -4741,17 +4519,15 @@ export default function App() {
                 </>
               ) : (
                 /* Empty state */
-                <div style={{flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:18, color:T.ink3, padding:40}}>
-                  <Wand2 size={44} strokeWidth={1} style={{opacity:.3}}/>
-                  <div style={{textAlign:'center', maxWidth:360}}>
-                    <p style={{fontSize:'var(--text-md)', fontWeight:700, color:T.ink2, marginBottom:10}}>No sequence yet</p>
-                    <p style={{fontSize:'var(--text-sm)', lineHeight:1.75, margin:0, color:T.ink3}}>
-                      Write a mood brief on the left,<br/>
-                      optionally pick a reference photo,<br/>
-                      then press <strong className="text-ink">Build story sequence</strong>.
+                <div style={{flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:14, color:T.ink3, padding:40}}>
+                  <Wand2 size={26} strokeWidth={1} style={{opacity:.25}}/>
+                  <div style={{textAlign:'center', maxWidth:340}}>
+                    <p className="t-label" style={{margin:'0 0 8px'}}>No sequence yet</p>
+                    <p style={{fontSize:'var(--text-sm)', lineHeight:1.7, margin:0, color:T.ink3}}>
+                      Write a mood brief on the left, optionally pick a reference photo, then press Build the story.
                     </p>
                     {photos.length===0 && (
-                      <p style={{fontSize:'var(--text-sm)', color:T.gradeWeak, marginTop:14}}>Grade a folder first to load photos.</p>
+                      <p style={{fontSize:'var(--text-sm)', color:T.gradeWeak, marginTop:12}}>Grade a folder first to load photos.</p>
                     )}
                   </div>
                 </div>
@@ -4769,7 +4545,7 @@ export default function App() {
           {sel ? sel.path.split(/[\\/]/).pop() : 'Open a folder to begin'}
         </span>
         <div className="flex shrink-0 gap-3">
-          {[['← →','Navigate'],['1–5','Rate'],['G','Grid'],['E','Loupe']].map(([k, a]) => (
+          {[['← →','Navigate'],['1–5','Rate'],['0','Clear'],['X','Used'],['G','Grid'],['E','Loupe']].map(([k, a]) => (
             <span key={k} className="flex items-center gap-1 text-xs text-ink-3">
               <kbd className="t-num rounded-sm border border-line-strong bg-raised px-1 text-xs text-ink-2">{k}</kbd>
               {a}
@@ -4780,119 +4556,22 @@ export default function App() {
 
       {/* ── Folder browser modal ────────────────────────────────── */}
       {showBrowser && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4">
-          <div className="flex h-[82vh] w-full max-w-[640px] flex-col overflow-hidden rounded-md border border-line-strong bg-surface shadow-lg">
-            <div className="flex shrink-0 items-center justify-between border-b border-line px-4 py-3">
-              <span className="text-md font-semibold text-ink">Choose a photo folder</span>
-              <button onClick={() => setShowBrowser(false)} aria-label="Close"
-                className="cursor-pointer rounded-sm border-0 bg-transparent p-1 text-ink-3 transition-colors duration-fast ease hover:bg-raised hover:text-ink">
-                <X size={16}/>
-              </button>
-            </div>
-            <div className="flex shrink-0 items-center gap-2 border-b border-line bg-well px-3 py-2">
-              <Button size="sm" onClick={goUp} icon={<ArrowUp size={11}/>}>Up</Button>
-              <span className="t-num flex-1 truncate rounded-sm border border-line-strong bg-raised px-2 py-1 text-xs text-ink-2">
-                {bPath}
-              </span>
-              <Button
-                size="sm"
-                variant="solid"
-                onClick={async () => {
-                  try {
-                    if (browserMode === 'add') {
-                      const toAdd = bSelFolders.size ? Array.from(bSelFolders) : [bPath];
-                      for (const nf of toAdd) await handleAddFolder(nf);
-                    } else {
-                      setFolder(bPath); setPhotos([]); setSelId(null); setFolders([]);
-                    }
-                  } catch (err) { /* non-blocking */ }
-                  setShowBrowser(false);
-                  setBSelFolders(new Set());
-                }}
-                disabled={bImages.length===0}
-                title={bImages.length === 0 ? 'This folder holds no images' : undefined}>
-                {browserMode === 'add' ? 'Add' : 'Use folder'}
-                {bImages.length > 0 && <span className="t-num ml-1 opacity-70">{bImages.length}</span>}
-              </Button>
-            </div>
-            <div className="flex flex-1 overflow-hidden">
-              <div className="flex w-sidebar shrink-0 flex-col gap-px overflow-y-auto border-r border-line bg-well p-2">
-                <p className="t-label mb-1 px-2">Quick access</p>
-                {([
-                  { label:'Desktop',   path:'C:\\Users\\Nicky Tuason\\Desktop' },
-                  { label:'Pictures',  path:'C:\\Users\\Nicky Tuason\\Pictures' },
-                  { label:'Downloads', path:'C:\\Users\\Nicky Tuason\\Downloads' },
-                  { label:'Documents', path:'C:\\Users\\Nicky Tuason\\Documents' },
-                  { label:'C:\\',      path:'C:\\' },
-                ]).map(loc => (
-                  <button key={loc.path} onClick={() => { setBPath(loc.path); loadBrowser(loc.path); }}
-                    className={cn(
-                      'truncate rounded-sm border-0 px-2 py-1 text-left text-sm',
-                      'cursor-pointer transition-colors duration-fast ease',
-                      bPath === loc.path
-                        ? 'bg-raised-hover text-ink'
-                        : 'bg-transparent text-ink-3 hover:bg-raised hover:text-ink-2',
-                    )}>
-                    {loc.label}
-                  </button>
-                ))}
-              </div>
-              <div className="flex-1 overflow-y-auto p-4">
-                {bLoading ? (
-                  <div className="flex h-full items-center justify-center text-ink-3">
-                    <span className="text-sm">Reading folder…</span>
-                  </div>
-                ) : bFolders.length===0 && bImages.length===0 ? (
-                  <div className="flex h-full flex-col items-center justify-center gap-2 text-ink-3">
-                    <FolderOpen size={28} strokeWidth={1.5}/>
-                    <p className="text-sm">Nothing here</p>
-                    <p className="text-xs text-ink-4">No folders or images in this location.</p>
-                  </div>
-                ) : (
-                  <>
-                    {bFolders.length > 0 && (
-                      <div className="mb-6">
-                        <p className="t-label mb-2">Folders <span className="t-num">{bFolders.length}</span></p>
-                        <div className="grid gap-1" style={{ gridTemplateColumns:'repeat(auto-fill, minmax(150px,1fr))' }}>
-                          {bFolders.map((f, idx) => (
-                            <button key={f} onClick={(e) => handleBrowserFolderClick(e as any, f, idx)}
-                              className={cn(
-                                'flex cursor-pointer items-center gap-2 rounded-sm border px-3 py-2 text-left',
-                                'transition-colors duration-fast ease',
-                                bSelFolders.has(f)
-                                  ? 'border-mark bg-raised text-ink'
-                                  : 'border-line-strong bg-raised text-ink-2 hover:bg-raised-hover hover:text-ink',
-                              )}>
-                              <FolderOpen size={13} className="shrink-0 text-ink-3"/>
-                              <span className="truncate text-sm">{f.split(/[\\/]/).pop()}</span>
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    {bImages.length > 0 && (
-                      <div>
-                        <p className="t-label mb-2">Images <span className="t-num">{bImages.length}</span></p>
-                        <div className="flex flex-wrap gap-1">
-                          {bImages.slice(0,30).map(img => (
-                            <div key={img} className="overflow-hidden rounded-sm border border-line bg-well">
-                              <img src={thumbUrl(img)} className="block h-thumb w-auto max-w-none" loading="lazy" alt=""/>
-                            </div>
-                          ))}
-                          {bImages.length > 30 && (
-                            <div className="flex h-thumb items-center justify-center rounded-sm border border-line bg-raised px-3">
-                              <span className="t-num text-xs text-ink-3">+{bImages.length-30} more</span>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
+        <FolderBrowser
+          mode={browserMode}
+          bPath={bPath}
+          setBPath={setBPath}
+          bFolders={bFolders}
+          bImages={bImages}
+          bSelFolders={bSelFolders}
+          setBSelFolders={setBSelFolders}
+          loading={bLoading}
+          onNavigate={loadBrowser}
+          onGoUp={goUp}
+          onFolderClick={(e, p, i) => handleBrowserFolderClick(e, p, i)}
+          onAddFolders={async (fs) => { for (const nf of fs) await handleAddFolder(nf); }}
+          onUseFolder={() => { setFolder(bPath); setPhotos([]); setSelId(null); setFolders([]); }}
+          onClose={() => setShowBrowser(false)}
+        />
       )}
     </div>
   );

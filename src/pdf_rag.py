@@ -264,9 +264,39 @@ def _extract_concepts(text: str) -> list[str]:
 
 # ── Public ingest ─────────────────────────────────────────────────────────────
 
+# A phrase must describe something checkable IN A FRAME. Biography, career
+# history and publication metadata are not visible in a photograph, drag the
+# cosine rubric, and (when the source is a copyrighted book) risk carrying
+# derivative prose into prompts. The 2026-08-13 manual cleanup removed 29 such
+# lines by hand; this filter makes the rejection automatic.
+_NON_VISUAL_RE = re.compile(
+    r"\b(born|birth|died|death|biograph|museum|gallery|exhibition|exhibit|"
+    r"magazine|published|publication|catalogue|catalog|career|interview|"
+    r"vogue|life magazine|aperture|magnum photos|century|\b(19|20)\d{2}\b)",
+    re.IGNORECASE,
+)
+MAX_PHRASE_WORDS = 14
+
+
+def _is_visual_phrase(p: str) -> bool:
+    """True when a phrase reads as an image-checkable criterion."""
+    p = p.strip()
+    if not p or p.lower().startswith("a phrase from a book"):
+        return False
+    if len(p.split()) > MAX_PHRASE_WORDS:
+        return False
+    if _NON_VISUAL_RE.search(p):
+        return False
+    return True
+
+
 def ingest_pdf(pdf_path: str | Path, pdf_name: Optional[str] = None) -> list[str]:
     """
     Process one PDF: extract text → LLM concept phrases → append to store.
+
+    Extracted phrases pass a visual-criteria filter before storage: biography,
+    publication history and long prose sentences are dropped automatically
+    (the failure mode that polluted the store in August 2026).
 
     Returns the list of new phrases extracted from this PDF.
     """
@@ -281,7 +311,15 @@ def ingest_pdf(pdf_path: str | Path, pdf_name: Optional[str] = None) -> list[str
 
     print(f"[pdf_rag] {pages} pages, {len(text)} chars → extracting concepts…")
     new_phrases = _extract_concepts(text)
-    print(f"[pdf_rag] Extracted {len(new_phrases)} concept phrases")
+
+    # Visual-criteria gate — keep the rubric photographic.
+    rejected = [p for p in new_phrases if not _is_visual_phrase(p)]
+    new_phrases = [p for p in new_phrases if _is_visual_phrase(p)]
+    if rejected:
+        print(f"[pdf_rag] filtered {len(rejected)} non-visual/biographical phrases "
+              f"(e.g. {rejected[0][:60]!r})")
+
+    print(f"[pdf_rag] Kept {len(new_phrases)} concept phrases")
 
     # Merge with existing store (deduplicate by lowercase)
     existing = load_concepts()

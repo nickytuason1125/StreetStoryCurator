@@ -423,6 +423,45 @@ def query_all(min_score: float = 0.0) -> list[dict]:
     return [_row_to_dict(r) for r in rows]
 
 
+# Columns safe to fetch without the 1536-dim embedding blob. Any metadata-only
+# lookup should request these — pulling embeddings for a whole-library scan is
+# what made the per-click annotations endpoint copy hundreds of MB into RAM.
+_LIGHT_COLUMNS = ["path", "score", "grade", "breakdown", "reasoning_log",
+                  "has_annotations", "score_factors", "is_verified",
+                  "personal_score", "exif_ts"]
+
+
+def query_by_path_fragment(fragment: str,
+                           columns: "list[str] | None" = None) -> list[dict]:
+    """Fetch light rows whose path contains ``fragment`` (SQL LIKE).
+
+    Metadata-only alternative to query_all(): the embedding column is excluded
+    unless explicitly requested, so a single-record lookup costs kilobytes
+    instead of copying every graded photo's vectors into RAM. Callers that need
+    exact-path semantics should re-check the returned rows (a directory name
+    could theoretically contain the fragment).
+    """
+    frag = (fragment or "").strip()
+    if not frag:
+        return []
+    tbl = _open_table()
+    esc   = frag.replace("'", "''")
+    cols  = columns if columns is not None else _LIGHT_COLUMNS
+    try:
+        with _lock:
+            rows = (
+                tbl.search()
+                   .where(f"path LIKE '%{esc}%'", prefilter=True)
+                   .select(cols)
+                   .to_list()
+            )
+        return rows
+    except Exception as _e:
+        print(f"[lance_store] query_by_path_fragment failed: {_e}")
+        return []
+
+
+
 def query_embeddings_by_paths(paths: list[str]) -> dict[str, np.ndarray]:
     """
     Return {path: embedding (float32, shape 1536)} for every path that already

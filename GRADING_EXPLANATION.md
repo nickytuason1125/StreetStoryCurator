@@ -1,8 +1,8 @@
-# How Street Story Curator Grades Pictures
+# How FrameGrade Grades Pictures
 
 ## Grading Process Overview
 
-Street Story Curator uses a multi-dimensional analysis approach to grade photographs, evaluating them across several key criteria to determine their overall quality and suitability for various purposes.
+FrameGrade uses a multi-dimensional analysis approach to grade photographs, evaluating them across several key criteria to determine their overall quality and suitability for various purposes.
 
 ## Core Grading Dimensions
 
@@ -85,4 +85,4 @@ The system is designed to be improved over time through:
 
 ## Conclusion
 
-While no automated system can perfectly replicate human judgment, Street Story Curator's multi-dimensional approach with optional enhanced models (YuNet for better face detection and NIMA for human-rated aesthetics) provides a robust framework for photo evaluation that minimizes false positives and negatives while offering actionable feedback for improvement.
+While no automated system can perfectly replicate human judgment, FrameGrade's multi-dimensional approach with optional enhanced models (YuNet for better face detection and NIMA for human-rated aesthetics) provides a robust framework for photo evaluation that minimizes false positives and negatives while offering actionable feedback for improvement.

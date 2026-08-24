@@ -72,7 +72,7 @@ export function Segmented<T extends string>({
             )}
             {o.icon}
             {!iconOnly && o.label}
-            {o.count != null && <span className="t-num opacity-70">{o.count}</span>}
+            {o.count != null && <span className="t-num text-ink-4">({o.count})</span>}
           </button>
         );
       })}

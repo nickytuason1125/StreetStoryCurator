@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    street_story_curator_lib::run();
+    framegrade_lib::run();
 }

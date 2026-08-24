@@ -138,6 +138,22 @@ def _trim_crash_log(path: str) -> None:
         print(f"[server] crash.log trim skipped: {_e_trim}", flush=True)
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write text atomically: temp file in the same dir, then os.replace().
+
+    Used for every state file a user depends on across sessions (catalog
+    Resume, saved sequences, photo flags). The old direct write_text/open('w')
+    pattern truncated the destination BEFORE writing, so a crash or power loss
+    mid-write destroyed the only copy — taking the Resume-after-crash feature
+    down with it. os.replace is atomic on Windows and POSIX.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(str(tmp), str(path))
+
+
 RECENTLY_GENERATED: set = set()
 MAX_HISTORY = 25
 LAST_SEQUENCE: list = []   # paths from the most recent generation — used as avoid_paths
@@ -258,6 +274,11 @@ def _release_annotation_model() -> None:
 # 1.8: the HF SigLIP loader commits only ~1 GB, so culls run at low free RAM;
 # Qwen has its own preflight that degrades to CLIP scoring when RAM is tight.
 _GRADE_MIN_RAM_GB = float(os.environ.get("FRAMEGRADE_MIN_RAM_GB", "1.8"))
+
+# nvidia-smi telemetry cache for /api/models/status (see the endpoint for why).
+_SMI_CACHE: "tuple | None" = None    # (total_mib, free_mib, gpu_name)
+_SMI_CACHE_TS: float = 0.0
+_SMI_CACHE_S: float = 2.5
 
 # ── Frontier 2026: legacy V1 analyzer replaced by _FrontierStub ───────────────
 # lightweight_analyzer.py was renamed to *.legacy_backup — it cannot be imported.
@@ -836,13 +857,28 @@ async def model_status():
     # this long-lived SERVER process a CUDA context, which can race the grade worker's
     # isolated GPU subprocesses. nvidia-smi is a separate process — zero CUDA state
     # here — and memory.free reports true free VRAM across all processes.
+    #
+    # nvidia-smi costs a full Windows process spawn (~50-150 ms) per call, and the
+    # pre-grade modal polls this endpoint every 3 s. The result is cached for
+    # _SMI_CACHE_S so a polling UI costs ~zero: VRAM numbers moving within a
+    # 2.5 s window is imperceptible in the readiness indicator.
     vram_free_gb  = None
     vram_total_gb = None
     gpu_name      = last.get("gpu_name")
     compute_device = "unknown"
+    global _SMI_CACHE, _SMI_CACHE_TS   # noqa: F841 — module-level cache vars below
     try:
-        import subprocess as _sp, shutil as _sh
-        _smi = _sh.which("nvidia-smi") or r"C:\Windows\System32\nvidia-smi.exe"
+        import time as _t_smi
+        _now = _t_smi.monotonic()
+        if _SMI_CACHE is not None and (_now - _SMI_CACHE_TS) < _SMI_CACHE_S:
+            (_tot, _free, _nm) = _SMI_CACHE
+            vram_total_gb = round(_tot / 1024.0, 1)
+            vram_free_gb  = round(_free / 1024.0, 1)
+            if not gpu_name:
+                gpu_name = _nm
+        else:
+            import subprocess as _sp, shutil as _sh
+            _smi = _sh.which("nvidia-smi") or r"C:\Windows\System32\nvidia-smi.exe"
         _out = _sp.run(
             [_smi, "--query-gpu=memory.total,memory.free,name",
              "--format=csv,noheader,nounits"],
@@ -851,6 +887,11 @@ async def model_status():
         )
         if _out.returncode == 0 and _out.stdout.strip():
             _tot, _free, _nm = [x.strip() for x in _out.stdout.strip().splitlines()[0].split(",")]
+            try:
+                _SMI_CACHE      = (float(_tot), float(_free), _nm)
+                _SMI_CACHE_TS   = _now
+            except Exception:
+                pass
             vram_total_gb = round(float(_tot) / 1024.0, 1)   # MiB -> GB
             vram_free_gb  = round(float(_free) / 1024.0, 1)
             if not gpu_name:
@@ -3192,14 +3233,18 @@ async def analyze_niche(payload: dict):
     ) - clamp(a - 0.65) * 0.45                  # harder penalty if clearly candid
 
     # London Street: atmosphere + human, urban mood, between street and cinematic
-    # Needs both human presence AND decent light — penalise if either is absent
+    # Needs both human presence AND decent light  penalise if either is absent
+    # (Both penalties are INSIDE the assignment: the light-quality term used to
+    # sit on its own line as a bare expression statement, so it was evaluated
+    # and discarded — the intended penalty never applied.)
     raw["London Street"] = (
         0.35 * clamp(l * 1.2) +
         0.30 * clamp(human_x_auth * 1.8) +
         0.20 * clamp(h) +
         0.15 * clamp(a)
-    ) - clamp(no_people * 2.0) * 0.35           # penalise if very few people
-    - clamp((0.40 - l) * 3.0) * 0.25            # penalise if light quality is poor
+        - clamp(no_people * 2.0) * 0.35         # penalise if very few people
+        - clamp((0.40 - l) * 3.0) * 0.25        # penalise if light quality is poor
+    )
 
     # ── Normalise scores to [0, 1] ────────────────────────────────────────────
     min_r = min(raw.values())
@@ -3391,6 +3436,9 @@ async def _scan_folder_for_data(all_folders: list, preset: str, sample_limit: in
             except _std_queue.Empty:
                 return None
 
+        _deadline = asyncio.get_running_loop().time() + 240.0   # hard stop: a
+        # worker that is alive but wedged must not hold gpu_lock forever — the
+        # caller falls back to the CPU detector and the UI stays responsive.
         while True:
             try:
                 msg = await asyncio.wait_for(loop.run_in_executor(None, _try_get), timeout=20.0)
@@ -3399,6 +3447,9 @@ async def _scan_folder_for_data(all_folders: list, preset: str, sample_limit: in
             if msg is None:
                 if _worker_proc is None or not _worker_proc.is_alive():
                     return []                      # worker died — caller falls back
+                if asyncio.get_running_loop().time() > _deadline:
+                    print("[server] scan_mode pass timed out after 240 s — falling back")
+                    return []
                 continue
             if msg.get("error"):
                 return []
@@ -3978,8 +4029,7 @@ async def save_sequence(payload: dict):
     data["sequences"] = [s for s in data["sequences"] if s["name"] != name]
     data["sequences"].append({"name": name, "sequence": sequence})
     
-    with open(sequences_file, "w") as f:
-        json.dump(data, f, indent=2)
+    _atomic_write_text(sequences_file, json.dumps(data, indent=2))
     
     return {"success": True, "message": f"Sequence '{name}' saved"}
 
@@ -4005,14 +4055,13 @@ async def get_catalog():
 async def save_catalog(payload: dict):
     photos  = payload.get("photos", [])
     folders = payload.get("folders", [])
-    _CATALOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    _CATALOG_PATH.write_text(
+    _atomic_write_text(
+        _CATALOG_PATH,
         json.dumps({
             "photos":    photos,
             "folders":   folders,
             "saved_at":  time.strftime("%Y-%m-%dT%H:%M:%S"),
         }, ensure_ascii=False, indent=2),
-        encoding="utf-8",
     )
     return {"ok": True}
 
@@ -4023,50 +4072,63 @@ async def clear_catalog():
     return {"ok": True}
 
 
+def _load_flags_file() -> dict:
+    f = _DATA_DIR / "cache" / "photo_flags.json"
+    try:
+        if f.exists():
+            with open(f, "r", encoding="utf-8") as fh:
+                return json.load(fh)
+    except Exception:
+        pass
+    return {}
+
+
+def _write_flags_atomic(data: dict) -> None:
+    """Atomically replace photo_flags.json (temp file + os.replace).
+
+    The old in-place open(...,'w') truncated the file before writing, so a
+    crash or power loss mid-write destroyed every lock/used flag at once.
+    """
+    f = _DATA_DIR / "cache" / "photo_flags.json"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    tmp = f.with_suffix(f.suffix + f".{os.getpid()}.tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2)
+    os.replace(str(tmp), str(f))
+
+
+def _toggle_flag_key(key: str, path: str) -> dict:
+    data = _load_flags_file()
+    items = data.setdefault(key, [])
+    present = path in items
+    if present:
+        items.remove(path)
+    else:
+        items.append(path)
+    try:
+        _write_flags_atomic(data)
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+    return {"success": True, key: not present}
+
+
 @app.post("/api/flags/lock")
 async def toggle_lock(payload: dict):
     """Toggle lock flag for a photo."""
     path = payload.get("path", "")
-    lock_file = _DATA_DIR / "cache" / "photo_flags.json"
-    lock_file.parent.mkdir(exist_ok=True)
-    try:
-        if lock_file.exists():
-            with open(lock_file, "r") as f:
-                data = json.load(f)
-        else:
-            data = {"locked": []}
-        if path in data["locked"]:
-            data["locked"].remove(path)
-        else:
-            data["locked"].append(path)
-        with open(lock_file, "w") as f:
-            json.dump(data, f, indent=2)
-        return {"success": True, "locked": path in data["locked"]}
-    except Exception as e:
-        return {"success": False, "message": str(e)}
+    if not path:
+        return {"success": False, "message": "path required"}
+    # File IO is offloaded so the event loop never blocks on disk.
+    return JSONResponse(await run_in_threadpool(_toggle_flag_key, "locked", path))
 
 
 @app.post("/api/flags/used")
 async def toggle_used(payload: dict):
     """Toggle used flag for a photo."""
     path = payload.get("path", "")
-    used_file = _DATA_DIR / "cache" / "photo_flags.json"
-    used_file.parent.mkdir(exist_ok=True)
-    try:
-        if used_file.exists():
-            with open(used_file, "r") as f:
-                data = json.load(f)
-        else:
-            data = {"used": []}
-        if path in data["used"]:
-            data["used"].remove(path)
-        else:
-            data["used"].append(path)
-        with open(used_file, "w") as f:
-            json.dump(data, f, indent=2)
-        return {"success": True, "used": path in data["used"]}
-    except Exception as e:
-        return {"success": False, "message": str(e)}
+    if not path:
+        return {"success": False, "message": "path required"}
+    return JSONResponse(await run_in_threadpool(_toggle_flag_key, "used", path))
 
 
 @app.get("/api/flags/load")
@@ -4454,9 +4516,13 @@ async def get_annotations(image_hash: str):
 
     try:
         import lance_store as _ls
-        all_rows = _ls.query_all(min_score=0.0)
-        record   = next(
-            (r for r in all_rows
+        # Indexed, embedding-free lookup — query_all() copied every row's
+        # 1536-dim vector into RAM just to read two fields on each photo click.
+        rows = _ls.query_by_path_fragment(
+            image_hash, ["path", "has_annotations", "score_factors"]
+        )
+        record = next(
+            (r for r in rows
              if Path(r["path"]).stem == image_hash or image_hash in Path(r["path"]).stem),
             None,
         )
@@ -4577,10 +4643,15 @@ async def reasoning_overlay(req: Request):
         raw_path  = body.get("path", "")
         if not raw_path:
             return JSONResponse({"error": "path required"}, status_code=400)
-        img_path  = sanitize_path(raw_path)
+        # sanitize_path was never defined here — every call to this endpoint
+        # raised NameError -> 500. Use the same path-safety helper as the
+        # other image endpoints.
+        img_path  = str(_safe_image_path(raw_path))
 
         import lance_store as _ls
-        rows = _ls.query_all(min_score=0.0)
+        # Indexed lookup — see get_annotations: query_all() here meant a full
+        # library copy (embeddings included) per overlay render.
+        rows = _ls.query_by_path_fragment(str(Path(img_path).stem))
         record = next(
             (r for r in rows if str(Path(r["path"])) == str(Path(img_path))),
             None,

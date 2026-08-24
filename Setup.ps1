@@ -24,7 +24,7 @@ function MakeFont($size, $bold=$false) {
 
 # ── Main window ───────────────────────────────────────────────────
 $form = New-Object System.Windows.Forms.Form
-$form.Text            = "Street Story Curator — Setup"
+$form.Text            = "FrameGrade — Setup"
 $form.ClientSize      = New-Object System.Drawing.Size(500, 440)
 $form.StartPosition   = "CenterScreen"
 $form.BackColor       = $bg
@@ -199,8 +199,8 @@ function Show-Welcome {
 
     Add-Title "Welcome"
     Add-Divider 68
-    Add-Sub "This wizard will install Street Story Curator on your computer." 84
-    Add-Sub "Street Story Curator analyses and grades your street photography, builds sequenced stories, and gives editorial feedback — all running locally on your machine." 120
+    Add-Sub "This wizard will install FrameGrade on your computer." 84
+    Add-Sub "FrameGrade analyses and grades your street photography, builds sequenced stories, and gives editorial feedback — all running locally on your machine." 120
     Add-Divider 210
     Add-Sub "Install location:" 226
     $pathBox = New-Object System.Windows.Forms.TextBox
@@ -530,7 +530,7 @@ function Show-Installing {
         Set-Progress 96 "Creating desktop shortcut..."
         try {
             $desktop  = [Environment]::GetFolderPath('Desktop')
-            $lnkPath  = Join-Path $desktop "Street Story Curator.lnk"
+            $lnkPath  = Join-Path $desktop "FrameGrade.lnk"
             $iconPath = Join-Path $ROOT "icon.ico"
             $vbsPath  = Join-Path $ROOT "launch_hidden.vbs"
             $sh       = New-Object -ComObject WScript.Shell
@@ -539,7 +539,7 @@ function Show-Installing {
             $s.Arguments        = "`"$vbsPath`""
             $s.WorkingDirectory = $ROOT
             $s.IconLocation     = "$iconPath,0"
-            $s.Description      = "Street Story Curator — AI Photo Curator"
+            $s.Description      = "FrameGrade — AI Photo Curator"
             $s.Save()
             Log "  ✓ Shortcut created on Desktop"
         } catch { Log "  ⚠ Could not create shortcut: $_" }
@@ -587,13 +587,13 @@ function Show-Complete {
     $($content.Controls | Where-Object { $_ -is [System.Windows.Forms.Label] -and $_.Text -eq "All done!" }).Location = New-Object System.Drawing.Point(70, 38)
 
     Add-Divider 86
-    Add-Sub "Street Story Curator is installed and ready." 102
+    Add-Sub "FrameGrade is installed and ready." 102
     Add-Sub "A shortcut has been placed on your Desktop.`nDouble-click it any time to launch the app." 132
 
     Add-Divider 196
 
     $chk = New-Object System.Windows.Forms.CheckBox
-    $chk.Text      = "Launch Street Story Curator now"
+    $chk.Text      = "Launch FrameGrade now"
     $chk.Font      = MakeFont 10
     $chk.ForeColor = $txt
     $chk.BackColor = $bg

@@ -1,6 +1,6 @@
 # Optional Models Integration
 
-This document explains how to integrate optional models for enhanced grading in Street Story Curator.
+This document explains how to integrate optional models for enhanced grading in FrameGrade.
 
 ## YuNet Face Detection Model
 

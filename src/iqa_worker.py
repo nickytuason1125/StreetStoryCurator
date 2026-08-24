@@ -57,14 +57,14 @@ def main():
         # Pre-warm — in THIS main thread — every heavy module run_vision_heads
         # imports lazily deep in its call stack, several of them from spawned worker
         # threads (fast_ingestion in _load_images_parallel; pyiqa in _timed_create's
-        # timeout thread; ultralytics/YOLO). Cold-importing from a fresh subprocess —
+        # timeout thread). Cold-importing from a fresh subprocess —
         # worse from a non-main thread — intermittently hits a Windows import glitch,
         # WinError 6714 (transactional-NTFS / Defender racing the src/ directory
         # scan), which would abort the whole IQA pass. Importing them once here, with
         # a short retry, puts them in sys.modules so the later (threaded) imports are
         # cache hits that never touch the filesystem.
         import time as _time
-        for _mod in ("torch", "cv2", "pyiqa", "ultralytics", "fast_ingestion",
+        for _mod in ("torch", "cv2", "pyiqa", "fast_ingestion",
                      "vision_composition_heads", "yolo_auditor"):
             for _attempt in range(6):
                 try:

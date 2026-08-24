@@ -1,8 +1,8 @@
-# Story Sequencing Logic in Street Story Curator
+# Story Sequencing Logic in FrameGrade
 
 ## Narrative Sequencing Overview
 
-Street Story Curator's sequencing engine creates coherent visual narratives by selecting and ordering images according to established storytelling principles. The system goes beyond simple "best photo" selection to craft meaningful sequences that engage viewers through pacing, contrast, and thematic development.
+FrameGrade's sequencing engine creates coherent visual narratives by selecting and ordering images according to established storytelling principles. The system goes beyond simple "best photo" selection to craft meaningful sequences that engage viewers through pacing, contrast, and thematic development.
 
 ## Slot-Based Storytelling Framework
 
@@ -112,4 +112,4 @@ The sequencer employs a multi-objective optimization approach:
 
 ## Conclusion
 
-Street Story Curator's sequencing logic provides a sophisticated framework for visual storytelling that combines technical excellence with narrative structure. While it cannot fully replicate human intuition about story meaning, it offers a robust foundation for creating engaging photographic sequences that follow established editorial principles. The integration of enhanced models like YuNet and NIMA further improves the system's ability to identify compelling narrative elements and maintain visual coherence throughout the sequence.
+FrameGrade's sequencing logic provides a sophisticated framework for visual storytelling that combines technical excellence with narrative structure. While it cannot fully replicate human intuition about story meaning, it offers a robust foundation for creating engaging photographic sequences that follow established editorial principles. The integration of enhanced models like YuNet and NIMA further improves the system's ability to identify compelling narrative elements and maintain visual coherence throughout the sequence.

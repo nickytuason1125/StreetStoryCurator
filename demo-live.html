@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<title>FrameGrade — live sample demo</title><style>
+*{box-sizing:border-box;margin:0}
+body{background:#111;font-family:'Segoe UI',Inter,system-ui,sans-serif;
+     color:#d6d6d6;-webkit-font-smoothing:antialiased;padding:32px}
+.board-head{max-width:1500px;margin:0 auto 18px;font-size:14px;color:#bbb}
+.wrap{max-width:1500px;margin:0 auto;border:1px solid #000;border-radius:4px;overflow:hidden}
+.workspace{display:flex;flex-direction:column;height:880px;background:#191919}
+.hdr{font-size:10px;letter-spacing:.12em;color:#6e6e6e;font-weight:600;padding:8px 12px}
+.row{padding:5px 14px;font-size:12px}
+.cnt{float:right;font-family:Consolas,monospace;font-size:11px;color:#6e6e6e}
+.tb{font-size:12px;color:#9e9e9e}.tb.on{color:#fff}
+.fs{width:64px;height:76px;overflow:hidden;position:relative;flex-shrink:0;
+    outline:2px solid transparent;outline-offset:-2px;cursor:pointer}
+.fs.on{outline-color:#fff}
+.fs img{width:100%;height:100%;object-fit:cover;display:block}
+.fs .r{position:absolute;bottom:9px;left:0;height:2px;width:100%;background:#7fb069}
+.fs .n{position:absolute;bottom:1px;left:3px;font-family:Consolas,monospace;
+       font-size:10px;color:#ddd;text-shadow:0 1px 2px #000}
+.sl{display:flex;align-items:center;gap:8px;font-size:12px;color:#9e9e9e}
+.sl b{width:78px;font-weight:400}
+.tr{flex:1;height:3px;background:#3d3d3d;border-radius:2px;position:relative}
+.tr i{position:absolute;left:0;top:0;height:3px;border-radius:2px;background:#7fb069}
+</style></head><body>
+<div class="board-head">FrameGrade — live demo · your sample photos</div>
+<div class="wrap"><div class="workspace">
+<div style="height:44px;background:#2b2b2b;border-bottom:1px solid #1f1f1f;
+     display:flex;align-items:center;padding:0 14px;gap:20px">
+  <b style="font-size:13px;color:#e6e6e6">FrameGrade</b>
+  <div style="display:flex;gap:22px;margin-left:auto;font-size:12px">
+    <span style="color:#fff;font-weight:600;border-bottom:2px solid #7fb069;
+          padding-bottom:4px">Cull</span>
+    <span style="color:#9e9e9e">Story</span><span style="color:#9e9e9e">Competition</span></div>
+  <span style="margin-left:16px;background:#333;border-radius:3px;padding:4px 8px;
+        font-family:Consolas,monospace;font-size:11px;color:#9e9e9e">RAM 62% · GPU RTX 3060</span></div>
+<div style="flex:1;display:flex;min-height:0">
+<div style="width:210px;background:#2b2b2b;border-right:1px solid #1f1f1f;padding:10px 0">
+  <div class="hdr">CATALOG</div>
+  <div class="row" style="background:#4a4a4a">All Photographs<span class="cnt">214</span></div>
+  <div class="hdr" style="margin-top:14px">FOLDERS</div>
+  <div class="row" style="background:#4a4a4a">dataset_images<span class="cnt">100</span></div>
+  <div class="hdr" style="margin-top:14px">PRESETS</div>
+  <div class="row" style="color:#9e9e9e">Classic Street</div></div>
+<div style="flex:1;display:flex;flex-direction:column;min-width:0">
+  <div style="height:34px;display:flex;align-items:center;gap:14px;padding:0 10px;
+       border-bottom:1px solid #1f1f1f;background:#242424">
+    <span class="tb on">Loupe</span><span class="tb">Grid</span>
+    <span style="flex:1"></span><span class="tb">Sort: Grade ▾</span></div>
+  <div style="flex:1;display:flex;align-items:center;justify-content:center;
+       position:relative;background:#191919">
+    <img src="dataset_images/carousel_01_TPE26-1.jpg" style="max-width:74%;
+         max-height:88%;border-radius:2px;box-shadow:0 6px 30px rgb(0 0 0/.55)">
+    <div style="position:absolute;right:14px;top:14px;width:190px;
+         background:rgb(36 36 36/.92);border:1px solid #3d3d3d;border-radius:3px;padding:12px">
+      <div style="display:flex;align-items:baseline;gap:6px">
+        <span style="font-family:Consolas,monospace;font-size:22px;color:#7fb069">0.84</span>
+        <span style="font-size:11px;color:#9e9e9e">Strong ✓</span></div>
+      <svg width="100%" height="86" style="margin-top:8px">
+        <polygon points="95,8 178,52 148,80 42,80 12,52" fill="none" stroke="#3d3d3d"/>
+        <polygon points="95,20 158,58 136,72 54,72 28,58"
+                 fill="rgb(127 176 105/.15)" stroke="#7fb069"/></svg></div></div>
+  <div style="height:88px;background:#2b2b2b;border-top:1px solid #1f1f1f;
+       display:flex;align-items:center;gap:4px;padding:0 10px;overflow:hidden">
+    <div class="fs on"><img src="dataset_images/carousel_01_TPE26-1.jpg">
+      <span class="r"></span><span class="n">0001</span></div>
+    <div class="fs"><img src="dataset_images/carousel_01_TPE26-105.jpg">
+      <span class="r"></span><span class="n">0002</span></div>
+    <div class="fs"><img src="dataset_images/carousel_01_TPE26-110.jpg">
+      <span class="n">0003</span></div>
+    <div class="fs" style="opacity:.5"><img src="dataset_images/carousel_01_TPE26-112.jpg">
+      <span class="r" style="background:#5c5c5c"></span><span class="n">0004</span></div>
+    <div class="fs"><img src="dataset_images/carousel_01_TPE26-116.jpg">
+      <span class="r"></span><span class="n">0005</span></div>
+    <div class="fs"><img src="dataset_images/carousel_01_TPE26-118.jpg">
+      <span class="n">0006</span></div>
+    <div class="fs" style="opacity:.5"><img src="dataset_images/carousel_01_TPE26-135.jpg">
+      <span class="r" style="background:#5c5c5c"></span><span class="n">0007</span></div>
+    <div class="fs"><img src="dataset_images/carousel_01_TPE26-15.jpg">
+      <span class="n">0008</span></div>
+    <div class="fs"><img src="dataset_images/carousel_01_TPE26-16.jpg">
+      <span class="r"></span><span class="n">0009</span></div>
+    <div class="fs"><img src="dataset_images/carousel_01_TPE26-17.jpg">
+      <span class="n">0010</span></div>
+  </div></div>
+<div style="width:250px;background:#2b2b2b;border-left:1px solid #1f1f1f">
+  <div class="hdr">HISTOGRAM — from loupe photo</div>
+  <svg viewBox="0 0 230 110" style="width:calc(100% - 16px);margin:0 8px;
+       background:#191919;border-radius:2px;display:block">
+    <path d="M0 90 C30 70 50 30 78 34 S120 78 150 62 S200 20 230 44 L230 110 0 110Z"
+          fill="rgb(127 176 105/.25)" stroke="#7fb069" stroke-width="1"/></svg>
+  <div class="hdr" style="margin-top:10px;padding-bottom:4px">GRADE BREAKDOWN</div>
+  <div style="padding:0 12px;display:flex;flex-direction:column;gap:7px">
+    <div class="sl"><b>Composition</b><span class="tr"><i style="width:88%"></i></span><span>88</span></div>
+    <div class="sl"><b>Technical</b><span class="tr"><i style="width:81%"></i></span><span>81</span></div>
+    <div class="sl"><b>Lighting</b><span class="tr"><i style="width:74%"></i></span><span>74</span></div>
+    <div class="sl"><b>Narrative</b><span class="tr"><i style="width:68%"></i></span><span>68</span></div>
+    <div class="sl"><b>Human</b><span class="tr"><i style="width:55%"></i></span><span>55</span></div></div>
+  <div class="hdr" style="margin-top:14px;padding-bottom:4px">QUICK ACTIONS</div>
+  <div style="padding:0 8px;font-size:12px;color:#9e9e9e">
+    <div class="row">✓ Mark as Strong</div><div class="row">Add to Story sequence</div>
+    <div class="row">Request deep analysis</div></div></div>
+</div></div></div></body></html>
+

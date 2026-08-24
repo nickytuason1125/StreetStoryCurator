@@ -12,7 +12,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
 import suppress_console
 _LOG    = _ROOT / "crash.log"
-_APP_ID = "StreetPhotography.StreetStoryCurator.1"
+_APP_ID = "StreetPhotography.FrameGrade.1"
 
 # Register a unique App User Model ID before any window is created.
 # Without this, Windows groups our window under "pythonw.exe" and uses

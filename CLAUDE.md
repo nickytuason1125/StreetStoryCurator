@@ -1,4 +1,4 @@
-# Street Story Curator — Frontier 2026 Architectural Contract
+# FrameGrade — Frontier 2026 Architectural Contract
 
 ## Model Stack (Sequential, VRAM-safe)
 

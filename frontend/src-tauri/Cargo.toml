@@ -1,16 +1,16 @@
 [package]
-name = "street-story-curator"
+name = "framegrade"
 version = "1.0.0"
-description = "Street Story Curator — offline street photography grading & sequencing"
-authors = ["Street Story Curator"]
+description = "FrameGrade — offline street photography grading & sequencing"
+authors = ["FrameGrade"]
 edition = "2021"
 
 [lib]
-name = "street_story_curator_lib"
+name = "framegrade_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [[bin]]
-name = "street-story-curator"
+name = "framegrade"
 path = "src/main.rs"
 
 [build-dependencies]
