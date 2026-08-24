@@ -1,0 +1,10 @@
+﻿513: const [infoTab,    setInfoTab]    = useState<"exif"|"breakdown"|"analysis">("breakdown");
+911: const cached = sel.exif || {};
+914: axios.get(`${API}/api/exif`, { params: { path: sel.path }, signal: ctrl.signal })
+917: setPhotos(prev => prev.map(p => p.id === sel.id ? { ...p, exif: r.data } : p));
+919: .catch(e => { if (!axios.isCancel(e)) console.warn('[exif]', e); });
+1031: const rawPhotos: {path:string;exif:any}[] = res.data.photos || res.data.paths?.map((p: str
+1033: const ps = rawPhotos.map(p => ({ id:photoId(p.path), path:p.path, grade:'Pending', score:0
+1335: const rawPhotos: {path:string;exif:any}[] = res.data.photos || [];
+1340: .map(p => ({ id:photoId(p.path), path:p.path, grade:'Pending', score:0, breakdown:{}, crit
+2751: infoTab={infoTab} setInfoTab={setInfoTab} exif={exif}
