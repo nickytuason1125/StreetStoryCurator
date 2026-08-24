@@ -124,7 +124,9 @@ SETTINGS = {
     "FRAMEGRADE_FUNNEL_FRAC": Setting(float, 0.35, "fraction kept by the funnel"),
     "FRAMEGRADE_FUNNEL_CEIL": Setting(int, 0, "max photos through the funnel"),
     "FRAMEGRADE_STEP4E":      Setting(bool, True, "borderline re-judge pass"),
-    "FRAMEGRADE_PH_WEIGHT_MAX": Setting(float, 0.35, "taste-model blend ceiling"),
+    "FRAMEGRADE_PH_WEIGHT_MAX": Setting(float, 0.0,
+        "hard cap on taste-model authority; 0 = auto (scales with rating "
+        "baseline: <25→0.35, ≥25→0.45, ≥50→0.55, ≥100→0.70)"),
     # decode
     "FRAMEGRADE_SHARED_DECODE": Setting(bool, True, "reuse decoded frames across stages"),
     "FRAMEGRADE_DFINE_DRAFT": Setting(bool, True, "DCT-domain draft decode for detection"),

@@ -3050,12 +3050,37 @@ def run_v2(
             _pers_arr = np.asarray(pers, dtype=np.float32)
             _conf     = np.clip(np.abs(_pers_arr - 0.5) / 0.5, 0.0, 1.0)   # 0=neutral … 1=certain
             _w_floor  = 0.20                                                # == today's weight
-            _w_ceil   = float(os.environ.get("FRAMEGRADE_PH_WEIGHT_MAX", "0.35"))
-            _w_ceil   = min(max(_w_ceil, _w_floor), 0.60)                   # sanity clamp
+            # ── Baseline-size-scaled taste authority ─────────────────────────
+            # The ceiling used to be a flat 0.35 no matter how many ratings the
+            # user had banked — a 100+ rating baseline could only ever NUDGE
+            # grades, never lead them. Now evidence earns authority: the ceiling
+            # grows with the durable star-rating count (ratings_store):
+            #     <25 ratings → 0.35   (head still young; unchanged behaviour)
+            #     ≥25         → 0.45
+            #     ≥50         → 0.55
+            #     ≥100        → 0.70   taste LEADS, the machine grader tiebreaks
+            # Confidence scaling below is untouched: even at a 0.70 ceiling an
+            # image only gets that weight if the head is actually confident
+            # about it; neutral (~0.5) outputs still collapse to the floor.
+            try:
+                import ratings_store as _rs
+                _n_ratings = len(_rs.load())
+            except Exception:
+                _n_ratings = 0
+            if   _n_ratings >= 100: _w_ceil = 0.70
+            elif _n_ratings >= 50:  _w_ceil = 0.55
+            elif _n_ratings >= 25:  _w_ceil = 0.45
+            else:                   _w_ceil = 0.35
+            _env_cap = os.environ.get("FRAMEGRADE_PH_WEIGHT_MAX", "").strip()
+            if _env_cap:
+                # Explicit override wins as a HARD CAP (escape hatch); sanity-
+                # clamped so it can neither go negative-float nor past 0.80.
+                _w_ceil = min(max(float(_env_cap), _w_floor), 0.80)
             _w_pers   = _w_floor + (_w_ceil - _w_floor) * _conf            # per-image taste weight
             final_scores = (1.0 - _w_pers) * scores_arr + _w_pers * _pers_arr
             _n_op = int((_conf > 0.20).sum())
-            print(f"[v2] PersonalHead blend: taste weight {_w_floor:.2f}–{_w_ceil:.2f} "
+            print(f"[v2] PersonalHead blend: {_n_ratings} banked ratings → "
+                  f"taste weight {_w_floor:.2f}–{_w_ceil:.2f} "
                   f"(mean {float(_w_pers.mean()):.3f}); {_n_op}/{n} images got a confident taste vote")
         except _TasteTierMismatch:
             pass          # already reported above; grades use the grader alone
