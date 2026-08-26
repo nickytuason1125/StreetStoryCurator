@@ -115,7 +115,9 @@
    * Controls and dialogs carry the modern radii: 3px reads machined rather
    * than default-browser, 8px gives dialogs and pills their soft edge. ── */
   --r-sm: 3px;  /* default: cells, inputs, buttons                             */
-  --r-md: 8px;  /* modals, pills. There is no third radius.                    */
+  --r-md: 8px;  /* modals, pills                                              */
+  --r-lg: 12px; /* cards, floating glass chrome                               */
+  --r-xl: 16px; /* hero surfaces                                              */
 
   /* Not a third step — a shape. Dots, spinners and avatars are circles, and a
    * circle is 50% rather than a large radius. Named so the guard can tell the
@@ -139,11 +141,30 @@
   --w-hero: 640px;     /* welcome hero: brand moment on the empty stage */
   --h-thumb: 64px;     /* browser image preview row                   */
   --h-toolbar: 36px;   /* floating header pill — one step above h-8 chrome */
+  --h-rule: 2px;       /* machine verdict rule / hover score bar       */
+  --h-palette: 256px;  /* command palette list viewport                */
 
-  /* ── Motion: one curve, two durations. ── */
+  /* ── Machine voice: the one cold accent. ──
+   * 2026 identity pass. The neutral-chrome rule stands — the photograph is
+   * still the only warm thing on screen — but the machine's verdicts now get
+   * a voice of their own: a single electric cyan reserved for AI output
+   * (grade chips, score bars, command palette, progress). Cold because it
+   * must never be confused with --mark (the photographer's warm judgements)
+   * or the alarm pair. If cyan starts appearing on user actions, the
+   * reservation has leaked — same audit rule as --mark. */
+  --ai:     #22d3ee;                 /* the accent itself                      */
+  --ai-dim: rgb(34 211 238 / .14);   /* tint fills, chip washes                */
+  --ai-ink: #06272e;                 /* text ON an --ai fill                   */
+
+  /* ── Motion: one curve, two durations — plus a spring for entrances. ──
+   * --ease is the workhorse (hover, panels); --spring overshoots slightly
+   * and is reserved for things that APPEAR as a result of a decision
+   * (chips, popovers, palette rows). Never use it for continuous state. */
   --ease: cubic-bezier(.2, 0, 0, 1);
   --t-fast: 120ms;  /* hover, focus, press                                     */
   --t-slow: 220ms;  /* panel open, grid → loupe                                */
+  --spring: cubic-bezier(.3, 1.4, .4, 1);
+  --t-spring: 380ms;
 
   /* ── Display type ─────────────────────────────────────────────────────── */
   --text-2xl: 40px;      /* hero moments: empty-state numbers, verdict page   */

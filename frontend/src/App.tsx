@@ -11,7 +11,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import {
   FolderOpen, Layers, FileDown, RefreshCw,
-  ImageOff, X, Sparkles, Copy, Flag,
+  ImageOff, X, Sparkles, Flag,
   LayoutGrid, RectangleHorizontal, SlidersHorizontal,
   Download, CheckSquare, ArrowUpDown, ArrowUp, ArrowDown,
   Wand2, Zap, Eye, EyeOff, Upload, Search, Aperture,
@@ -21,6 +21,7 @@ import { Chip } from "./components/ui/Chip";
 import { Segmented } from "./components/ui/Segmented";
 import { AnnotatedMark } from "./components/ui/GradeRule";
 import { Modal } from "./components/ui/Modal";
+import { CommandPalette } from "./components/ui/CommandPalette";
 import { Field, TextArea } from "./components/ui/Field";
 import { StarRating } from "./components/ui/StarRating";
 import { ExifPanel } from "./components/ExifPanel";
@@ -39,6 +40,7 @@ import { SimilarShots } from "./components/views/SimilarShots";
 import { FolderBrowser } from "./components/views/FolderBrowser";
 import { T, gradeRule, gradeKey, gradeLabel, formatScore } from "./theme/tokens";
 import { cn } from "./lib/cn";
+import ErrorBoundary from "./ErrorBoundary";
 import { API, photoUrl, sanitizePath, thumbUrl } from "./lib/api";
 import { APP_VERSION } from "./lib/version";
 import { useGuardedInterval } from "./hooks/useGuardedInterval";
@@ -457,6 +459,7 @@ export default function App() {
   const [gradeStartMs,  setGradeStartMs]  = useState<number | null>(null);
   const [gradeEtaSecs,  setGradeEtaSecs]  = useState<number | null>(null);
   const [toast,      setToast]      = useState<{msg: string; type: "success"|"error"|"info"} | null>(null);
+  const [catalogSaveFailed, setCatalogSaveFailed] = useState(false);
   const [selId,      setSelId]      = useState<string | null>(null);
   const [nicheRec,   setNicheRec]   = useState<any>(null);
   const [nicheDetecting, setNicheDetecting] = useState(false);
@@ -624,7 +627,9 @@ export default function App() {
 
   useEffect(() => {
     if (!toast) return;
-    const t = setTimeout(() => setToast(null), 3200);
+    // Errors need longer — they usually name something the user must act on,
+    // and 3.2 s is not enough to read a path or a reason.
+    const t = setTimeout(() => setToast(null), toast.type === "error" ? 10_000 : 3200);
     return () => clearTimeout(t);
   }, [toast]);
 
@@ -1006,15 +1011,35 @@ export default function App() {
       .catch(() => {});
   }, []);
 
-  /* auto-save catalog (debounced 2s) whenever graded photos or folder list changes */
+  /* auto-save catalog (debounced 2s) whenever graded photos or folder list changes.
+   * Failures are NOT silent: the first failure notifies the user and starts a
+   * retry loop — a swallowed error here means Resume silently loses the session. */
   useEffect(() => {
     if (folders.length === 0 || !photos.some(p => p.grade !== 'Pending')) return;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
       const photosToSave = photos.map(({ id: _id, ...rest }) => rest);
-      axios.post(`${API}/api/catalog/save`, { photos: photosToSave, folders }).catch(() => {});
+      axios.post(`${API}/api/catalog/save`, { photos: photosToSave, folders })
+        .then(() => setCatalogSaveFailed(false))
+        .catch(() => {
+          setCatalogSaveFailed(prevFailed => {
+            if (!prevFailed) notify('Changes are not being saved — your session will not resume after closing.', 'error');
+            return true;
+          });
+        });
     }, 2000);
-  }, [photos, folders]);
+  }, [photos, folders, notify]);
+
+  /* While saving is failing, retry every 15 s until it succeeds again. */
+  useEffect(() => {
+    if (!catalogSaveFailed) return;
+    const id = setInterval(() => {
+      axios.post(`${API}/api/catalog/save`, { photos: photos.map(({ id: _id, ...rest }) => rest), folders })
+        .then(() => { setCatalogSaveFailed(false); notify('Saving resumed', 'success'); })
+        .catch(() => {});
+    }, 15_000);
+    return () => clearInterval(id);
+  }, [catalogSaveFailed, photos, folders, notify]);
 
   // Hide heatmap overlay whenever the selected photo changes
   useEffect(() => { setShowHeatmap(false); }, [selId]);
@@ -2214,7 +2239,7 @@ export default function App() {
             elevated one step above the sheet rather than a surface strip
             bolted to the window edge. min-w-0 lets the row scroll instead of
             stretching its parent (see note above). */}
-        <div className="glass elev-1 flex h-toolbar min-w-0 items-center gap-2 overflow-x-auto rounded-md border border-line-strong px-2 scrollbar-hide">
+        <div className="glass elev-2 flex h-toolbar min-w-0 items-center gap-2 overflow-x-auto rounded-md border border-line-strong px-2 scrollbar-hide">
 
         {/* Brand — aperture mark in the grease-pencil colour. The one warm
             pixel in the chrome: it is the product's signature, the same
@@ -2551,7 +2576,6 @@ export default function App() {
           const warmMsg =
             listLoading ? 'Generating fast-scroll thumbnails…' :
             (graderStatus?.qwen_loading || graderStatus?.warmup_running) ? 'Waking up models…' :
-            nicheDetecting ? 'Detecting ideal niche…' :
             null;
           if (!warmMsg) return null;
           return (
@@ -2611,21 +2635,6 @@ export default function App() {
             <Button size="sm" variant="quiet" onClick={() => setFilterStars(null)}>Clear</Button>
           )}
 
-          {redacted.size > 0 && (
-            <>
-              <div className="h-4 w-px shrink-0 bg-line-strong"/>
-              <Button size="sm" variant={showDuplicates ? 'solid' : 'quiet'}
-                onClick={() => setShowDuplicates(v => !v)}
-                title={showDuplicates ? 'Hide duplicate shots' : 'Show duplicate shots'}
-                icon={<Copy size={10}/>}>
-                Dupes <span className="t-num ml-1 opacity-70">{redacted.size}</span>
-              </Button>
-            </>
-          )}
-
-          <span className="ml-auto text-xs text-ink-3">
-            <span className="t-num">{filteredPhotos.length}</span> shown
-          </span>
         </div>
       )}
 
@@ -2637,6 +2646,7 @@ export default function App() {
           <div style={{ flex:1, display:'flex', minHeight:0, overflow:'hidden' }}>
 
             {loupeMode === 'grid' && photos.length > 0 && (
+              <ErrorBoundary variant="inline" label="Contact sheet">
               <GridView
                 photos={filteredPhotos}
                 selId={selId}
@@ -2648,7 +2658,13 @@ export default function App() {
                 setSelectedIds={setSelectedIds}
                 onCreateSequence={handleCreateFromSelection}
                 onAutoSequence={handleGenerate}
+                nicheDetecting={nicheDetecting}
+                dupesCount={redacted.size}
+                showDuplicates={showDuplicates}
+                onToggleDupes={() => setShowDuplicates(v => !v)}
+                shownCount={filteredPhotos.length}
               />
+              </ErrorBoundary>
             )}
 
             {(loupeMode === 'loupe' || photos.length === 0) && (<>
@@ -2663,6 +2679,7 @@ export default function App() {
                   onResume={handleResume}
                   onStartFresh={() => { axios.post(`${API}/api/catalog/clear`); setCatalogBanner(false); }}/>
               ) : sel ? (
+                <ErrorBoundary variant="inline" label="Loupe">
                 <LoupeStage
                   sel={sel} selId={selId} setSelId={setSelId}
                   loupePreviewFailed={loupePreviewFailed} setLoupePreviewFailed={setLoupePreviewFailed}
@@ -2675,6 +2692,7 @@ export default function App() {
                   hasPrev={hasPrev} hasNext={hasNext} selIdx={selIdx} filteredPhotos={filteredPhotos}
                   handleCreateFromSelection={handleCreateFromSelection} handleGenerate={handleGenerate}
                 />
+                </ErrorBoundary>
               ) : null}
             </div>
 
@@ -2757,6 +2775,7 @@ export default function App() {
 
       ) : mainTab === 'duplicates' ? (
         /* ── Duplicates grid view — see components/views/SimilarShots.tsx ── */
+        <ErrorBoundary variant="inline" label="Duplicates">
         <SimilarShots
           groups={dupStats.groups}
           totalDups={dupStats.totalDups}
@@ -2765,9 +2784,11 @@ export default function App() {
           onOpenPhoto={(id) => { setMainTab('gallery'); setSelId(id); setLoupeMode('loupe'); }}
           onExport={() => setExportModal(true)}
         />
+        </ErrorBoundary>
 
       ) : mainTab === 'creative' ? (
         /* ── Creative Direction view ───────────────────────────── */
+        <ErrorBoundary variant="inline" label="Creative Director">
         <CreativeDirector
           photos={photos} creativeResults={creativeResults} creativeLoading={creativeLoading}
           engineHealth={engineHealth}
@@ -2784,6 +2805,7 @@ export default function App() {
           pegFile={pegFile} setPegFile={setPegFile} pegHash={pegHash} setPegHash={setPegHash}
           pegLoading={pegLoading} handlePegUpload={handlePegUpload}
         />
+        </ErrorBoundary>
       ) : null}
 
       {/* ── Status bar ─────────────────────────────────────────── */}
@@ -2792,7 +2814,7 @@ export default function App() {
           {sel ? sel.path.split(/[\\/]/).pop() : 'Open a folder to begin'}
         </span>
         <div className="flex shrink-0 gap-3">
-          {[['← →','Navigate'],['1–5','Rate'],['0','Clear'],['X','Used'],['G','Grid'],['E','Loupe']].map(([k, a]) => (
+          {[['⌘K','Commands'],['← →','Navigate'],['1–5','Rate'],['0','Clear'],['X','Used'],['G','Grid'],['E','Loupe']].map(([k, a]) => (
             <span key={k} className="flex items-center gap-1 text-xs text-ink-3">
               <kbd className="t-num rounded-sm border border-line-strong bg-raised px-1 text-xs text-ink-2">{k}</kbd>
               {a}
@@ -2802,6 +2824,21 @@ export default function App() {
       </div>
 
       {/* ── Folder browser modal ────────────────────────────────── */}
+      {/* ── Command palette (⌘K / Ctrl-K) — the keyboard's complete control
+              surface. Self-registering listener; App only supplies actions. ── */}
+      <CommandPalette actions={[
+        { id: 'grade',    label: 'Grade folder',     hint: 'run the grader',                 run: () => { void handleGrade(); } },
+        { id: 'loupe',    label: 'Open loupe',       kbd: 'E', hint: 'view current',         run: () => setLoupeMode('loupe') },
+        { id: 'grid',     label: 'Back to grid',     kbd: 'G', hint: 'contact sheet',        run: () => setLoupeMode('grid') },
+        { id: 'open',     label: 'Open folder…',     hint: 'browse',                         run: () => openBrowser() },
+        { id: 'add',      label: 'Add folder…',                                              run: () => openAddFolder() },
+        { id: 'dupes',    label: 'Duplicates view',  hint: 'similar shots',                  run: () => setMainTab('duplicates') },
+        { id: 'gallery',  label: 'Gallery view',                                             run: () => setMainTab('gallery') },
+        { id: 'creative', label: 'Creative Director', hint: 'sequence builder',              run: () => setMainTab('creative') },
+        { id: 'export',   label: 'Export sequence…', hint: `${carousel.length} in sequence`, run: () => setExportModal(true) },
+        { id: 'clear',    label: 'Clear used marks',                                         run: () => handleClearUsed() },
+      ]}/>
+
       {showBrowser && (
         <FolderBrowser
           mode={browserMode}

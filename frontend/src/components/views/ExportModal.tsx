@@ -10,13 +10,38 @@ import { API, photoUrl } from '../../lib/api';
 export function ExportModal({ photos, filterGrade, onClose }: { photos: any[]; filterGrade: string | null; onClose: () => void }) {
   const [xmpState, setXmpState] = useState<'idle'|'busy'|'done'|'error'>('idle');
   const [xmpCount, setXmpCount] = useState(0);
+  const [zipState, setZipState] = useState<'idle'|'busy'|'error'>('idle');
 
   const handleDownload = (p: any) => {
     const a = document.createElement('a');
     a.href = photoUrl(p.path); a.download = p.path.split(/[\\/]/).pop() || 'photo.jpg';
     a.click();
   };
-  const handleDownloadAll = () => photos.forEach((p, i) => setTimeout(() => handleDownload(p), i * 200));
+
+  /* One ZIP download instead of N staggered anchor-clicks — Chromium/WebView2
+   * silently blocks automatic multi-downloads after the first. */
+  const handleDownloadAll = async () => {
+    setZipState('busy');
+    try {
+      const res = await fetch(`${API}/api/export/batch-zip`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paths: photos.map(p => p.path) }),
+      });
+      if (!res.ok) throw new Error(`Server error ${res.status}`);
+      const data = await res.json();
+      if (!data.zip) throw new Error('No archive returned');
+      const a = document.createElement('a');
+      a.href = photoUrl(data.zip);
+      a.download = data.zip.split(/[\\/]/).pop() || 'photos.zip';
+      a.click();
+      setZipState('idle');
+    } catch {
+      // Fall back to per-photo downloads so the action still does *something*.
+      setZipState('error');
+      photos.forEach((p, i) => setTimeout(() => handleDownload(p), i * 300));
+    }
+  };
 
   const handleExportXmp = async () => {
     setXmpState('busy');
@@ -45,8 +70,8 @@ export function ExportModal({ photos, filterGrade, onClose }: { photos: any[]; f
       footer={
         <>
           <Button onClick={onClose}>Cancel</Button>
-          <Button variant="solid" onClick={handleDownloadAll} icon={<Download size={11}/>}>
-            Download all (<span className="t-num">{photos.length}</span>)
+          <Button variant="solid" onClick={handleDownloadAll} disabled={zipState === 'busy'} icon={<Download size={11}/>}>
+            {zipState === 'busy' ? 'Zipping…' : <>Download all (<span className="t-num">{photos.length}</span>)</>}
           </Button>
         </>
       }

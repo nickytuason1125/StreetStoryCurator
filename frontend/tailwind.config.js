@@ -45,6 +45,11 @@ export default {
       // only non-neutral, non-mark colours the chrome may ever show.
       "alarm-warn": "var(--alarm-warn)",
       "alarm-crit": "var(--alarm-crit)",
+
+      // Machine voice — the one cold accent, reserved for AI output.
+      ai: "var(--ai)",
+      "ai-dim": "var(--ai-dim)",
+      "ai-ink": "var(--ai-ink)",
     },
 
     fontFamily: {
@@ -64,6 +69,8 @@ export default {
       none: "0",
       sm: "var(--r-sm)",
       md: "var(--r-md)",
+      lg: "var(--r-lg)",
+      xl: "var(--r-xl)",
       full: "9999px",
     },
 
@@ -80,14 +87,15 @@ export default {
       full: "100%",
     },
 
-    transitionTimingFunction: { DEFAULT: "var(--ease)", ease: "var(--ease)" },
-    transitionDuration: { DEFAULT: "var(--t-fast)", fast: "var(--t-fast)", slow: "var(--t-slow)" },
+    transitionTimingFunction: { DEFAULT: "var(--ease)", ease: "var(--ease)", spring: "var(--spring)" },
+    transitionDuration: { DEFAULT: "var(--t-fast)", fast: "var(--t-fast)", slow: "var(--t-slow)", spring: "var(--t-spring)" },
 
     extend: {
       // Structural dimensions, named. Keeps w-72 / h-16 magic numbers out of
       // the markup now that the numeric spacing scale is deliberately sparse.
       width:  { panel: "var(--w-panel)", sidebar: "var(--w-sidebar)", stage: "var(--w-stage)" },
-      height: { thumb: "var(--h-thumb)", toolbar: "var(--h-toolbar)" },
+      height: { thumb: "var(--h-thumb)", toolbar: "var(--h-toolbar)", rule: "var(--h-rule)", palette: "var(--h-palette)" },
+      maxHeight: { palette: "var(--h-palette)" },
       borderWidth: { DEFAULT: "1px", 0: "0", 2: "2px" },
       opacity: { reject: "var(--dim-reject)" },
       // No `keyframes` block here on purpose. Every @keyframes lives in
@@ -101,6 +109,9 @@ export default {
         "fade-in": "fadeIn var(--t-slow) var(--ease)",
         "dialog-in": "dialogIn var(--t-slow) var(--ease)",
         sweep: "sweep 1.2s ease-in-out infinite",
+        "chip-in": "chipIn var(--t-spring) var(--spring) both",
+        "pop-in": "popIn var(--t-spring) var(--spring) both",
+        "palette-in": "paletteIn var(--t-spring) var(--spring) both",
       },
     },
   },

@@ -16,6 +16,11 @@ import { cn } from '../../lib/cn';
  * the dialog is usually describing.
  */
 
+/* Open-dialog registry: only the topmost modal reacts to Escape, so a nested
+ * modal closing doesn't also dismiss the one underneath (both listen on
+ * document; stopPropagation alone can't order document-level listeners). */
+const openDialogs: HTMLElement[] = [];
+
 export function Modal({
   title,
   subtitle,
@@ -37,12 +42,43 @@ export function Modal({
   useEffect(() => {
     restoreTo.current = document.activeElement;
     panel.current?.focus();
+    const el = panel.current;
+    if (el) openDialogs.push(el);
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { e.stopPropagation(); onClose(); }
+      if (e.key === 'Escape') {
+        // Only the topmost open dialog consumes Escape.
+        if (openDialogs[openDialogs.length - 1] !== panel.current) return;
+        e.stopPropagation();
+        onClose();
+        return;
+      }
+      // Focus trap: without this a keyboard user tabs straight out of the
+      // open dialog into the occluded page behind it (WCAG 2.4.3).
+      if (e.key === 'Tab' && panel.current) {
+        const focusables = panel.current.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), ' +
+          'select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        );
+        if (focusables.length === 0) { e.preventDefault(); return; }
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        const active = document.activeElement;
+        const inside = active instanceof Node && panel.current.contains(active);
+        if (!inside || (e.shiftKey && (active === first || active === panel.current))) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && active === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
     };
     document.addEventListener('keydown', onKey);
     return () => {
       document.removeEventListener('keydown', onKey);
+      // Remove from the registry so the modal underneath becomes topmost.
+      const idx = openDialogs.indexOf(el);
+      if (idx >= 0) openDialogs.splice(idx, 1);
       (restoreTo.current as HTMLElement | null)?.focus?.();
     };
   }, [onClose]);

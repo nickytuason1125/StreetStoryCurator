@@ -1,6 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 
-interface Props { children: ReactNode }
+interface Props { children: ReactNode; /** inline = contain within a panel (per-view); overlay = fullscreen (root). */ variant?: 'overlay' | 'inline'; label?: string }
 interface State { error: Error | null; info: ErrorInfo | null }
 
 /**
@@ -36,8 +36,35 @@ export default class ErrorBoundary extends Component<Props, State> {
   reset = () => this.setState({ error: null, info: null })
 
   render() {
-    const { error, info } = this.state
+    const { error, info, variant = 'overlay', label } = this.props
     if (!error) return this.props.children
+
+    // Per-view containment: one broken panel must not blank the whole app.
+    // The inline variant renders in-flow where the view was — the rest of the
+    // chrome (header, status bar, tabs) keeps working and stays clickable.
+    if (variant === 'inline') {
+      return (
+        <div style={{
+          flex: 1, minHeight: 0, overflow: 'auto',
+          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+          gap: 'var(--sp-2)', background: 'var(--ground)',
+          border: '1px solid var(--line-strong)', borderRadius: 'var(--r-md)',
+          margin: 'var(--sp-2)', padding: 'var(--sp-4)',
+        }}>
+          <span className="t-label" style={{ color: 'var(--alarm-crit)' }}>
+            {label ?? 'This view'} failed to render
+          </span>
+          <span style={{ color: 'var(--ink-3)', fontSize: 'var(--text-xs)', textAlign: 'center' }}>
+            {String(error.message ?? error).slice(0, 200)}
+          </span>
+          <button onClick={this.reset}
+            style={{ padding: 'var(--sp-1) var(--sp-3)', fontSize: 'var(--text-xs)', fontWeight: 600, cursor: 'pointer',
+              background: 'var(--raised)', color: 'var(--ink)', border: '1px solid var(--line-strong)', borderRadius: 'var(--r-sm)' }}>
+            Retry
+          </button>
+        </div>
+      )
+    }
 
     return (
       // Tokens are safe here even though the tree failed to render: tokens.css

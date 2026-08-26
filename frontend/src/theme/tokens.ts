@@ -33,6 +33,11 @@ export const T = {
   alarmWarn: 'var(--alarm-warn)',
   alarmCrit: 'var(--alarm-crit)',
 
+  /** Machine voice — AI verdicts, score bars, command palette. Never user actions. */
+  ai: 'var(--ai)',
+  aiDim: 'var(--ai-dim)',
+  aiInk: 'var(--ai-ink)',
+
   focus: 'var(--focus)',
   focusInset: 'var(--focus-inset)',
 

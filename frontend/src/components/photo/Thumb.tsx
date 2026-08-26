@@ -70,8 +70,17 @@ export function Thumb({ path, className, eager, onLoad, style }: ThumbProps) {
     return (
       <span
         role="button"
+        tabIndex={0}
+        aria-label="Thumbnail failed to load — press to retry"
         title="Thumbnail unavailable — click to retry"
         onClick={() => { setAttempt(0); setPhase('loading'); }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            setAttempt(0);
+            setPhase('loading');
+          }
+        }}
         className={cn(
           'group absolute inset-0 flex cursor-pointer items-center justify-center',
           'bg-well transition-colors duration-fast ease hover:bg-raised',

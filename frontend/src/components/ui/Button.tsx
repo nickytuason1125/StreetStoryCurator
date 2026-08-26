@@ -30,8 +30,9 @@ const VARIANTS: Record<Variant, string> = {
   default: 'bg-transparent border border-line-strong text-ink-2 hover:bg-raised hover:text-ink active:bg-raised-hover',
   // No border. For dense clusters where borders would create visual noise.
   quiet: 'bg-transparent border border-transparent text-ink-3 hover:bg-raised hover:text-ink active:bg-raised-hover',
-  // Filled. Emphasis via luminance, not hue.
-  solid: 'bg-raised border border-line-strong text-ink hover:bg-raised-hover active:bg-raised',
+  // Filled. Emphasis via luminance, not hue. The inset top-light hairline gives
+  // the fill physical presence — the same edge --shadow-3 paints on dialogs.
+  solid: 'bg-raised border border-line-strong text-ink hover:bg-raised-hover active:bg-raised [box-shadow:inset_0_1px_0_rgb(255_255_255/_.06)]',
   // Inverted ink — the strongest step the chrome may take. Full-luminance fill,
   // well-coloured label: a white button on the dark ground. Reserved for the
   // one primary action on a screen (the welcome hero's CTA); still strictly

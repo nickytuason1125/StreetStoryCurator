@@ -66,8 +66,8 @@ const RULES = [
     re: /\b(?:bg|text|border|outline|ring|divide|from|via|to)-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose)-\d{2,3}\b/g,
   },
   {
-    name: 'radius outside the two-step scale (rounded-sm | rounded-md | rounded-full)',
-    re: /\brounded-(?:lg|xl|2xl|3xl)\b/g,
+    name: 'radius outside the four-step scale (rounded-sm | rounded-md | rounded-lg | rounded-xl | rounded-full)',
+    re: /\brounded-(?:2xl|3xl)\b/g,
   },
 ];
 

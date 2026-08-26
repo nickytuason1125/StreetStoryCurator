@@ -20,10 +20,14 @@ body {
 ::selection { background: var(--ink); color: var(--well); }
 input, textarea { caret-color: var(--ink); }
 
-/* Elevation utilities — consume the token ramp; shadow-lg etc. stay unused. */
-.elev-1 { box-shadow: var(--shadow-1); }
-.elev-2 { box-shadow: var(--shadow-2); }
-.elev-3 { box-shadow: var(--shadow-3); }
+/* Elevation utilities — consume the token ramp; shadow-lg etc. stay unused.
+   Declared in @layer utilities so Tailwind grants variant support
+   (hover:elev-1 etc.). */
+@layer utilities {
+  .elev-1 { box-shadow: var(--shadow-1); }
+  .elev-2 { box-shadow: var(--shadow-2); }
+  .elev-3 { box-shadow: var(--shadow-3); }
+}
 
 /* Glass — chrome that floats above artwork. Translucent token surface plus a
    blur; saturate(1.1) keeps the photo's colour alive behind the control
@@ -78,6 +82,36 @@ input, textarea { caret-color: var(--ink); }
 @keyframes dialogIn {
   from { opacity: 0; transform: translateY(6px) scale(.985) }
   to   { opacity: 1; transform: translateY(0)   scale(1) }
+}
+
+/* Spring entrances — 2026 motion pass. These run ONLY on elements that appear
+   as the result of a decision (grade chips, score bars, palette rows), driven
+   by --spring so the overshoot reads as "landing", not "bouncing". Declared
+   here, not in tailwind.config.js, so emission is unconditional (see the
+   keyframes note above). */
+@keyframes chipIn {
+  from { opacity: 0; transform: translateY(4px) scale(.85) }
+  to   { opacity: 1; transform: translateY(0)   scale(1) }
+}
+@keyframes popIn {
+  from { opacity: 0; transform: scale(.92) }
+  to   { opacity: 1; transform: scale(1) }
+}
+@keyframes paletteIn {
+  from { opacity: 0; transform: translateY(-10px) scale(.97) }
+  to   { opacity: 1; transform: translateY(0)     scale(1) }
+}
+
+/* Grid → loupe morph: the View Transitions API animates what CSS transitions
+   cannot (an element moving between layout parents). Browsers without support
+   fall through to the existing --t-slow cross-fade — progressive enhancement
+   in the literal sense. */
+@media (prefers-reduced-motion: no-preference) {
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation-duration: var(--t-slow);
+    animation-timing-function: var(--ease);
+  }
 }
 
 /* Aurora drift: a slow conic-gradient sweep behind the welcome hero. Rotates
@@ -189,6 +223,15 @@ input, textarea { caret-color: var(--ink); }
 }
 .range-token:hover::-webkit-slider-thumb { background: var(--ink); }
 .range-token:hover::-moz-range-thumb     { background: var(--ink); }
+/* Focus indicator: the outline is suppressed on the input itself (browsers
+ * draw it clipped inside the track) but re-expressed as a high-contrast ring
+ * on the thumb — scale alone failed WCAG 2.4.7 / 1.4.11. */
 .range-token:focus-visible { outline: none; }
-.range-token:focus-visible::-webkit-slider-thumb { transform: scale(1.15); }
-.range-token:focus-visible::-moz-range-thumb     { transform: scale(1.15); }
+.range-token:focus-visible::-webkit-slider-thumb {
+  transform: scale(1.15);
+  box-shadow: 0 0 0 3px var(--focus);
+}
+.range-token:focus-visible::-moz-range-thumb {
+  transform: scale(1.15);
+  box-shadow: 0 0 0 3px var(--focus);
+}

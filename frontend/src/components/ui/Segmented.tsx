@@ -55,7 +55,7 @@ export function Segmented<T extends string>({
             title={o.title}
             onClick={() => onChange(o.value)}
             className={cn(
-              'inline-flex h-6 items-center justify-center gap-1 border-0 text-sm font-medium',
+              'relative inline-flex h-6 items-center justify-center gap-1 border-0 text-sm font-medium',
               'cursor-pointer whitespace-nowrap transition-colors duration-fast ease',
               iconOnly ? 'w-8' : 'px-3',
               i > 0 && 'border-l border-line-strong',
@@ -64,6 +64,16 @@ export function Segmented<T extends string>({
                 : 'bg-transparent text-ink-3 hover:bg-raised hover:text-ink',
             )}
           >
+            {/* Active tab rule: the same fixed-position language as the grade
+                rule under a frame — shape in a constant place, never hue. */}
+            <span
+              aria-hidden
+              className={cn(
+                'absolute inset-x-0 top-0 transition-opacity duration-fast ease',
+                active ? 'opacity-100' : 'opacity-0',
+              )}
+              style={{ height: 'var(--rule)', background: 'var(--ink)' }}
+            />
             {o.dot && (
               <span
                 className="h-1 w-1 shrink-0 rounded-full"

@@ -1,8 +1,8 @@
 import { memo, useEffect, useRef, useState } from 'react';
-import { CheckSquare, Flag, Layers, RefreshCw } from 'lucide-react';
+import { CheckSquare, Copy, Flag, Layers, RefreshCw } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { AnnotatedMark } from '../ui/GradeRule';
-import { T, gradeRule, gradeKey, formatScore } from '../../theme/tokens';
+import { T, gradeRule, gradeKey, gradeLabel, formatScore } from '../../theme/tokens';
 import { cn } from '../../lib/cn';
 import { Thumb } from '../photo/Thumb';
 import { useWindowedGrid } from '../../hooks/useWindowedGrid';
@@ -134,22 +134,27 @@ export function Filmstrip({
 /* ── Grid View ──────────────────────────────────────────────────── */
 export function GridView({
   photos, selId, onSelect, usedPaths, selectMode, setSelectMode, selectedIds, setSelectedIds, onCreateSequence, onAutoSequence,
+  nicheDetecting = false, dupesCount, showDuplicates = false, onToggleDupes, shownCount = null,
 }: {
   photos: any[]; selId: string | null; onSelect: (id: string) => void; usedPaths: Set<string>;
   selectMode: boolean; setSelectMode: (v: boolean) => void;
   selectedIds: Set<string>; setSelectedIds: React.Dispatch<React.SetStateAction<Set<string>>>;
   onCreateSequence: () => void; onAutoSequence: () => void;
+  /** Ambient status pill props - presentation only, state stays in App. */
+  nicheDetecting?: boolean; dupesCount?: number; showDuplicates?: boolean;
+  onToggleDupes?: () => void; shownCount?: number | null;
 }) {
   const toggleSelect = (id: string) => {
     setSelectedIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; });
   };
   /* Row windowing: only the visible sheet rows (±3) exist in the DOM. rowExtra
-   * = rule (2) + label strip (20) + row gap (8). */
-  const wg = useWindowedGrid({ itemCount: photos.length, minColWidth: 168, gap: 8, rowExtra: 30 });
+   * = rule (2) + label strip (20) + row gap (12). */
+  const [density, setDensity] = useState(220);
+  const wg = useWindowedGrid({ itemCount: photos.length, minColWidth: density, gap: 12, rowExtra: 34 });
   return (
     <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden', position:'relative' }}>
-      {/* Count row is padded to the sheet's own inset (p-2) so the number sits
-          exactly on the sheet's right edge instead of floating 4px past it. */}
+      {/* One quiet toolbar row: selection, density, dupes, ambient status and
+          counts - everything the sheet needs, nothing it doesn't. */}
       <div className="flex h-8 shrink-0 items-center justify-between border-b border-line bg-surface px-2">
         <div className="flex items-center gap-2">
           <Button size="sm" variant={selectMode ? 'solid' : 'quiet'}
@@ -164,8 +169,41 @@ export function GridView({
               Clear
             </Button>
           )}
+
+          <div className="h-4 w-px shrink-0 bg-line-strong"/>
+          <label className="flex items-center gap-1">
+            <span className="t-label">Size</span>
+            <input type="range" min={140} max={420} step={20} value={density}
+              onChange={e => setDensity(Number(e.target.value))}
+              aria-label="Thumbnail size"
+              className="range-token" style={{ width: 80 }}/>
+          </label>
+
+          {onToggleDupes && dupesCount !== undefined && dupesCount > 0 && (
+            <>
+              <div className="h-4 w-px shrink-0 bg-line-strong"/>
+              <Button size="sm" variant={showDuplicates ? 'solid' : 'quiet'} onClick={onToggleDupes}
+                title={showDuplicates ? 'Hide duplicate shots' : 'Show duplicate shots'}
+                icon={<Copy size={10}/>}>
+                Dupes <span className="t-num ml-1 opacity-70">{dupesCount}</span>
+              </Button>
+            </>
+          )}
+
+          {nicheDetecting && (
+            <span role="status"
+              className="glass animate-shimmer ml-1 flex items-center gap-1 rounded-md px-2 py-px text-xs text-ink-2">
+              <span aria-hidden
+                className="inline-block h-2 w-2 shrink-0 rounded-full border-2 border-current border-t-transparent"
+                style={{ animation: 'spin .8s linear infinite' }}/>
+              Detecting ideal niche…
+            </span>
+          )}
         </div>
-        <span className="t-num text-xs text-ink-3">{photos.length} photos</span>
+        <span className="t-num text-xs text-ink-3">
+          {shownCount != null && (<><span>{shownCount}</span> shown · </>)}
+          {photos.length} photos
+        </span>
       </div>
 
       {/* Contact sheet.
@@ -183,9 +221,10 @@ export function GridView({
        * background rather than breaking the column rhythm. The label strip is a
        * fixed height so filenames, stars and scores align into columns down the
        * sheet. */}
-      <div ref={wg.ref} onScroll={wg.onScroll} className="flex-1 overflow-auto bg-ground p-2">
-        <div className="grid gap-2"
+      <div ref={wg.ref} onScroll={wg.onScroll} className="flex-1 overflow-auto bg-ground px-4 py-3">
+        <div className="grid mx-auto gap-3"
           style={{ gridTemplateColumns: `repeat(${wg.cols}, minmax(0, 1fr))`,
+                   maxWidth: wg.cols * 440,
                    paddingTop: wg.padTop, paddingBottom: wg.padBottom }}>
           {photos.slice(wg.first, wg.last).map(p => {
             const isChecked = selectedIds.has(p.id);
@@ -193,16 +232,24 @@ export function GridView({
             const isCurrent = p.id === selId && !selectMode;
             const rule      = gradeRule(p.grade);
             const isWeak    = gradeKey(p.grade) === 'weak';
+            const isStrong  = gradeKey(p.grade) === 'strong';
             const isPending = gradeKey(p.grade) === 'pending';
             return (
               <button key={p.id} onClick={() => selectMode ? toggleSelect(p.id) : onSelect(p.id)}
                 className={cn(
                   'group relative flex cursor-pointer flex-col border-0 bg-transparent p-0',
-                  'rounded-sm outline outline-2 outline-offset-1 transition-[outline-color] duration-fast ease',
-                  isChecked ? 'outline-mark' : isCurrent ? 'outline-ink' : 'outline-transparent',
+                  'rounded-lg outline outline-2 outline-offset-2',
+                  // Motion policy: transform only on anything holding a photo.
+                  // The lift runs on the spring — a 2026 entrance curve for the
+                  // one interaction every cell shares.
+                  'transition-transform duration-spring ease-spring',
+                  // Hover lift: the frame rises under the cursor.
+                  'hover:-translate-y-0.5 active:scale-[.98]',
+                  // Selection ring uses --focus: neutral interactivity, never warm.
+                  isChecked || isCurrent ? 'outline-[color:var(--focus)]' : 'outline-transparent',
                 )}
                 style={{ contentVisibility: 'auto', containIntrinsicSize: '200px 190px' }}>
-                <span className="relative block overflow-hidden rounded-t-sm bg-well" style={{ aspectRatio: '3/2' }}>
+                <span className="relative block overflow-hidden rounded-t-lg bg-well" style={{ aspectRatio: '3/2' }}>
                   <Thumb path={p.path}
                     className={cn(
                       'block h-full w-full object-contain transition-[opacity,filter] duration-fast ease',
@@ -214,6 +261,34 @@ export function GridView({
                       isWeak && 'opacity-reject',
                       selectMode && !isChecked && 'opacity-reject',
                     )}/>
+                  {/* The machine's verdict as a glass chip — top-left. Strong
+                      speaks in the machine voice (--ai); Weak keeps the alarm
+                      register; Mid stays silent. Enters on the spring. */}
+                  {!isPending && (
+                    <span aria-hidden
+                      className="t-label pointer-events-none absolute left-1 top-1 animate-chip-in rounded-md px-1 py-px"
+                      style={{ background: T.glass, color: isWeak ? T.gradeWeak : isStrong ? T.ai : T.ink2 }}>
+                      {gradeLabel(p.grade)}
+                    </span>
+                  )}
+                  {/* The machine's score — top-right, only when it has one.
+                      Also machine voice, also spring. */}
+                  {!isPending && p.score > 0 && (
+                    <span aria-hidden
+                      className="t-num pointer-events-none absolute right-1 top-1 animate-chip-in rounded-md px-1 py-px text-xs"
+                      style={{ background: T.glass, color: T.ink }}>
+                      {formatScore(p.score)}
+                    </span>
+                  )}
+                  {/* Hover score bar — the score you can read without reading.
+                      A cold fill grows along the bottom edge of the frame,
+                      spring-revealed on hover. Length = score, so a row of
+                      frames sorts itself visually under the cursor. */}
+                  {!isPending && p.score > 0 && (
+                    <span aria-hidden
+                      className="pointer-events-none absolute inset-x-0 bottom-0 h-rule origin-left bg-ai opacity-0 transition-[opacity,transform] duration-spring ease-spring group-hover:opacity-100"
+                      style={{ transform: `scaleX(${Math.max(0.04, Math.min(1, p.score))})` }}/>
+                  )}
                   {selectMode && (
                     <span className={cn(
                       'absolute left-1 top-1 flex h-4 w-4 items-center justify-center rounded-sm border',
@@ -273,7 +348,7 @@ export function GridView({
       {/* Selection actions. Floats over the sheet, so it is the one surface that
           earns real elevation rather than a border. */}
       {selectMode && selectedIds.size > 0 && (
-        <div className="animate-fade-in absolute bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 whitespace-nowrap rounded-md border border-line-strong bg-surface px-4 py-2 elev-2">
+        <div className="glass elev-3 animate-fade-in absolute bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 whitespace-nowrap rounded-md border border-line-strong px-4 py-2">
           <span className="text-sm text-ink">
             <span className="t-num">{selectedIds.size}</span> selected
           </span>

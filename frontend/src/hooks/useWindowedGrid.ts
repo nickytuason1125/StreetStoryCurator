@@ -33,12 +33,16 @@ export interface WindowedGrid {
   padTop: number;
   /** Bottom spacer height in px. */
   padBottom: number;
+  /** Computed pixel width of one column - lets callers cap/centre cells. */
+  colWidth: number;
 }
 
 export function useWindowedGrid(opts: {
   itemCount: number;
   /** Minimum column width — matches the sheet's minmax() rhythm. */
   minColWidth: number;
+  /** Optional hard cap on column count - few photos form a centred block. */
+  maxCols?: number;
   /** Grid gap in px. */
   gap: number;
   /** Per-row height beyond the 3:2 image cell: rule + label strip + row gap. */
@@ -50,6 +54,12 @@ export function useWindowedGrid(opts: {
   const [width, setWidth] = useState(0);
   const [height, setHeight] = useState(0);
   const [scrollTop, setScrollTop] = useState(0);
+  const rafRef = useRef(0);
+
+  useEffect(() => () => {
+    // Unmount cleanup: a pending frame must not setState after teardown.
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+  }, []);
 
   const ref = useCallback((node: HTMLDivElement | null) => {
     nodeRef.current = node;
@@ -68,7 +78,11 @@ export function useWindowedGrid(opts: {
     return () => ro.disconnect();
   }, []);
 
-  const cols = Math.max(1, Math.floor((width + gap) / (minColWidth + gap)));
+  // With few photos a full-width single row reads as one stretched strip over
+  // a void - aim for a near-square centred block instead; fitCols is the ceiling.
+  const fitCols = Math.max(1, Math.floor((width + gap) / (minColWidth + gap)));
+  const idealCols = Math.max(1, Math.round(Math.sqrt(itemCount * 2)));
+  const cols = Math.min(fitCols, Math.max(1, opts.maxCols ?? idealCols));
   const colWidth = width > 0 ? (width - (cols - 1) * gap) / cols : minColWidth;
   const rowHeight = colWidth / 1.5 + rowExtra;
   const totalRows = Math.ceil(itemCount / cols);
@@ -77,13 +91,22 @@ export function useWindowedGrid(opts: {
   const endRow = Math.min(totalRows, startRow + visibleRows);
 
   const onScroll = useCallback((e: { currentTarget: { scrollTop: number } }) => {
-    setScrollTop(e.currentTarget.scrollTop);
+    // Scroll events fire many times per display frame; without coalescing each
+    // one triggers a full grid re-render. One render per frame is the ceiling
+    // the eye can perceive — everything between is dropped CPU work.
+    const st = e.currentTarget.scrollTop;
+    if (rafRef.current) return;
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = 0;
+      setScrollTop(st);
+    });
   }, []);
 
   return {
     ref,
     onScroll,
     cols,
+    colWidth,
     first: startRow * cols,
     last: endRow * cols,
     padTop: startRow * rowHeight,
