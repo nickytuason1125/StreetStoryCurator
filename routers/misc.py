@@ -4,6 +4,7 @@ session catalog and photo flags. Moved verbatim from server.py
 state imported lazily from server_impl inside each handler."""
 import json
 import os
+import threading
 import time
 
 from fastapi import APIRouter, HTTPException
@@ -11,6 +12,12 @@ from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
 router = APIRouter()
+
+# Serialises every read-modify-write on the small JSON state files below
+# (photo_flags.json, saved_sequences.json). Without it, two concurrent
+# toggles both load → mutate → write and the last writer silently drops
+# the other's change.
+_STATE_LOCK = threading.Lock()
 
 
 def _impl():
@@ -79,19 +86,20 @@ async def save_sequence(payload: dict):
 
     sequences_file = _DATA_DIR / "cache" / "saved_sequences.json"
     sequences_file.parent.mkdir(exist_ok=True)
-    
-    try:
-        with open(sequences_file, "r") as f:
-            data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        data = {"sequences": []}
-    
-    # Remove existing sequence with same name
-    data["sequences"] = [s for s in data["sequences"] if s["name"] != name]
-    data["sequences"].append({"name": name, "sequence": sequence})
-    
-    _atomic_write_text(sequences_file, json.dumps(data, indent=2))
-    
+
+    with _STATE_LOCK:
+        try:
+            with open(sequences_file, "r") as f:
+                data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            data = {"sequences": []}
+
+        # Remove existing sequence with same name
+        data["sequences"] = [s for s in data["sequences"] if s["name"] != name]
+        data["sequences"].append({"name": name, "sequence": sequence})
+
+        _atomic_write_text(sequences_file, json.dumps(data, indent=2))
+
     return {"success": True, "message": f"Sequence '{name}' saved"}
 
 
@@ -105,11 +113,22 @@ _NO_CACHE_HEADERS = {
 @router.get("/api/catalog")
 async def get_catalog():
     _DATA_DIR, _atomic_write_text, analyzer = _impl()
+    # Fallback: a failed re-grade moves the live catalog to .pre-regrade.bak.
+    # Serving the backup here keeps Resume working after a failed re-grade
+    # instead of reporting an empty history.
+    source = _CATALOG_PATH
+    fallback = False
     if not _CATALOG_PATH.exists():
-        return JSONResponse({"exists": False}, headers=_NO_CACHE_HEADERS)
+        bak = _CATALOG_PATH.with_name("catalog.json.pre-regrade.bak")
+        if bak.exists():
+            source = bak
+            fallback = True
+        else:
+            return JSONResponse({"exists": False}, headers=_NO_CACHE_HEADERS)
     try:
-        data = json.loads(_CATALOG_PATH.read_text(encoding="utf-8"))
-        return JSONResponse({"exists": True, **data}, headers=_NO_CACHE_HEADERS)
+        data = json.loads(source.read_text(encoding="utf-8"))
+        return JSONResponse({"exists": True, "fallback": fallback, **data},
+                            headers=_NO_CACHE_HEADERS)
     except Exception:
         return JSONResponse({"exists": False}, headers=_NO_CACHE_HEADERS)
 
@@ -165,17 +184,18 @@ def _write_flags_atomic(data: dict) -> None:
 
 def _toggle_flag_key(key: str, path: str) -> dict:
     _DATA_DIR, _atomic_write_text, analyzer = _impl()
-    data = _load_flags_file()
-    items = data.setdefault(key, [])
-    present = path in items
-    if present:
-        items.remove(path)
-    else:
-        items.append(path)
-    try:
-        _write_flags_atomic(data)
-    except Exception as e:
-        return {"success": False, "message": str(e)}
+    with _STATE_LOCK:
+        data = _load_flags_file()
+        items = data.setdefault(key, [])
+        present = path in items
+        if present:
+            items.remove(path)
+        else:
+            items.append(path)
+        try:
+            _write_flags_atomic(data)
+        except Exception as e:
+            return {"success": False, "message": str(e)}
     return {"success": True, key: not present}
 
 
