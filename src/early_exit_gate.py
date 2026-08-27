@@ -171,6 +171,7 @@ def run_early_exit_gate(
     n_workers: int = 8,
     run_yolo: bool = False,    # True only when CD brief implies empty/liminal scenes
     yolo_conf: float = 0.35,
+    on_progress=None,          # optional (done, total) -> None, called during the decode pass
 ) -> tuple[list[str], set[str], set[str], set[str], dict[str, str]]:
     """
     Technical inspection (readiness → flat/void → blur) then optional YOLO gate.
@@ -190,8 +191,24 @@ def run_early_exit_gate(
     # fixed n_workers default, so a memory-tight machine narrows the fan-out
     # instead of running 8 concurrent full-resolution decodes into an OOM.
     _workers = min(decode_workers(len(paths), hi=n_workers), len(paths))
+    # Stream the results instead of list(pool.map(...)).
+    #
+    # This gate decodes EVERY image to measure Laplacian variance, so on a real
+    # folder it is minutes of work — 1,045 photos sat here for a long time with
+    # the progress bar frozen at 2%, because the old form blocked until the last
+    # future resolved and reported nothing in between. pool.map still yields in
+    # submission order, so consuming it lazily costs nothing and gives the
+    # caller something true to show.
+    _total = len(paths)
+    results = []
     with ThreadPoolExecutor(max_workers=_workers) as pool:
-        results = list(pool.map(_technical_inspect, paths))
+        for _i, _r in enumerate(pool.map(_technical_inspect, paths), 1):
+            results.append(_r)
+            if on_progress is not None and (_i % 20 == 0 or _i == _total):
+                try:
+                    on_progress(_i, _total)
+                except Exception:
+                    pass          # a progress callback must never fail a cull
 
     technical_disq:    dict[str, str] = {}
     blur_disqualified: set[str] = set()

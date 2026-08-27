@@ -68,9 +68,18 @@ def run_gate_stage(paths: list, progress: Callable) -> GateResult:
             run_yolo = False
 
         progress(0.015, "Checking image files…")
+
+        # This gate decodes every image, so on a real folder it owns minutes of
+        # wall time. Reporting only before and after left the bar frozen at 2%
+        # for the whole pass — the single worst "is it stuck?" moment in a cull.
+        # 0.015 -> 0.030 is its lane; spend it proportionally.
+        def _gate_progress(done: int, total: int) -> None:
+            frac = 0.015 + 0.015 * (done / max(1, total))
+            progress(frac, f"Checking image files… {done}/{total}")
+
         (out.survivors, out.blur_disqualified, out.yolo_disqualified,
          out.yolo_soft_penalized, out.technical_disq) = run_early_exit_gate(
-            paths, run_yolo=run_yolo)
+            paths, run_yolo=run_yolo, on_progress=_gate_progress)
 
         if out.n_failed:
             progress(0.025, f"{out.n_failed} unusable images set aside")

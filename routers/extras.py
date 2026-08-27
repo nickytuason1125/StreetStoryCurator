@@ -25,6 +25,12 @@ from routers.library import _RAW_EXTS
 
 router = APIRouter()
 
+# The unit root — the directory holding src/, scripts/ and static/. NOT this
+# module's directory. See the identical note in routers/grading.py: the server
+# split moved this code from the repo root into routers/, and every
+# Path(__file__).parent silently began resolving one level too deep.
+_UNIT_ROOT = Path(__file__).resolve().parent.parent
+
 
 def __getattr__(name):
     # Eager bindings above cover every static reference; this only serves
@@ -364,7 +370,7 @@ async def jury_critique(image_hash: str):
     # Uses sys.path.insert so it can import from src/ without package install.
     _critique_script = r"""
 import sys, json
-sys.path.insert(0, 'src')
+sys.path.insert(0, sys.argv[2] if len(sys.argv) > 2 else 'src')
 image_hash = sys.argv[1]
 try:
     from critique_engine import run_jury_critique
@@ -391,7 +397,7 @@ except Exception as _e:
             _py, "-c", _critique_script, image_hash,
             stdout=_aio.subprocess.PIPE,
             stderr=_aio.subprocess.PIPE,
-            cwd=str(Path(__file__).parent),
+            cwd=str(_UNIT_ROOT),
             creationflags=_cflags,
         )
 
@@ -478,12 +484,12 @@ async def pull_model_stream(req: ModelPullRequest):
         import subprocess
         proc = None
         try:
-            cmd = [sys.executable, str(Path(__file__).parent / "scripts" / "fetch_models.py"),
+            cmd = [sys.executable, str(_UNIT_ROOT / "scripts" / "fetch_models.py"),
                    "--json"]
             if req.model_name in ("optional", "all"):
                 cmd.append("--with-optional" if req.model_name == "optional" else "--all")
             proc = subprocess.Popen(
-                cmd, cwd=str(Path(__file__).parent),
+                cmd, cwd=str(_UNIT_ROOT),
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1,
             )
@@ -546,7 +552,7 @@ async def health_engine():
 async def get_annotations(image_hash: str):
     """Return has_annotations, score_factors, and eye_overlay_url for a single image."""
     # Resolve eye overlay URLs for canvas_renderer.py outputs
-    _overlay_base = Path(__file__).parent / "static" / "eye_feature_overlays"
+    _overlay_base = _UNIT_ROOT / "static" / "eye_feature_overlays"
     _verified     = _overlay_base / f"verified_{image_hash}.png"
     _critique     = _overlay_base / f"critique_{image_hash}.png"
     eye_overlay_url: str = ""

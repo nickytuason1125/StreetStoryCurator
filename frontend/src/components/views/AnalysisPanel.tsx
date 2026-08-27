@@ -10,7 +10,6 @@ import { cn } from '../../lib/cn';
 import { regionGuide, tierColor, tierIcon, tierHeat } from '../../lib/regions';
 import type { RegionTier } from '../../lib/regions';
 import { aspectDim } from '../../lib/aspects';
-import { useTasteSummary } from '../../hooks/useTasteSummary';
 
 /* â”€â”€ AnalysisPanel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
  * The loupe's right rail: thumbnail header with grade pill, rating +
@@ -44,9 +43,6 @@ export function AnalysisPanel({
   handleGenerate: () => void; handleCreateFromSelection: () => void;
   hasPrev: boolean; hasNext: boolean; selIdx: number; filteredPhotos: any[];
 }) {
-  /* The photographer's taste-authority standing — re-read whenever the stars
-     on the selected frame change, so the meter tracks the baseline live. */
-  const taste = useTasteSummary(sel?.stars);
   return (
     <>
             {photos.length > 0 && <div style={{ width:rightW, flexShrink:0, background:T.surface, borderLeft:`1px solid ${T.line}`, display:'flex', flexDirection:'column', overflow:'hidden' }}>
@@ -79,9 +75,7 @@ export function AnalysisPanel({
                   </div>
                   {/* Score hero — the machine's measurement at the size the
                       constitution reserves for it (--text-xl: "the score, in
-                      the loupe. Only there."). The taste meter underneath is
-                      the photographer's own warm mark: how much of this number
-                      is his. */}
+                      the loupe. Only there."). */}
                   {isGraded && sel && typeof sel.score === 'number' && (
                     <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${T.line}` }}>
                       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
@@ -96,22 +90,13 @@ export function AnalysisPanel({
                           {gradeLabel(sel.grade)}
                         </span>
                       </div>
-                      {taste && taste.ratings > 0 && (
-                        <div style={{ marginTop: 8 }}>
-                          <div aria-hidden style={{ height: 3, borderRadius: 'var(--r-sm)', overflow: 'hidden', display: 'flex', background: T.line }}>
-                            <span style={{ width: `${Math.round(taste.weight * 100)}%`, background: `linear-gradient(90deg, ${T.markDim}, ${T.mark})` }}/>
-                            <span style={{ flex: 1, background: T.lineStrong }}/>
-                          </div>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
-                            <span style={{ fontSize: 'var(--text-xs)', color: T.ink3 }}>
-                              <span style={{ color: T.markInk, fontWeight: 600 }} className="t-num">{taste.ratings}</span> ratings learned
-                            </span>
-                            <span className="t-num" style={{ fontSize: 'var(--text-xs)', color: T.ink2, fontWeight: 600 }}>
-                              {Math.round(taste.weight * 100)}% your call
-                            </span>
-                          </div>
-                        </div>
-                      )}
+                      {/* The taste meter is gone from here on purpose.
+                          "124 ratings learned" and "70% your call" describe how
+                          the MACHINE weighted itself. That is engine telemetry,
+                          not a fact about this photograph, and it sat directly
+                          under the score where the reader is deciding about the
+                          picture. PersonalHead still does the same work; it just
+                          no longer narrates it in the middle of the verdict. */}
                     </div>
                   )}
                   <StarRating stars={sel.stars ?? 0} size={22} onSet={n => handleSetStars(sel.id, n)}/>

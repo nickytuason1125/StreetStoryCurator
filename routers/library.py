@@ -208,8 +208,20 @@ def _gen_one_thumb(path: str, low_priority: bool = False) -> None:
         if dest.exists():
             return
 
-        # Smaller target size for faster processing (grid display only)
-        THUMB_SIZE = (200, 200)
+        # Sized for the LARGEST place a thumbnail is shown, not the smallest.
+        #
+        # This was (200, 200) — "grid display only". But a contact-sheet cell is
+        # ~290 CSS px wide at a 1500px window and wider on a bigger one, and on
+        # a HiDPI screen each of those is 2 device pixels. A 200px thumbnail was
+        # therefore being upscaled 1.5x to 3x on every cell, which is exactly
+        # the "all the pictures are pixelated" report — the photographs were
+        # never that soft, the thumbnails were too small for where they land.
+        #
+        # 448 covers a 290px cell at 2x DPR with a little headroom, and it is
+        # the same short edge the vision models take, so nothing else in the
+        # pipeline wants a different number. WebP keeps the file cost close to
+        # the old 200px JPEG despite ~5x the pixels.
+        THUMB_SIZE = (448, 448)
 
         def _save(img) -> None:
             """Atomically write `img` to `dest` via a unique temp file."""
