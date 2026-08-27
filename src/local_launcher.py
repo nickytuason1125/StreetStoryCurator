@@ -6,7 +6,28 @@ Errors are written to crash.log in the project root.
 import os, sys, time, threading, socket, traceback, urllib.request, subprocess
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parent.parent
+def _resolve_root() -> Path:
+    """Where the app's files actually are.
+
+    From source that is the repo root, one level above src/. Inside a frozen
+    PyInstaller bundle __file__ points into the archive, so the old expression
+    resolved somewhere that contains none of the app's data — and the first
+    casualty was frontend/dist/index.html. _build_frontend_if_needed() then
+    concluded the frontend was missing and tried to run `npm run build` inside
+    a windowed executable with no real stdio handles, which dies:
+
+        OSError: [WinError 50] The request is not supported
+
+    So the packaged app failed to start by trying to compile itself.
+    sys._MEIPASS is where PyInstaller unpacks datas, which is exactly the
+    directory the spec's paths are relative to.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+    return Path(__file__).resolve().parent.parent
+
+
+_ROOT = _resolve_root()
 # Must be first — patches subprocess/multiprocessing/asyncio, allocates hidden
 # console so any native child that omits CREATE_NO_WINDOW inherits it silently.
 sys.path.insert(0, str(_ROOT))
