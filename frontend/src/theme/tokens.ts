@@ -86,6 +86,20 @@ export function gradeRule(g: string | null | undefined): string | null {
   return null; // mid and pending carry no rule
 }
 
+/* The cell's OTHER verdict channel: the glass chip over the frame.
+ *
+ * It answers the same question as gradeRule - does this grade get a mark? - so
+ * it has to give the same answer, and the only way to guarantee that is to ask
+ * here rather than re-deciding in JSX. GridView previously did re-decide, with
+ * a guard of `!isPending`, so Mid fell through and rendered a label in --ink-2
+ * while the rule beneath the same cell stayed silent. On a real folder that is
+ * most of the grid, which is precisely the noise Mid-silence exists to prevent.
+ *
+ * Returns the chip's text colour, or null when the grade does not speak. */
+export function gradeBadge(g: string | null | undefined): string | null {
+  return gradeRule(g);
+}
+
 /** Weak frames physically sink. Cheapest high-value scanning affordance here. */
 export function gradeOpacity(g: string | null | undefined): number {
   return gradeKey(g) === 'weak' ? 0.55 : 1;

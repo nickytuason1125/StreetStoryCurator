@@ -2,7 +2,7 @@ import { memo, useEffect, useRef, useState } from 'react';
 import { CheckSquare, Copy, Flag, Layers, RefreshCw } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { AnnotatedMark } from '../ui/GradeRule';
-import { T, gradeRule, gradeKey, gradeLabel, formatScore } from '../../theme/tokens';
+import { T, gradeRule, gradeBadge, gradeKey, gradeLabel, formatScore } from '../../theme/tokens';
 import { cn } from '../../lib/cn';
 import { Thumb } from '../photo/Thumb';
 import { useWindowedGrid } from '../../hooks/useWindowedGrid';
@@ -231,8 +231,8 @@ export function GridView({
             const isUsed    = usedPaths.has(p.path);
             const isCurrent = p.id === selId && !selectMode;
             const rule      = gradeRule(p.grade);
+            const badge     = gradeBadge(p.grade);
             const isWeak    = gradeKey(p.grade) === 'weak';
-            const isStrong  = gradeKey(p.grade) === 'strong';
             const isPending = gradeKey(p.grade) === 'pending';
             return (
               <button key={p.id} onClick={() => selectMode ? toggleSelect(p.id) : onSelect(p.id)}
@@ -262,12 +262,15 @@ export function GridView({
                       selectMode && !isChecked && 'opacity-reject',
                     )}/>
                   {/* The machine's verdict as a glass chip — top-left. Strong
-                      speaks in the machine voice (--ai); Weak keeps the alarm
-                      register; Mid stays silent. Enters on the spring. */}
-                  {!isPending && (
+                      speaks in the machine voice; Weak keeps the alarm
+                      register; Mid stays silent. Enters on the spring.
+                      Who speaks is gradeBadge's call, not this file's — see the
+                      note there. Deciding it inline is how the chip came to
+                      contradict the rule under the very same cell. */}
+                  {badge && (
                     <span aria-hidden
                       className="t-label pointer-events-none absolute left-1 top-1 animate-chip-in rounded-md px-1 py-px"
-                      style={{ background: T.glass, color: isWeak ? T.gradeWeak : isStrong ? T.ai : T.ink2 }}>
+                      style={{ background: T.glass, color: badge }}>
                       {gradeLabel(p.grade)}
                     </span>
                   )}
