@@ -29,7 +29,19 @@ from pathlib import Path
 from typing import Optional
 
 # Absolute path anchored to this file — never affected by CWD changes in server threads.
-_DB_DIR    = str(Path(__file__).resolve().parent.parent / "cache" / "lance.db")
+#
+# FRAMEGRADE_LANCE_DIR exists for ONE reason: tests and throwaway harnesses had
+# no way to avoid the real store. `data_dir` in a grade request does not
+# redirect it, so pytest wrote its fixtures straight into the photographer's
+# vector store — rows from three separate runs were found sitting in a live
+# library alongside real photographs. tests/conftest.py sets this for the whole
+# session; production never sets it and behaviour there is unchanged.
+#
+# It is read once, at import, deliberately. Re-reading per call would let a
+# stray os.environ edit mid-run point half a cull at a different database.
+import os as _os_ls
+_DB_DIR    = str(_os_ls.environ.get("FRAMEGRADE_LANCE_DIR")
+                 or Path(__file__).resolve().parent.parent / "cache" / "lance.db")
 # One table PER TIER. Each encoder tier produces a different embedding
 # dimension, and _connect_or_create's dim-change path used to respond by
 # DROPPING the table ("PURGING table, photos will re-encode") — so running a
