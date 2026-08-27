@@ -1,7 +1,9 @@
-import { X, ArrowUp, FolderOpen } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { X, ArrowUp, FolderOpen, HardDrive } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { cn } from '../../lib/cn';
 import { Thumb } from '../photo/Thumb';
+import { API } from '../../lib/api';
 
 /* ── Folder browser modal ───────────────────────────────────────── */
 /* Native-feeling explorer for picking the working folder. Extracted
@@ -23,6 +25,28 @@ export function FolderBrowser({ mode, bPath, setBPath, bFolders, bImages, bSelFo
   onUseFolder: () => void;
   onClose: () => void;
 }) {
+  /* Roots come from the SERVER, which is the side that can actually see the
+   * disk. These used to be five hardcoded literals pointing at one developer's
+   * user profile, so on any other machine every shortcut was a dead link. And
+   * no drive was listed at all — the browser only ever lists a directory you
+   * have already named, so a library on D:/ or E:/ simply could not be reached
+   * without typing the path by hand. /api/places answers both. */
+  const [places, setPlaces] = useState<{ label: string; path: string }[]>([]);
+  const [drives, setDrives] = useState<{ label: string; path: string }[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${API}/api/places`)
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => {
+        if (cancelled || !d) return;
+        setPlaces(d.places ?? []);
+        setDrives(d.drives ?? []);
+      })
+      .catch(() => {/* typing a path still works; this is a convenience */});
+    return () => { cancelled = true; };
+  }, []);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4">
       <div className="flex h-[82vh] w-full max-w-[640px] flex-col overflow-hidden rounded-md border border-line-strong bg-surface shadow-lg">
@@ -63,13 +87,7 @@ export function FolderBrowser({ mode, bPath, setBPath, bFolders, bImages, bSelFo
         <div className="flex flex-1 overflow-hidden">
           <div className="flex w-sidebar shrink-0 flex-col gap-px overflow-y-auto border-r border-line bg-well p-2">
             <p className="t-label mb-1 px-2">Quick access</p>
-            {([
-              { label:'Desktop',   path:'C:\\Users\\Nicky Tuason\\Desktop' },
-              { label:'Pictures',  path:'C:\\Users\\Nicky Tuason\\Pictures' },
-              { label:'Downloads', path:'C:\\Users\\Nicky Tuason\\Downloads' },
-              { label:'Documents', path:'C:\\Users\\Nicky Tuason\\Documents' },
-              { label:'C:\\',      path:'C:\\' },
-            ]).map(loc => (
+            {places.map(loc => (
               <button key={loc.path} onClick={() => { setBPath(loc.path); onNavigate(loc.path); }}
                 className={cn(
                   'truncate rounded-sm border-0 px-2 py-1 text-left text-sm',
@@ -79,6 +97,27 @@ export function FolderBrowser({ mode, bPath, setBPath, bFolders, bImages, bSelFo
                     : 'bg-transparent text-ink-3 hover:bg-raised hover:text-ink-2',
                 )}>
                 {loc.label}
+              </button>
+            ))}
+
+            {/* Drives. Without these a library anywhere but the system drive
+                was unreachable: browse-folder lists a directory you have
+                already named, and nothing ever named D:/ or E:/. */}
+            {drives.length > 0 && (
+              <p className="t-label mb-1 mt-3 px-2">Drives</p>
+            )}
+            {drives.map(d => (
+              <button key={d.path} onClick={() => { setBPath(d.path); onNavigate(d.path); }}
+                title={d.path}
+                className={cn(
+                  'flex items-center gap-2 truncate rounded-sm border-0 px-2 py-1 text-left text-sm',
+                  'cursor-pointer transition-colors duration-fast ease',
+                  bPath === d.path
+                    ? 'bg-raised-hover text-ink'
+                    : 'bg-transparent text-ink-3 hover:bg-raised hover:text-ink-2',
+                )}>
+                <HardDrive size={12} className="shrink-0"/>
+                <span className="truncate">{d.label}</span>
               </button>
             ))}
           </div>

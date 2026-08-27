@@ -1680,14 +1680,27 @@ export default function App() {
     dragCounter.current = 0;
     setDragOver(false);
     const item = e.dataTransfer.items?.[0];
-    const file = e.dataTransfer.files[0]; if (!file) return;
-    const fullPath = (file as any).path as string | undefined;
-    if (!fullPath) return;
+    const file = e.dataTransfer.files?.[0];
+    // `File.path` is an ELECTRON extension. This app runs in pywebview /
+    // WebView2, where a File carries no filesystem path at all — so this was
+    // always undefined and the handler returned here, every single time.
+    // Dropping a folder never did anything, silently, and looked like the app
+    // ignoring the gesture.
+    //
+    // A webview genuinely cannot resolve a dropped folder to a path: the HTML
+    // File API deliberately does not expose one. The honest response is to
+    // open the native picker the drop was trying to shortcut, so the gesture
+    // still gets the user where they were going.
+    const fullPath = (file as any)?.path as string | undefined;
+    if (!fullPath) {
+      openBrowser();
+      return;
+    }
     const entry = item?.webkitGetAsEntry?.();
     const isDir = entry?.isDirectory || fullPath.endsWith('/') || fullPath.endsWith('\\');
     const fp = isDir ? fullPath : fullPath.split(/[\\/]/).slice(0, -1).join('/') || fullPath;
     if (fp) { setFolder(fp); setPhotos([]); setSelId(null); }
-  }, []);
+  }, [openBrowser]);
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault();
