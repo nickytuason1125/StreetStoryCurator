@@ -529,6 +529,30 @@ export function AnalysisPanel({
                         const _panBlur   = _blurType === 'panning';
                         const _isTilted = _hasHorizon && _horizTilt > 3;
 
+                        // Does this frame ACTUALLY have a critical failure?
+                        //
+                        // The Strong branch below used to assert "No critical
+                        // failures pulling it down" unconditionally — it never
+                        // checked. So a frame could be told its composition was
+                        // at portfolio level with nothing dragging it down while
+                        // the panel's own SUBJECT row, four lines further down,
+                        // said "Subject is lost in the scene." The panel
+                        // contradicted itself on screen, in the same glance.
+                        //
+                        // A high overall score does not mean nothing is wrong:
+                        // it means the average is good. The weakest axis is the
+                        // thing that can still be failing underneath it.
+                        const _failures: string[] = [];
+                        if (weakest && _weakPct < 35) _failures.push(`${_weakLabel.toLowerCase()} is failing at ${_weakPct}`);
+                        if (_shakeBlur)               _failures.push('camera shake is softening the frame');
+                        if (_isTilted)                _failures.push(`the horizon is ${_horizTilt.toFixed(0)}° off level`);
+                        if (_hlClip > 0.05)           _failures.push('highlights are clipped');
+                        const _hasCriticalFailure = _failures.length > 0;
+                        // Name what is wrong rather than denying anything is.
+                        const _failureNote = _hasCriticalFailure
+                          ? `Worth knowing before you keep it: ${_failures[0]}.`
+                          : '';
+
                         if (_tier === 'strong') {
                           if (best === 'Narrative' && _bestPct >= 70)
                             return `Decisive moment caught — gesture, light, and composition align in the same frame. That's the hardest thing to do consistently in street photography.`;
@@ -539,8 +563,12 @@ export function AnalysisPanel({
                           if (best === 'Composition' && _isLayered)
                             return `Foreground-background layering creates depth. The compressed perspective pulls the viewer through the frame.`;
                           if (_bestPct >= 75)
-                            return `${_bestLabel} is at portfolio level — that's what defines this frame. No critical failures pulling it down.`;
-                          return `No critical failures, and ${_bestLabel} is doing portfolio-level work. That's the formula for a consistent keeper.`;
+                            return _hasCriticalFailure
+                              ? `${_bestLabel} is at portfolio level — that's what defines this frame. ${_failureNote}`
+                              : `${_bestLabel} is at portfolio level — that's what defines this frame. No critical failures pulling it down.`;
+                          return _hasCriticalFailure
+                            ? `${_bestLabel} is doing portfolio-level work. ${_failureNote}`
+                            : `No critical failures, and ${_bestLabel} is doing portfolio-level work. That's the formula for a consistent keeper.`;
                         }
 
                         if (_tier === 'weak') {
