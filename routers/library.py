@@ -78,6 +78,53 @@ async def serve_photo(path: str = Query(...)):
     return FileResponse(str(p))
 
 
+@router.get("/api/places")
+async def list_places():
+    """Every root the user can start browsing from: drives + their own folders.
+
+    Two bugs made this necessary. Nothing enumerated drives at all, so a
+    library on D:/ or E:/ was unreachable unless you could already type the
+    path — browse-folder only lists a directory you have already named. And
+    the frontend's quick-access shortcuts were hardcoded to one developer's
+    profile (a literal C-drive user path), which is a dead link on every
+    other machine.
+
+    Both answers belong on the server, which is the side that can actually see
+    the filesystem.
+    """
+    import string
+    from pathlib import Path as _P
+
+    drives = []
+    if os.name == "nt":
+        for letter in string.ascii_uppercase:
+            root = f"{letter}:\\"
+            if os.path.exists(root):
+                label = f"{letter}:"
+                try:
+                    import ctypes
+                    buf = ctypes.create_unicode_buffer(261)
+                    if ctypes.windll.kernel32.GetVolumeInformationW(
+                            ctypes.c_wchar_p(root), buf, 261,
+                            None, None, None, None, 0):
+                        if buf.value:
+                            label = f"{buf.value} ({letter}:)"
+                except Exception:
+                    pass          # a label is a nicety; the drive still lists
+                drives.append({"label": label, "path": root})
+    else:
+        drives.append({"label": "/", "path": "/"})
+
+    home = _P.home()
+    places = []
+    for name in ("Desktop", "Pictures", "Downloads", "Documents"):
+        candidate = home / name
+        if candidate.is_dir():
+            places.append({"label": name, "path": str(candidate)})
+
+    return {"places": places, "drives": drives, "home": str(home)}
+
+
 @router.post("/api/browse-folder")
 async def browse_folder(body: dict):
     """Browse one or more folders — immediate, non-recursive scan of each directory.

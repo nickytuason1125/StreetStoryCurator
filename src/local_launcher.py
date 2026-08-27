@@ -420,7 +420,43 @@ def _run_server_only(port: int) -> None:
     _run_server(port)   # blocks in uvicorn.run for the life of the server
 
 
+def _reexec_in_venv_if_needed() -> None:
+    """Re-launch under the venv interpreter when started with the wrong Python.
+
+    The system Python has fastapi and uvicorn but NO torch, so an app started
+    with it comes all the way up — window opens, server binds, /api/config
+    answers 200 — and then every grade dies on `import torch`. The failure is
+    as far as possible from its cause.
+
+    It propagates, too: the backend is spawned with sys.executable, so one
+    wrong launch poisons both processes. A desktop shortcut pointing at
+    `pythonw src\\local_launcher.py` is enough to cause it, and that is exactly
+    how the running instance on this machine was started.
+
+    Frozen builds bundle their own interpreter and are skipped.
+    """
+    if getattr(sys, "frozen", False):
+        return
+    try:
+        import torch  # noqa: F401
+        return                      # whatever we are on can grade; leave it
+    except Exception:
+        pass
+
+    venv_py = _ROOT / "venv" / "Scripts" / ("pythonw.exe" if sys.platform == "win32" else "python")
+    if not venv_py.exists():
+        venv_py = _ROOT / "venv" / "Scripts" / "python.exe"
+    if not venv_py.exists() or Path(sys.executable).resolve() == venv_py.resolve():
+        _log("WARNING: torch is unavailable and no venv interpreter was found. "
+             "Grading will fail. Run scripts/setup_wizard.py or launch.bat.")
+        return
+
+    _log(f"Wrong interpreter ({sys.executable}) — no torch. Re-executing with {venv_py}")
+    os.execv(str(venv_py), [str(venv_py), str(Path(__file__).resolve()), *sys.argv[1:]])
+
+
 def main():
+    _reexec_in_venv_if_needed()
     port = 8000
     url = f"http://127.0.0.1:{port}"
 
