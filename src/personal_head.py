@@ -71,7 +71,13 @@ def _get_head(embed_dim: int = _DEFAULT_EMBED_DIM) -> tuple[PersonalHead, torch.
         _head = PersonalHead(embed_dim=embed_dim)
         if _WEIGHTS_PATH.exists():
             try:
-                saved = torch.load(_WEIGHTS_PATH, map_location="cpu")
+                # weights_only=True: _save() writes a plain state_dict, so there
+                # is nothing here that needs the pickle machinery. Without it a
+                # .pt on disk is an arbitrary-code-execution vector at startup —
+                # the file lives in a user-writable cache dir and this app is
+                # meant to be distributed, so "we wrote it ourselves" is not a
+                # property that survives shipping.
+                saved = torch.load(_WEIGHTS_PATH, map_location="cpu", weights_only=True)
                 # Infer saved embed_dim from first Linear weight shape
                 saved_dim = saved.get("net.0.weight", torch.zeros(1, embed_dim)).shape[1]
                 if saved_dim == embed_dim:

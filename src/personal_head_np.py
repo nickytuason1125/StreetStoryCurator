@@ -59,7 +59,9 @@ def export_mirror() -> bool:
         return False
     try:
         import torch                              # the one and only torch use
-        saved = torch.load(_WEIGHTS_PATH, map_location="cpu")
+        # weights_only=True — see the note at the matching load in
+        # personal_head.py. A state_dict needs no pickle reduction.
+        saved = torch.load(_WEIGHTS_PATH, map_location="cpu", weights_only=True)
         arrays = {k: np.asarray(v.detach().cpu().numpy(), dtype=np.float32)
                   for k, v in saved.items()}
         missing = [k for k in _LAYER_KEYS if k not in arrays]
