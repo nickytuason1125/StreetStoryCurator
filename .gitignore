@@ -78,3 +78,8 @@ models/dpo_adapter/*.db
 # that GitHub warns about on every push. Nobody can use a compiled artifact
 # from someone else's machine, and every "Download ZIP" was dragging it along.
 native/framegrade-rs/target/
+
+# PyInstaller output
+dist/
+build_pyi/
+pyi_build*.log

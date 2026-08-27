@@ -105,16 +105,16 @@ a = Analysis(
         # Imported lazily inside exif_reader, so PyInstaller's static scan
         # never sees it and the packaged build would return no RAW EXIF.
         "exifread",
-        "lightweight_analyzer",
+        # NOTE: lightweight_analyzer, niche_engine, niche_classifier,
+        # reference_bank and fast_io were listed here and do not exist in the
+        # tree at all — deleted modules whose entries were never removed.
+        # PyInstaller logged five ERRORs and carried on, so nothing ever
+        # forced the question. tests/test_packaging_spec.py now checks it.
         "sequence_engine",
-        "niche_engine",
-        "niche_classifier",
         "vlm_niche_detector",
         "editorial_renderer",
         "engine_utils",
-        "reference_bank",
         "model_loader",
-        "fast_io",
 
         # ── FastAPI / ASGI stack ──────────────────────────────────────
         "fastapi", "fastapi.middleware.cors",
