@@ -73,3 +73,8 @@ models/dpo_adapter/*.db
 # Parity backups kept beside a refactor (e.g. server_impl.pre_split.bak).
 # Deliberately kept on disk as a reference; never a tracked artifact.
 *.bak
+
+# Rust build output. 588 files, 395 MB, including two .rlib/.rmeta over 88 MB
+# that GitHub warns about on every push. Nobody can use a compiled artifact
+# from someone else's machine, and every "Download ZIP" was dragging it along.
+native/framegrade-rs/target/
