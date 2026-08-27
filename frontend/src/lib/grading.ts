@@ -14,10 +14,14 @@ export function ramReadiness(gs: any): {
   const percent = gs?.ram_percent ?? null;
   const min     = gs?.ram_min_gb ?? 1.8;
   if (free == null) return { level: 'unknown', free, total, percent, readout: '', tip: 'System memory unknown' };
-  // Compact readout that mirrors Task Manager: % in use + GB available.
-  const readout = percent != null
-    ? `${percent.toFixed(0)}% · ${free.toFixed(1)} GB free`
-    : `${free.toFixed(1)}${total != null ? ` / ${total.toFixed(1)}` : ''} GB`;
+  // Headroom is the only number that changes a decision here, and it is the
+  // only one the grade floor is expressed in, so it is the only one the chip
+  // carries. Printing "% in use" beside it made this the widest element in a
+  // toolbar that already needs 2008px of a 1500px window; the percentage is
+  // still in the tooltip and in the popover, where there is room for context.
+  const readout = percent != null || total != null
+    ? `${free.toFixed(1)} GB free`
+    : `${free.toFixed(1)} GB`;
   const usedTip = percent != null ? ` (${percent.toFixed(0)}% in use — matches Task Manager)` : '';
   // "clear" requires at least 5 GB free: the SigLIP encode subprocess needs
   // ~2 GB RAM during model load plus the grade worker's baseline ~1 GB, leaving

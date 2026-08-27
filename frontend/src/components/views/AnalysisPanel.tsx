@@ -56,14 +56,12 @@ export function AnalysisPanel({
                 <div style={{ flexShrink:0, position:'relative', aspectRatio:'3/2', background:T.ground, overflow:'hidden' }}>
                   <Thumb key={sel.path} path={sel.path} eager
                     style={{ width:'100%', height:'100%', objectFit:'cover', display:'block' }}/>
-                  {isGraded && (
-                    <div style={{ position:'absolute', inset:0, background:`linear-gradient(to top,${T.scrim} 0%,transparent 55%)`, display:'flex', alignItems:'flex-end', padding:'10px 12px' }}>
-                      <div style={{ display:'flex', alignItems:'center', gap:6, background:T.scrim, backdropFilter:'blur(8px)', borderRadius:'var(--r-md)', padding:'6px 12px', border:`1px solid ${gc(sel.grade)}` }}>
-                        <div style={{ width:8, height:8, borderRadius:'var(--r-round)', background:gc(sel.grade), flexShrink:0 }}/>
-                        <span style={{ fontSize:'var(--text-md)', fontWeight:500, color:T.ink }}>{gradeLabel(sel.grade)}</span>
-                      </div>
-                    </div>
-                  )}
+                  {/* No verdict pill here. The score row immediately below
+                      says the same thing with the number attached, and in loupe
+                      mode the photograph is already on the main stage - this
+                      thumb identifies the frame, it is not a second viewer.
+                      The panel was rendering the word "Strong" four times at
+                      once inside a 280px column. */}
                 </div>
               )}
 
@@ -810,12 +808,12 @@ export function AnalysisPanel({
                            * colour is the thin rule — the same rule used in the
                            * contact sheet, so the two views speak one language. */}
                           <div className="flex flex-col gap-2">
-                            <div className="flex items-baseline gap-3">
-                              <span className="t-num text-xl leading-none text-ink">
-                                {formatScore(sel?.score)}
-                              </span>
-                              <span className="t-label">{gradeLabel(sel?.grade)}</span>
-                            </div>
+                            {/* The score hero lives ABOVE the tab strip, so it is
+                                on screen whichever tab is open. Repeating it here
+                                printed the same number and the same word twice in
+                                one 280px column, about 200px apart, every time this
+                                tab was selected. The tab keeps what is its own: the
+                                rule, and the reason underneath it. */}
                             <span aria-hidden className="block w-full"
                                   style={{ height: 'var(--rule)',
                                            background: gradeRule(sel?.grade) ?? T.line }}/>

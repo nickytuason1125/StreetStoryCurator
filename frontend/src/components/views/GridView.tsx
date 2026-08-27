@@ -274,15 +274,12 @@ export function GridView({
                       {gradeLabel(p.grade)}
                     </span>
                   )}
-                  {/* The machine's score — top-right, only when it has one.
-                      Also machine voice, also spring. */}
-                  {!isPending && p.score > 0 && (
-                    <span aria-hidden
-                      className="t-num pointer-events-none absolute right-1 top-1 animate-chip-in rounded-md px-1 py-px text-xs"
-                      style={{ background: T.glass, color: T.ink }}>
-                      {formatScore(p.score)}
-                    </span>
-                  )}
+                  {/* The score is NOT repeated over the frame. It already has
+                      two renderings on this cell: the number in the caption
+                      row, which aligns into a scannable column, and the hover
+                      bar below, which is preattentive. A third copy stamped on
+                      the photograph obscured the picture to say what the strip
+                      underneath already said. */}
                   {/* Hover score bar — the score you can read without reading.
                       A cold fill grows along the bottom edge of the frame,
                       spring-revealed on hover. Length = score, so a row of

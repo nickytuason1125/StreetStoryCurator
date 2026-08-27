@@ -2240,7 +2240,15 @@ export default function App() {
             elevated one step above the sheet rather than a surface strip
             bolted to the window edge. min-w-0 lets the row scroll instead of
             stretching its parent (see note above). */}
-        <div className="glass elev-2 flex h-toolbar min-w-0 items-center gap-2 overflow-x-auto rounded-md border border-line-strong px-2 scrollbar-hide">
+        {/* Wraps rather than scrolls. Measured on a populated library, this row
+            wants 1917px of content; it therefore overflowed at EVERY window
+            width, 1920 included. With overflow-x-auto and a hidden scrollbar
+            that did not read as "scroll me" — it read as the view tabs and
+            Re-grade not existing, because the only affordance was a horizontal
+            drag on an invisible bar. Wrapping spends height, and only when the
+            window is actually too narrow, to keep every control reachable.
+            min-h rather than h so a single-row header is unchanged. */}
+        <div className="glass elev-2 flex min-h-toolbar min-w-0 flex-wrap items-center gap-y-1 gap-x-2 rounded-md border border-line-strong px-2 py-1">
 
         {/* Brand — aperture mark in the grease-pencil colour. The one warm
             pixel in the chrome: it is the product's signature, the same
@@ -2318,15 +2326,17 @@ export default function App() {
           const tip = isGpu
             ? [gpuName, vramStr].filter(Boolean).join(' · ')
             : 'Models running on CPU — no CUDA GPU detected or VRAM too low';
-          // GPU is the expected state, so it is silent. Falling back to CPU is
-          // the case worth flagging: it means a run will be far slower.
+          // GPU is the expected state, so it is silent — and silence includes
+          // the number. Free VRAM does not change what the photographer does
+          // next (the grade floor the app actually enforces is system RAM), so
+          // in the expected case the chip just confirms which device is in use
+          // and leaves the figure to the tooltip. Falling back to CPU is the
+          // case worth flagging: it means a run will be far slower.
           return (
             <Chip
               label={isGpu ? 'GPU' : 'CPU'}
               title={tip}
               tone={isGpu ? 'neutral' : 'warn'}
-              numeric={isGpu}
-              value={isGpu && free != null ? `${free.toFixed(1)} GB` : undefined}
             />
           );
         })()}

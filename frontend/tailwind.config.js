@@ -113,6 +113,7 @@ export default {
       height: { thumb: "var(--h-thumb)", toolbar: "var(--h-toolbar)", rule: "var(--h-rule)", palette: "var(--h-palette)",
                 field: "var(--h-field)", row: "var(--h-row)" },
       minWidth: { kbd: "var(--w-kbd)" },
+      minHeight: { toolbar: "var(--h-toolbar)" },
       maxHeight: { palette: "var(--h-palette)" },
       borderWidth: { DEFAULT: "1px", 0: "0", 2: "2px" },
       opacity: { reject: "var(--dim-reject)" },
