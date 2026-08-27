@@ -55,12 +55,22 @@ except Exception as _pp_err:
 
 # ── Frozen (PyInstaller) path resolution ────────────────────────────────────
 if getattr(sys, 'frozen', False):
-    # Running as PyInstaller onedir bundle — exe lives at curator-api/curator-api.exe
-    # Set CWD to exe dir so relative paths (models/, frontend/dist/, cache/) resolve.
-    _EXE_DIR = Path(sys.executable).parent
-    os.chdir(_EXE_DIR)
-    # Redirect writable cache to user's AppData (Program Files is read-only)
-    _DATA_DIR = Path(os.environ.get('CURATOR_DATA_DIR', str(_EXE_DIR)))
+    # PyInstaller 6.x puts every bundled data file under <exe dir>/_internal,
+    # NOT beside the executable the way 5.x did. sys._MEIPASS points at that
+    # directory, so it is what CWD must be for relative reads of models/,
+    # frontend/dist/ and the shipped calibration anchors to resolve. Pointing
+    # CWD at the exe directory — correct under the old layout, and what this
+    # did — lands one level above all of it, and the app starts up unable to
+    # find its own models.
+    _BUNDLE_DIR = Path(getattr(sys, '_MEIPASS', Path(sys.executable).parent))
+    _EXE_DIR = _BUNDLE_DIR
+    os.chdir(_BUNDLE_DIR)
+    # Writable state stays OUT of the bundle: _internal is reinstalled wholesale
+    # on update and may sit under Program Files, which is read-only.
+    _DATA_DIR = Path(os.environ.get(
+        'CURATOR_DATA_DIR',
+        str(Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'FrameGrade')))
+    _DATA_DIR.mkdir(parents=True, exist_ok=True)
 else:
     _EXE_DIR = Path(__file__).parent
     _DATA_DIR = _EXE_DIR

@@ -43,7 +43,23 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-_ROOT = Path(__file__).resolve().parent.parent
+import sys
+
+
+def _bundle_root() -> Path:
+    """Where models/ lives. From source: the repo root, one above src/.
+
+    Frozen, __file__ points inside the PyInstaller archive, so parent.parent
+    lands above the bundle and every model path built from it misses. PyInstaller
+    6.x unpacks datas to sys._MEIPASS (<exe dir>/_internal), which is the
+    directory the spec's paths are relative to.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+    return Path(__file__).resolve().parent.parent
+
+
+_ROOT = _bundle_root()
 
 TIERS = ("high", "mid", "low")
 
