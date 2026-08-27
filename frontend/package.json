@@ -6,14 +6,15 @@
   "scripts": {
     "dev": "vite",
     "dev:full": "concurrently -n VITE,API -c cyan,yellow \"vite\" \"python ../server.py\"",
-    "build": "npm run lint:tokens && npm run lint:tdz && tsc && vite build",
+    "build": "npm run lint:tokens && npm run lint:tdz && npm run test && tsc && vite build",
     "lint:tokens": "node scripts/lint-tokens.mjs",
     "lint:tdz": "node scripts/check-tdz.mjs",
     "watch": "vite build --watch",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "npm run build && tauri build"
+    "tauri:build": "npm run build && tauri build",
+    "test": "node scripts/run-tests.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.1.0",
