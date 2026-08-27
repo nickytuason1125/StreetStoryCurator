@@ -24,8 +24,40 @@ a = Analysis(
     datas=[
         # Pre-built React frontend
         (str(ROOT / "frontend" / "dist"),  "frontend/dist"),
-        # ML models
-        (str(ROOT / "models"),             "models"),
+        # ML models — enumerated, NOT the whole directory.
+        #
+        # models/ is 22 GB and bundling it whole made the installer 22 GB. What
+        # ships is what a first cull actually loads; the rest is either an
+        # accelerator for hardware not every user has, a fallback for a
+        # checkpoint that already ships, or an opt-in feature. All of it stays
+        # on disk — this list decides what goes in the BUNDLE, nothing is
+        # deleted, and model_registry already treats every one of them as
+        # optional ("None of these is required to grade").
+        #
+        # Deliberately NOT bundled, with the reason each:
+        #   siglip2/        7.1 GB  open_clip fp32 fallback for a checkpoint we
+        #                           already ship, measured 10.3 GB peak - more
+        #                           RAM than the path it backs up. Reachable
+        #                           only via SIGLIP_ENC_USE_OC=1.
+        #   onnx/           3.5 GB  high-tier + GPU only (onnx_enabled() is
+        #                           false on CPU: 6.5-7.6 GB, 11-14 s/img), so
+        #                           every CPU user carries it for nothing.
+        #   *Qwen*.gguf     3.1 GB  Deep Grade is already opt-in.
+        #   LFM2.5-VL*.gguf 698 MB  ditto.
+        #   _quarantine/    702 MB  quarantined artefacts, not a live path.
+        #
+        # 22 GB -> ~6.6 GB. The three encoder tiers all stay, so the RAM
+        # degradation ladder is untouched: a weak machine still has somewhere
+        # to fall back to, which is the one thing that must not become an
+        # optional download.
+        (str(ROOT / "models" / "siglip2_hf_fp16"),   "models/siglip2_hf_fp16"),
+        (str(ROOT / "models" / "siglip2_L_hf_fp16"), "models/siglip2_L_hf_fp16"),
+        (str(ROOT / "models" / "siglip2_B_hf_fp16"), "models/siglip2_B_hf_fp16"),
+        (str(ROOT / "models" / "vision_probe"),      "models/vision_probe"),
+        (str(ROOT / "models" / "dfine_nano"),        "models/dfine_nano"),
+        (str(ROOT / "models" / "dpo_adapter"),       "models/dpo_adapter"),
+        (str(ROOT / "models" / "ViT-B-32.pt"),       "models"),
+        (str(ROOT / "models" / "face_detection_yunet_2023mar.onnx"), "models"),
         # Python source modules (server.py lives at root)
         (str(ROOT / "server.py"),          "."),
         # server.py is a thin launcher: `from server_impl import app`. The app
