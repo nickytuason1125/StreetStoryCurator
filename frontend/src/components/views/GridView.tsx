@@ -238,7 +238,7 @@ export function GridView({
               <button key={p.id} onClick={() => selectMode ? toggleSelect(p.id) : onSelect(p.id)}
                 className={cn(
                   'group relative flex cursor-pointer flex-col border-0 bg-transparent p-0',
-                  'rounded-lg outline outline-2 outline-offset-2',
+                  'rounded-cell outline outline-2 outline-offset-2',
                   // Motion policy: transform only on anything holding a photo.
                   // The lift runs on the spring — a 2026 entrance curve for the
                   // one interaction every cell shares.
@@ -249,7 +249,7 @@ export function GridView({
                   isChecked || isCurrent ? 'outline-[color:var(--focus)]' : 'outline-transparent',
                 )}
                 style={{ contentVisibility: 'auto', containIntrinsicSize: '200px 190px' }}>
-                <span className="relative block overflow-hidden rounded-t-lg bg-well" style={{ aspectRatio: '3/2' }}>
+                <span className="relative block overflow-hidden rounded-t-cell bg-well" style={{ aspectRatio: '3/2' }}>
                   <Thumb path={p.path}
                     className={cn(
                       'block h-full w-full object-contain transition-[opacity,filter] duration-fast ease',

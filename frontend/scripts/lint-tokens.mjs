@@ -52,6 +52,24 @@ const RULES = [
   // exactly how the 15-size / 13-radius sprawl happened.
   { name: 'raw fontSize',     re: /\bfontSize\s*:\s*['"]?\d/g },
   { name: 'raw borderRadius', re: /\bborderRadius\s*:\s*['"]?\d/g },
+
+  // ── Typography literals ───────────────────────────────────────────────────
+  // The guard caught hex and font SIZE but never tracking or leading, so those
+  // two drifted freely while everything around them stayed disciplined: nine
+  // different letter-spacings for what is one thing (an uppercase micro-label,
+  // --track-label) and six different body leadings against one --leading-body.
+  // That is why retuning the tokens did not visibly change the UI — the call
+  // sites had stopped asking. `var(--x)` passes; a digit, dot or minus does not.
+  //
+  // These carry their own ratchet (`typographyLiterals`) rather than joining the
+  // legacy one, because `legacyViolations` was already at 0 and folding a new
+  // category in would have silently surrendered that guarantee. The counter was
+  // seeded at 42, the call sites were migrated in the same pass, and it now sits
+  // at 0 — so a single new literal anywhere in src/ fails the build, which is
+  // the same strictness the other rules get. The separate counter is kept for
+  // its error message: it names the token you should have reached for.
+  { name: 'raw letterSpacing', re: /\bletterSpacing\s*:\s*['"]?[-.\d]/g, typography: true },
+  { name: 'raw lineHeight',    re: /\blineHeight\s*:\s*['"]?[.\d]/g,     typography: true },
   // oklch()/rgb() literals are hex by another name.
   { name: 'raw colour fn', re: /\b(?:oklch|rgba?|hsla?)\s*\(/g },
 
@@ -102,6 +120,8 @@ const files = walk(SRC);
 let strictViolations = [];
 let deadClasses = [];      // always fatal, anywhere — these render as nothing
 let ratchetCount = 0;
+let typographyCount = 0;
+const typographyHits = [];   // rel -> sample, for a report that names files
 const definedKeyframes = new Set();
 const usedKeyframes = new Map();  // name -> first file that uses it
 
@@ -126,6 +146,10 @@ for (const file of files) {
     // the failure is invisible rather than merely untidy.
     if (rule.name.startsWith('stock Tailwind') || rule.name.startsWith('radius outside')) {
       deadClasses.push(`  ${rel}: ${[...new Set(hits)].slice(0, 6).join(', ')}  (${rule.name})`);
+    } else if (rule.typography) {
+      // Own ratchet, regardless of STRICT/legacy — see the note on the rules.
+      typographyCount += hits.length;
+      typographyHits.push(`  ${rel}: ${hits.length}x ${rule.name}`);
     } else if (isStrict) {
       strictViolations.push(`  ${rel}: ${hits.length}x ${rule.name} (${[...new Set(hits)].slice(0, 4).join(', ')})`);
     } else {
@@ -146,9 +170,12 @@ const KEYFRAME_IGNORE = new Set(['none', 'inherit', 'initial', 'unset', 'var']);
 const missingKeyframes = [...usedKeyframes]
   .filter(([name]) => !definedKeyframes.has(name) && !KEYFRAME_IGNORE.has(name));
 
-const prev = existsSync(BASELINE)
-  ? JSON.parse(readFileSync(BASELINE, 'utf8')).legacyViolations
-  : ratchetCount;
+const saved = existsSync(BASELINE) ? JSON.parse(readFileSync(BASELINE, 'utf8')) : {};
+const prev = existsSync(BASELINE) ? saved.legacyViolations : ratchetCount;
+// A key that has never been recorded seeds from the current count; from then on
+// it may only fall. Seeding is why this is `??` and not `|| typographyCount` —
+// a recorded 0 is a real baseline and must not be re-seeded to a higher number.
+const prevTypo = saved.typographyLiterals ?? typographyCount;
 
 const updating = process.argv.includes('--update');
 let failed = false;
@@ -190,18 +217,43 @@ if (ratchetCount > prev) {
   failed = true;
 }
 
+if (typographyCount > prevTypo) {
+  console.error(
+    `\nToken guard FAILED — typography literals went UP: ${prevTypo} -> ${typographyCount}.\n\n` +
+    typographyHits.join('\n') +
+    `\n\nUse --track-label / --track-tight / --track-brand for letterSpacing and\n` +
+    `--leading-body / --leading-display for lineHeight. If a value genuinely has\n` +
+    `no token yet, add one to tokens.css — that is the decision this guard exists\n` +
+    `to force.\n`
+  );
+  failed = true;
+}
+
 if (failed) process.exit(1);
 
 // A missing baseline must be WRITTEN, not quietly tolerated. `prev` falls back
 // to ratchetCount when the file is absent, so without this branch the ratchet
 // compares 401 against 401 forever: it can never fail, and never records the
 // file that would let it fail. The guard's whole second mode was inert.
+const record = () => writeFileSync(BASELINE, JSON.stringify(
+  { legacyViolations: ratchetCount, typographyLiterals: typographyCount }, null, 2) + '\n');
+
+// A newly-added counter has to be written on its first clean run, or it never
+// gets a baseline to ratchet against — the same inert-guard bug the legacy
+// counter had before the `!existsSync` branch below was added.
+const seedingTypo = saved.typographyLiterals === undefined;
+
 if (!existsSync(BASELINE)) {
-  writeFileSync(BASELINE, JSON.stringify({ legacyViolations: ratchetCount }, null, 2) + '\n');
-  console.log(`Token guard OK — baseline recorded at ${ratchetCount} legacy literals.`);
-} else if (ratchetCount < prev || updating) {
-  writeFileSync(BASELINE, JSON.stringify({ legacyViolations: ratchetCount }, null, 2) + '\n');
-  console.log(`Token guard OK — legacy literals ${prev} -> ${ratchetCount}; baseline lowered.`);
+  record();
+  console.log(`Token guard OK — baseline recorded at ${ratchetCount} legacy, ${typographyCount} typography literals.`);
+} else if (ratchetCount < prev || typographyCount < prevTypo || seedingTypo || updating) {
+  record();
+  const parts = [];
+  if (ratchetCount < prev || updating) parts.push(`legacy ${prev} -> ${ratchetCount}`);
+  if (seedingTypo) parts.push(`typography baseline seeded at ${typographyCount}`);
+  else if (typographyCount < prevTypo) parts.push(`typography ${prevTypo} -> ${typographyCount}`);
+  console.log(`Token guard OK — ${parts.join('; ')}.`);
 } else {
-  console.log(`Token guard OK — managed code clean, legacy literals ${ratchetCount} (baseline ${prev}).`);
+  console.log(`Token guard OK — managed code clean, legacy ${ratchetCount} (baseline ${prev}), ` +
+              `typography ${typographyCount} (baseline ${prevTypo}).`);
 }

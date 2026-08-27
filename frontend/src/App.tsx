@@ -22,6 +22,7 @@ import { Segmented } from "./components/ui/Segmented";
 import { AnnotatedMark } from "./components/ui/GradeRule";
 import { Modal } from "./components/ui/Modal";
 import { CommandPalette } from "./components/ui/CommandPalette";
+import { KbdHint } from "./components/ui/Kbd";
 import { Field, TextArea } from "./components/ui/Field";
 import { StarRating } from "./components/ui/StarRating";
 import { ExifPanel } from "./components/ExifPanel";
@@ -373,10 +374,10 @@ function AnalysisHUD({ grade, score, breakdown }: { grade: string; score: number
     <div style={{ position:'absolute', bottom:62, left:20, pointerEvents:'none', zIndex:2 }}>
       {/* Score + grade written directly on the photo */}
       <div style={{ display:'flex', alignItems:'baseline', gap:6, marginBottom:10 }}>
-        <span style={{ fontFamily:_MONO, fontSize:'var(--text-xl)', fontWeight:500, lineHeight:1,
-          color:gradeColor, textShadow:_SH, letterSpacing:'-.01em' }}>{pct}</span>
+        <span style={{ fontFamily:_MONO, fontSize:'var(--text-xl)', fontWeight:500, lineHeight:'var(--leading-none)',
+          color:gradeColor, textShadow:_SH, letterSpacing:'var(--track-tight)' }}>{pct}</span>
         <span style={{ fontFamily:_MONO, fontSize:'var(--text-xs)', color:_INK, textShadow:_SH, opacity:.45 }}>/100</span>
-        <span style={{ fontFamily:_MONO, fontSize:'var(--text-xs)', fontWeight:500, letterSpacing:'.1em',
+        <span style={{ fontFamily:_MONO, fontSize:'var(--text-xs)', fontWeight:500, letterSpacing:'var(--track-label)',
           color:gradeColor, textShadow:_SH, marginLeft:4 }}>{gradeLabel(grade).toUpperCase()}</span>
       </div>
       {/* Aspect scores as pen-ruled tick lines */}
@@ -390,7 +391,7 @@ function AnalysisHUD({ grade, score, breakdown }: { grade: string; score: number
           return (
             <div key={k} style={{ display:'flex', alignItems:'center', gap:8 }}>
               <span style={{ fontFamily:_MONO, fontSize:'var(--text-xs)', color:col, textShadow:_SH,
-                width:82, textAlign:'right', flexShrink:0, opacity:.85, letterSpacing:'.02em' }}>
+                width:82, textAlign:'right', flexShrink:0, opacity:.85, letterSpacing:'var(--track-body)' }}>
                 {k}
               </span>
               <svg width="80" height="9" style={{ flexShrink:0, overflow:'visible' }}>
@@ -1823,7 +1824,7 @@ export default function App() {
         ) : (
           <>
             <div style={{ width:40, height:40, border:`3px solid ${T.raisedHover}`, borderTopColor:T.ink3, borderRadius:'var(--r-round)', animation:'spin .8s linear infinite' }}/>
-            <span style={{ fontSize:'var(--text-sm)', color:T.ink2, letterSpacing:'.05em' }}>Starting FrameGrade…</span>
+            <span style={{ fontSize:'var(--text-sm)', color:T.ink2, letterSpacing:'var(--track-body)' }}>Starting FrameGrade…</span>
           </>
         )}
       </div>
@@ -1991,7 +1992,7 @@ export default function App() {
                 onClick={() => setBannerDismissed(true)}
                 title="Dismiss"
                 style={{ marginLeft:'auto', flexShrink:0, background:'none', border:'none', cursor:'pointer',
-                  color: isOffline ? T.well : T.ink3, fontSize:'var(--text-md)', lineHeight:1, padding:'2px 4px' }}>
+                  color: isOffline ? T.well : T.ink3, fontSize:'var(--text-md)', lineHeight:'var(--leading-none)', padding:'2px 4px' }}>
                 ✕
               </button>
             )}
@@ -2037,7 +2038,7 @@ export default function App() {
                           background:T.ink3, transition:'width .8s cubic-bezier(.2,0,0,1)' }}/>
                       </div>
                     )}
-                    <div style={{ fontSize:'var(--text-xs)', color:T.ink3, lineHeight:1.5, marginTop:2 }}>
+                    <div style={{ fontSize:'var(--text-xs)', color:T.ink3, lineHeight:'var(--leading-body)', marginTop:2 }}>
                       ~6 GB one-time download, runs in the background. You can start grading now — it begins once complete.
                     </div>
                   </div>
@@ -2047,7 +2048,7 @@ export default function App() {
                   <div style={{ width:6, height:6, borderRadius:'var(--r-round)', background:T.ink3, flexShrink:0, marginTop:6 }}/>
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ fontSize:'var(--text-sm)', color:T.ink }}>Vision Engine ready</div>
-                    <div style={{ fontSize:'var(--text-xs)', color:T.ink3, lineHeight:1.5, marginTop:2 }}>Loaded in VRAM — grading starts immediately.</div>
+                    <div style={{ fontSize:'var(--text-xs)', color:T.ink3, lineHeight:'var(--leading-body)', marginTop:2 }}>Loaded in VRAM — grading starts immediately.</div>
                   </div>
                 </div>
               ) : graderStatus?.qwen_loading ? (
@@ -2055,7 +2056,7 @@ export default function App() {
                   <div style={{ width:9, height:9, borderRadius:'var(--r-round)', border:`2px solid ${T.ink3}`, borderTopColor:'transparent', animation:'spin .8s linear infinite', flexShrink:0, marginTop:4 }}/>
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ fontSize:'var(--text-sm)', color:T.ink }}>Loading Vision Engine…</div>
-                    <div style={{ fontSize:'var(--text-xs)', color:T.ink3, lineHeight:1.5, marginTop:2 }}>~30–60 seconds — Start Culling unlocks automatically.</div>
+                    <div style={{ fontSize:'var(--text-xs)', color:T.ink3, lineHeight:'var(--leading-body)', marginTop:2 }}>~30–60 seconds — Start Culling unlocks automatically.</div>
                   </div>
                 </div>
               ) : (
@@ -2063,7 +2064,7 @@ export default function App() {
                   <div style={{ width:6, height:6, borderRadius:'var(--r-round)', background:T.ink3, flexShrink:0, marginTop:6 }}/>
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ fontSize:'var(--text-sm)', color:T.ink }}>Vision Engine ready</div>
-                    <div style={{ fontSize:'var(--text-xs)', color:T.ink3, lineHeight:1.5, marginTop:2 }}>Model cached on disk — first load takes ~30–60 seconds.</div>
+                    <div style={{ fontSize:'var(--text-xs)', color:T.ink3, lineHeight:'var(--leading-body)', marginTop:2 }}>Model cached on disk — first load takes ~30–60 seconds.</div>
                   </div>
                 </div>
               )}
@@ -2083,7 +2084,7 @@ export default function App() {
                 return (
                   <div style={{ display:'flex', gap:10, padding:'10px 0', borderBottom:`1px solid ${T.line}` }}>
                     <div style={{ width:6, height:6, borderRadius:'var(--r-round)', background:row.col, flexShrink:0, marginTop:6 }}/>
-                    <div style={{ flex:1, minWidth:0, fontSize:'var(--text-sm)', lineHeight:1.5,
+                    <div style={{ flex:1, minWidth:0, fontSize:'var(--text-sm)', lineHeight:'var(--leading-body)',
                       color: r.level === 'clear' ? T.ink2 : row.col }}>{row.text}</div>
                   </div>
                 );
@@ -2096,7 +2097,7 @@ export default function App() {
                   <div style={{ width:6, height:6, borderRadius:'var(--r-round)', background:T.ink3, flexShrink:0, marginTop:6 }}/>
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ fontSize:'var(--text-sm)', color:T.ink }}>First cull: one-time engine optimisation</div>
-                    <div style={{ fontSize:'var(--text-xs)', color:T.ink3, lineHeight:1.5, marginTop:2 }}>
+                    <div style={{ fontSize:'var(--text-xs)', color:T.ink3, lineHeight:'var(--leading-body)', marginTop:2 }}>
                       The engine compresses for your GPU on this run — expect a pause of a few minutes around 52%. Saved afterwards, so every later cull skips it.
                     </div>
                   </div>
@@ -2109,14 +2110,14 @@ export default function App() {
                   <div style={{ width:9, height:9, borderRadius:'var(--r-round)', border:`2px solid ${T.ink3}`, borderTopColor:'transparent', animation:'spin .8s linear infinite', flexShrink:0, marginTop:4 }}/>
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ fontSize:'var(--text-sm)', color:T.ink }}>Calibrating pipeline…</div>
-                    <div style={{ fontSize:'var(--text-xs)', color:T.ink3, lineHeight:1.5, marginTop:2 }}>Warming CUDA kernels on your best photos — Start Culling unlocks when done.</div>
+                    <div style={{ fontSize:'var(--text-xs)', color:T.ink3, lineHeight:'var(--leading-body)', marginTop:2 }}>Warming CUDA kernels on your best photos — Start Culling unlocks when done.</div>
                   </div>
                 </div>
               )}
               {graderStatus?.warmup_done && !graderStatus?.warmup_running && (
                 <div style={{ display:'flex', gap:10, padding:'10px 0', borderBottom:`1px solid ${T.line}` }}>
                   <div style={{ width:6, height:6, borderRadius:'var(--r-round)', background:T.ink3, flexShrink:0, marginTop:6 }}/>
-                  <div style={{ flex:1, minWidth:0, fontSize:'var(--text-sm)', color:T.ink3, lineHeight:1.5 }}>
+                  <div style={{ flex:1, minWidth:0, fontSize:'var(--text-sm)', color:T.ink3, lineHeight:'var(--leading-body)' }}>
                     Pipeline calibrated — first cull of this session will be fast.
                   </div>
                 </div>
@@ -2558,7 +2559,7 @@ export default function App() {
                     run to run — showing it explains why speed/results vary. */}
                 {gradeQuality && (
                   <span title={`Analysis quality for this run: ${gradeQuality}`}
-                        style={{ fontStyle:'normal', fontSize:'var(--text-xs)', letterSpacing:.4, textTransform:'uppercase',
+                        style={{ fontStyle:'normal', fontSize:'var(--text-xs)', letterSpacing:'var(--track-label)', textTransform:'uppercase',
                                  color:T.ink2, border:`1px solid ${T.line}`, borderRadius:'var(--r-sm)',
                                  padding:'1px 5px', fontWeight:600 }}>
                     {gradeQuality}
@@ -2731,7 +2732,7 @@ export default function App() {
           <div style={{ flexShrink:0, background:T.surface, borderTop:`1px solid ${T.line}`, display:'flex', flexDirection:'column' }}>
             <div style={{ height:20, flexShrink:0, display:'flex', alignItems:'center', justifyContent:'space-between', padding:'0 12px', borderBottom:`1px solid ${T.line}` }}>
               <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-                <span style={{ fontSize:'var(--text-xs)', color:T.ink3, fontWeight:600, letterSpacing:'.08em', textTransform:'uppercase' }}>Library</span>
+                <span style={{ fontSize:'var(--text-xs)', color:T.ink3, fontWeight:600, letterSpacing:'var(--track-label)', textTransform:'uppercase' }}>Library</span>
                 {/* Tweaks toggle */}
                 <button title="Filmstrip settings" onClick={() => setShowTweaks(v => !v)}
                   style={{ display:'flex', alignItems:'center', justifyContent:'center', width:18, height:16, cursor:'pointer', background:showTweaks ? T.raisedHover : 'transparent', color:showTweaks ? T.ink : T.ink3, border:'none', borderRadius:'var(--r-sm)', transition:'all .25s cubic-bezier(.2,0,0,1)' }}>
@@ -2815,10 +2816,7 @@ export default function App() {
         </span>
         <div className="flex shrink-0 gap-3">
           {[['⌘K','Commands'],['← →','Navigate'],['1–5','Rate'],['0','Clear'],['X','Used'],['G','Grid'],['E','Loupe']].map(([k, a]) => (
-            <span key={k} className="flex items-center gap-1 text-xs text-ink-3">
-              <kbd className="t-num rounded-sm border border-line-strong bg-raised px-1 text-xs text-ink-2">{k}</kbd>
-              {a}
-            </span>
+            <KbdHint key={k} keys={k} label={a}/>
           ))}
         </div>
       </div>
@@ -2827,16 +2825,16 @@ export default function App() {
       {/* ── Command palette (⌘K / Ctrl-K) — the keyboard's complete control
               surface. Self-registering listener; App only supplies actions. ── */}
       <CommandPalette actions={[
-        { id: 'grade',    label: 'Grade folder',     hint: 'run the grader',                 run: () => { void handleGrade(); } },
-        { id: 'loupe',    label: 'Open loupe',       kbd: 'E', hint: 'view current',         run: () => setLoupeMode('loupe') },
-        { id: 'grid',     label: 'Back to grid',     kbd: 'G', hint: 'contact sheet',        run: () => setLoupeMode('grid') },
-        { id: 'open',     label: 'Open folder…',     hint: 'browse',                         run: () => openBrowser() },
-        { id: 'add',      label: 'Add folder…',                                              run: () => openAddFolder() },
-        { id: 'dupes',    label: 'Duplicates view',  hint: 'similar shots',                  run: () => setMainTab('duplicates') },
-        { id: 'gallery',  label: 'Gallery view',                                             run: () => setMainTab('gallery') },
-        { id: 'creative', label: 'Creative Director', hint: 'sequence builder',              run: () => setMainTab('creative') },
-        { id: 'export',   label: 'Export sequence…', hint: `${carousel.length} in sequence`, run: () => setExportModal(true) },
-        { id: 'clear',    label: 'Clear used marks',                                         run: () => handleClearUsed() },
+        { id: 'grade',    label: 'Grade folder',     group: 'Grade', hint: 'run the grader',                 run: () => { void handleGrade(); } },
+        { id: 'loupe',    label: 'Open loupe',       group: 'View',  kbd: 'E', hint: 'view current',         run: () => setLoupeMode('loupe') },
+        { id: 'grid',     label: 'Back to grid',     group: 'View',  kbd: 'G', hint: 'contact sheet',        run: () => setLoupeMode('grid') },
+        { id: 'gallery',  label: 'Gallery view',     group: 'View',                                          run: () => setMainTab('gallery') },
+        { id: 'dupes',    label: 'Duplicates view',  group: 'View',  hint: 'similar shots',                  run: () => setMainTab('duplicates') },
+        { id: 'creative', label: 'Creative Director', group: 'View', hint: 'sequence builder',               run: () => setMainTab('creative') },
+        { id: 'open',     label: 'Open folder…',     group: 'Library', hint: 'browse',                       run: () => openBrowser() },
+        { id: 'add',      label: 'Add folder…',      group: 'Library',                                       run: () => openAddFolder() },
+        { id: 'clear',    label: 'Clear used marks', group: 'Library',                                       run: () => handleClearUsed() },
+        { id: 'export',   label: 'Export sequence…', group: 'Export', hint: `${carousel.length} in sequence`, run: () => setExportModal(true) },
       ]}/>
 
       {showBrowser && (

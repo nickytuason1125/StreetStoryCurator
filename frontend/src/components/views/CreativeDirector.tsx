@@ -326,7 +326,7 @@ export function CreativeDirector({
                           <div key={i} style={{borderRadius:'var(--r-md)', overflow:'hidden', border:`1px solid ${T.line}`, background:T.surface, display:'flex', flexDirection:'column', boxShadow:`0 2px 12px ${T.well}`}}>
                             {/* Slot header */}
                             <div style={{padding:'8px 12px', background:T.raised, borderBottom:`2px solid ${sc}`, display:'flex', alignItems:'center', gap:8}}>
-                              <span style={{fontSize:'var(--text-xs)', fontWeight:600, letterSpacing:'.12em', color:sc, textTransform:'uppercase', flex:1}}>{slot}</span>
+                              <span style={{fontSize:'var(--text-xs)', fontWeight:600, letterSpacing:'var(--track-label)', color:sc, textTransform:'uppercase', flex:1}}>{slot}</span>
                               <span style={{fontSize:'var(--text-xs)', color:T.ink3, fontWeight:600, background:T.raisedHover, borderRadius:'var(--r-sm)', padding:'1px 6px'}}>
                                 {i+1}/{successResults.length}
                               </span>
@@ -365,7 +365,7 @@ export function CreativeDirector({
                   <Wand2 size={26} strokeWidth={1} style={{opacity:.25}}/>
                   <div style={{textAlign:'center', maxWidth:340}}>
                     <p className="t-label" style={{margin:'0 0 8px'}}>No sequence yet</p>
-                    <p style={{fontSize:'var(--text-sm)', lineHeight:1.7, margin:0, color:T.ink3}}>
+                    <p style={{fontSize:'var(--text-sm)', lineHeight:'var(--leading-prose)', margin:0, color:T.ink3}}>
                       Write a mood brief on the left, optionally pick a reference photo, then press Build the story.
                     </p>
                     {photos.length===0 && (

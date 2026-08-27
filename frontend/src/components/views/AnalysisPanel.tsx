@@ -235,7 +235,7 @@ export function AnalysisPanel({
                           title={isAuditModeActive ? 'Hide annotation overlay' : 'Show critique overlay and narrative analysis'}
                           style={{ display:'flex', alignItems:'center', gap:7, padding:'7px 13px',
                             borderRadius:'var(--r-md)', alignSelf:'flex-start', cursor:'pointer',
-                            fontWeight:600, fontSize:'var(--text-xs)', letterSpacing:'.03em',
+                            fontWeight:600, fontSize:'var(--text-xs)', letterSpacing:'var(--track-body)',
                             border:`1px solid ${isAuditModeActive ? T.lineStrong : T.line}`,
                             background: isAuditModeActive ? T.raisedHover : T.raised,
                             color: isAuditModeActive ? T.ink : T.ink2,
@@ -256,19 +256,19 @@ export function AnalysisPanel({
                         {sel.is_verified && (
                           <div style={{ display:'inline-flex', alignItems:'center', gap:5, padding:'4px 10px', borderRadius:'var(--r-sm)', background:T.raised, border:`1px solid ${T.gradeStrong}`, alignSelf:'flex-start' }}>
                             <div style={{ width:6, height:6, borderRadius:'var(--r-round)', background:T.gradeStrong }}/>
-                            <span style={{ fontSize:'var(--text-xs)', fontWeight:700, letterSpacing:'.08em', color:T.gradeStrong }}>VERIFIED</span>
+                            <span style={{ fontSize:'var(--text-xs)', fontWeight:700, letterSpacing:'var(--track-label)', color:T.gradeStrong }}>VERIFIED</span>
                           </div>
                         )}
                         {/* Tier label */}
                         {tierWord && (
                           <div style={{ display:'flex', alignItems:'center', gap:8 }}>
                             <div style={{ width:10, height:10, borderRadius:'var(--r-round)', background:gradeCol, flexShrink:0 }}/>
-                            <span style={{ fontSize:'var(--text-sm)', fontWeight:600, letterSpacing:'.08em', color:gradeCol }}>{tierWord.toUpperCase()}</span>
+                            <span style={{ fontSize:'var(--text-sm)', fontWeight:600, letterSpacing:'var(--track-label)', color:gradeCol }}>{tierWord.toUpperCase()}</span>
                           </div>
                         )}
                         {/* Verdict */}
                         {verdict && (
-                          <p style={{ fontSize:'var(--text-sm)', color:T.ink2, lineHeight:1.7, margin:0, fontStyle:'italic' }}>{verdict}</p>
+                          <p style={{ fontSize:'var(--text-sm)', color:T.ink2, lineHeight:'var(--leading-prose)', margin:0, fontStyle:'italic' }}>{verdict}</p>
                         )}
                         {/* Per-aspect observations */}
                         {obsLines.length > 0 && (
@@ -295,10 +295,10 @@ export function AnalysisPanel({
                                     alignItems:'center', marginBottom: v !== null ? 5 : 0 }}>
                                     {label && (
                                       <span style={{ fontSize:'var(--text-xs)', fontWeight:500,
-                                        letterSpacing:'.08em', color:bc }}>{label.toUpperCase()}</span>
+                                        letterSpacing:'var(--track-label)', color:bc }}>{label.toUpperCase()}</span>
                                     )}
                                     {vpct !== null && (
-                                      <span style={{ fontSize:'var(--text-xs)', fontWeight:600, letterSpacing:'.05em', textTransform:'uppercase',
+                                      <span style={{ fontSize:'var(--text-xs)', fontWeight:600, letterSpacing:'var(--track-label)', textTransform:'uppercase',
                                         color:bc }}>{vpct >= 60 ? 'Strong' : vpct >= 41 ? 'Mid' : 'Weak'}</span>
                                     )}
                                   </div>
@@ -310,7 +310,7 @@ export function AnalysisPanel({
                                         transition:'width .5s cubic-bezier(.2,0,0,1)' }}/>
                                     </div>
                                   )}
-                                  <p style={{ fontSize:'var(--text-xs)', color:T.ink2, margin:0, lineHeight:1.6 }}>{note}</p>
+                                  <p style={{ fontSize:'var(--text-sm)', color:T.ink2, margin:0, lineHeight:'var(--leading-prose)' }}>{note}</p>
                                 </div>
                               );
                             })}
@@ -318,7 +318,7 @@ export function AnalysisPanel({
                         )}
                         {/* Best / Weakest */}
                         {footer && (
-                          <p style={{ fontSize:'var(--text-xs)', color:T.ink3, margin:0, letterSpacing:'.02em' }}>{footer.trim()}</p>
+                          <p style={{ fontSize:'var(--text-xs)', color:T.ink3, margin:0, letterSpacing:'var(--track-body)' }}>{footer.trim()}</p>
                         )}
                         {/* Vision Critique — fast-scan bboxes + on-demand deep text */}
                         {(() => {
@@ -341,18 +341,18 @@ export function AnalysisPanel({
                               </div>
                               {_dnarr && (
                                 <div style={{ animation:'fadeIn .4s cubic-bezier(.2,0,0,1)' }}>
-                                  <span style={{ fontSize:'var(--text-xs)', fontWeight:500, letterSpacing:'.08em', color:T.ink3 }}>NARRATIVE</span>
-                                  <p style={{ fontSize:'var(--text-xs)', color:T.ink2, lineHeight:1.65, margin:'4px 0 0' }}>{_dnarr}</p>
+                                  <span style={{ fontSize:'var(--text-xs)', fontWeight:500, letterSpacing:'var(--track-label)', color:T.ink3 }}>NARRATIVE</span>
+                                  <p style={{ fontSize:'var(--text-sm)', color:T.ink2, lineHeight:'var(--leading-prose)', margin:'4px 0 0' }}>{_dnarr}</p>
                                 </div>
                               )}
                               {_dgeo && (
                                 <div style={{ animation:'fadeIn .4s cubic-bezier(.2,0,0,1)' }}>
-                                  <span style={{ fontSize:'var(--text-xs)', fontWeight:500, letterSpacing:'.08em', color:T.ink3 }}>GEOMETRY</span>
-                                  <p style={{ fontSize:'var(--text-xs)', color:T.ink2, lineHeight:1.65, margin:'4px 0 0' }}>{_dgeo}</p>
+                                  <span style={{ fontSize:'var(--text-xs)', fontWeight:500, letterSpacing:'var(--track-label)', color:T.ink3 }}>GEOMETRY</span>
+                                  <p style={{ fontSize:'var(--text-sm)', color:T.ink2, lineHeight:'var(--leading-prose)', margin:'4px 0 0' }}>{_dgeo}</p>
                                 </div>
                               )}
                               {_qwenCritique && !_hasDeep && (
-                                <p style={{ fontSize:'var(--text-sm)', color:T.ink2, lineHeight:1.7, margin:0,
+                                <p style={{ fontSize:'var(--text-sm)', color:T.ink2, lineHeight:'var(--leading-prose)', margin:0,
                                   fontStyle:'italic', padding:'8px 10px', background:T.raised,
                                   borderRadius:'var(--r-md)', border:`1px solid ${T.line}` }}>
                                   {_qwenCritique}
@@ -360,7 +360,7 @@ export function AnalysisPanel({
                               )}
                               {_vbboxes.length > 0 && (
                                 <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
-                                  <span style={{ fontSize:'var(--text-xs)', fontWeight:500, letterSpacing:'.08em', color:T.ink3 }}>SPATIAL ANCHORS</span>
+                                  <span style={{ fontSize:'var(--text-xs)', fontWeight:500, letterSpacing:'var(--track-label)', color:T.ink3 }}>SPATIAL ANCHORS</span>
                                   {_vbboxes.map((b, bi) => {
                                     const guide  = regionGuide(b.label);
                                     const dotCol = tierColor(guide.tier);
@@ -372,10 +372,10 @@ export function AnalysisPanel({
                                         <div style={{ width:6, height:6, borderRadius:'var(--r-round)',
                                           background:dotCol, flexShrink:0, marginTop:4 }}/>
                                         <div style={{ flex:1, minWidth:0 }}>
-                                          <span style={{ fontSize:'var(--text-xs)', fontWeight:500, letterSpacing:'.06em',
+                                          <span style={{ fontSize:'var(--text-xs)', fontWeight:500, letterSpacing:'var(--track-label)',
                                             color:dotCol }}>{`${tierIcon(guide.tier)} ${guide.title}`.toUpperCase()}</span>
                                           {coach && (
-                                            <p style={{ fontSize:'var(--text-xs)', color:T.ink2, lineHeight:1.6, margin:'2px 0 0' }}>
+                                            <p style={{ fontSize:'var(--text-sm)', color:T.ink2, lineHeight:'var(--leading-prose)', margin:'2px 0 0' }}>
                                               {coach}
                                             </p>
                                           )}
@@ -390,13 +390,13 @@ export function AnalysisPanel({
                         })()}
                         {/* Jury critique fallback */}
                         {!rl && juryCritique && (
-                          <div style={{ fontSize:'var(--text-sm)', color:T.ink2, lineHeight:1.75 }}>
+                          <div style={{ fontSize:'var(--text-sm)', color:T.ink2, lineHeight:'var(--leading-prose)' }}>
                             {parseCritique(juryCritique, setCritTrigger, () => setCritTrigger(''))}
                           </div>
                         )}
                         {!rl && !juryCritique && (
                           <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-                            <p style={{ fontSize:'var(--text-sm)', color:T.ink3, lineHeight:1.7 }}>No grader analysis. Generate a jury critique:</p>
+                            <p style={{ fontSize:'var(--text-sm)', color:T.ink3, lineHeight:'var(--leading-prose)' }}>No grader analysis. Generate a jury critique:</p>
                             <button
                               onClick={() => sel && handleJuryCritique(sel.path)}
                               disabled={juryLoading}
@@ -410,7 +410,7 @@ export function AnalysisPanel({
                       </div>
                     );
                   })() : (
-                    <p style={{ fontSize:'var(--text-sm)', color:T.ink3, lineHeight:1.7 }}>Grade your folder to see analysis.</p>
+                    <p style={{ fontSize:'var(--text-sm)', color:T.ink3, lineHeight:'var(--leading-prose)' }}>Grade your folder to see analysis.</p>
                   )
                 )}
                 {infoTab === 'breakdown' && (
@@ -794,7 +794,7 @@ export function AnalysisPanel({
                                   </span>
                                 )}
                               </div>
-                              <p className="text-xs text-ink-2">
+                              <p className="text-sm text-ink-2">
                                 {_isPrimary
                                   ? 'Highest-scoring frame in this burst. The others scored lower overall.'
                                   : `${_altName || 'Another frame'} scored higher and is the primary pick. Compare before rejecting.`}
@@ -835,7 +835,7 @@ export function AnalysisPanel({
                           {_checks.length > 0 && (
                             <div>
                               <div style={{ display:'flex', alignItems:'baseline', gap:8, marginBottom:8 }}>
-                                <span style={{ fontSize:'var(--text-xs)', fontWeight:500, letterSpacing:'.09em',
+                                <span style={{ fontSize:'var(--text-xs)', fontWeight:500, letterSpacing:'var(--track-label)',
                                   textTransform:'uppercase', color:T.ink3 }}>Judge's Eye</span>
                                 <span style={{ fontSize:'var(--text-xs)', color:T.ink3, opacity:.6 }}>— what's working and what to fix</span>
                               </div>
@@ -855,19 +855,19 @@ export function AnalysisPanel({
                                       <div style={{ display:'flex', alignItems:'center', gap:10 }}>
                                         <div style={{ width:6, height:6, borderRadius:'var(--r-round)',
                                           background:col, flexShrink:0 }}/>
-                                        <span style={{ fontSize:'var(--text-xs)', fontWeight:500, letterSpacing:'.07em',
+                                        <span style={{ fontSize:'var(--text-xs)', fontWeight:500, letterSpacing:'var(--track-label)',
                                           color:T.ink3, minWidth:62, textTransform:'uppercase' }}>{label}</span>
                                         <span style={{ fontSize:'var(--text-xs)', fontWeight:600, color:col }}>{value}</span>
                                         {isLimit && (
                                           <span style={{ marginLeft:'auto', fontSize:'var(--text-xs)', fontWeight:600,
-                                            letterSpacing:'.08em', color: _tier === 'weak' ? T.gradeWeak : T.ink2,
+                                            letterSpacing:'var(--track-label)', color: _tier === 'weak' ? T.gradeWeak : T.ink2,
                                             textTransform:'uppercase' }}>
                                             {_tier === 'weak' ? '↑ WHAT FAILED' : '↑ WHAT TO FIX'}
                                           </span>
                                         )}
                                       </div>
                                       {showNote && (
-                                        <p style={{ fontSize:'var(--text-xs)', color:T.ink3, lineHeight:1.55,
+                                        <p style={{ fontSize:'var(--text-sm)', color:T.ink2, lineHeight:'var(--leading-prose)',
                                           margin:'5px 0 0 16px', fontStyle:'italic' }}>
                                           {note}
                                         </p>
@@ -888,7 +888,7 @@ export function AnalysisPanel({
                             <div className="flex flex-col gap-2">
                               <div>
                                 <p className="t-label">Visual language</p>
-                                <p className="mt-px text-xs text-ink-3">
+                                <p className="mt-px text-sm text-ink-3">
                                   The photographic tradition this frame is working in.
                                 </p>
                               </div>
@@ -919,7 +919,7 @@ export function AnalysisPanel({
                   ) : (
                     <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:8, padding:'20px 0' }}>
                       <Layers size={24} strokeWidth={1} style={{ color:T.ink3 }}/>
-                      <p style={{ fontSize:'var(--text-sm)', color:T.ink3, textAlign:'center', lineHeight:1.6 }}>Grade your folder to see breakdown.</p>
+                      <p style={{ fontSize:'var(--text-sm)', color:T.ink3, textAlign:'center', lineHeight:'var(--leading-prose)' }}>Grade your folder to see breakdown.</p>
                     </div>
                   )
                 )}

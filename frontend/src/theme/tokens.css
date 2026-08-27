@@ -25,17 +25,19 @@
 
 :root {
   /* ── Ground: dead neutral. Any hue here contaminates the read of a photo. ──
-   * 2026 premium pass: the ramp was re-stepped so distance reads at a glance —
-   * a deeper well and ground push photographs forward, panels sit clearly
-   * above them, and the hover step (+11 luminance) is unmistakable under the
-   * cursor. Still strictly R=G=B. */
+   * Cockpit pass: the ramp is re-stepped for SEPARATION rather than softness.
+   * Ground drops to near-black so every panel above it reads as a distinct
+   * plane, and --line comes back up to a hairline you can actually see. The
+   * previous pass softened both, which is the correct move for chrome that
+   * floats over artwork and the wrong one for a dense keyboard tool: here the
+   * edges ARE the information architecture. Still strictly R=G=B. */
   --well:         #080808;  /* loupe stage, image backdrop                     */
-  --ground:       #141414;  /* app background, gallery field                   */
-  --surface:      #1d1d1d;  /* panels, header, filmstrip rail, modals          */
-  --raised:       #282828;  /* controls, inputs, chips                         */
-  --raised-hover: #333333;  /* THE hover token: +11 luminance, no hue          */
+  --ground:       #0d0d0d;  /* app background, gallery field                   */
+  --surface:      #161616;  /* panels, header, filmstrip rail, modals          */
+  --raised:       #202020;  /* controls, inputs, chips                         */
+  --raised-hover: #2a2a2a;  /* THE hover token: +11 luminance, no hue          */
   --line:         #262626;  /* hairline dividers                               */
-  --line-strong:  #3f3f3f;  /* panel edges, active control borders             */
+  --line-strong:  #3d3d3d;  /* panel edges, active control borders             */
 
   /* Chrome that floats ABOVE the artwork (filmstrip scrubber, loupe chrome,
    * floating toolbars). Translucent + blurred so the photograph stays present
@@ -61,15 +63,21 @@
    * Hue untouched. ── */
   --ink:   #f5f5f5;  /* 16.4:1                                                */
   --ink-2: #b4b4b4;  /*  8.1:1 — AA body text, comfortably                     */
-  --ink-3: #7a7a7a;  /*  4.1:1 — labels and large text; lifted for the deeper
-                        surfaces so eyebrows don't sink into the chrome       */
+  --ink-3: #8f8f8f;  /*  5.7:1 — lifted from #7a7a7a (4.3:1). This token
+                        renders 65 elements, most of them at --text-xs; at the
+                        old value that much of the UI read as disabled text.  */
   --ink-4: #4d4d4d;  /*  non-text only (hairlines, disabled glyphs)            */
 
   /* ── Machine judgement: cold, or silent. Never warm — the machine did not
    * pick up a pencil. Mid is deliberately absent: silence is the correct
    * rendering of "no opinion", and Mid is the majority bucket, so the grid
    * stays quiet. Weak leans on --dim-reject so rejects physically sink. ── */
-  --grade-strong:  #48b89c;  /* teal: instrument reading, not a success toast  */
+  --grade-strong:  #22d3ee;  /* the machine voice — the SAME cyan as --ai.
+                                Was #48b89c teal, which sat ~30° away from the
+                                AI accent: two adjacent colds, both of them the
+                                machine talking, read as a mistake rather than
+                                a distinction. One hue now covers every verdict.
+                                Revert this single line to restore the teal.   */
   --grade-weak:    #575757;  /* dim neutral rule                               */
   --grade-pending: #333333;  /* hatch in the score slot — distinct from Mid    */
   --dim-reject:    0.55;     /* image opacity for Weak cells                   */
@@ -102,19 +110,34 @@
   --font-display: 'Space Grotesk Variable', 'Space Grotesk', 'Geist Variable', 'Geist', system-ui, sans-serif;
   --font-mono: 'Geist Mono Variable', 'Geist Mono', ui-monospace, monospace;
 
-  --text-xs: 11px;  /* frame numbers, EXIF keys, eyebrows                      */
-  --text-sm: 13px;  /* THE workhorse — body, labels, most UI                   */
-  --text-md: 16px;  /* panel headings, verdict text                            */
-  --text-lg: 20px;  /* section titles                                          */
+  --text-xs: 12px;  /* frame numbers, EXIF keys, eyebrows                      */
+  --text-sm: 14px;  /* THE workhorse — body, labels, most UI                   */
+  --text-md: 17px;  /* panel headings, verdict text                            */
+  --text-lg: 24px;  /* section titles                                          */
   --text-xl: 30px;  /* the score, in the loupe. Only there.                    */
 
-  --leading-body:    1.35;
+  /* ── Leading. Three, because the UI has three kinds of line. ──────────────
+   * The call sites had drifted to six hand-typed values (1.5 eight times, 1.7
+   * five, plus 1.55 / 1.6 / 1.65 / 1.75) against a single --leading-body, which
+   * is how you end up retuning a token and seeing nothing change. The split is
+   * by JOB, not by taste: a number that occupies one line, a label or control
+   * that wraps to two, and a paragraph you actually read are three different
+   * typographic problems and only the last one wants generous leading. */
+  --leading-none:    1;     /* single-line: the score, glyph buttons          */
+  --leading-body:    1.45;  /* UI text: labels, rows, helper lines            */
+  --leading-prose:   1.6;   /* paragraphs you read: critique, narrative, notes */
   --leading-display: 1.1;
 
   /* ── Geometry. A cell stays square — a contact sheet has square corners.
    * Controls and dialogs carry the modern radii: 3px reads machined rather
    * than default-browser, 8px gives dialogs and pills their soft edge. ── */
-  --r-sm: 3px;  /* default: cells, inputs, buttons                             */
+  --r-sm: 5px;  /* default: inputs, buttons, chips                             */
+
+  /* The contact-sheet cell, and ONLY that. Split out from --r-sm because the
+   * two want opposite things: controls read modern at 6px, while a contact
+   * sheet has square corners — which this file already claimed, while GridView
+   * quietly rendered cells at --r-lg (12px). Naming it settles the argument. */
+  --r-cell: 2px;
   --r-md: 8px;  /* modals, pills                                              */
   --r-lg: 12px; /* cards, floating glass chrome                               */
   --r-xl: 16px; /* hero surfaces                                              */
@@ -142,7 +165,18 @@
   --h-thumb: 64px;     /* browser image preview row                   */
   --h-toolbar: 36px;   /* floating header pill — one step above h-8 chrome */
   --h-rule: 2px;       /* machine verdict rule / hover score bar       */
-  --h-palette: 256px;  /* command palette list viewport                */
+  --h-palette: 384px;  /* command palette list viewport                */
+
+  /* ── The command surface. ──────────────────────────────────────────────────
+   * The palette stopped being a convenience and became the primary control
+   * surface, so it is sized like one: a 560px sheet, not a 288px dropdown
+   * borrowed from the side panel's width. Rows and the query field get named
+   * heights because a keyboard-first list has to hold a steady rhythm while
+   * results filter underneath the cursor. */
+  --w-palette: 560px;  /* the command sheet itself                     */
+  --h-field: 48px;     /* the query field — a real input, not a chip   */
+  --h-row: 36px;       /* one command row                              */
+  --w-kbd: 18px;       /* minimum key-cap width, so "G" and "esc" align*/
 
   /* ── Machine voice: the one cold accent. ──
    * 2026 identity pass. The neutral-chrome rule stands — the photograph is
@@ -172,6 +206,10 @@
   --track-tight: -0.02em; /* large text only — optical correction, not style  */
   --track-brand: -.01em;  /* wordmark only — Space Grotesk 650 runs loose small */
   --track-label: .1em;    /* uppercase micro-labels                            */
+  /* Sentence-case small text — mono aspect keys, status lines, footers. A hair
+   * of tracking keeps 12px mono legible without the shout of a label. This was
+   * .02em and .03em and .05em at three different call sites, all meaning this. */
+  --track-body: .02em;
 
   /* ── Elevation: layered, hueless, soft. Three steps because depth needs
    *   at least three readable distances (chrome / popover / dialog). Pure

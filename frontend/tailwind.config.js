@@ -67,6 +67,8 @@ export default {
 
     borderRadius: {
       none: "0",
+      // The contact-sheet cell only — see the --r-cell note in tokens.css.
+      cell: "var(--r-cell)",
       sm: "var(--r-sm)",
       md: "var(--r-md)",
       lg: "var(--r-lg)",
@@ -93,8 +95,11 @@ export default {
     extend: {
       // Structural dimensions, named. Keeps w-72 / h-16 magic numbers out of
       // the markup now that the numeric spacing scale is deliberately sparse.
-      width:  { panel: "var(--w-panel)", sidebar: "var(--w-sidebar)", stage: "var(--w-stage)" },
-      height: { thumb: "var(--h-thumb)", toolbar: "var(--h-toolbar)", rule: "var(--h-rule)", palette: "var(--h-palette)" },
+      width:  { panel: "var(--w-panel)", sidebar: "var(--w-sidebar)", stage: "var(--w-stage)",
+                palette: "var(--w-palette)", kbd: "var(--w-kbd)" },
+      height: { thumb: "var(--h-thumb)", toolbar: "var(--h-toolbar)", rule: "var(--h-rule)", palette: "var(--h-palette)",
+                field: "var(--h-field)", row: "var(--h-row)" },
+      minWidth: { kbd: "var(--w-kbd)" },
       maxHeight: { palette: "var(--h-palette)" },
       borderWidth: { DEFAULT: "1px", 0: "0", 2: "2px" },
       opacity: { reject: "var(--dim-reject)" },
