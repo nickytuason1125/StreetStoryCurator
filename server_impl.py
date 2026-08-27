@@ -75,6 +75,15 @@ else:
     _EXE_DIR = Path(__file__).parent
     _DATA_DIR = _EXE_DIR
 
+# The catalog's location — shared state, so it lives with the rest of it.
+#
+# It was defined ONLY in routers/misc.py while routers/grading.py referenced it
+# five times. grading.py's module __getattr__ falls back to server_impl, which
+# did not have it either, so every reference raised NameError at runtime. The
+# route registers, imports succeed, and the failure appears only when someone
+# actually grades — which is why the split's parity checks never saw it.
+_CATALOG_PATH = _DATA_DIR / "cache" / "catalog.json"
+
 # ---------------------------------------------------------------------------
 # Path-safety helpers
 # ---------------------------------------------------------------------------

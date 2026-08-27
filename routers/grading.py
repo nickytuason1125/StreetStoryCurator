@@ -18,7 +18,7 @@ from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, field_validator, validator, model_validator
 
 from server_impl import (  # shared state & helpers
-    Path, _BG_EXECUTOR, _DATA_DIR, _GRADE_MIN_RAM_GB, _grading_active, _release_annotation_model, _trim_crash_log, analyzer, annotation_queue, asyncio, gpu_lock, os, sys,
+    Path, _BG_EXECUTOR, _CATALOG_PATH, _DATA_DIR, _GRADE_MIN_RAM_GB, _grading_active, _release_annotation_model, _trim_crash_log, analyzer, annotation_queue, asyncio, gpu_lock, os, sys,
 )
 import json
 

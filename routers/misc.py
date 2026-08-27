@@ -103,7 +103,7 @@ async def save_sequence(payload: dict):
     return {"success": True, "message": f"Sequence '{name}' saved"}
 
 
-_CATALOG_PATH = _DATA_DIR / "cache" / "catalog.json"
+from server_impl import _CATALOG_PATH  # one definition, shared
 
 _NO_CACHE_HEADERS = {
     "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
