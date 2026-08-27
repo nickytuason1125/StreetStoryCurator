@@ -134,7 +134,7 @@ export function WelcomeStage({ catalogBanner, onOpenFolder, onResume, onStartFre
                         </Button>
                       </>
                     ) : (
-                      <span className="text-xs text-ink-3">
+                      <span className="text-sm text-ink-3">
                         50 to 100 photos is a good first run
                       </span>
                     )}

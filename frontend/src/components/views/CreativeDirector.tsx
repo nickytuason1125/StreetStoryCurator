@@ -72,7 +72,7 @@ export function CreativeDirector({
                   <Wand2 size={14} className="text-ink-3"/>
                   <span className="t-label">Creative director</span>
                 </div>
-                <p className="text-xs text-ink-3">
+                <p className="text-sm text-ink-3">
                   Builds a story arc from five visually distinct frames.
                 </p>
               </div>
@@ -167,7 +167,7 @@ export function CreativeDirector({
                     Reference Photo{' '}
                     <span className="text-xs font-normal normal-case tracking-normal text-ink-3">optional</span>
                   </label>
-                  <p className="mb-3 text-xs text-ink-3">Sets the visual style anchor for the sequence.</p>
+                  <p className="mb-3 text-sm text-ink-3">Sets the visual style anchor for the sequence.</p>
                   {creativeAnchor ? (
                     <div style={{ position:'relative', borderRadius:'var(--r-md)', overflow:'hidden', border:`2px solid ${T.mark}`, cursor:'pointer', boxShadow:`0 0 0 3px ${T.markDim}` }}
                       onClick={()=>setCreativeAnchor(null)} title="Click to remove">
@@ -190,7 +190,7 @@ export function CreativeDirector({
                   catalog). Now only the visible rows exist. */}
               {sortedPhotos.length > 0 && (
                 <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
-                  <p className="mb-2 text-xs text-ink-3">{sortedPhotos.length} photos · sorted by grade · click to anchor</p>
+                  <p className="mb-2 text-sm text-ink-3">{sortedPhotos.length} photos · sorted by grade · click to anchor</p>
                   <AnchorPicker photos={sortedPhotos} anchorPath={creativeAnchor} onPick={setCreativeAnchor}/>
                 </div>
               )}
@@ -211,7 +211,7 @@ export function CreativeDirector({
                       { value: 'auto',        label: 'Auto' },
                     ]}
                   />
-                  <p className="text-xs text-ink-3">
+                  <p className="text-sm text-ink-3">
                     {seqMode === 'competition'
                       ? 'Picks your strongest single frames — no repeats of the same look. For entries and portfolio reviews.'
                       : seqMode === 'auto'
@@ -221,7 +221,7 @@ export function CreativeDirector({
                 </div>
 
                 {photos.length === 0 && (
-                  <p className="mb-2 text-center text-xs text-ink-3">
+                  <p className="mb-2 text-center text-sm text-ink-3">
                     Grade a folder first — there are no photos to work with yet.
                   </p>
                 )}
@@ -243,7 +243,7 @@ export function CreativeDirector({
 
                 {usedCount > 0 && (
                   <button onClick={handleClearUsed}
-                    className="mt-2 w-full cursor-pointer border-0 bg-transparent py-1 text-center text-xs text-ink-3 transition-colors duration-fast ease hover:text-ink-2">
+                    className="mt-2 w-full cursor-pointer border-0 bg-transparent py-1 text-center text-sm text-ink-3 transition-colors duration-fast ease hover:text-ink-2">
                     Put back <span className="t-num">{usedCount}</span> set-aside photos
                   </button>
                 )}

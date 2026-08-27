@@ -42,7 +42,7 @@ export function SimilarShots({ groups, totalDups, shownCount, onRevealMore, onOp
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-ground">
       <div className="flex h-8 shrink-0 items-center gap-2 border-b border-line bg-surface px-4">
         <span className="t-label">Similar shots</span>
-        <span className="text-xs text-ink-4">
+        <span className="text-xs text-ink-3">
           <span className="t-num">({groups.length})</span> group{groups.length!==1?'s':''}
           {' · '}<span className="t-num">({totalDups})</span> alternates
         </span>
@@ -139,7 +139,7 @@ export function SimilarShots({ groups, totalDups, shownCount, onRevealMore, onOp
                 {shown.length < groups.length && (
                   <div>
                     <RevealSentinel onVisible={onRevealMore}/>
-                    <p className="pb-3 text-center text-xs text-ink-4">
+                    <p className="pb-3 text-center text-xs text-ink-3">
                       Showing <span className="t-num">{shown.length}</span> of <span className="t-num">{groups.length}</span> groups
                     </p>
                   </div>
@@ -149,7 +149,7 @@ export function SimilarShots({ groups, totalDups, shownCount, onRevealMore, onOp
                   <div className="flex flex-col items-center justify-center gap-3 pt-12 text-ink-3">
                     <ImageOff size={28} strokeWidth={1}/>
                     <p className="text-sm">No similar shots found.</p>
-                    <p className="max-w-[36ch] text-center text-xs text-ink-4">
+                    <p className="max-w-[36ch] text-center text-sm text-ink-3">
                       Bursts and near-duplicates appear here once a folder has been graded.
                     </p>
                   </div>

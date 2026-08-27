@@ -97,7 +97,7 @@ export function ExportModal({ photos, filterGrade, onClose }: { photos: any[]; f
       <div className="sticky bottom-0 -mx-4 mt-2 flex items-center justify-between gap-3 border-t border-line bg-raised px-4 py-3">
         <div className="min-w-0">
           <p className="text-sm text-ink-2">XMP sidecars</p>
-          <p className="mt-px text-xs text-ink-3">
+          <p className="mt-px text-sm text-ink-3">
             {xmpState === 'idle'  && 'Write .xmp files beside each photo — Lightroom and Capture One read them'}
             {xmpState === 'busy'  && 'Writing sidecars…'}
             {xmpState === 'done'  && <><span className="t-num">{xmpCount}</span> sidecar{xmpCount !== 1 ? 's' : ''} written beside your photos</>}

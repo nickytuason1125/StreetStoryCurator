@@ -92,7 +92,7 @@ export function FolderBrowser({ mode, bPath, setBPath, bFolders, bImages, bSelFo
                 <div className="flex h-full flex-col items-center justify-center gap-2 text-ink-3">
                   <FolderOpen size={28} strokeWidth={1.5}/>
                   <p className="text-sm">Nothing here</p>
-                  <p className="text-xs text-ink-4">No folders or images in this location.</p>
+                  <p className="text-sm text-ink-3">No folders or images in this location.</p>
                 </div>
               ) : (
                 <>

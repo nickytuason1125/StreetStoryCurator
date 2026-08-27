@@ -98,7 +98,7 @@ export function EmptyState({
       {icon && <div className="text-ink-4">{icon}</div>}
       <div>
         <p className="text-md font-medium text-ink-2">{title}</p>
-        {hint && <p className="mx-auto mt-1 max-w-[36ch] text-xs leading-relaxed text-ink-3">{hint}</p>}
+        {hint && <p className="mx-auto mt-1 max-w-[36ch] text-sm leading-prose text-ink-3">{hint}</p>}
       </div>
       {action}
     </div>

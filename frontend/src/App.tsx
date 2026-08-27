@@ -2361,7 +2361,7 @@ export default function App() {
                     {r.free?.toFixed(1)} GB free{r.total != null ? <> of <span className="t-num">{r.total?.toFixed(1)}</span> GB</> : null}
                     {r.percent != null && <> · <span className="t-num">{r.percent.toFixed(0)}%</span> in use</>}
                   </p>
-                  <p className="mb-2 text-xs leading-relaxed text-ink-2">{guidance}</p>
+                  <p className="mb-2 text-xs leading-prose text-ink-2">{guidance}</p>
                   <p className="text-xs text-ink-4">Polled live every 2 s. The grade floor is <span className="t-num">1.8 GB</span> free.</p>
                 </div>
               )}

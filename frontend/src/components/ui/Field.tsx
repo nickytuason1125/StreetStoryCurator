@@ -26,7 +26,7 @@ export function Field({
         <span className="t-label">{label}</span>
         {action}
       </div>
-      {hint && <p className="-mt-1 text-xs text-ink-3">{hint}</p>}
+      {hint && <p className="-mt-1 text-sm text-ink-3">{hint}</p>}
       {children}
     </div>
   );

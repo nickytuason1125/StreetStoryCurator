@@ -103,7 +103,7 @@ export function Modal({
         <div className="flex shrink-0 items-center gap-3 border-b border-line px-4 py-3">
           <div className="min-w-0 flex-1">
             <p className="text-md font-semibold text-ink">{title}</p>
-            {subtitle && <p className="mt-px text-xs text-ink-3">{subtitle}</p>}
+            {subtitle && <p className="mt-px text-sm text-ink-3">{subtitle}</p>}
           </div>
           <button
             onClick={onClose}

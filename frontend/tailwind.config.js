@@ -65,6 +65,19 @@ export default {
       xl: ["var(--text-xl)", { lineHeight: "var(--leading-display)" }],
     },
 
+    // Leading utilities resolve to the SAME tokens the inline styles use.
+    // Without this the class layer fell through to Tailwind's stock scale, so
+    // `leading-relaxed` (1.625) sat beside `--leading-prose` (1.6) doing the
+    // same job by a different number — the exact split the token guard exists
+    // to prevent, just one layer up. Replacing the key (rather than extending)
+    // also retires the stock names, so there is one way to say this.
+    lineHeight: {
+      none: "var(--leading-none)",
+      body: "var(--leading-body)",
+      prose: "var(--leading-prose)",
+      display: "var(--leading-display)",
+    },
+
     borderRadius: {
       none: "0",
       // The contact-sheet cell only — see the --r-cell note in tokens.css.

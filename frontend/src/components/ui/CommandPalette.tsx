@@ -202,7 +202,7 @@ export function CommandPalette({ actions }: { actions: PaletteAction[] }) {
           <KbdHint keys="↵" label="Run"/>
           <KbdHint keys="esc" label="Close"/>
           <span className="flex-1"/>
-          <span className="text-xs text-ink-4">
+          <span className="text-xs text-ink-3">
             <span className="t-num">{hits.length}</span> of <span className="t-num">{actions.length}</span>
           </span>
         </div>

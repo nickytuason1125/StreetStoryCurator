@@ -54,7 +54,7 @@ export default class ErrorBoundary extends Component<Props, State> {
           <span className="t-label" style={{ color: 'var(--alarm-crit)' }}>
             {label ?? 'This view'} failed to render
           </span>
-          <span style={{ color: 'var(--ink-3)', fontSize: 'var(--text-xs)', textAlign: 'center' }}>
+          <span style={{ color: 'var(--ink-3)', fontSize: 'var(--text-sm)', textAlign: 'center' }}>
             {String(error.message ?? error).slice(0, 200)}
           </span>
           <button onClick={this.reset}
