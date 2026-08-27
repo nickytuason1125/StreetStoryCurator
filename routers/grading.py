@@ -384,14 +384,9 @@ async def regrade_photos(req: GradeRequest):
     """
     # Move the previous catalog aside instead of deleting it. If the re-grade
     # fails (RAM refusal, crash, power loss) /api/catalog falls back to this
-    # backup below, so hours of grades are never destroyed by one failed run.
-    _CATALOG_BAK = _CATALOG_PATH.with_name("catalog.json.pre-regrade.bak")
-    try:
-        if _CATALOG_PATH.exists():
-            os.replace(str(_CATALOG_PATH), str(_CATALOG_BAK))
-            print("[regrade] Previous catalog moved to catalog.json.pre-regrade.bak before re-grade")
-    except Exception as _e:
-        print(f"[regrade] catalog backup warning: {_e}")
+    # backup, so hours of grades are never destroyed by one failed run.
+    import catalog_store
+    catalog_store.back_up("regrade", path=_CATALOG_PATH)
     return await grade_photos_v2_stream(req.model_copy(update={"force_rescan": True, "scan_mode": False}))
 
 
@@ -401,7 +396,15 @@ async def scan_photos(req: GradeRequest):
     Low-latency scan: clears catalog.json, runs embedding + IQA without full
     SpecVLM verification (scan_mode=True), and rebuilds the catalog. SSE streaming,
     same format as /api/grade/v2/stream.
+
+    Backs the catalog up first, exactly as /api/regrade does. This clears the
+    catalog by the same force_rescan=True route, so a scan that fails — and a
+    RAM refusal is the ordinary failure here, not an exotic one — used to
+    destroy the whole library with no .pre-regrade.bak for /api/catalog to fall
+    back to. Two endpoints, one destructive act, one backup helper.
     """
+    import catalog_store
+    catalog_store.back_up("scan", path=_CATALOG_PATH)
     return await grade_photos_v2_stream(req.model_copy(update={"force_rescan": True, "scan_mode": True}))
 
 

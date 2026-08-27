@@ -189,3 +189,41 @@ def test_purge_prefix_never_matches_a_partial_folder_name(tmp_path):
 
 def test_purge_prefix_on_a_missing_catalog_is_a_no_op(tmp_path):
     assert cs.purge_prefix(r"C:/Anything", path=tmp_path / "nope.json") == 0
+
+
+# ── Backing up before a destructive rebuild ──────────────────────────────────
+# /api/regrade moved the catalog aside before clearing it; /api/scan did the
+# same clearing with force_rescan=True and NO backup. A scan that then failed —
+# a RAM refusal is the common case — destroyed the library with nothing to fall
+# back to, which is consistent with a 21,416-photo catalog going to zero with no
+# .pre-regrade.bak beside it. One helper now, so the two paths cannot drift.
+
+def test_back_up_moves_the_catalog_aside(tmp_path):
+    cat = tmp_path / "catalog.json"
+    cs.merge_write([photo(r"C:/Photos/a.jpg")], path=cat)
+
+    assert cs.back_up("scan", path=cat) is True
+    assert not cat.exists(), "the live catalog is moved, not copied"
+    bak = cat.with_name("catalog.json.pre-regrade.bak")
+    assert bak.exists()
+    assert {p["path"] for p in json.loads(bak.read_text(encoding="utf-8"))["photos"]} \
+        == {r"C:/Photos/a.jpg"}
+
+
+def test_back_up_with_no_catalog_is_a_no_op(tmp_path):
+    assert cs.back_up("scan", path=tmp_path / "nope.json") is False
+    assert not (tmp_path / "catalog.json.pre-regrade.bak").exists()
+
+
+def test_back_up_does_not_destroy_an_earlier_backup_when_there_is_nothing_to_save(tmp_path):
+    """A second scan with no live catalog must not clobber the recovery copy."""
+    cat = tmp_path / "catalog.json"
+    cs.merge_write([photo(r"C:/Photos/precious.jpg")], path=cat)
+    cs.back_up("regrade", path=cat)          # first failed run: catalog -> bak
+    bak = cat.with_name("catalog.json.pre-regrade.bak")
+    before = bak.read_text(encoding="utf-8")
+
+    cs.back_up("scan", path=cat)             # second run, nothing live to move
+
+    assert bak.read_text(encoding="utf-8") == before, \
+        "the only copy of the user's grades was overwritten by an empty run"

@@ -136,6 +136,36 @@ def mark_missing(path: Optional[Path] = None) -> int:
     return n_missing
 
 
+def back_up(reason: str = "rebuild", path: Optional[Path] = None) -> bool:
+    """Move the live catalog aside before something rebuilds it from scratch.
+
+    Returns True if a catalog was actually moved.
+
+    /api/regrade did this inline and /api/scan did not, though both pass
+    force_rescan=True and both docstrings say they clear catalog.json. So a
+    scan that failed — a RAM refusal is the ordinary case, not an exotic one —
+    destroyed the library outright, and /api/catalog's fallback then had no
+    .pre-regrade.bak to find. Living here means the two callers cannot drift
+    apart again, the way the two verdict channels did.
+
+    Moved, not copied: the point is that the rebuild starts from nothing. And
+    when there is no live catalog the backup is left ALONE rather than
+    overwritten — otherwise a second failed run would replace the only
+    surviving copy of the photographer's grades with the absence of one.
+    """
+    p = Path(path) if path else _default_path()
+    if not p.exists():
+        return False
+    bak = p.with_name("catalog.json.pre-regrade.bak")
+    try:
+        os.replace(str(p), str(bak))
+        print(f"[{reason}] previous catalog moved to {bak.name}")
+        return True
+    except Exception as e:
+        print(f"[{reason}] catalog backup warning: {e}")
+        return False
+
+
 def _norm(p: str) -> str:
     """Windows hands the same folder back as C:\\Temp\\x and c:/temp/x."""
     return p.replace("\\", "/").rstrip("/").lower()
