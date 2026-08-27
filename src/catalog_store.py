@@ -136,6 +136,55 @@ def mark_missing(path: Optional[Path] = None) -> int:
     return n_missing
 
 
+def _norm(p: str) -> str:
+    """Windows hands the same folder back as C:\\Temp\\x and c:/temp/x."""
+    return p.replace("\\", "/").rstrip("/").lower()
+
+
+def purge_prefix(prefix: str, path: Optional[Path] = None) -> int:
+    """Delete every entry under `prefix`. Returns how many were removed.
+
+    This is deletion, not `mark_missing`. The distinction matters: a photo that
+    has moved keeps its grades and gets flagged, because losing that work would
+    look like the app threw it away. A generated test frame was never the
+    photographer's picture at all, so leaving a tombstone for it is just a
+    second kind of pollution.
+
+    Written for the harness in .claude/skills/run-framegrade/driver.py, which
+    grades five synthetic frames and previously purged only its LanceDB rows —
+    so running the ship-readiness smoke test permanently salted the real
+    catalog, and once the temp folder was gone, salted it with entries pointing
+    at files that do not exist.
+
+    Matching respects folder boundaries: `C:/Temp/fg` does not swallow
+    `C:/Temp/fg_real/`.
+    """
+    p = Path(path) if path else _default_path()
+    if not p.exists():
+        return 0
+    d = load(p)
+    photos = d.get("photos", [])
+    if not photos:
+        return 0
+    pre = _norm(prefix)
+    keep = [ph for ph in photos
+            if not (_norm(ph.get("path") or "") == pre
+                    or _norm(ph.get("path") or "").startswith(pre + "/"))]
+    removed = len(photos) - len(keep)
+    if not removed:
+        return 0
+    folders = [f for f in d.get("folders", [])
+               if not (_norm(f) == pre or _norm(f).startswith(pre + "/"))]
+    payload = json.dumps({"photos": keep, "folders": folders,
+                          "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S")},
+                         ensure_ascii=False, default=_np2py)
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(payload, encoding="utf-8")
+    tmp.replace(p)
+    print(f"[catalog] purged {removed} entries under {prefix}")
+    return removed
+
+
 def rebuild_from_lance(path: Optional[Path] = None,
                        min_score: float = 0.0) -> int:
     """Regenerate the catalog from LanceDB, the source of truth.

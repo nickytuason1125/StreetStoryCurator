@@ -130,3 +130,62 @@ def test_rebuild_survives_an_unavailable_store(tmp_path, monkeypatch):
         lambda min_score=0.0: (_ for _ in ()).throw(RuntimeError("db down")))})
     monkeypatch.setitem(sys.modules, "lance_store", broken)
     assert cs.rebuild_from_lance(path=tmp_path / "c.json") == 0
+
+
+# ── Purging a prefix ─────────────────────────────────────────────────────────
+# The project's own smoke test grades five generated frames in a temp folder.
+# It purged its LanceDB rows in a `finally:` block but never touched the
+# catalog, so running the ship-readiness check permanently salted the user's
+# library with synthetic noise — and once the temp dir was cleaned up, with
+# entries pointing at files that no longer exist. Deleting a prefix is the
+# catalog's own operation, so it lives here with the same atomic write.
+
+def test_purge_prefix_removes_only_the_matching_rows(tmp_path):
+    cat = tmp_path / "catalog.json"
+    cs.merge_write([photo(r"C:/Photos/keep_1.jpg"),
+                    photo(r"C:/Photos/keep_2.jpg"),
+                    photo(r"C:/Temp/fg_selftest_abc/img/frame_0.jpg"),
+                    photo(r"C:/Temp/fg_selftest_abc/img/flat.jpg")], path=cat)
+
+    removed = cs.purge_prefix(r"C:/Temp/fg_selftest_abc", path=cat)
+
+    assert removed == 2
+    paths = {p["path"] for p in cs.load(cat)["photos"]}
+    assert paths == {r"C:/Photos/keep_1.jpg", r"C:/Photos/keep_2.jpg"}
+
+
+def test_purge_prefix_is_case_insensitive_and_slash_agnostic(tmp_path):
+    """Windows hands the same folder back as C:\Temp and c:/temp."""
+    cat = tmp_path / "catalog.json"
+    cs.merge_write([photo(r"C:\Temp\fg_selftest_abc\img\frame_0.jpg"),
+                    photo(r"C:/Photos/keep.jpg")], path=cat)
+
+    removed = cs.purge_prefix("c:/temp/fg_selftest_abc", path=cat)
+
+    assert removed == 1
+    assert {p["path"] for p in cs.load(cat)["photos"]} == {r"C:/Photos/keep.jpg"}
+
+
+def test_purge_prefix_no_match_leaves_the_file_untouched(tmp_path):
+    cat = tmp_path / "catalog.json"
+    cs.merge_write([photo(r"C:/Photos/keep.jpg")], path=cat)
+    before = cat.read_text(encoding="utf-8")
+
+    assert cs.purge_prefix(r"C:/Nowhere", path=cat) == 0
+    assert cat.read_text(encoding="utf-8") == before
+
+
+def test_purge_prefix_never_matches_a_partial_folder_name(tmp_path):
+    """`C:/Temp/fg` must not eat `C:/Temp/fg_selftest_abc`'s neighbour."""
+    cat = tmp_path / "catalog.json"
+    cs.merge_write([photo(r"C:/Temp/fg_real/keeper.jpg"),
+                    photo(r"C:/Temp/fg/frame.jpg")], path=cat)
+
+    removed = cs.purge_prefix(r"C:/Temp/fg", path=cat)
+
+    assert removed == 1, "prefix matching must respect folder boundaries"
+    assert {p["path"] for p in cs.load(cat)["photos"]} == {r"C:/Temp/fg_real/keeper.jpg"}
+
+
+def test_purge_prefix_on_a_missing_catalog_is_a_no_op(tmp_path):
+    assert cs.purge_prefix(r"C:/Anything", path=tmp_path / "nope.json") == 0
