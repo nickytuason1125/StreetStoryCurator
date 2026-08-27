@@ -2698,7 +2698,7 @@ export default function App() {
                   photoNatDims={photoNatDims} setPhotoNatDims={setPhotoNatDims}
                   selectedIds={selectedIds} setSelectedIds={setSelectedIds}
                   showEyeOverlay={showEyeOverlay} setShowEyeOverlay={setShowEyeOverlay}
-                  showHeatmap={showHeatmap} critTrigger={critTrigger} heatmapB64={heatmapB64}
+                  showHeatmap={showHeatmap} critTrigger={critTrigger} heatmapB64={heatmapB64} heatmapLoading={heatmapLoading} toggleHeatmap={toggleHeatmap}
                   isAuditModeActive={isAuditModeActive} isGraded={isGraded}
                   hasPrev={hasPrev} hasNext={hasNext} selIdx={selIdx} filteredPhotos={filteredPhotos}
                   handleCreateFromSelection={handleCreateFromSelection} handleGenerate={handleGenerate}

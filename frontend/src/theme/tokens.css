@@ -83,6 +83,16 @@
   --dim-reject:    0.55;     /* image opacity for Weak cells                   */
   --rule:          2px;      /* the underscore beneath each frame              */
 
+  /* ── Focus-map scale ──────────────────────────────────────────────────────
+   * These QUOTE the lookup table in src/pipeline/heatmaps.py — red at low
+   * Laplacian variance (blurred), green at high (sharp) — they do not choose
+   * it. They are the only saturated hues in the app, and they earn that by
+   * being a measurement's legend rather than decoration: if that LUT changes,
+   * these change with it or the legend starts lying. */
+  --heat-blur:  #ff0000;
+  --heat-mid:   #ffff00;
+  --heat-sharp: #00ff00;
+
   /* ── Alarm. Status chrome (RAM, GPU, grader mode) renders neutral by default
    * and reaches for these ONLY when the user actually needs to act. "Everything
    * is fine" is expressed as silence, not as a green badge — so any colour in
@@ -159,6 +169,7 @@
    * structural dimensions, and giving them names stops w-72 / h-16 style
    * magic numbers creeping back into the markup. ── */
   --w-panel: 288px;    /* creative config column */
+  --w-heat-scale: 96px; /* focus-map legend gradient bar */
   --w-sidebar: 144px;  /* folder-browser quick access */
   --w-stage: 460px;    /* centred stage panel: empty state, import */
   --w-hero: 640px;     /* welcome hero: brand moment on the empty stage */

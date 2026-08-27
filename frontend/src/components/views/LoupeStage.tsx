@@ -17,7 +17,7 @@ export function LoupeStage({
   sel, selId, setSelId, loupePreviewFailed, setLoupePreviewFailed,
   loupeRetry, setLoupeRetry, photoNatDims, setPhotoNatDims,
   selectedIds, setSelectedIds, showEyeOverlay, setShowEyeOverlay,
-  showHeatmap, critTrigger, heatmapB64, isAuditModeActive, isGraded,
+  showHeatmap, toggleHeatmap, critTrigger, heatmapB64, heatmapLoading, isAuditModeActive, isGraded,
   hasPrev, hasNext, selIdx, filteredPhotos,
   handleCreateFromSelection, handleGenerate,
 }: {
@@ -28,6 +28,7 @@ export function LoupeStage({
   selectedIds: Set<string>; setSelectedIds: React.Dispatch<React.SetStateAction<Set<string>>>;
   showEyeOverlay: boolean; setShowEyeOverlay: React.Dispatch<React.SetStateAction<boolean>>;
   showHeatmap: boolean; critTrigger: string | null; heatmapB64: string | null;
+  heatmapLoading: boolean; toggleHeatmap: () => void;
   isAuditModeActive: boolean; isGraded: boolean;
   hasPrev: boolean; hasNext: boolean; selIdx: number; filteredPhotos: any[];
   handleCreateFromSelection: () => void; handleGenerate: () => void;
@@ -104,12 +105,88 @@ export function LoupeStage({
                       </svg>
                     </button>
                   )}
+                  {/* Focus-map toggle. The reason this button is new: App.tsx
+                      has carried a complete toggleHeatmap() — with its own
+                      loading state and per-photo cache — that was never called
+                      from anywhere. The map could only be summoned by hovering
+                      an annotation link buried inside the jury critique text,
+                      so a finished feature had no entry point. Sits under the
+                      judge's-eye toggle and borrows its exact geometry. */}
+                  {isGraded && (
+                    <button
+                      onClick={toggleHeatmap}
+                      aria-pressed={showHeatmap}
+                      title={showHeatmap ? 'Hide focus map' : 'Show focus map — where the frame is sharp'}
+                      style={{
+                        position:'absolute', top: sel.eye_overlay_url ? 52 : 10, right:10, zIndex:20,
+                        width:34, height:34, borderRadius:'var(--r-md)',
+                        display:'flex', alignItems:'center', justifyContent:'center',
+                        background: showHeatmap ? T.raisedHover : T.glass,
+                        border: `1px solid ${showHeatmap ? T.ink : T.lineStrong}`,
+                        backdropFilter:'blur(16px) saturate(1.1)',
+                        WebkitBackdropFilter:'blur(16px) saturate(1.1)',
+                        cursor:'pointer',
+                        transition:'background .2s ease, border-color .2s ease',
+                        color: showHeatmap ? T.ink : T.ink2,
+                      }}>
+                      {/* Aperture-ish target: focus, not "heat" */}
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                           strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="12" cy="12" r="8"/>
+                        <circle cx="12" cy="12" r="2.5"/>
+                        <line x1="12" y1="1.5" x2="12" y2="4"/>
+                        <line x1="12" y1="20" x2="12" y2="22.5"/>
+                        <line x1="1.5" y1="12" x2="4" y2="12"/>
+                        <line x1="20" y1="12" x2="22.5" y2="12"/>
+                      </svg>
+                    </button>
+                  )}
+
+                  {/* ── Focus map ───────────────────────────────────────────
+                      Per-block Laplacian variance: red = blurred, green = sharp.
+                      The PNG already carries its own 40% alpha, so it composites
+                      NORMALLY. It used to be drawn with mixBlendMode:'multiply'
+                      and then multiplied again by 0.7 opacity — multiply only
+                      darkens, so on a dark frame the map vanished, on a bright
+                      one it just dimmed the picture, and either way the effective
+                      strength was ~28% of a wash that was never meant to be
+                      blended twice. */}
                   {(showHeatmap || critTrigger === 'blur' || critTrigger === 'heatmap') && heatmapB64 && (
                     <img
                       src={`data:image/png;base64,${heatmapB64}`}
-                      alt=""
-                      style={{ position:'absolute', top:0, left:0, width:'100%', height:'100%', objectFit:'contain', mixBlendMode:'multiply', pointerEvents:'none', transition:'opacity .2s ease', opacity: critTrigger ? 0.85 : 0.7 }}
+                      alt="Focus map: red areas are blurred, green areas are sharp"
+                      style={{ position:'absolute', top:0, left:0, width:'100%', height:'100%',
+                               objectFit:'contain', pointerEvents:'none',
+                               transition:'opacity .2s ease', opacity: 1 }}
                     />
+                  )}
+
+                  {/* The scale, without which the map is just coloured fog: a
+                      red/green wash means nothing until you are told which end
+                      is which. Sits bottom-left over the stage, on the same
+                      glass the rest of the floating chrome uses. */}
+                  {(showHeatmap || critTrigger === 'blur' || critTrigger === 'heatmap') && heatmapB64 && (
+                    <div className="glass elev-2 pointer-events-none absolute bottom-4 flex items-center gap-3 rounded-md border border-line-strong px-3 py-2 animate-fade-in"
+                         style={{ left: '50%', transform: 'translateX(-50%)' }}>
+                      <span className="t-label">Focus map</span>
+                      <span aria-hidden className="h-2 rounded-sm"
+                            style={{ width: 'var(--w-heat-scale)',
+                                     background: 'linear-gradient(90deg,var(--heat-blur),var(--heat-mid),var(--heat-sharp))' }}/>
+                      <span className="flex items-center gap-2 text-xs text-ink-2">
+                        <span>blurred</span><span className="text-ink-4">→</span><span>sharp</span>
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Generation runs a 32x32 Laplacian pass server-side, so the
+                      click is not instant. Saying nothing read as a dead toggle. */}
+                  {heatmapLoading && !heatmapB64 && (
+                    <div className="glass elev-2 pointer-events-none absolute bottom-4 flex items-center gap-2 rounded-md border border-line-strong px-3 py-2 animate-fade-in"
+                         style={{ left: '50%', transform: 'translateX(-50%)' }}>
+                      <span aria-hidden className="block h-3 w-3 border-2 border-line-strong"
+                            style={{ borderRadius: 'var(--r-round)', borderTopColor: 'var(--ai)', animation: 'spin .8s linear infinite' }}/>
+                      <span className="text-sm text-ink-2">Measuring focus…</span>
+                    </div>
                   )}
                   {critTrigger === 'grid' && (
                     <svg style={{ position:'absolute', top:0, left:0, width:'100%', height:'100%', pointerEvents:'none' }} xmlns="http://www.w3.org/2000/svg">
