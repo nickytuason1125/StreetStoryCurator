@@ -61,6 +61,33 @@ else:
             si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             si.wShowWindow = subprocess.SW_HIDE
             kwargs["startupinfo"] = si
+
+        # A GUI process started from Explorer has NO standard handles. Popen
+        # then tries to duplicate them for the child and Windows refuses:
+        #
+        #     OSError: [WinError 50] The request is not supported
+        #
+        # ...which is how the packaged app died on every real launch while
+        # looking fine when started from a terminal — a terminal lends its
+        # console handles to whatever it spawns, so testing that way cannot
+        # see this at all.
+        #
+        # Any stream the caller did not specify, and which we do not actually
+        # have, becomes DEVNULL. Streams the caller DID ask for (PIPE, a file,
+        # DEVNULL) are left exactly as given: this only fills in the ones that
+        # would otherwise try to inherit a handle that does not exist.
+        for _name, _stream in (("stdin", sys.stdin),
+                               ("stdout", sys.stdout),
+                               ("stderr", sys.stderr)):
+            if kwargs.get(_name) is not None:
+                continue
+            try:
+                _usable = _stream is not None and _stream.fileno() >= 0
+            except Exception:
+                _usable = False          # detached, or a wrapper with no fd
+            if not _usable:
+                kwargs[_name] = subprocess.DEVNULL
+
         _orig_Popen_init(self, args, **kwargs)  # type: ignore[arg-type]
 
     subprocess.Popen.__init__ = _silent_Popen  # type: ignore[method-assign]
