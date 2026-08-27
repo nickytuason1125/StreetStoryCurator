@@ -149,9 +149,23 @@ async def save_catalog(payload: dict):
 
 @router.post("/api/catalog/clear")
 async def clear_catalog():
+    """Clear the catalog — but keep one step of undo.
+
+    This used to unlink() outright, so a misclick was unrecoverable: every
+    grade in the library gone, with nothing on disk to fall back to. It is a
+    deliberate action rather than a silent one (unlike the /api/scan bug), so
+    it does not need a confirmation dialogue here — it needs the same recovery
+    copy the rebuild paths already write, which /api/catalog then serves.
+    """
     _DATA_DIR, _atomic_write_text, analyzer = _impl()
-    if _CATALOG_PATH.exists():
-        _CATALOG_PATH.unlink()
+    try:
+        import catalog_store
+        catalog_store.back_up("catalog/clear", path=_CATALOG_PATH)
+    except Exception as _e:
+        # Never let the safety net stop the action the user asked for.
+        print(f"[catalog/clear] backup skipped: {_e}")
+        if _CATALOG_PATH.exists():
+            _CATALOG_PATH.unlink()
     return {"ok": True}
 
 
