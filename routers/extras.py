@@ -402,7 +402,13 @@ except Exception as _e:
         )
 
         try:
-            stdout_b, stderr_b = await _aio.wait_for(proc.communicate(), timeout=90)
+            # 90 s was not enough for the FIRST call: the text GGUF is 1.9 GB and
+            # a cold load off disk can eat most of that budget before a single
+            # token is generated, so the very first critique a user ever asked
+            # for reliably reported a timeout on a model that was working. The
+            # ceiling only needs to cover a cold load once — every later call
+            # hits a warm model and returns in seconds.
+            stdout_b, stderr_b = await _aio.wait_for(proc.communicate(), timeout=300)
         except _aio.TimeoutError:
             # Kill and reap the child so it doesn't linger as a zombie
             try:
@@ -410,9 +416,9 @@ except Exception as _e:
                 await _aio.wait_for(proc.wait(), timeout=5)
             except Exception:
                 pass
-            print("[jury] subprocess timed out after 90 s — killed and reaped")
+            print("[jury] subprocess timed out after 300 s — killed and reaped")
             return JSONResponse(
-                {"error": "Critique timed out (90 s). Model may still be loading — try again.", "critique": "", "think": ""},
+                {"error": "Critique timed out (5 min). The writing model may still be loading on first use — try again.", "critique": "", "think": ""},
                 status_code=504,
             )
 

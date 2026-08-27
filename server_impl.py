@@ -255,9 +255,22 @@ def _thumb_pool_sizes() -> tuple[int, int]:
     don't spike memory on small machines. Returns (on_demand, prewarm)."""
     try:
         import psutil as _ps
-        gb = _ps.virtual_memory().total / 1e9
-        ondemand = 8 if gb >= 24 else 6 if gb >= 12 else 4 if gb >= 8 else 2
-        prewarm  = 2 if gb >= 16 else 1
+        # Sized on what is FREE, floored by what is installed.
+        #
+        # Using total RAM alone put 6 concurrent full-resolution decodes on a
+        # 16 GB machine that had 2 GB free, which is the RAM spike people see
+        # the moment a folder is opened: a 24 MP frame is ~100 MB decoded, so
+        # six at once is ~600 MB on top of a cull that already wants 2.5 GB.
+        #
+        # A machine is not "16 GB" at the moment it matters; it is however much
+        # is free right then. The installed figure still sets the ceiling, so a
+        # big idle machine keeps its fan-out.
+        total_gb = _ps.virtual_memory().total / 1e9
+        free_gb  = _ps.virtual_memory().available / 1e9
+        by_total = 8 if total_gb >= 24 else 6 if total_gb >= 12 else 4 if total_gb >= 8 else 2
+        by_free  = 8 if free_gb >= 8 else 6 if free_gb >= 5 else 4 if free_gb >= 3 else 2
+        ondemand = max(2, min(by_total, by_free))
+        prewarm  = 2 if (total_gb >= 16 and free_gb >= 4) else 1
         return ondemand, prewarm
     except Exception:
         return 6, 2
