@@ -28,6 +28,12 @@ a = Analysis(
         (str(ROOT / "models"),             "models"),
         # Python source modules (server.py lives at root)
         (str(ROOT / "server.py"),          "."),
+        # server.py is a thin launcher: `from server_impl import app`. The app
+        # itself, and the routers it mounts, live at the ROOT rather than in
+        # src/, so bundling src/ does not reach them. Missing these is not a
+        # degraded build, it is ModuleNotFoundError before the first pixel.
+        (str(ROOT / "server_impl.py"),     "."),
+        (str(ROOT / "routers"),            "routers"),
         (str(ROOT / "src"),                "src"),
         # Pacing presets JSON
         (str(ROOT / "src" / "pacing_presets.json"), "src"),
@@ -42,6 +48,19 @@ a = Analysis(
     hiddenimports=[
         # ── App modules ───────────────────────────────────────────────
         "server",
+        "server_impl",
+        # routers.mount_all() imports these INSIDE the function, deliberately,
+        # so the app module is fully initialised before they bind. That is also
+        # exactly the pattern PyInstaller's static scan cannot follow, so every
+        # one has to be named. tests/test_packaging_spec.py discovers routers/
+        # from disk and fails if a new one is added without being listed here.
+        "routers",
+        "routers.system", "routers.library", "routers.grading",
+        "routers.creative", "routers.sequence", "routers.export",
+        "routers.extras", "routers.misc",
+        # Imported lazily inside request handlers and main(), same reason.
+        "catalog_store",
+        "system_check",
         # Imported lazily inside exif_reader, so PyInstaller's static scan
         # never sees it and the packaged build would return no RAW EXIF.
         "exifread",
