@@ -21,6 +21,18 @@ from server_impl import (  # shared state & helpers
     Path, _BG_EXECUTOR, _DATA_DIR, _GRADE_MIN_RAM_GB, _grading_active, _release_annotation_model, _trim_crash_log, analyzer, annotation_queue, asyncio, gpu_lock, os, sys,
 )
 import json
+
+# The unit root — the directory that holds server_impl.py, grade_runner.py and
+# crash.log. NOT this module's directory.
+#
+# This code lived in server_impl.py at the root, where dirname(__file__) was
+# the root. The server split moved it into routers/, and the expression came
+# along unchanged, so it silently began resolving to routers/. The runner path
+# became routers/grade_runner.py, which does not exist, and every grade started
+# from the UI failed to launch its subprocess. Route parity checks did not catch
+# it (the route still registers) and neither did the harness, which invokes
+# grade_runner.py directly and never goes through this handler.
+_UNIT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 from routers.library import GradeRequest, _precompute_clusters, _run_vlm_deep_review
 
 router = APIRouter()
@@ -246,12 +258,12 @@ async def grade_photos_v2_stream(req: GradeRequest):
                     "mogco_target": 0,   # cull only; Story sequencing is its own endpoint
                 }, _rf)
 
-            _runner = os.path.join(os.path.dirname(os.path.abspath(__file__)), "grade_runner.py")
+            _runner = os.path.join(_UNIT_ROOT, "grade_runner.py")
             _flags = 0x08000000 if os.name == "nt" else 0   # CREATE_NO_WINDOW
             _renv = dict(os.environ); _renv["PYTHONIOENCODING"] = "utf-8"
             # Route the runner's [v2] progress prints to crash.log (utf-8) for
             # debuggability — its result stream goes via the progress file above.
-            _crash_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crash.log")
+            _crash_path = os.path.join(_UNIT_ROOT, "crash.log")
             _trim_crash_log(_crash_path)
             _rlog = open(_crash_path, "a", encoding="utf-8", errors="replace")
             # ── Hard RAM gate: fail fast BEFORE spawning into certain paging death.
@@ -274,7 +286,7 @@ async def grade_photos_v2_stream(req: GradeRequest):
             import win_job as _wj
             _proc = _wj.popen(
                 [sys.executable, _runner, _req_path, _prog_path],
-                cwd=os.path.dirname(os.path.abspath(__file__)),
+                cwd=_UNIT_ROOT,
                 creationflags=_flags, close_fds=True,
                 stdin=_sp.DEVNULL, stdout=_rlog, stderr=_rlog, env=_renv,
             )
