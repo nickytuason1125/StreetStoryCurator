@@ -66,6 +66,15 @@ a = Analysis(
         # degraded build, it is ModuleNotFoundError before the first pixel.
         (str(ROOT / "server_impl.py"),     "."),
         (str(ROOT / "routers"),            "routers"),
+        # local_launcher.py imports suppress_console on line 13, BEFORE anything
+        # else — it patches subprocess/multiprocessing so native children do not
+        # flash a console window. Missing it is not a degraded build, it is a
+        # ModuleNotFoundError on the first line that runs.
+        (str(ROOT / "suppress_console.py"), "."),
+        # Spawned as a real subprocess by routers/grading.py, by PATH, so the
+        # file itself has to exist in the bundle — a hiddenimport is not enough.
+        (str(ROOT / "grade_runner.py"),    "."),
+        (str(ROOT / "grade_worker.py"),    "."),
         (str(ROOT / "src"),                "src"),
         # Pacing presets JSON
         (str(ROOT / "src" / "pacing_presets.json"), "src"),

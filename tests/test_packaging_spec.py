@@ -66,6 +66,18 @@ def test_each_router_is_declared(spec, mod):
     )
 
 
+def test_root_modules_the_frozen_app_cannot_start_without_are_bundled(spec):
+    """These live at the repo ROOT, so bundling src/ does not reach them.
+
+    suppress_console is imported by local_launcher.py line 13 - before any
+    other app code runs. grade_runner/grade_worker are spawned as real
+    subprocesses BY PATH, so the .py files must exist in the bundle; a
+    hiddenimport would not put a file on disk for Popen to find.
+    """
+    for mod in ("suppress_console.py", "grade_runner.py", "grade_worker.py"):
+        assert mod in spec, f"{mod} is at the repo root and is not bundled"
+
+
 @pytest.mark.parametrize("mod", ["catalog_store", "system_check"])
 def test_lazily_imported_modules_are_declared(spec, mod):
     """Imported inside functions (to keep startup light / avoid cycles), which
