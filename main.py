@@ -70,6 +70,18 @@ def main() -> None:
     )
     set_force_frontier(args.force_frontier)
 
+    # Say it before the cull, not during it. This costs a psutil read and no
+    # model imports, and it never blocks: browsing, rating and exporting all
+    # work with no memory to spare, so refusing to start would take those away
+    # to prevent a failure that already reports itself where it happens.
+    try:
+        from system_check import read_and_assess
+        _sys_state = read_and_assess()
+        (logger.warning if _sys_state.level in ("tight", "insufficient")
+         else logger.info)(_sys_state.message)
+    except Exception as _e:                       # never let the check stop launch
+        logger.info(f"System check skipped: {_e}")
+
     if args.force_frontier:
         logger.info("--force-frontier active — running pre-flight checks…")
         check_model_integrity()                   # aborts if no encoder is installed

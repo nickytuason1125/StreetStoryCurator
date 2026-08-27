@@ -44,6 +44,30 @@ Install these three free programs before running Setup:
 
 **Python install tip:** tick **"Add Python to PATH"** during the Python installer — it won't work without it.
 
+### System requirements
+
+Grading loads a vision model into memory, so free RAM is the figure that
+decides whether a cull runs — not how much RAM the machine has in total.
+
+| | Minimum | Comfortable |
+|---|---|---|
+| **Free** memory at grade time | 1.8 GB | 5 GB |
+| Total system memory | 8 GB | 16 GB |
+| Free disk | 30 GB | 60 GB |
+| GPU (optional) | — | NVIDIA, 6 GB VRAM |
+
+- Below **1.5 GB free** the vision model will not load at all, and the app says
+  so rather than stalling.
+- Between **1.8 and 5 GB** a cull runs but may drop to a lighter, faster,
+  less accurate encoder tier.
+- **No GPU is required.** Everything runs on CPU, just slower.
+- The disk figure is mostly model weights (~22 GB) plus thumbnails and the
+  vector store, both of which grow with your library.
+
+FrameGrade checks this at launch and prints a warning if the machine is under
+spec. It never refuses to start — browsing, rating and exporting an existing
+library need almost no memory, and only grading has a floor.
+
 ---
 
 ## After Install
