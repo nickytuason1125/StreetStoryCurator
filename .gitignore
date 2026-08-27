@@ -69,3 +69,7 @@ StreetStoryCurator/
 models/.models_ready
 models/**/refs/
 models/dpo_adapter/*.db
+
+# Parity backups kept beside a refactor (e.g. server_impl.pre_split.bak).
+# Deliberately kept on disk as a reference; never a tracked artifact.
+*.bak
