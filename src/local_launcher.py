@@ -268,7 +268,22 @@ def _start_frontend_watch():
     Start 'npm run watch' (vite build --watch) as a background process.
     Vite watches frontend/src and rebuilds dist/ on every file save,
     so the backend always serves the latest bundle without a manual build step.
+
+    DEVELOPMENT ONLY. A packaged app ships a built dist/ and carries no
+    frontend/src to watch, no package.json and no node_modules — and the user
+    may not have Node at all. Attempting it there produced, on every launch:
+
+        Frontend watch failed to start: [WinError 50] The request is not supported
+
+    Caught and logged, so the app still ran, but it is the first thing anyone
+    reads in crash.log when something looks wrong and it sends them chasing a
+    failure that has no consequences. The condition it needs is simply not
+    present in a bundle, so do not ask.
     """
+    if getattr(sys, "frozen", False):
+        _log("Frontend watch skipped — packaged build serves a prebuilt dist/")
+        return
+
     import subprocess as sp
     try:
         proc = sp.Popen(
