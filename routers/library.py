@@ -23,6 +23,27 @@ from server_impl import (  # shared state & helpers
 
 router = APIRouter()
 
+# Thumbnail geometry — ONE definition, used by the generator AND the /api/thumb
+# handler. They each built the cache filename independently, so the moment the
+# size entered the key they disagreed and no thumbnail could ever be found.
+#
+# Sized for the LARGEST place a thumbnail is shown, not the smallest. This was
+# 200px, commented "grid display only", but a contact-sheet cell is ~290 CSS px
+# and each of those is 2 device pixels on a HiDPI screen — so every thumbnail
+# was upscaled 1.5x to 3x. That is the "pictures are pixelated" report; the
+# photographs were fine, the thumbnails were too small for where they land.
+THUMB_PX = 448
+
+
+def _thumb_cache_name(src) -> str:
+    """Cache filename for a source path. The target size is part of a
+    thumbnail's identity, so it belongs in the key: without it, raising the
+    size left every already-cached image serving its old smaller file for
+    ever, and the fix appeared not to work."""
+    import hashlib as _h
+    return f"{_h.md5(str(src).encode()).hexdigest()[:10]}_{THUMB_PX}.webp"
+
+
 
 def __getattr__(name):
     # Eager bindings above cover every static reference; this only serves
@@ -43,7 +64,7 @@ async def serve_thumb(path: str = Query(...)):
     import hashlib
     p = _safe_image_path(path)
     src = Path(p).resolve()
-    safe_name = hashlib.md5(str(src).encode()).hexdigest()[:10] + ".webp"
+    safe_name = _thumb_cache_name(src)
     thumb_path = THUMB_DIR / safe_name
     if thumb_path.exists():
         return FileResponse(str(thumb_path))
@@ -203,7 +224,14 @@ def _gen_one_thumb(path: str, low_priority: bool = False) -> None:
         src = Path(path).resolve()
         if not src.exists() or src.suffix.lower() not in _IMAGE_EXTS:
             return
-        safe = _hl.md5(str(src).encode()).hexdigest()[:10] + ".webp"
+        # The TARGET SIZE is part of the identity of a thumbnail, so it belongs
+        # in the key. Without it, raising THUMB_SIZE left every already-cached
+        # image serving its old, smaller file forever — the library stayed
+        # pixelated and only newly-seen photos got the better thumbnail, which
+        # is the worst of both: a visible mix, and a fix that appears not to
+        # work. Including the size means a change invalidates cleanly and the
+        # old files simply fall out of use.
+        safe = _thumb_cache_name(src)
         dest = THUMB_DIR / safe
         if dest.exists():
             return
@@ -221,7 +249,7 @@ def _gen_one_thumb(path: str, low_priority: bool = False) -> None:
         # the same short edge the vision models take, so nothing else in the
         # pipeline wants a different number. WebP keeps the file cost close to
         # the old 200px JPEG despite ~5x the pixels.
-        THUMB_SIZE = (448, 448)
+        THUMB_SIZE = (THUMB_PX, THUMB_PX)
 
         def _save(img) -> None:
             """Atomically write `img` to `dest` via a unique temp file."""

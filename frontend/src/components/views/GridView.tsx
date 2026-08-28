@@ -332,12 +332,12 @@ export function GridView({
                   )}
                   {p.stars > 0 && <span className="t-num shrink-0 text-xs text-mark-ink">{p.stars}</span>}
                   {p.has_annotations && <AnnotatedMark/>}
-                  {!isPending && p.score > 0 && (
-                    <span className={cn('t-num shrink-0 text-xs', isWeak ? 'text-ink-4' : 'text-ink-3')}
-                      >
-                      {formatScore(p.score)}
-                    </span>
-                  )}
+                  {/* No raw score on the cell. ".041 MID" is the machine's
+                      internal number leaking into a contact sheet — it asks the
+                      photographer to read a decimal on every frame while they
+                      are looking at pictures. The verdict chip already says what
+                      the machine thinks, the hover bar shows it comparatively,
+                      and the exact figure is one click away in the loupe. */}
                 </span>
               </button>
             );
