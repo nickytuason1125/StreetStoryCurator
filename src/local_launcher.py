@@ -284,6 +284,22 @@ def _start_frontend_watch():
         _log("Frontend watch skipped — packaged build serves a prebuilt dist/")
         return
 
+    # OPT-IN, not opt-out. This is a developer convenience — vite rebuilding
+    # dist/ when you edit frontend/src — and it was running for everyone.
+    #
+    # On Windows `npm` is npm.cmd, so every invocation goes through cmd.exe,
+    # and `vite build --watch` then runs for the life of the app, rebuilding on
+    # every file change. That is a console window appearing again and again in
+    # what the user thinks of as a finished application. A photographer culling
+    # a folder has no frontend source to watch and no reason to own a build
+    # toolchain; if node is absent it is also a guaranteed failure on startup.
+    #
+    # Set FRAMEGRADE_FRONTEND_WATCH=1 while developing. `npm run watch` in a
+    # terminal does the same job and shows you its output.
+    if os.environ.get("FRAMEGRADE_FRONTEND_WATCH", "") not in ("1", "true", "yes"):
+        _log("Frontend watch not started (set FRAMEGRADE_FRONTEND_WATCH=1 for dev)")
+        return
+
     import subprocess as sp
     try:
         proc = sp.Popen(
