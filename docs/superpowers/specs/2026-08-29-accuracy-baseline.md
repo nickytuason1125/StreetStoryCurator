@@ -35,7 +35,60 @@ rated photos:          125
 ==============================================================
 ```
 
-## Reading
+## Why every metric is undefined
+
+The audit output reports "need at least 3 to rank" because only 1 of 125 rated
+photos has a corresponding machine score in the current graded catalog.
+
+**Root cause:** the rated library was evicted from both stores.
+
+- 124 of the 125 ratings are photos in `C:\Users\Nicky Tuason\Desktop\tpe2026_2\`.
+  The 125th is in `Sample_Street`.
+- LanceDB (current store) holds 1485 scored rows: `100MSDCF` 1045, `sub250` 250,
+  `sub120` 120, `LAS` 58, `Sample_Street` 12. **No `tpe2026_2` at all.**
+- `cache/catalog.json` holds 440 scored photos: `sub250` 250, `sub120` 120,
+  `LAS` 58, `Sample_Street` 12. **No `tpe2026_2`.**
+- Overlap between rated paths and catalog paths is exactly 1 — the single
+  `Sample_Street` photo, which is the `n=1` in the output.
+- The 2026-08-25 run joined against a catalog of 21416 scored photos. That
+  catalog is gone and there is no backup of it (`cache/user_ratings.backup.json`
+  exists, but that is the ratings, not the catalog).
+- So the rated library was evicted from BOTH stores. `sub250`, `sub120` and
+  `LAS` (250, 120, 58 photos) match the benchmark folders used in the
+  2026-08-28 draft-decode measurements, which makes that benchmarking the
+  likely evictor.
+
+**This was not caused by the work in this plan.** The LanceDB tables were last
+written 2026-08-27/28 and `cache/catalog.json` at 2026-08-28 19:11 — all before
+this session began on 2026-08-29.
+
+**It is recoverable:** the photos still exist on disk (`tpe2026_2` contains 138
+files). Re-grading that folder restores the join and makes the baseline
+measurable again.
+
+## What is still measurable
+
+These do NOT depend on the catalog and remain valid metrics from the data state
+at baseline time:
+
+**Star histogram**, from `cache/user_ratings.json` alone: `{1: 2, 2: 3, 3: 44, 4: 34, 5: 42}` over n=125.
+
+**Chance level**, p95 over 2000 random-score trials against those ratings: **rho +0.149**.
+
+**Reachable ceiling**, 2000 trials of a grader that orders the star groups
+correctly but is blind within a group: **rho +0.948**.
+
+**Agreement from 2026-06-14 bake-off**, per-photo scores joined to the stars by
+basename (24 rated photos of the 25-photo test batch, independent of the
+catalog):
+- Qwen2.5-VL-3B: **+0.243**
+- Qwen3-VL-4B: **+0.078**
+- Qwen3-VL-2B: **−0.012**
+
+## Reading (for when the baseline is measurable again)
+
+These explanations describe what the metrics mean when enough data exists. The
+figures (Strong 4.02 / Mid 3.95 / Weak 3.50) come from the superseded 2026-08-25 run, not this one.
 
 - **Rank agreement** is the legitimacy metric. Record the rho and the n.
 - **Band monotonicity** can PASS on a trivial margin. Record the three means,
@@ -45,3 +98,12 @@ rated photos:          125
 - **Personal shift** reports `undefined` rather than a number when
   `personal_score` has no variance. If it says undefined, the named cause is
   the finding — the metric is not broken, the input is degenerate.
+
+## Before this baseline can be used
+
+Re-grade `C:\Users\Nicky Tuason\Desktop\tpe2026_2\` and re-run:
+```
+./venv/Scripts/python.exe scripts_accuracy_report.py
+```
+
+Until then, the rank-agreement investigation plan (`docs/superpowers/plans/2026-08-29-rank-agreement-investigation.md`) has no live "before" figure, and its Task 1 ceiling check would misfire on n=1.
