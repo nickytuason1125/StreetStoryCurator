@@ -39,7 +39,8 @@ async def get_config():
         ff = is_force_frontier()
     except ImportError:
         ff = False
-    return JSONResponse({"force_frontier": ff})
+    from __version__ import __version__ as _version
+    return JSONResponse({"force_frontier": ff, "version": _version})
 
 
 @router.get("/api/system/ram")

@@ -93,9 +93,10 @@ def main() -> None:
             "to fit this machine; pass --force-frontier to demand the Pro stack."
         )
 
+    from __version__ import __version__ as _version
     import uvicorn
     logger.info(
-        f"Starting FrameGrade  host={args.host}  port={args.port}  "
+        f"Starting FrameGrade v{_version}  host={args.host}  port={args.port}  "
         f"force_frontier={args.force_frontier}"
     )
     uvicorn.run(
