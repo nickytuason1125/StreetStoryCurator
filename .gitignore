@@ -49,6 +49,11 @@ models/**/*.weights
 /_train_baseline.py
 /srv_out*.txt
 /srv_err*.txt
+# Generated audit output. Both are REPORTS, regenerated on demand, and both
+# went stale in the tree: accuracy_report.txt sat three days behind the fix to
+# its own nan bug and was read as if current.
+/accuracy_report.txt
+/tsc_audit.txt
 
 # Legacy backup files
 *.legacy_backup
