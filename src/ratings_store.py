@@ -59,27 +59,57 @@ def _atomic_write(target: Path, ratings: dict) -> None:
     os.replace(tmp, target)
 
 
+def _stars_of(v) -> int:
+    """A rating entry is either a bare int (legacy) or a dict with 'stars' —
+    accept both so old cache/user_ratings.json files keep working."""
+    if isinstance(v, dict):
+        v = v.get("stars")
+    return int(v) if isinstance(v, (int, float)) else 0
+
+
 def load() -> dict:
     """Return {path: stars(int)} for every rated photo."""
-    return {k: int(v) for k, v in _read_raw().items()
-            if isinstance(v, (int, float)) and int(v) > 0}
+    return {k: _stars_of(v) for k, v in _read_raw().items() if _stars_of(v) > 0}
 
 
 def get(path: str) -> int:
     """Stars for one path, 0 if unrated."""
-    return int(_read_raw().get(path, 0) or 0)
+    return _stars_of(_read_raw().get(path))
 
 
-def set_rating(path: str, stars: int) -> None:
+def get_score_snapshot(path: str) -> dict | None:
+    """The machine score(s) captured at the moment this photo was rated, or
+    None if this rating predates snapshotting (legacy bare-int entry) or the
+    path isn't rated. Lets accuracy measurement survive a re-grade/migration
+    that wipes or reshuffles the live LanceDB/catalog rows for this photo."""
+    v = _read_raw().get(path)
+    if not isinstance(v, dict):
+        return None
+    return {"score": v.get("score"), "personal_score": v.get("personal_score")}
+
+
+def set_rating(path: str, stars: int, score: float | None = None,
+               personal_score: float | None = None) -> None:
     """Persist (or clear, when stars==0) one rating to BOTH the primary store and
     the mirror backup, atomically. Two synced copies = a deleted/corrupt primary
-    self-recovers on the next read."""
+    self-recovers on the next read.
+
+    When the caller has the photo's current machine score in hand (it does,
+    right after a LanceDB lookup), pass it through — it's snapshotted onto the
+    rating so agreement can still be measured after a later re-grade changes or
+    removes the live row for this exact path.
+    """
     if not path:
         return
     with _lock:
         cur = _read_raw()
         if stars and int(stars) > 0:
-            cur[path] = int(stars)
+            entry: dict = {"stars": int(stars)}
+            if score is not None:
+                entry["score"] = float(score)
+            if personal_score is not None:
+                entry["personal_score"] = float(personal_score)
+            cur[path] = entry
         else:
             cur.pop(path, None)
         _atomic_write(_PATH, cur)

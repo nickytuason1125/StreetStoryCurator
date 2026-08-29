@@ -150,20 +150,35 @@ def main():
                 print(f"[report] joined against catalog: {len(rows)} scored photos")
                 break
 
+    import ratings_store as _rs
+
     pairs = []      # (score, stars)
     ppairs = []     # (personal_score, stars)
     missing = 0
+    snapshot_used = 0
     for path, stars_raw in ratings.items():
         r = rows.get(path)
         try:
             stars = int(stars_raw)
         except Exception:
             continue
-        if r is None:
+        s = p = None
+        if r is not None:
+            s = r.get("score")
+            p = r.get("personal_score")
+        if s is None:
+            # Live join missed (re-grade/migration moved this photo out of
+            # LanceDB/catalog) — fall back to the score snapshotted at rating
+            # time, when this rating is new enough to carry one.
+            snap = _rs.get_score_snapshot(path)
+            if snap:
+                s = s if s is not None else snap.get("score")
+                p = p if p is not None else snap.get("personal_score")
+                if s is not None:
+                    snapshot_used += 1
+        if s is None and p is None:
             missing += 1
             continue
-        s = r.get("score")
-        p = r.get("personal_score")
         if isinstance(s, (int, float)):
             pairs.append((float(s), stars))
         if isinstance(p, (int, float)) and p != 0:
@@ -175,7 +190,8 @@ def main():
     print("=" * W)
     print(f"rated photos:          {len(ratings)}")
     print(f"  with machine score:  {len(pairs)}")
-    print(f"  store miss:          {missing}  (rated before last re-grade)")
+    print(f"    from snapshot:     {snapshot_used}  (live row gone, score captured at rating time)")
+    print(f"  store miss:          {missing}  (rated before snapshotting existed, and re-graded since)")
     print()
 
     rho = None

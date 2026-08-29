@@ -539,6 +539,16 @@ async def personal_star(payload: dict):
         this_emb   = this_row["embedding"]
         this_grade = this_row.get("grade") or "Mid ⚠️"
 
+        # Snapshot the machine score onto the rating now that we have it, so
+        # accuracy measurement survives a later re-grade/migration wiping this
+        # exact path out of LanceDB/catalog. The bare stars write above must
+        # stay first (and stay independent) — this is a best-effort enrichment.
+        try:
+            _rs.set_rating(path, stars, score=this_row.get("score"),
+                            personal_score=this_row.get("personal_score"))
+        except Exception as _e_snap:
+            print(f"[star] score snapshot skipped: {_e_snap}")
+
         # Queue DPO event: auto grade → user star grade
         try:
             import background_dpo_trainer as _dpo
