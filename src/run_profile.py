@@ -78,11 +78,21 @@ class TierSpec:
     cpu_ram_gb: float          # requirement with NO GPU (activations in RAM)
 
 
-# MEASURED, not estimated. GPU floors come from real encode peaks; CPU figures
-# from runs with the GPU hidden (8-16 photos, batch 4):
+# MEASURED, not estimated. GPU floors are the ENCODER's own peak; CPU figures
+# come from runs with the GPU hidden (8-16 photos, batch 4):
 #   high  ONNX/GPU 1.20 GB;  CPU 6.5-7.6 GB and 11-14 s/img -> unusable on CPU
 #   mid   GPU peak 2.05-2.23 GB;  CPU 4.52 GB, 2.94 s/img
 #   low   GPU peak 1.46 GB;       CPU 2.83 GB, 1.05-1.24 s/img
+#
+# These stay ENCODER-scoped on purpose. They are what tier_select compares to
+# decide WHICH ENCODER fits, and the ladder's whole value is that the tiers
+# differ — flatten them to a single whole-cull number and a low-RAM machine can
+# no longer degrade to a smaller encoder, it just gets refused. That was tried
+# on 2026-08-28 and it broke exactly that (test_gpu_ladder_is_unchanged,
+# test_lean_checkpoints_would_unlock_the_middle_tier).
+#
+# "Will this cull fit in RAM" is a DIFFERENT question, and these numbers cannot
+# answer it — see required_ram_gb() below, which owns it.
 _SPECS = {
     "high": TierSpec("high", "Pro", 1536, "ViT-gopt-16-SigLIP2-384",
                      "models/siglip2_hf_fp16", "models/siglip2",
@@ -384,6 +394,60 @@ def _gpu_present() -> bool:
         return tier_select.has_gpu()
     except Exception:
         return False
+
+
+# ── whole-cull RAM requirement ──────────────────────────────────────────────
+# MEASURED 2026-08-28 with a 0.2 s process-tree sampler over real culls. This is
+# NOT TierSpec.ram_hard_gb: those size the ENCODER so tier_select can pick one,
+# and they cannot answer "will this cull fit", because a cull is the
+# grade_runner parent PLUS the encode_worker and iqa_worker subprocesses, which
+# are isolated precisely so they hold their own memory. At peak the encoder is
+# ~0.50 GB of a ~3.3 GB tree; iqa_worker is the rest, and it is tier-independent
+# — so all three tiers cost the SAME here and the ladder cannot bargain it down.
+#
+#   photos   draft ON        draft OFF
+#      58    2.89-3.35 GB    5.85 GB
+#     250    3.22-3.60 GB    6.35 GB
+#
+# Two things that table settles:
+#  * The requirement depends on the DECODE PATH far more than on photo count.
+#    Scaled ("draft") decode roughly halves it, because the old path decoded
+#    every frame at full resolution before shrinking it to 384 px.
+#  * Growth with n is weak once drafting, because the IQA decode window is
+#    capped at 256 images (_iqa_chunk_size) — beyond that the working set
+#    plateaus rather than tracking library size.
+#
+# Above 300 photos is EXTRAPOLATED, not measured; the cap is deliberately
+# generous rather than pretending to a precision no run supports. Re-measure
+# before tightening it.
+_RAM_NEED_GB = {
+    #                    <=300 photos   >300 photos (extrapolated)
+    True:  (3.8, 4.2),   # draft decode on  (the default)
+    False: (6.6, 7.0),   # draft decode off (FRAMEGRADE_DRAFT_DECODE=0)
+}
+
+
+def draft_decode_enabled() -> bool:
+    """Whether JPEGs are decoded at reduced scale. Drives the RAM requirement."""
+    return os.environ.get("FRAMEGRADE_DRAFT_DECODE", "1").strip() != "0"
+
+
+def required_ram_gb(n_photos: int = 0) -> float:
+    """Free RAM (GB) a cull of `n_photos` needs, at whole-process-tree level.
+
+    Use this for "can this machine run a cull", never TierSpec.ram_hard_gb —
+    that one answers "which encoder fits", a different question. A single
+    constant cannot serve both: the old 1.8 GB gate was Balanced's ENCODER
+    floor, so it admitted culls that then drove the machine to 0.10 GB free and
+    into the pagefile (111 s versus 25 s for the same folder with RAM to spare).
+    """
+    small, large = _RAM_NEED_GB[draft_decode_enabled()]
+    need = small if n_photos <= 300 else large
+    try:
+        override = float(os.environ.get("FRAMEGRADE_MIN_RAM_GB", "") or 0)
+    except ValueError:
+        override = 0.0
+    return override if override > 0 else need
 
 
 def spec_for(tier: str) -> TierSpec:

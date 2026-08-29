@@ -83,17 +83,52 @@ def _get_tj():
     return _tj
 
 
+def _scale_den(w: int, h: int, hint: int) -> int:
+    """Largest power-of-two downscale whose result still covers `hint` px.
+
+    Both decoders can downscale DURING the decode (libjpeg DCT scaling), which
+    is far cheaper than decoding full-size and resizing after. Never go below
+    the hint: the caller resizes to its exact target afterwards, and upsampling
+    a too-small decode would lose real detail.
+    """
+    for d in (8, 4, 2):
+        if min(w, h) // d >= hint:
+            return d
+    return 1
+
+
 def decode_one(
     path: str,
     target_hw: Optional[tuple[int, int]] = None,
     pin: bool = True,
+    draft_hint: Optional[int] = None,
 ) -> Optional[torch.Tensor]:
     """
     Decode a single image to (C, H, W) float32 tensor in [0, 1].
 
-    target_hw : (H, W) to resize after decode. None = native resolution.
-    pin       : call .pin_memory() so the GPU DMA engine can fetch directly.
+    target_hw  : (H, W) to resize after decode. None = native resolution.
+    pin        : call .pin_memory() so the GPU DMA engine can fetch directly.
+    draft_hint : long-edge px the caller will actually use. When set, JPEGs are
+                 decoded at the largest power-of-two downscale that still covers
+                 it, instead of full-size-then-shrink.
+
+    Why draft_hint exists: a cull's dominant cost is JPEG decode (measured
+    2026-08-28: 279 ms/img decode versus 3 ms for the quality model itself), and
+    every caller immediately shrinks to <=512 px. Decoding 45 MP to throw away
+    99% of it was the single largest expense in the pipeline. Measured on this
+    repo's own files: 325 -> 83 ms/img (3.9x) for 7.7 MB JPEGs, 772 -> 374 ms
+    (2.1x) for 50 MB ones, with 36-64x less RAM per image.
+
+    It is OPT-IN because it is not bit-identical: DCT-domain downscaling gives
+    slightly different pixels than full decode + Lanczos (mean |drift| 0.0016-
+    0.0047 on a 0-1 scale). This repo has been bitten before by a "harmless"
+    change that moved grades across a threshold, so callers opt in and the drift
+    is measured, not assumed. FRAMEGRADE_DRAFT_DECODE=0 disables globally.
     """
+    import os as _os_dd
+    if draft_hint and _os_dd.environ.get("FRAMEGRADE_DRAFT_DECODE", "1").strip() == "0":
+        draft_hint = None
+
     ext = Path(path).suffix.lower()
     try:
         if ext in _JPEG_EXTS:
@@ -101,11 +136,33 @@ def decode_one(
             if tj is not None:
                 with open(path, "rb") as fh:
                     raw = fh.read()
-                bgr = tj.decode(raw)                          # (H, W, 3) uint8 BGR
+                bgr = None
+                if draft_hint:
+                    # TurboJPEG validates scaling_factor against a set the NATIVE
+                    # library reports, so an unsupported ratio raises. Without
+                    # this fallback that exception would reach the outer handler
+                    # and return None — silently DROPPING the photo from the cull
+                    # rather than merely decoding it slower. Never trade a
+                    # correct result for a faster one.
+                    try:
+                        _w, _h, _, _ = tj.decode_header(raw)
+                        _d = _scale_den(_w, _h, draft_hint)
+                        if _d > 1:
+                            bgr = tj.decode(raw, scaling_factor=(1, _d))
+                    except Exception:
+                        bgr = None
+                if bgr is None:
+                    bgr = tj.decode(raw)                      # (H, W, 3) uint8 BGR
                 rgb = bgr[:, :, ::-1].copy()                  # BGR→RGB, contiguous
             else:
                 from PIL import Image
-                rgb = np.array(Image.open(path).convert("RGB"), dtype=np.uint8)
+                with Image.open(path) as _im:
+                    if draft_hint:
+                        # Tells libjpeg to decode at 1/2, 1/4 or 1/8 directly.
+                        # Must be called BEFORE the pixels are loaded, or it is
+                        # a silent no-op.
+                        _im.draft("RGB", (draft_hint, draft_hint))
+                    rgb = np.array(_im.convert("RGB"), dtype=np.uint8)
         elif ext in _RAW_EXTS:
             # Serialise libraw (not thread-safe) AND use the embedded preview
             # (~5.5 MB) instead of a full demosaic (~100 MB) — the 1920px preview is

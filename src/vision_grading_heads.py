@@ -102,7 +102,11 @@ def _load_images_parallel(
     from concurrent.futures import ThreadPoolExecutor as _TPE
 
     def _load_one(p: str) -> Optional[torch.Tensor]:
-        t = decode_one(p, target_hw=None, pin=pin)
+        # draft_hint=max_size: this function shrinks to max_size two lines below,
+        # so decoding any larger is work thrown straight away. Decode was 99% of
+        # this stage (279 ms/img versus 3 ms of GPU), so that waste was the
+        # pipeline's single biggest cost.
+        t = decode_one(p, target_hw=None, pin=pin, draft_hint=max_size)
         if t is None:
             return None
         _, h, w = t.shape
@@ -761,7 +765,16 @@ def _run_vision_heads_streaming(
         c_paths = image_paths[c0:c1]
 
         _td = _t.monotonic()
-        tensors = _load_images_parallel(c_paths, pin=False)      # THE ONLY DECODE
+        # max_size=640, NOT the 512 default. D-FINE's processor resizes every
+        # input to a fixed 640x640, and its own (non-shared) path draft-decodes
+        # to 640 for exactly that reason. Handing it a 512 buffer to upscale
+        # loses detail and flips borderline person detections — which changes
+        # the scoring FORMULA a photo routes through (route 1 never touches
+        # TOPIQ), not just its pixels. Measured 2026-08-28 on 250 photos: at
+        # 512 that moved 3 photos across grade buckets with swings up to 0.21.
+        # The quality head only ever needs <=512 and squashes to 384 anyway, so
+        # feeding it 640 costs nothing it cares about.
+        tensors = _load_images_parallel(c_paths, pin=False, max_size=640)  # THE ONLY DECODE
         t_decode += _t.monotonic() - _td
 
         # detector consumes the same buffer (uint8 HWC as the processor expects)

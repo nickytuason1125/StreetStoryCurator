@@ -304,11 +304,25 @@ def _release_annotation_model() -> None:
     except Exception:
         pass
 
-# Hard floor of free system RAM (GB) below which a grade is refused (503). The
-# grader-status endpoint reports this so the UI can warn BEFORE the user starts.
-# 1.8: the HF SigLIP loader commits only ~1 GB, so culls run at low free RAM;
-# Qwen has its own preflight that degrades to CLIP scoring when RAM is tight.
-_GRADE_MIN_RAM_GB = float(os.environ.get("FRAMEGRADE_MIN_RAM_GB", "1.8"))
+# Free-RAM floor reported to the UI so it can warn BEFORE the user starts.
+#
+# This is only the DISPLAY figure, for when no folder has been chosen yet. The
+# real gate is per-cull and lives in run_profile.required_ram_gb(n_photos) —
+# because what a cull needs depends on the decode path and the job size, and no
+# constant can express that. The previous constant (1.8) was Balanced's ENCODER
+# floor masquerading as a whole-cull budget; it admitted culls that then ran the
+# machine to 0.10 GB free.
+def _grade_min_ram_gb() -> float:
+    try:
+        import sys as _s, os as _o
+        _s.path.insert(0, _o.path.join(_o.path.dirname(__file__), "src"))
+        import run_profile as _rp
+        return _rp.required_ram_gb(0)
+    except Exception:
+        return 3.8          # matches run_profile's measured draft-on figure
+
+
+_GRADE_MIN_RAM_GB = _grade_min_ram_gb()
 
 # nvidia-smi telemetry cache for /api/models/status (see the endpoint for why).
 _SMI_CACHE: "tuple | None" = None    # (total_mib, free_mib, gpu_name)

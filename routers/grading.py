@@ -182,23 +182,6 @@ async def grade_photos_v2_stream(req: GradeRequest):
             "A grade is already running. Wait for it to finish before starting another.",
         )
 
-    # ── System RAM gate ─────────────────────────────────────────────────────
-    # Lowered 3.0 → 1.8 GB: the HF SigLIP loader commits only ~1 GB (was ~9.5 GB
-    # under open_clip), so culls run at far lower free RAM now. Qwen grading has
-    # its own preflight that falls back to CLIP scoring if RAM is tight, so a low
-    # but non-zero RAM cull still completes (in degraded mode) rather than 503.
-    try:
-        import psutil as _psutil
-        _free_gb = _psutil.virtual_memory().available / 1e9
-        if _free_gb < _GRADE_MIN_RAM_GB:
-            return JSONResponse(
-                status_code=503,
-                content={"error": f"Not enough RAM to grade safely — only {_free_gb:.1f} GB free, need at least ~2 GB. "
-                         "Close a couple of apps and retry."},
-            )
-    except Exception:
-        pass
-
     # NOTE: there was an Ollama health gate here that 503'd every non-scan grade
     # when http://localhost:11434 did not answer. Nothing installed Ollama — not
     # Setup.ps1, not requirements.txt — and no user-facing doc mentioned it, while
@@ -214,6 +197,44 @@ async def grade_photos_v2_stream(req: GradeRequest):
             all_folders = [str(Path(req.folder_path).resolve())]
         else:
             raise HTTPException(400, "No valid folder path provided")
+
+    # ── System RAM gate ─────────────────────────────────────────────────────
+    # Deliberately AFTER folder resolution: what a cull costs depends on the
+    # decode path and on how big the job is, so the gate needs the job in front
+    # of it. This used to be one constant checked before anything was known —
+    # 1.8 GB, which was Balanced's ENCODER floor rather than a whole-cull
+    # budget, so it admitted runs that then drove the machine to 0.10 GB free
+    # and into the pagefile (111 s versus 25 s for the same folder with room).
+    #
+    # Counting is a listdir, not a decode. scan_mode passes 0 because it skips
+    # IQA entirely — the expensive part — so it must not be charged for it.
+    try:
+        import psutil as _psutil
+        import run_profile as _rp_ram
+        _free_gb = _psutil.virtual_memory().available / 1e9
+        # Literal, not a shared constant: this only needs to be roughly right —
+        # it sizes a RAM budget, it does not decide what gets graded. Anything
+        # missed here just makes the estimate slightly conservative.
+        _exts = (".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff",
+                 ".rw2", ".raf", ".arw", ".cr2", ".cr3", ".nef", ".dng", ".orf")
+        _n_photos = 0
+        for _fp in all_folders:
+            try:
+                _n_photos += sum(1 for _f in os.listdir(_fp)
+                                 if _f.lower().endswith(_exts))
+            except OSError:
+                pass
+        _need_gb = _rp_ram.required_ram_gb(0 if req.scan_mode else _n_photos)
+        if _free_gb < _need_gb:
+            return JSONResponse(
+                status_code=503,
+                content={"error": f"Not enough RAM to grade safely — only {_free_gb:.1f} GB "
+                         f"free, and {_n_photos} photos need about {_need_gb:.1f} GB. "
+                         "Close a couple of apps and retry."},
+            )
+    except Exception:
+        pass
+
 
     async def _stream_with_lock():
         # Hold gpu_lock for the full grading run so the annotation daemon

@@ -2140,13 +2140,21 @@ def run_v2(
     # backwards (it used to sit at "55%" through the whole IQA stage).
     _p(0.655, "Measuring light and contrast…")
 
-    # FRAMEGRADE_LUM_DRAFT=1 lets the JPEG decoder downscale in the DCT domain
-    # before the full frame is ever materialised (the idiom at encode_worker.py's
-    # image read). Much cheaper, and the result is thumbnailed to 128×128 anyway
-    # — but it is NOT bit-identical (a different resample chain shifts Y mean/std
-    # slightly, and those feed the Chiaroscuro / Vintage-Lens thresholds), so it
-    # stays opt-in until verified against a full before/after score diff.
-    _LUM_DRAFT = os.environ.get("FRAMEGRADE_LUM_DRAFT", "0").strip() == "1"
+    # Lets the JPEG decoder downscale in the DCT domain before the full frame is
+    # ever materialised (the idiom at encode_worker.py's image read). Much
+    # cheaper, and the result is thumbnailed to 128×128 anyway — but it is NOT
+    # bit-identical (a different resample chain shifts Y mean/std slightly, and
+    # those feed the Chiaroscuro / Vintage-Lens thresholds), so it was opt-in
+    # "until verified against a full before/after score diff".
+    #
+    # That diff has now been run (2026-08-28), on two folders, comparing every
+    # photo's final score against the same cull with this off:
+    #     58 photos  95.5 vs 82.2 photos/min,  0 grade-bucket changes
+    #    250 photos  58.7 vs 55.0 photos/min,  0 grade-bucket changes
+    # Per-photo drift was identical to the run without it, i.e. this flag moved
+    # no score at all on either set. Verified, so it defaults ON; set
+    # FRAMEGRADE_LUM_DRAFT=0 to go back to full-resolution lum reads.
+    _LUM_DRAFT = os.environ.get("FRAMEGRADE_LUM_DRAFT", "1").strip() == "1"
 
     def _lum_stats(path: str):
         try:

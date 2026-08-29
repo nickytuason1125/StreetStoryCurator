@@ -270,3 +270,68 @@ def test_lance_store_pins_native_extensions_at_import():
     assert out.returncode == 0, out.stderr[-1500:]
     assert "PYARROW" in out.stdout and "MISSING-PYARROW" not in out.stdout, out.stdout
     assert "LANCEDB" in out.stdout and "MISSING-LANCEDB" not in out.stdout, out.stdout
+
+
+# ── 6. the whole-cull RAM requirement ────────────────────────────────────────
+# TierSpec.ram_hard_gb sizes the ENCODER, so tier_select can pick one; it cannot
+# say whether a CULL fits, because a cull is grade_runner + encode_worker +
+# iqa_worker and the encoder is only ~0.50 GB of a ~3.3 GB tree. Conflating the
+# two is what let a 1.8 GB gate admit runs that hit 0.10 GB free.
+#
+# Measured 2026-08-28 (0.2 s process-tree sampler, real culls):
+#     photos   draft ON       draft OFF
+#        58    2.89-3.35 GB   5.85 GB
+#       250    3.22-3.60 GB   6.35 GB
+
+import pytest as _pytest
+
+
+def test_requirement_covers_every_measured_peak():
+    """No measured cull may exceed what the gate says it needs."""
+    import run_profile as rp
+    for n, peak in ((58, 3.35), (250, 3.60)):
+        assert rp.required_ram_gb(n) >= peak, (
+            f"{n} photos measured {peak} GB but the gate asks for "
+            f"{rp.required_ram_gb(n)} GB — it would admit a cull it cannot fund")
+
+
+def test_requirement_is_higher_without_draft_decode(monkeypatch):
+    """Full-resolution decode measured ~2x the RAM, so it must ask for more."""
+    import run_profile as rp
+    monkeypatch.setenv("FRAMEGRADE_DRAFT_DECODE", "0")
+    off = rp.required_ram_gb(250)
+    monkeypatch.setenv("FRAMEGRADE_DRAFT_DECODE", "1")
+    on = rp.required_ram_gb(250)
+    assert off > on, f"draft-off ({off}) must need more than draft-on ({on})"
+    assert off >= 6.35, "draft-off measured 6.35 GB at 250 photos"
+
+
+def test_requirement_does_not_shrink_as_the_job_grows():
+    """Monotonic: a bigger cull may never be told it needs less."""
+    import run_profile as rp
+    needs = [rp.required_ram_gb(n) for n in (0, 10, 58, 250, 300, 301, 5000)]
+    assert needs == sorted(needs), needs
+
+
+def test_env_override_still_wins():
+    """FRAMEGRADE_MIN_RAM_GB stays an escape hatch for an unusual machine."""
+    import os
+    import run_profile as rp
+    os.environ["FRAMEGRADE_MIN_RAM_GB"] = "1.5"
+    try:
+        assert rp.required_ram_gb(250) == 1.5
+    finally:
+        os.environ.pop("FRAMEGRADE_MIN_RAM_GB", None)
+
+
+def test_tier_floors_stay_differentiated():
+    """The ladder must keep distinct floors so a small machine can DEGRADE.
+
+    Flattening these to one whole-cull number (tried 2026-08-28) removes the
+    ladder: below the single floor nothing is selectable, so a machine that
+    could have run Fast is refused outright.
+    """
+    import run_profile as rp
+    floors = [rp.spec_for(t).ram_hard_gb for t in rp.TIERS]
+    assert len(set(floors)) == len(floors), f"tier floors collapsed: {floors}"
+    assert floors == sorted(floors, reverse=True), floors
