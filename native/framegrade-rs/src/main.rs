@@ -58,6 +58,50 @@ impl App {
     }
 }
 
+// ── cull RAM requirement ────────────────────────────────────────────────────
+// MIRRORS src/run_profile.py::required_ram_gb. Two implementations of one
+// number is exactly the drift that put a stale `1.8` in this file's
+// system_ram handler while the Python gate had moved to 3.8 — the shim told
+// the photographer a cull would fit and the server then refused it.
+//
+// This crate cannot import Python, so the table is copied verbatim and locked
+// by the tests at the bottom of this file. If run_profile's measurements are
+// redone, change both or the tests fail.
+//
+//   photos   draft ON   draft OFF
+//    <=300     3.8 GB     6.6 GB
+//     >300     4.2 GB     7.0 GB
+
+/// Pure arithmetic — no env, no I/O — so it is testable without races.
+fn ram_need_gb(draft: bool, n_photos: u32, override_gb: Option<f64>) -> f64 {
+    // Python: `return override if override > 0 else need`. A zero or negative
+    // override means "unset", never "no floor".
+    if let Some(v) = override_gb {
+        if v > 0.0 {
+            return v;
+        }
+    }
+    match (draft, n_photos <= 300) {
+        (true, true) => 3.8,
+        (true, false) => 4.2,
+        (false, true) => 6.6,
+        (false, false) => 7.0,
+    }
+}
+
+/// Env-reading wrapper. Same two variables the Python side honours:
+/// FRAMEGRADE_MIN_RAM_GB (absolute override) and FRAMEGRADE_DRAFT_DECODE
+/// ("0" disables scaled decode, which roughly doubles the requirement).
+fn required_ram_gb(n_photos: u32) -> f64 {
+    let override_gb = std::env::var("FRAMEGRADE_MIN_RAM_GB")
+        .ok()
+        .and_then(|s| s.trim().parse::<f64>().ok());
+    let draft = std::env::var("FRAMEGRADE_DRAFT_DECODE")
+        .map(|s| s.trim() != "0")
+        .unwrap_or(true);
+    ram_need_gb(draft, n_photos, override_gb)
+}
+
 // ── handlers: telemetry ─────────────────────────────────────────────────────
 
 async fn system_ram(State(app): State<App>) -> Json<Value> {
@@ -70,7 +114,10 @@ async fn system_ram(State(app): State<App>) -> Json<Value> {
         "ram_free_gb":  (free * 10.0).round() / 10.0,
         "ram_total_gb": (total * 10.0).round() / 10.0,
         "ram_percent":  (percent * 10.0).round() / 10.0,
-        "ram_min_gb":   1.8,
+        // n_photos = 0: this endpoint is polled with no job in front of it, so
+        // it reports the floor for a small cull. The real per-cull gate lives
+        // in the Python grading router, which knows the folder size.
+        "ram_min_gb":   required_ram_gb(0),
     }))
 }
 
@@ -204,4 +251,66 @@ async fn main() {
     axum::serve(listener, app).await.unwrap();
 }
 
+// ── tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::ram_need_gb;
+
+    // This crate claims byte-compatible responses with the Python server, so a
+    // number it invents is a bug even when it is plausible. These lock the
+    // table to src/run_profile.py::_RAM_NEED_GB. If that table is re-measured,
+    // both sides move together or this fails — which is the point.
+    //
+    // Pure function, no env reads: env is process-global and `cargo test` runs
+    // threads in parallel, so testing the wrapper directly would be flaky.
+
+    #[test]
+    fn draft_on_small_job_matches_python() {
+        assert_eq!(ram_need_gb(true, 0, None), 3.8);
+        assert_eq!(ram_need_gb(true, 58, None), 3.8);
+        assert_eq!(ram_need_gb(true, 300, None), 3.8);
+    }
+
+    #[test]
+    fn draft_on_large_job_uses_the_extrapolated_figure() {
+        assert_eq!(ram_need_gb(true, 301, None), 4.2);
+        assert_eq!(ram_need_gb(true, 5000, None), 4.2);
+    }
+
+    #[test]
+    fn draft_off_roughly_doubles_the_requirement() {
+        // Full-resolution decode was measured at 5.85-6.35 GB against
+        // 2.89-3.60 GB drafting. The gate is deliberately above the measured
+        // peak, not at it.
+        assert_eq!(ram_need_gb(false, 0, None), 6.6);
+        assert_eq!(ram_need_gb(false, 301, None), 7.0);
+    }
+
+    #[test]
+    fn an_explicit_override_wins_over_every_branch() {
+        assert_eq!(ram_need_gb(true, 0, Some(2.5)), 2.5);
+        assert_eq!(ram_need_gb(false, 9000, Some(2.5)), 2.5);
+    }
+
+    #[test]
+    fn a_zero_or_negative_override_is_ignored() {
+        // Python treats "" and 0 as absent (`override if override > 0`). A
+        // gate of 0 GB would admit every cull, so this must not be a way to
+        // switch the gate off by accident.
+        assert_eq!(ram_need_gb(true, 0, Some(0.0)), 3.8);
+        assert_eq!(ram_need_gb(true, 0, Some(-1.0)), 3.8);
+    }
+
+    #[test]
+    fn the_dead_floor_is_gone() {
+        // 1.8 was Balanced's ENCODER floor masquerading as a whole-cull
+        // budget. No branch may return it.
+        for &draft in &[true, false] {
+            for &n in &[0u32, 58, 300, 301, 5000] {
+                assert_ne!(ram_need_gb(draft, n, None), 1.8);
+            }
+        }
+    }
+}
 
