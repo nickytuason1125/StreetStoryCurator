@@ -285,6 +285,14 @@ def _ram_total() -> float:
 
 
 def main() -> None:
+    # Windows consoles default stdout to cp1252, which can't encode the → in
+    # these progress prints — reconfigure so the benchmark doesn't crash after
+    # doing all the work, right as it tries to report the result.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--scan", action="store_true", help="cull in fast scan mode")
     ap.add_argument("--deep", action="store_true", help="cull with Deep Grade (Qwen)")
