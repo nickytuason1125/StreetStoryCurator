@@ -2092,7 +2092,7 @@ export default function App() {
                 const row = {
                   clear:    { col:T.ink3,      text:`System memory clear — ${r.free?.toFixed(1)} GB free, plenty of headroom for a full cull.` },
                   tight:    { col:T.alarmWarn, text:`System memory tight — ${r.free?.toFixed(1)} GB free. Grading will run, but closing a few apps gives the best results.` },
-                  critical: { col:T.alarmCrit, text:`Low system memory — only ${r.free?.toFixed(1)} GB free, below the ~${(sysRam?.ram_min_gb ?? graderStatus?.ram_min_gb ?? 1.8)} GB needed. Close some apps before grading.` },
+                  critical: { col:T.alarmCrit, text:`Low system memory — only ${r.free?.toFixed(1)} GB free, below the ~${r.min} GB needed. Close some apps before grading.` },
                 }[r.level]!;
                 return (
                   <div style={{ display:'flex', gap:10, padding:'10px 0', borderBottom:`1px solid ${T.line}` }}>
@@ -2364,8 +2364,14 @@ export default function App() {
           // two culls died tonight when free memory fell under the encoder's
           // load floor. Clear stays neutral so tight and critical actually read.
           const tone = ({ clear: 'neutral', tight: 'warn', critical: 'crit' } as const)[r.level];
+          // Served by /api/system/ram as ram_min_gb (_GRADE_MIN_RAM_GB), read
+          // ONCE by ramReadiness and handed back as r.min. Never restate it as
+          // a literal here: three copies of the floor were baked into display
+          // strings and every one went stale the moment the gate moved from
+          // 1.8 to 3.8, each of them under-warning the photographer.
+          const ramFloorGb = r.min;
           const guidance = r.level === 'critical'
-            ? 'Browsing the library is safe. Scan and Re-grade will be refused until ~1.8 GB is free — close browser tabs or other apps, then retry.'
+            ? `Browsing the library is safe. Scan and Re-grade will be refused until ~${ramFloorGb} GB is free — close browser tabs or other apps, then retry.`
             : r.level === 'tight'
             ? 'Grading will run, but a long cull may drop to Scout Mode (CLIP-only scoring). Closing heavy apps first keeps the full vision pipeline alive.'
             : 'Clear to grade — the full vision pipeline will run.';
@@ -2385,7 +2391,7 @@ export default function App() {
                     {r.percent != null && <> · <span className="t-num">{r.percent.toFixed(0)}%</span> in use</>}
                   </p>
                   <p className="mb-2 text-xs leading-prose text-ink-2">{guidance}</p>
-                  <p className="text-xs text-ink-4">Polled live every 2 s. The grade floor is <span className="t-num">1.8 GB</span> free.</p>
+                  <p className="text-xs text-ink-4">Polled live every 2 s. The grade floor is <span className="t-num">{ramFloorGb} GB</span> free.</p>
                 </div>
               )}
             </span>
