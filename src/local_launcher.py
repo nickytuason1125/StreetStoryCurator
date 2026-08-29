@@ -74,6 +74,31 @@ if __name__ == "__main__" and "--server-only" in sys.argv and sys.platform == "w
     except Exception:
         pass
 
+def _rotate_log_if_large(path: Path, max_bytes: int = 8_000_000, backups: int = 3) -> None:
+    """Roll crash.log -> crash.log.1 -> ... once at launch if it's grown large.
+
+    Everything (raw stdout/stderr via dup2, pywebview's logger, uvicorn's
+    logger) writes into this one file for the life of the process, so it can
+    only be safely rotated before it's opened — rotating a logging handler
+    mid-run would sever the dup2'd fd from the renamed file and split the
+    log stream across two files.
+    """
+    try:
+        if not path.exists() or path.stat().st_size < max_bytes:
+            return
+        oldest = path.with_suffix(f"{path.suffix}.{backups}")
+        if oldest.exists():
+            oldest.unlink()
+        for i in range(backups - 1, 0, -1):
+            src = path.with_suffix(f"{path.suffix}.{i}")
+            if src.exists():
+                src.rename(path.with_suffix(f"{path.suffix}.{i + 1}"))
+        path.rename(path.with_suffix(f"{path.suffix}.1"))
+    except Exception:
+        pass  # never let log rotation block launch
+
+
+_rotate_log_if_large(_LOG)
 try:
     _log_fh = open(_LOG, "a", encoding="utf-8", buffering=1)
 except PermissionError:
