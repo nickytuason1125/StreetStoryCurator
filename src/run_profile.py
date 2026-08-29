@@ -157,6 +157,14 @@ SETTINGS = {
     "FRAMEGRADE_SHARED_DECODE": Setting(bool, True, "reuse decoded frames across stages"),
     "FRAMEGRADE_DFINE_DRAFT": Setting(bool, True, "DCT-domain draft decode for detection"),
     "FRAMEGRADE_LUM_DRAFT":   Setting(bool, True, "draft decode for luminance stats"),
+    "FRAMEGRADE_DRAFT_DECODE": Setting(bool, True,
+        "scaled JPEG decode for grading; drives required_ram_gb(). Declared "
+        "here for discoverability only — draft_decode_enabled() below keeps "
+        "its own literal '!= \"0\"' parse rather than routing through "
+        "setting(), because setting()'s bool rule ('0'/'false'/'no'/'off' are "
+        "falsy) would diverge from the Rust mirror at native/framegrade-rs/"
+        "src/main.rs (which also treats only \"0\" as off), reintroducing the "
+        "exact cross-language drift this module exists to remove"),
     "FRAMEGRADE_GATE_WORKERS": Setting(int, 0, "early-gate worker threads; 0 = auto"),
     "FRAMEGRADE_IQA_SLICE":   Setting(int, 0, "IQA slice size"),
     # local LLM (replaces the Ollama HTTP dependency)
@@ -440,6 +448,12 @@ def required_ram_gb(n_photos: int = 0) -> float:
     constant cannot serve both: the old 1.8 GB gate was Balanced's ENCODER
     floor, so it admitted culls that then drove the machine to 0.10 GB free and
     into the pagefile (111 s versus 25 s for the same folder with RAM to spare).
+
+    Warning: the FRAMEGRADE_MIN_RAM_GB override read here also aliases
+    RunProfile.ram_soft_gb's "legacy alias of the soft floor" (see SETTINGS and
+    ram_soft_gb above, ~line 278) — setting it to escape this cull gate on a
+    tight machine silently disables the encoder's own batch-reduction
+    degradation too, since both read the same env var.
     """
     small, large = _RAM_NEED_GB[draft_decode_enabled()]
     need = small if n_photos <= 300 else large

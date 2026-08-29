@@ -51,14 +51,14 @@ decides whether a cull runs — not how much RAM the machine has in total.
 
 | | Minimum | Comfortable |
 |---|---|---|
-| **Free** memory at grade time | 1.8 GB | 5 GB |
+| **Free** memory at grade time | 3.8 GB | 5 GB |
 | Total system memory | 8 GB | 16 GB |
 | Free disk | 30 GB | 60 GB |
 | GPU (optional) | — | NVIDIA, 6 GB VRAM |
 
 - Below **1.5 GB free** the vision model will not load at all, and the app says
   so rather than stalling.
-- Between **1.8 and 5 GB** a cull runs but may drop to a lighter, faster,
+- Between **3.8 and 5 GB** a cull runs but may drop to a lighter, faster,
   less accurate encoder tier.
 - **No GPU is required.** Everything runs on CPU, just slower.
 - The disk figure is mostly model weights (~22 GB) plus thumbnails and the

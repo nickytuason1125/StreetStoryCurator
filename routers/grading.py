@@ -18,7 +18,7 @@ from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, field_validator, validator, model_validator
 
 from server_impl import (  # shared state & helpers
-    Path, _BG_EXECUTOR, _CATALOG_PATH, _DATA_DIR, _GRADE_MIN_RAM_GB, _grading_active, _release_annotation_model, _trim_crash_log, analyzer, annotation_queue, asyncio, gpu_lock, os, sys,
+    Path, _BG_EXECUTOR, _CATALOG_PATH, _DATA_DIR, _grading_active, _release_annotation_model, _trim_crash_log, analyzer, annotation_queue, asyncio, gpu_lock, os, sys,
 )
 import json
 
@@ -206,8 +206,15 @@ async def grade_photos_v2_stream(req: GradeRequest):
     # budget, so it admitted runs that then drove the machine to 0.10 GB free
     # and into the pagefile (111 s versus 25 s for the same folder with room).
     #
-    # Counting is a listdir, not a decode. scan_mode passes 0 because it skips
-    # IQA entirely — the expensive part — so it must not be charged for it.
+    # Counting is a listdir, not a decode. scan_mode passes 0 — but that only
+    # avoids the >300-photo bump to the "large" figure (4.2 GB); it does NOT
+    # remove the IQA charge, because required_ram_gb(0) still returns the
+    # IQA-inclusive 3.8 GB figure. Scan mode genuinely skips IQA (the expensive
+    # part) and so is charged more than it needs — a real over-estimate, left
+    # in place because correcting it needs a measured encoder-only number that
+    # does not exist yet, and this repo does not invent numbers (see the
+    # _RAM_NEED_GB header in run_profile.py). Consequence: a low-RAM machine
+    # can be refused a scan it could actually run.
     try:
         import psutil as _psutil
         import run_profile as _rp_ram
@@ -229,12 +236,11 @@ async def grade_photos_v2_stream(req: GradeRequest):
             return JSONResponse(
                 status_code=503,
                 content={"error": f"Not enough RAM to grade safely — only {_free_gb:.1f} GB "
-                         f"free, and {_n_photos} photos need about {_need_gb:.1f} GB. "
+                         f"free, and this cull needs about {_need_gb:.1f} GB. "
                          "Close a couple of apps and retry."},
             )
     except Exception:
         pass
-
 
     async def _stream_with_lock():
         # Hold gpu_lock for the full grading run so the annotation daemon

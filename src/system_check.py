@@ -5,7 +5,8 @@ already; the problem was that nothing said so until a run was underway:
 
   1.5 GB free   the SigLIP encoder refuses to load below this and the failure
                 looks like a hang (see the run-framegrade skill's gotchas)
-  1.8 GB free   the grade floor the RAM chip and the pre-grade modal gate on
+  3.8 GB free   the whole-cull grade floor (run_profile.required_ram_gb) the
+                pre-grade modal gate now enforces
   5.0 GB free   what "comfortable" means: ~2 GB for the encode subprocess
                 during model load, plus the grade worker's ~1 GB baseline,
                 plus room for the OS to not swap
@@ -23,7 +24,23 @@ from typing import Optional
 # without moving it here fails the suite instead of silently making the docs a
 # lie.
 ENCODER_FLOOR_GB = 1.5
-GRADE_FLOOR_GB = 1.8
+
+# GRADE_FLOOR_GB must never be a second hardcoded copy of the gate — that is
+# exactly the bug this constant caused once already (this module said 1.8
+# while the real gate, run_profile.required_ram_gb, had moved to 3.8). Pull
+# the live value from the single source of truth; fall back to its current
+# measured figure only if the import itself fails, so a broken import can
+# never stop the app launching (see the module docstring's hard contract:
+# no heavy imports here).
+try:
+    import sys as _sys
+    from pathlib import Path as _Path
+    _sys.path.insert(0, str(_Path(__file__).resolve().parent))
+    import run_profile as _rp
+    GRADE_FLOOR_GB = _rp.required_ram_gb(0)
+except Exception:
+    GRADE_FLOOR_GB = 3.8
+
 COMFORTABLE_FREE_GB = 5.0
 MODELS_DISK_GB = 22.0
 DISK_HEADROOM_GB = 5.0

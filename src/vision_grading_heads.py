@@ -719,11 +719,15 @@ def _run_vision_heads_streaming(
     quality model). This processes a chunk at a time: decode -> detect -> route
     -> score -> discard, so peak memory is O(chunk) and each photo is read once.
 
-    TOPIQ scores are UNCHANGED: the decode is the same 512px path score_all
-    already used, so the quality model sees identical pixels. Only the detector
-    changes — it now sees that 512px buffer instead of its own 640px read, which
-    can move a borderline detection and therefore which formula a photo routes
-    through. Enable with FRAMEGRADE_SHARED_DECODE=1.
+    The shared buffer decodes at 640px (see max_size=640 below), not the 512px
+    path score_all uses on its own — so the quality model does NOT see pixels
+    identical to the unshared path; score_tensors resizes whatever it is given
+    down to its fixed _INPUT_SIZE=384, and a 640->384 resize is not the same as
+    a 512->384 one. That drift is harmless to the quality head (see the note at
+    the decode call below for why), but it is real. The detector, which does
+    care about resolution, now gets its native 640 instead of a downscaled read
+    — the opposite direction from what a naive reading of "512px" would suggest.
+    Enable with FRAMEGRADE_SHARED_DECODE=1.
     """
     import os as _os
     import time as _t

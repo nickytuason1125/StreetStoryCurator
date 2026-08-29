@@ -324,6 +324,60 @@ def test_env_override_still_wins():
         os.environ.pop("FRAMEGRADE_MIN_RAM_GB", None)
 
 
+# ── 7. Rust mirror stays in sync with Python's numbers ───────────────────────
+# native/framegrade-rs/src/main.rs::ram_need_gb copies _RAM_NEED_GB verbatim
+# because the crate cannot import Python. Its own Rust tests assert the SAME
+# literals, so a Python-side re-measure would leave those green while the two
+# sides silently diverge — exactly the class of bug that put a stale 1.8 in
+# the Rust shim while Python had already moved to 3.8. This test reads the
+# Rust source as text and checks its four match-arm literals against Python's
+# _RAM_NEED_GB, with no toolchain / cargo dependency.
+
+def test_rust_ram_mirror_matches_python():
+    import re
+    import run_profile as rp
+
+    rs_path = _ROOT / "native" / "framegrade-rs" / "src" / "main.rs"
+    if not rs_path.exists():
+        pytest.skip(f"Rust shim not present at {rs_path}")
+    text = rs_path.read_text(encoding="utf-8")
+
+    m = re.search(
+        r"\(true,\s*true\)\s*=>\s*([\d.]+),\s*"
+        r"\(true,\s*false\)\s*=>\s*([\d.]+),\s*"
+        r"\(false,\s*true\)\s*=>\s*([\d.]+),\s*"
+        r"\(false,\s*false\)\s*=>\s*([\d.]+),",
+        text,
+    )
+    assert m is not None, (
+        f"could not find the ram_need_gb match arms in {rs_path} — "
+        "the function may have been reshaped; update this test's regex"
+    )
+    rust_draft_small, rust_draft_large, rust_full_small, rust_full_large = (
+        float(g) for g in m.groups()
+    )
+
+    py_draft_small, py_draft_large = rp._RAM_NEED_GB[True]
+    py_full_small, py_full_large = rp._RAM_NEED_GB[False]
+
+    mismatches = []
+    pairs = (
+        ("draft-on, <=300",  rust_draft_small, py_draft_small),
+        ("draft-on, >300",   rust_draft_large, py_draft_large),
+        ("draft-off, <=300", rust_full_small,  py_full_small),
+        ("draft-off, >300",  rust_full_large,  py_full_large),
+    )
+    for label, rust_v, py_v in pairs:
+        if rust_v != py_v:
+            mismatches.append(f"{label}: rust={rust_v} python={py_v}")
+
+    assert not mismatches, (
+        "native/framegrade-rs/src/main.rs::ram_need_gb has drifted from "
+        "src/run_profile.py::_RAM_NEED_GB — one side moved without the "
+        "other:\n" + "\n".join(mismatches)
+    )
+
+
 def test_tier_floors_stay_differentiated():
     """The ladder must keep distinct floors so a small machine can DEGRADE.
 

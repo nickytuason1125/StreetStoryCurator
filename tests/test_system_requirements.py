@@ -23,6 +23,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT / "src"))
 
 import system_check as sc  # noqa: E402
+import run_profile as rp  # noqa: E402
 
 
 # ── Classification ───────────────────────────────────────────────────────────
@@ -34,7 +35,12 @@ def test_a_comfortable_machine_is_ok():
 
 
 def test_enough_to_run_but_tight_is_flagged_not_failed():
-    r = sc.assess(total_gb=8.0, free_gb=2.5, disk_free_gb=60.0)
+    # A fixed 2.5 GB was "tight" back when the floor was a hardcoded 1.8; now
+    # that GRADE_FLOOR_GB tracks run_profile.required_ram_gb(0) (3.8), derive
+    # a value that stays between the floor and "comfortable" instead of
+    # re-hardcoding an assumption this test exists to prevent.
+    free_gb = (sc.GRADE_FLOOR_GB + sc.COMFORTABLE_FREE_GB) / 2
+    r = sc.assess(total_gb=8.0, free_gb=free_gb, disk_free_gb=60.0)
     assert r.level == "tight"
     assert r.blocking is False
     assert "close" in r.message.lower()
@@ -43,7 +49,8 @@ def test_enough_to_run_but_tight_is_flagged_not_failed():
 def test_under_the_grade_floor_is_called_out():
     r = sc.assess(total_gb=8.0, free_gb=1.2, disk_free_gb=60.0)
     assert r.level == "insufficient"
-    assert "1.8" in r.message or "1.5" in r.message
+    floor = str(rp.required_ram_gb(0))
+    assert floor in r.message or "1.5" in r.message
 
 
 def test_low_disk_is_reported_even_when_memory_is_fine():
@@ -76,7 +83,7 @@ def test_message_is_always_actionable_and_never_empty():
 def test_floors_match_what_the_app_actually_enforces():
     """If someone moves a floor, this fails rather than the docs going stale."""
     assert sc.ENCODER_FLOOR_GB == 1.5
-    assert sc.GRADE_FLOOR_GB == 1.8
+    assert sc.GRADE_FLOOR_GB == rp.required_ram_gb(0)
     assert sc.COMFORTABLE_FREE_GB == 5.0
 
 

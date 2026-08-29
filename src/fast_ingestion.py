@@ -108,9 +108,14 @@ def decode_one(
 
     target_hw  : (H, W) to resize after decode. None = native resolution.
     pin        : call .pin_memory() so the GPU DMA engine can fetch directly.
-    draft_hint : long-edge px the caller will actually use. When set, JPEGs are
-                 decoded at the largest power-of-two downscale that still covers
-                 it, instead of full-size-then-shrink.
+    draft_hint : px the caller will actually use. When set, JPEGs are decoded
+                 at the largest power-of-two downscale that still covers it,
+                 instead of full-size-then-shrink. _scale_den gates on the
+                 SHORT edge (min(w, h) // d >= hint), not the long edge — this
+                 is deliberate and conservative (it never undersizes the
+                 decode), but it does mean a non-square frame comes back with
+                 some extra pixels on its long edge that a long-edge gate
+                 would have trimmed.
 
     Why draft_hint exists: a cull's dominant cost is JPEG decode (measured
     2026-08-28: 279 ms/img decode versus 3 ms for the quality model itself), and
