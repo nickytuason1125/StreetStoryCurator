@@ -1973,7 +1973,7 @@ export default function App() {
               </span>
             ) : (
               <span style={{ flex:1, minWidth:0 }}>
-                {missingModels.length > 0 && <>Optional model{missingModels.length > 1 ? "s" : ""} not installed: <strong>{missingModels.join(", ")}</strong> — grading works without {missingModels.length > 1 ? "them" : "it"}; the writing features need {missingModels.length > 1 ? "them" : "it"}.</>}
+                {missingModels.length > 0 && <>Optional AI writing features need a one-time download — grading works without {missingModels.length > 1 ? "them" : "it"}.</>}
               </span>
             )}
             {/* Ollama out-of-date — overrides all other controls */}
