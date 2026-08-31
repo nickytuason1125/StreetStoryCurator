@@ -89,14 +89,59 @@ async def serve_thumb(path: str = Query(...)):
 
 
 @router.get("/api/photo")
-async def serve_photo(path: str = Query(...)):
+async def serve_photo(path: str = Query(...), max: int = Query(0)):
+    """Serve a photograph for loupe display.
+
+    `max` (optional, pixels on the long edge): serve a cached, resized
+    preview instead of the original. A 7000px original can be 20-50 MB and
+    its decode blocks the UI thread for seconds; a 2048px preview decodes
+    in tens of milliseconds and is retina-sharp at loupe size. The cache
+    lives beside the thumbnails, keyed like they are.
+    """
     p = _safe_image_path(path)
+    if max and max > 0:
+        import asyncio
+        loop = asyncio.get_running_loop()
+        prev = await loop.run_in_executor(_THUMB_ONDEMAND, _gen_loupe_preview, str(p), int(max))
+        if prev:
+            return FileResponse(str(prev), media_type="image/jpeg")
     if p.suffix.lower() in (_RAW_EXTS | _HEIC_EXTS):
         import asyncio
         preview = await asyncio.get_running_loop().run_in_executor(None, _gen_preview, str(p))
         if preview:
             return FileResponse(str(preview), media_type="image/jpeg")
     return FileResponse(str(p))
+
+
+def _gen_loupe_preview(src_str: str, max_px: int):
+    """Cached long-edge resize for loupe display. Never raises — returns
+    None on any failure so the caller can fall back to the original."""
+    try:
+        import hashlib
+        src = Path(src_str).resolve()
+        safe = f"{hashlib.md5(str(src).encode()).hexdigest()[:10]}_L{max_px}.jpg"
+        cache = THUMB_DIR / safe
+        if cache.exists():
+            return cache
+        # Source pixels: for RAW/HEIC reuse the decoded full preview; for
+        # regular images decode the original directly.
+        if src.suffix.lower() in (_RAW_EXTS | _HEIC_EXTS):
+            base = _gen_preview(str(src))
+            if not base:
+                return None
+            src_img_path = Path(base)
+        else:
+            src_img_path = src
+        from PIL import Image as _I
+        im = _I.open(src_img_path)
+        im = im.convert("RGB") if im.mode not in ("RGB", "L") else im
+        im.thumbnail((max_px, max_px), _I.LANCZOS)
+        THUMB_DIR.mkdir(parents=True, exist_ok=True)
+        im.save(cache, "JPEG", quality=90)
+        return cache
+    except Exception:
+        return None
+
 
 
 @router.get("/api/places")

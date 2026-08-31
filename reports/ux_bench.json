@@ -1,17 +1,17 @@
 {
   "base": "http://127.0.0.1:8000",
-  "generated": "2026-08-31T05:11:33.778Z",
+  "generated": "2026-08-31T05:53:59.285Z",
   "checks": {
-    "domContentLoaded": 83,
+    "domContentLoaded": 122,
     "fcp": null,
-    "gridPopulated": 1645,
+    "gridPopulated": 1955,
     "thumbCount": 60,
     "scroll": {
-      "idleFps": 191.2,
-      "scrollFps": 237.7
+      "idleFps": 172.5,
+      "scrollFps": 234.5
     },
-    "heapAfterScrollMB": 171,
-    "interactionMs": 8482,
-    "heapFinalMB": 192
+    "heapAfterScrollMB": 164,
+    "interactionMs": 11850,
+    "heapFinalMB": 188
   }
 }

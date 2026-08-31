@@ -1,0 +1,1 @@
+﻿waiting for PyInstaller build... ~ build done ~ frontend copied into engine ~ staged to E:\firstcut-engine ~ deployed to C:\Users\Nicky Tuason\AppData\Roaming\engine\curator-api-x86_64-pc-windows-msvc ~ health: 200 ~ no visible engine consoles ~ DONE

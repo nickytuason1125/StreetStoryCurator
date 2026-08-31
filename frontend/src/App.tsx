@@ -2044,8 +2044,8 @@ export default function App() {
                 <div style={{ width:120, height:6, background:T.raised, borderRadius:'var(--r-sm)', overflow:'hidden' }}>
                   <div style={{ width:`${downloadProgress}%`, height:'100%', background:T.ink3, borderRadius:'var(--r-sm)', transition:'width .3s ease' }}/>
                 </div>
-                <span style={{ fontSize:'var(--text-xs)', whiteSpace:'nowrap', color:T.ink2 }}>
-                  {currentDownloadModel}: {downloadProgress}% — do not close the app
+                <span style={{ fontSize:'var(--text-xs)', whiteSpace:'nowrap', color:'#111', fontWeight:600 }}>
+                  {currentDownloadModel.charAt(0).toUpperCase() + currentDownloadModel.slice(1)}: {downloadProgress}% — do not close the app
                 </span>
               </div>
             )}

@@ -1,4 +1,5 @@
 import { RefreshCw, Layers, Eye } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from '../ui/Button';
 import { Thumb } from '../photo/Thumb';
 import { T } from '../../theme/tokens';
@@ -33,24 +34,70 @@ export function LoupeStage({
   hasPrev: boolean; hasNext: boolean; selIdx: number; filteredPhotos: any[];
   handleCreateFromSelection: () => void; handleGenerate: () => void;
 }) {
+  // ── Preview-first loupe ────────────────────────────────────────────────
+  // The full-resolution original (or a RAW decode) can take seconds; the
+  // 448px thumbnail is disk-cached and paints instantly. So: paint the
+  // thumb scaled up (soft), crossfade the real photo in when decoded.
+  //   * fullReady resets per photo — but a photo already shown this session
+  //     snaps in immediately (loadedPaths), no blur flash on the way back.
+  //   * onError keeps the existing degrade-to-thumb + retry path.
+  //   * prefers-reduced-motion: layers swap without transitions.
+  const [fullReady, setFullReady] = useState(false);
+  const loadedPaths = useRef<Set<string>>(new Set());
+  const reducedMotion = useRef(
+    typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches,
+  );
+  useEffect(() => {
+    setFullReady(loadedPaths.current.has(sel.path));
+  }, [sel.path]);
+
   return (
     <>
                   {/* Base photo — always rendered; eye overlay crossfades on top.
                       On failure: degrade to the thumbnail, never a black stage. */}
                   {!loupePreviewFailed ? (
-                    <img
-                      key={sel.path}
-                      src={photoUrl(sel.path) + (loupeRetry ? `&_r=${loupeRetry}` : '')}
-                      alt=""
-                      onError={() => setLoupePreviewFailed(true)}
-                      onLoad={e => setPhotoNatDims({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })}
-                      style={{ maxWidth:'100%', maxHeight:'100%', objectFit:'contain', display:'block', userSelect:'none',
-                        boxShadow:'var(--shadow-2)',
-                        animation:'fadeIn .35s cubic-bezier(.2,0,0,1)',
-                        outline: selectedIds.has(selId ?? '') ? `3px solid ${T.mark}` : 'none',
-                        outlineOffset:'-3px', transition:'outline .22s ease',
-                      }}
-                    />
+                    <div style={{ position:'relative', display:'flex', alignItems:'center', justifyContent:'center', width:'100%', height:'100%' }}>
+                      {/* Layer 0 — the cached thumbnail, painted instantly.
+                          Explicit width/height + contain: a 448px thumb must
+                          UPSCALE to fill the stage (max-* never upscales). */}
+                      <img
+                        key={`thumb-${sel.path}`}
+                        src={`${API}/api/thumb?path=${encodeURIComponent(sel.path)}`}
+                        alt=""
+                        aria-hidden={fullReady || undefined}
+                        style={{ width:'100%', height:'100%', objectFit:'contain', display:'block', userSelect:'none',
+                          boxShadow:'var(--shadow-2)',
+                          position: fullReady ? 'absolute' : 'relative', inset: fullReady ? 0 : undefined,
+                          opacity: fullReady ? 0 : 1,
+                          filter: fullReady ? 'none' : 'blur(6px)',
+                          transition: reducedMotion.current ? 'none' : 'opacity .3s ease, filter .45s ease',
+                        }}
+                      />
+                      {/* Layer 1 — the real photo; invisible until decoded, then
+                          crossfades over the soft thumb. decoding:async keeps the
+                          multi-thousand-pixel decode off the main thread. */}
+                      <img
+                        key={sel.path}
+                        src={photoUrl(sel.path) + '&max=2048' + (loupeRetry ? `&_r=${loupeRetry}` : '')}
+                        alt=""
+                        decoding="async"
+                        onError={() => setLoupePreviewFailed(true)}
+                        onLoad={e => {
+                          loadedPaths.current.add(sel.path);
+                          setFullReady(true);
+                          setPhotoNatDims({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight });
+                        }}
+                        style={{ maxWidth:'100%', maxHeight:'100%', objectFit:'contain', display:'block', userSelect:'none',
+                          boxShadow:'var(--shadow-2)',
+                          position: fullReady ? 'relative' : 'absolute', inset: fullReady ? undefined : 0,
+                          opacity: fullReady ? 1 : 0,
+                          pointerEvents: fullReady ? 'auto' : 'none',
+                          transition: reducedMotion.current ? 'none' : 'opacity .35s cubic-bezier(.2,0,0,1), outline .22s ease',
+                          outline: selectedIds.has(selId ?? '') ? `3px solid ${T.mark}` : 'none',
+                          outlineOffset:'-3px',
+                        }}
+                      />
+                    </div>
                   ) : (
                     <div className="flex flex-col items-center gap-3" style={{ maxWidth:'100%', maxHeight:'100%' }}>
                       <Thumb key={`loupe-fallback-${sel.path}`} path={sel.path} eager
