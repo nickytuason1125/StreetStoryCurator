@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Continue'
+﻿$ErrorActionPreference = 'Continue'
 $root = 'C:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator'
 $log = "$root\deploy_engine.log"
 "waiting for PyInstaller build..." | Out-File $log -Encoding utf8
@@ -9,6 +9,13 @@ while ((Get-Date) -lt $deadline) {
 }
 if (-not (Test-Path "$root\dist\FirstCut\FirstCut.exe")) { "BUILD STILL NOT DONE" | Out-File $log -Append -Encoding utf8; exit 1 }
 "build done" | Out-File $log -Append -Encoding utf8
+
+# 0. KILL FIRST â€” the running engine locks its own exe/PYZ, so copying over it
+#    silently fails (locked files keep old bytes) and the "restart" just
+#    relaunches the stale binary. Order is: kill â†’ copy â†’ relaunch.
+Get-Process firstcut,curator-api,pythonw -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 4
+"killed running app + engine" | Out-File $log -Append -Encoding utf8
 
 # 1. fresh frontend (with banner fix + preview-first loupe) into the new engine
 $fd = "$root\dist\FirstCut\_internal\frontend\dist"
@@ -29,9 +36,7 @@ Copy-Item "$root\dist\FirstCut\*" $live -Recurse -Force
 Rename-Item "$live\FirstCut.exe" 'curator-api.exe' -Force
 "deployed to $live" | Out-File $log -Append -Encoding utf8
 
-# 4. relaunch + verify
-Get-Process firstcut,curator-api -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-Start-Sleep -Seconds 3
+# 4. relaunch + verify (app killed in step 0)
 Start-Process "$env:LOCALAPPDATA\FirstCut\firstcut.exe"
 Start-Sleep -Seconds 30
 try { $h = Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:8000/api/health' -TimeoutSec 10; "health: $($h.StatusCode)" | Out-File $log -Append -Encoding utf8 } catch { "health: FAILED" | Out-File $log -Append -Encoding utf8 }

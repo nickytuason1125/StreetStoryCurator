@@ -553,6 +553,7 @@ def _in_process_pull_stream(model_name: str):
 
 
 
+@router.post("/api/models/pull")
 async def pull_model_stream(req: ModelPullRequest):
     """Stream the model downloader's progress as ndjson.
 
