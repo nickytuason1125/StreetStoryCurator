@@ -15,7 +15,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-SRC = Path(r"E:\cullwise-engine")  # engine staging (C: is too small to hold the loose tree)
+SRC = Path(r"E:\firstcut-engine")  # engine staging (C: is too small to hold the loose tree)
 DST_DIR = Path(__file__).resolve().parent.parent / "frontend/src-tauri/resources"
 PART_LIMIT = 1_600_000_000  # stay well under NSIS's 2 GB mmap limit
 TRIPLE = "x86_64-pc-windows-msvc"
