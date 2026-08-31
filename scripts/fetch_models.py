@@ -40,10 +40,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+# models/ may live on exFAT (this project's E: staging drive is), which
+# supports neither hard links nor symlinks. huggingface_hub's xet downloader
+# and cache-linking both raise OSError [WinError 50] "The request is not
+# supported" there. Disabling xet forces the classic HTTPS path, which writes
+# plain files — the _fetch_gguf fallback below covers any residual case.
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
 _ROOT = Path(__file__).resolve().parent.parent
 _SRC = _ROOT / "src"
@@ -293,8 +301,29 @@ def _fetch_gguf(key: str, as_json: bool) -> bool:
         # TWICE the disk per file — measured: one 1.8 GB GGUF took free space from
         # 17.1 GB to 11.8 GB. On a machine with 17 GB free and 9 GB of models to
         # fetch, that difference decides whether the install completes.
-        got = hf_hub_download(repo_id=m.repo, filename=m.filename,
-                              local_dir=str(m.dest.parent))
+        try:
+            got = hf_hub_download(repo_id=m.repo, filename=m.filename,
+                                  local_dir=str(m.dest.parent))
+        except OSError as link_err:
+            # exFAT (and network) destinations reject the hard-link/symlink and
+            # xet-chunk operations hf_hub uses internally — WinError 50. The
+            # file itself is a plain CDN object: stream it directly instead.
+            _emit(as_json, name=f"gguf:{key}", status="start",
+                  message=f"hub linker unavailable ({str(link_err)[:60]}) — direct download")
+            url = f"https://huggingface.co/{m.repo}/resolve/main/{m.filename}"
+            import requests as _rq
+            dest = m.dest
+            part = dest.with_name(dest.name + ".part")
+            have = part.stat().st_size if part.exists() else 0
+            with _rq.get(url, headers=({"Range": f"bytes={have}-"} if have else {}),
+                         stream=True, timeout=(15, 90), allow_redirects=True) as r:
+                r.raise_for_status()
+                append = (r.status_code == 206 and have > 0)
+                with open(part, "ab" if append else "wb") as f:
+                    for chunk in r.iter_content(1024 * 1024):
+                        if chunk:
+                            f.write(chunk)
+            got = part
         got = Path(got)
         if got.resolve() != m.dest.resolve():
             shutil.move(str(got), str(m.dest))

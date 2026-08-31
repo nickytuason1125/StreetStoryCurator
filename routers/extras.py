@@ -471,50 +471,136 @@ except Exception as _e:
 class ModelPullRequest(BaseModel):
     model_name: str
 
-@router.post("/api/models/pull")
+def _in_process_pull_stream(model_name: str):
+    """Frozen-engine model downloads: plain HTTP with range-resume.
+
+    The bundled engine has no Python interpreter for helper scripts, so
+    scripts/fetch_models.py cannot run here. The OPTIONAL models are single
+    plain files on the Hugging Face CDN — a streaming GET with range-resume
+    covers them without any helper script or torch. Emits the same ndjson
+    vocabulary fetch_models.py uses, so the existing UI progress banner
+    works unchanged.
+    """
+    import json as _j
+    try:
+        import model_registry as _mr
+    except Exception as exc:
+        yield (_j.dumps({"name": "plan", "status": "fail",
+                         "message": f"model_registry unavailable: {exc}"[:200]}) + "\n").encode()
+        return
+
+    keys = ["vision", "vision_mmproj", "text"]
+    if model_name == "all":
+        keys += [m.key for m in _mr.GGUF_MODELS if m.key not in keys]
+
+    import requests as _rq
+    ok_all = True
+    for key in keys:
+        try:
+            m = _mr.gguf(key)
+        except Exception as exc:
+            yield (_j.dumps({"name": f"gguf:{key}", "status": "fail",
+                             "message": str(exc)[:120]}) + "\n").encode()
+            ok_all = False
+            continue
+        if m.present():
+            yield (_j.dumps({"name": f"gguf:{key}", "status": "skip",
+                             "message": "already installed"}) + "\n").encode()
+            continue
+
+        dest = m.dest
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        part = dest.with_name(dest.name + ".part")
+        have = part.stat().st_size if part.exists() else 0
+        url = f"https://huggingface.co/{m.repo}/resolve/main/{m.filename}"
+        yield (_j.dumps({"name": f"gguf:{key}", "status": "start",
+                         "message": f"{m.filename} (~{m.size_gb:.1f} GB) — {m.purpose}"}) + "\n").encode()
+        try:
+            headers = {"Range": f"bytes={have}-"} if have else {}
+            with _rq.get(url, headers=headers, stream=True,
+                         timeout=(15, 90), allow_redirects=True) as r:
+                if r.status_code == 404:
+                    yield (_j.dumps({"name": f"gguf:{key}", "status": "fail",
+                                     "message": "file not found on the hub (404)"}) + "\n").encode()
+                    ok_all = False
+                    continue
+                r.raise_for_status()
+                # A server that ignores Range answers 200 — restart cleanly.
+                append = (r.status_code == 206 and have > 0)
+                done = have if append else 0
+                last = 0
+                with open(part, "ab" if append else "wb") as f:
+                    for chunk in r.iter_content(1024 * 1024):
+                        if not chunk:
+                            continue
+                        f.write(chunk)
+                        done += len(chunk)
+                        if done - last >= 256 * 1024 * 1024:
+                            last = done
+                            yield (_j.dumps({"name": f"gguf:{key}", "status": "progress",
+                                             "received_gb": round(done / 1e9, 2),
+                                             "total_gb": m.size_gb}) + "\n").encode()
+            part.replace(dest)   # same directory — atomic on NTFS
+            yield (_j.dumps({"name": f"gguf:{key}", "status": "ok"}) + "\n").encode()
+        except Exception as exc:
+            yield (_j.dumps({"name": f"gguf:{key}", "status": "fail",
+                             "message": f"{str(exc)[:120]} — progress kept, retry resumes"}) + "\n").encode()
+            ok_all = False
+
+    yield (_j.dumps({"name": "plan", "status": "ok" if ok_all else "fail",
+                     "message": ("optional models installed"
+                                 if ok_all else "one or more downloads failed — retry resumes")}) + "\n").encode()
+
+
+
 async def pull_model_stream(req: ModelPullRequest):
     """Stream the model downloader's progress as ndjson.
 
-    This used to proxy Ollama's /api/pull. Ollama is gone, so it proxied a port
-    nothing was listening on. It now runs scripts/fetch_models.py, which asks
-    tier_select which encoder this machine will actually use and fetches only
-    that — the difference between ~0.8 GB on a CPU laptop and the 20+ GB the old
-    unconditional prefetch would have pulled.
+    Two paths:
 
-    A subprocess, not an in-process call: downloads take minutes, and the event
-    loop must stay free to serve the UI that is displaying this progress.
+    * Dev/source builds run scripts/fetch_models.py as a subprocess (it needs
+      a real Python for torch-touching helpers).
+    * The FROZEN engine ships no Python interpreter, so that subprocess cannot
+      run — the missing script surfaced as download failures in installed
+      builds. There the OPTIONAL models are fetched in-process instead: each
+      is a single plain file on the Hugging Face CDN, so a streaming GET with
+      range-resume covers them completely. The encoder is not downloadable
+      this way — it ships inside the engine bundle itself.
     """
     def _stream():
         # Imported here, not at module scope: suppress_console patches subprocess
         # at import line 1, and a local import picks up the patched module.
         import subprocess
-        proc = None
-        try:
-            cmd = [sys.executable, str(_UNIT_ROOT / "scripts" / "fetch_models.py"),
-                   "--json"]
-            if req.model_name in ("optional", "all"):
-                cmd.append("--with-optional" if req.model_name == "optional" else "--all")
-            proc = subprocess.Popen(
-                cmd, cwd=str(_UNIT_ROOT),
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1,
-            )
-            for line in proc.stdout:                      # type: ignore[union-attr]
-                line = line.strip()
-                if line.startswith("{"):
-                    yield (line + "\n").encode()
-            proc.wait(timeout=30)
-        except Exception as exc:
-            import json as _j
-            yield (_j.dumps({"name": "plan", "status": "fail",
-                             "message": str(exc)[:200]}) + "\n").encode()
-        finally:
-            # A disconnected client must not leave a multi-GB download orphaned.
-            if proc is not None and proc.poll() is None:
-                try:
-                    proc.terminate()
-                except Exception:
-                    pass
+        fetch_script = _UNIT_ROOT / "scripts" / "fetch_models.py"
+        if fetch_script.exists():
+            proc = None
+            try:
+                cmd = [sys.executable, str(fetch_script), "--json"]
+                if req.model_name in ("optional", "all"):
+                    cmd.append("--with-optional" if req.model_name == "optional" else "--all")
+                proc = subprocess.Popen(
+                    cmd, cwd=str(_UNIT_ROOT),
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, bufsize=1,
+                )
+                for line in proc.stdout:                      # type: ignore[union-attr]
+                    line = line.strip()
+                    if line.startswith("{"):
+                        yield (line + "\n").encode()
+                proc.wait(timeout=30)
+            except Exception as exc:
+                import json as _j
+                yield (_j.dumps({"name": "plan", "status": "fail",
+                                 "message": str(exc)[:200]}) + "\n").encode()
+            finally:
+                # A disconnected client must not leave a multi-GB download orphaned.
+                if proc is not None and proc.poll() is None:
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+            return
+        yield from _in_process_pull_stream(req.model_name)
 
     return StreamingResponse(_stream(), media_type="application/x-ndjson")
 
