@@ -173,8 +173,8 @@ def _find_a_raw() -> Path | None:
     an empty bench directory is why this test silently skipped at first.
     """
     from src.exif_reader import RAW_EXTS
-    for root in (Path(r"E:\GB"), Path(r"D:\cullwise_bench\raw"),
-                 Path(r"D:\cullwise_bench\raw2")):
+    for root in (Path(r"E:\GB"), Path(r"D:\lumara_bench\raw"),
+                 Path(r"D:\lumara_bench\raw2")):
         if not root.exists():
             continue
         for f in sorted(root.rglob("*")):

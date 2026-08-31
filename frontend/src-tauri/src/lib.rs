@@ -101,7 +101,199 @@ fn start_python_server(project_root: &std::path::Path) -> Option<Child> {
 
 // ─── Release-mode sidecar launcher ──────────────────────────────────────────
 
-/// Spawn the PyInstaller sidecar bundle in release mode.
+/// Extract the engine zip (shipped as a single resource) into
+/// <resource_dir>/binaries/curator-api-<triple>/. Runs once on first launch
+/// — the NSIS payload stores the engine zipped because tauri-build's
+/// resources glob stack-overflows on the 8k-file tree and NSIS is far
+/// faster with one entry. A version marker re-triggers extraction when the
+/// app version changes, so engine updates ship cleanly.
+fn extract_engine_zip(zip_path: &std::path::Path, dest_root: &std::path::Path) -> Result<(), String> {
+    eprintln!("[tauri] extracting engine part {:?} (one-time, a few minutes)…", zip_path);
+    let file = std::fs::File::open(zip_path).map_err(|e| format!("open engine zip: {}", e))?;
+    let mut archive = zip::ZipArchive::new(std::io::BufReader::new(file))
+        .map_err(|e| format!("read engine zip: {}", e))?;
+
+    let total = archive.len();
+    for i in 0..total {
+        let mut entry = archive.by_index(i)
+            .map_err(|e| format!("zip entry {}: {}", i, e))?;
+        let Some(rel) = entry.enclosed_name().map(|p| p.to_path_buf()) else {
+            continue; // skip unsafe paths (.., absolute, etc.)
+        };
+        let out_path = dest_root.join(rel);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&out_path)
+                .map_err(|e| format!("mkdir {}: {}", out_path.display(), e))?;
+            continue;
+        }
+        if let Some(parent) = out_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("mkdir {}: {}", parent.display(), e))?;
+        }
+        let mut out = std::fs::File::create(&out_path)
+            .map_err(|e| format!("create {}: {}", out_path.display(), e))?;
+        std::io::copy(&mut entry, &mut out)
+            .map_err(|e| format!("write {}: {}", out_path.display(), e))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Some(mode) = entry.unix_mode() {
+                let _ = std::fs::set_permissions(&out_path, std::fs::Permissions::from_mode(mode));
+            }
+        }
+        if i % 1000 == 0 {
+            eprintln!("[tauri]   extracted {}/{}", i, total);
+        }
+    }
+
+    std::fs::write(dest_root.join(".engine-part-ok"), "1")
+        .map_err(|e| format!("write marker: {}", e))?;
+    eprintln!("[tauri] engine part extracted.");
+    Ok(())
+}
+
+/// Find engine zip parts (curator-engine-NN.zip) under the given base dirs.
+fn collect_engine_parts(bases: &[PathBuf]) -> Vec<PathBuf> {
+    let mut parts: Vec<PathBuf> = Vec::new();
+    for base in bases {
+        if let Ok(rd) = std::fs::read_dir(base) {
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if name.starts_with("curator-engine-") && name.ends_with(".zip") {
+                    parts.push(e.path());
+                }
+            }
+        }
+    }
+    parts.sort();
+    parts.dedup();
+    parts
+}
+
+/// Download one engine part with HTTP range resume. Ok(false) = 404 (no more parts).
+fn download_with_resume(url: &str, dest: &std::path::Path) -> Result<bool, String> {
+    let have = dest.metadata().map(|m| m.len()).unwrap_or(0);
+    let mut resp = match ureq::get(url).set("Range", &format!("bytes={}-", have)).call() {
+        Ok(r) => r,
+        Err(ureq::Error::Status(code, _)) if code == 404 => return Ok(false),
+        Err(e) => return Err(format!("GET {}: {}", url, e)),
+    };
+    eprintln!("[tauri]   downloading {} (resuming from {} bytes)", url, have);
+    use std::io::Write;
+    let mut out = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dest)
+        .map_err(|e| format!("open {}: {}", dest.display(), e))?;
+    let mut reader = resp.into_reader();
+    let mut copied: u64 = 0;
+    loop {
+        let mut buf = [0u8; 256 * 1024];
+        let n = reader.read(&mut buf).map_err(|e| format!("read {}: {}", url, e))?;
+        if n == 0 {
+            break;
+        }
+        out.write_all(&buf[..n]).map_err(|e| format!("write {}: {}", dest.display(), e))?;
+        copied += n as u64;
+        if copied / (128 * 1024 * 1024) != (copied - n as u64) / (128 * 1024 * 1024) {
+            eprintln!("[tauri]   … {} MB of this part", copied / (1024 * 1024));
+        }
+    }
+    Ok(true)
+}
+
+/// Download every engine part from `base` (e.g. https://host/engine/1.0.0/),
+/// extracting each as it lands. Returns the bundle dir on success.
+fn download_engine(base: &str, engine_root: &std::path::Path, triple: &str) -> Option<PathBuf> {
+    std::fs::create_dir_all(engine_root).ok()?;
+    let mut n: u32 = 1;
+    loop {
+        let name = format!("curator-engine-{:02}.zip", n);
+        let part_path = engine_root.join(format!("{}.part", name));
+        match download_with_resume(&format!("{}/{}", base, name), &part_path) {
+            Ok(true) => {
+                extract_engine_zip(&part_path, engine_root).ok()?;
+                let _ = std::fs::remove_file(&part_path);
+                n += 1;
+                if n > 64 {
+                    break;
+                }
+            }
+            Ok(false) => break, // 404 — no more parts
+            Err(e) => {
+                eprintln!("[tauri] ERROR downloading engine: {} (progress kept; relaunch to resume)", e);
+                return None;
+            }
+        }
+    }
+    if n == 1 {
+        eprintln!("[tauri] ERROR: engine download URL has no parts (404 on part 01): {}", base);
+        return None;
+    }
+    let dir = engine_root.join(format!("curator-api-{}", triple));
+    if dir.join(format!("curator-api{}", exe_ext())).exists() {
+        Some(dir)
+    } else {
+        eprintln!("[tauri] ERROR: engine downloaded but curator-api exe missing");
+        None
+    }
+}
+
+/// Resolve the engine bundle dir: 1) previously downloaded/extracted engine in
+/// the writable data dir, 2) loose sidecar in resources (local builds),
+/// 3) zip parts shipped in resources (offline distribution),
+/// 4) first-run download from LUMARA_ENGINE_URL (public distribution).
+fn resolve_engine(app: &tauri::AppHandle, triple: &str, ext: &str) -> Option<PathBuf> {
+    let resource_dir = app.path().resource_dir()
+        .map_err(|e| eprintln!("[tauri] resource_dir error: {}", e))
+        .ok()?;
+    let engine_root = app.path().data_dir().unwrap_or_else(|_| resource_dir.clone()).join("engine");
+    let name = format!("curator-api-{}", triple);
+    let exe_rel = format!("curator-api{}", ext);
+
+    // 1) Already installed in the writable data dir.
+    let installed = engine_root.join(&name);
+    if installed.join(&exe_rel).exists() {
+        return Some(installed);
+    }
+
+    // 2) Loose sidecar next to resources (local/dev builds).
+    for base in [resource_dir.join("binaries"), resource_dir.join("resources").join("binaries")] {
+        let d = base.join(&name);
+        if d.join(&exe_rel).exists() {
+            return Some(d);
+        }
+    }
+
+    // 3) Zip parts shipped inside the installer (offline distribution).
+    let parts = collect_engine_parts(&[resource_dir.clone(), resource_dir.join("resources")]);
+    if !parts.is_empty() {
+        std::fs::create_dir_all(engine_root.join(&name)).ok()?;
+        let marker = engine_root.join(&name).join(".engine-version");
+        let want = format!("{}\t{}", env!("CARGO_PKG_VERSION"), parts.len());
+        if std::fs::read_to_string(&marker).map(|v| v.trim() != want).unwrap_or(true) {
+            for part in &parts {
+                if let Err(e) = extract_engine_zip(part, &engine_root) {
+                    eprintln!("[tauri] ERROR extracting {:?}: {}", part, e);
+                    return None;
+                }
+            }
+            let _ = std::fs::write(&marker, &want);
+        }
+        return Some(engine_root.join(&name));
+    }
+
+    // 4) First-run download.
+    if let Ok(base) = env::var("LUMARA_ENGINE_URL") {
+        if !base.trim().is_empty() {
+            eprintln!("[tauri] No engine installed — downloading from {}", base.trim());
+            return download_engine(base.trim(), &engine_root, triple);
+        }
+    }
+    eprintln!("[tauri] ERROR: no engine found and LUMARA_ENGINE_URL is not set — cannot start backend.");
+    None
+}
+
 /// The bundle dir lives at:
 ///   <resource_dir>/binaries/curator-api-<triple>/
 /// and the executable is:
@@ -109,28 +301,11 @@ fn start_python_server(project_root: &std::path::Path) -> Option<Child> {
 ///
 /// We set:
 ///   CWD          → the bundle dir  (so models/ and frontend/dist/ resolve)
-///   CURATOR_DATA_DIR → user's AppData/Cullwise (writable cache)
+///   CURATOR_DATA_DIR → user's AppData/Lumara (writable cache)
 fn start_sidecar(app: &tauri::AppHandle) -> Option<Child> {
-    let resource_dir = app.path().resource_dir()
-        .map_err(|e| eprintln!("[tauri] resource_dir error: {}", e))
-        .ok()?;
-
     let triple      = sidecar_triple();
     let ext         = exe_ext();
-    // Tauri v2 resource placement varies by config form: the glob may preserve
-    // the "resources/" prefix or strip it depending on version. Check both.
-    let candidates = [
-        resource_dir.join("binaries").join(format!("curator-api-{}", triple)),
-        resource_dir.join("resources").join("binaries").join(format!("curator-api-{}", triple)),
-    ];
-    let bundle_dir = candidates.iter().find(|d| d.join(format!("curator-api{}", ext)).exists());
-    let bundle_dir = match bundle_dir {
-        Some(d) => d.clone(),
-        None => {
-            eprintln!("[tauri] ERROR: sidecar exe not found in any resource location — did you run build-backend.bat?");
-            return None;
-        }
-    };
+    let bundle_dir  = resolve_engine(app, &triple, &ext)?;
     let exe_path    = bundle_dir.join(format!("curator-api{}", ext));
 
     eprintln!("[tauri] Sidecar bundle dir: {:?}", bundle_dir);
@@ -141,9 +316,9 @@ fn start_sidecar(app: &tauri::AppHandle) -> Option<Child> {
         return None;
     }
 
-    // Resolve the writable data directory (AppData\Roaming\Cullwise on Windows)
+    // Resolve the writable data directory (AppData\Roaming\Lumara on Windows)
     let data_dir = app.path().data_dir()
-        .map(|d| d.join("Cullwise"))
+        .map(|d| d.join("Lumara"))
         .unwrap_or_else(|_| bundle_dir.clone());
 
     eprintln!("[tauri] CURATOR_DATA_DIR: {:?}", data_dir);
@@ -164,12 +339,13 @@ fn start_sidecar(app: &tauri::AppHandle) -> Option<Child> {
 // ─── Poll until the server responds ─────────────────────────────────────────
 
 /// Poll until the server responds or timeout expires.
-fn wait_for_server(url: &str, retries: u32) -> bool {
-    for _ in 0..retries {
+fn wait_for_server(url: &str, max_wait_secs: u64) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_secs(max_wait_secs);
+    while std::time::Instant::now() < deadline {
         if ureq::get(url).call().is_ok() {
             return true;
         }
-        thread::sleep(Duration::from_millis(400));
+        thread::sleep(Duration::from_secs(2));
     }
     false
 }
@@ -204,7 +380,7 @@ pub fn run() {
     {
         let base = env::var("LOCALAPPDATA")
             .unwrap_or_else(|_| std::env::temp_dir().to_string_lossy().into_owned());
-        let wv_data = PathBuf::from(base).join("Cullwise").join("WebView2");
+        let wv_data = PathBuf::from(base).join("Lumara").join("WebView2");
         let _ = std::fs::create_dir_all(&wv_data);
         env::set_var("WEBVIEW2_USER_DATA_FOLDER", &wv_data);
     }
@@ -230,7 +406,7 @@ pub fn run() {
                 "main",
                 webview_url,
             )
-            .title("Cullwise")
+            .title("Lumara")
             // Calm WebView2: no first-run experience, no default-browser-check
             // prompts, no Microsoft UI surfaces inside the app window. NOTE:
             // setting these args REPLACES Tauri's defaults, so Tauri's own
@@ -272,15 +448,15 @@ pub fn run() {
 
                 *handle_clone.lock().unwrap() = child;
 
-                // Wait up to 60 s, then navigate the window to the real React app.
-                let ready = wait_for_server("http://127.0.0.1:8000/", 150);
+                // Wait up to 90 min (first-run engine download can be large), then navigate.
+                let ready = wait_for_server("http://127.0.0.1:8000/", 90 * 60);
                 if ready {
                     eprintln!("[tauri] Server ready — navigating to app.");
                     if let Some(win) = app_handle.get_webview_window("main") {
                         let _ = win.navigate("http://127.0.0.1:8000".parse().unwrap());
                     }
                 } else {
-                    eprintln!("[tauri] WARNING: Server did not respond in 60 s.");
+                    eprintln!("[tauri] WARNING: Server did not respond in 90 min.");
                 }
             });
 

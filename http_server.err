@@ -1,0 +1,2 @@
+usage: server.py [-h] [--cgi] [-b ADDRESS] [-d DIRECTORY] [-p VERSION] [port]
+server.py: error: unrecognized arguments: Tuason\Desktop\StreetPhotoEditor\street-story-curator\frontend\src-tauri\resources

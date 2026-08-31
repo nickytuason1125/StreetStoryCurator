@@ -1,14 +1,14 @@
-# Cullwise — formerly FrameGrade (renamed 2026-08-30)
+# Lumara — formerly FrameGrade (renamed 2026-08-30)
 
 > **Deprecation notice:** the product formerly known as **FrameGrade** is now
-> **Cullwise**. All user-facing strings, docs, env vars (`FRAMEGRADE_*` →
-> `CULLWISE_*`), the Tauri identity (`com.cullwise.app`), the Rust crate, and
-> the PyInstaller spec (`Cullwise.spec`) were migrated in one pass
+> **Lumara**. All user-facing strings, docs, env vars (`FRAMEGRADE_*` →
+> `LUMARA_*`), the Tauri identity (`com.lumara.app`), the Rust crate, and
+> the PyInstaller spec (`Lumara.spec`) were migrated in one pass
 > (`scripts/deprecate_framegrade.py`). If an old script still sets a
-> `FRAMEGRADE_*` variable, rename it to `CULLWISE_*` — the old names are
+> `FRAMEGRADE_*` variable, rename it to `LUMARA_*` — the old names are
 > deprecated and will not be recognized going forward.
 
-# Cullwise — Frontier 2026 Architectural Contract
+# Lumara — Frontier 2026 Architectural Contract
 
 ## Model Stack (Sequential, VRAM-safe)
 
@@ -109,7 +109,7 @@ Score blend (grade_pipeline_v2 Step 5): **confidence-adaptive** —
 `conf = |head-0.5|/0.5`. A neutral head (~0.5, i.e. a genre it hasn't learned)
 collapses `w` to the 0.20 floor → identical to the legacy flat 0.80/0.20, so it
 can never regress; a confident head rises toward `ceil` (env
-`CULLWISE_PH_WEIGHT_MAX`, default 0.35, clamped ≤0.60) so taste becomes a
+`LUMARA_PH_WEIGHT_MAX`, default 0.35, clamped ≤0.60) so taste becomes a
 first-class vote only where it has coverage. Adding a few ratings in a new genre
 raises the head's confidence there → grades shift toward the user's taste
 automatically, with zero effect where it hasn't learned.
@@ -175,10 +175,10 @@ Opt-in flags (default OFF) for non-shipped influence:
 
 | Flag | Enables | Guardrails |
 |---|---|---|
-| `CULLWISE_PERSONAL_TASTE=1` | PersonalHead taste blend (Step 5) | confidence-adaptive 0.20–0.70 weight, tier-mismatch guard |
-| `CULLWISE_MASTER_JUDGE=1` | local cache challenger + background auto-refit | champion/challenger promotion required |
-| `CULLWISE_MASTER_ANCHORS=1` | human-anchored calibration ruler (`cache/master_anchors.json`) | probe-fingerprint freshness + lo/hi span + 3★ monotonicity refusal |
-| `CULLWISE_MASTER_JUDGE_OFF=1` | kill switch — disables the shipped master judge too | — |
+| `LUMARA_PERSONAL_TASTE=1` | PersonalHead taste blend (Step 5) | confidence-adaptive 0.20–0.70 weight, tier-mismatch guard |
+| `LUMARA_MASTER_JUDGE=1` | local cache challenger + background auto-refit | champion/challenger promotion required |
+| `LUMARA_MASTER_ANCHORS=1` | human-anchored calibration ruler (`cache/master_anchors.json`) | probe-fingerprint freshness + lo/hi span + 3★ monotonicity refusal |
+| `LUMARA_MASTER_JUDGE_OFF=1` | kill switch — disables the shipped master judge too | — |
 
 Non-negotiables:
 - Never default-on the opt-in flags; never hand-edit `promoted` to true;
@@ -234,8 +234,8 @@ Two stages are OPT-IN because they were measured, not guessed:
 
 | Setting | Default | Cost when on |
 |---|---|---|
-| `CULLWISE_STORY_REVISION` | off | ~200s per iteration (170s to encode one contact sheet on CPU) |
-| `CULLWISE_STORY_VERDICT` | off | ~92s for a 200-token narrative |
+| `LUMARA_STORY_REVISION` | off | ~200s per iteration (170s to encode one contact sheet on CPU) |
+| `LUMARA_STORY_VERDICT` | off | ~92s for a 200-token narrative |
 
 With both off a Story run is **57.5s** end to end. With them on it did not
 return in ten minutes.
@@ -244,7 +244,7 @@ Also measured, and load-bearing:
 - Grammar-constrained decoding DEGRADES selection: 11/14 against 14/14
   unconstrained, biasing toward small ids. Do not add it back.
 - Manifest size drives latency superlinearly: 25 candidates 36.1s, 12 candidates
-  4.7s. `CULLWISE_DIRECTOR_POOL` defaults to 12.
+  4.7s. `LUMARA_DIRECTOR_POOL` defaults to 12.
 - Shot type does NOT discriminate in a street library: largest face measured was
   0.88% of frame against an 8% "close" boundary. Do not build narrative roles on
   camera distance.

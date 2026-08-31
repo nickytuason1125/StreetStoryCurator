@@ -1873,7 +1873,7 @@ export default function App() {
                 which tells someone staring at a stopped app precisely nothing. */}
             <p className="t-label !text-alarm-crit">Not connected</p>
             <p className="max-w-[38ch] text-center text-sm text-ink">
-              Cullwise can't reach its engine, so nothing can be graded yet.
+              Lumara can't reach its engine, so nothing can be graded yet.
             </p>
             <p className="max-w-[42ch] text-center text-xs text-ink-3">
               It usually means the engine is still starting. Give it a few seconds and retry —
@@ -1887,7 +1887,7 @@ export default function App() {
         ) : (
           <>
             <div style={{ width:40, height:40, border:`3px solid ${T.raisedHover}`, borderTopColor:T.ink3, borderRadius:'var(--r-round)', animation:'spin .8s linear infinite' }}/>
-            <span style={{ fontSize:'var(--text-sm)', color:T.ink2, letterSpacing:'var(--track-body)' }}>Starting Cullwise…</span>
+            <span style={{ fontSize:'var(--text-sm)', color:T.ink2, letterSpacing:'var(--track-body)' }}>Starting Lumara…</span>
           </>
         )}
       </div>
@@ -2316,10 +2316,10 @@ export default function App() {
         {/* Brand — aperture mark in the grease-pencil colour. The one warm
             pixel in the chrome: it is the product's signature, the same
             reservation a physical camera brand earns on its dial. */}
-        <div className="flex shrink-0 items-center gap-1 pr-1" title={`Cullwise v${APP_VERSION}`}>
+        <div className="flex shrink-0 items-center gap-1 pr-1" title={`Lumara v${APP_VERSION}`}>
           <Aperture size={15} strokeWidth={1.8} style={{ color: T.mark }}/>
           <span className="text-md text-ink"
-                style={{ fontFamily: 'var(--font-display)', fontWeight: 650, letterSpacing: 'var(--track-brand)' }}>Cullwise</span>
+                style={{ fontFamily: 'var(--font-display)', fontWeight: 650, letterSpacing: 'var(--track-brand)' }}>Lumara</span>
         </div>
         <div className="h-4 w-px shrink-0 bg-line-strong"/>
 

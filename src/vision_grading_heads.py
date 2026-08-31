@@ -131,11 +131,11 @@ def _iqa_chunk_size(n: int) -> int:
 
     Memory is still bounded: peak decode RAM is O(chunk), and 256 images at
     ~5 MB each (512px float32) is ~1.3 GB worst case, which the streamed design
-    already handled. CULLWISE_IQA_CHUNK overrides for a memory-tight machine —
+    already handled. LUMARA_IQA_CHUNK overrides for a memory-tight machine —
     at the cost of reproducibility across machines with different free RAM.
     """
     import os as _os
-    _env = _os.environ.get("CULLWISE_IQA_CHUNK")
+    _env = _os.environ.get("LUMARA_IQA_CHUNK")
     if _env:
         try:
             return max(16, min(int(_env), max(n, 1)))
@@ -727,7 +727,7 @@ def _run_vision_heads_streaming(
     the decode call below for why), but it is real. The detector, which does
     care about resolution, now gets its native 640 instead of a downscaled read
     — the opposite direction from what a naive reading of "512px" would suggest.
-    Enable with CULLWISE_SHARED_DECODE=1.
+    Enable with LUMARA_SHARED_DECODE=1.
     """
     import os as _os
     import time as _t
@@ -741,7 +741,7 @@ def _run_vision_heads_streaming(
                 "person_detected": {}, "framing_obstruction": {}, "subject_bboxes": {}}
 
     try:
-        chunk = int(_os.environ.get("CULLWISE_STREAM_CHUNK", "128"))
+        chunk = int(_os.environ.get("LUMARA_STREAM_CHUNK", "128"))
     except ValueError:
         chunk = 128
     chunk = max(8, min(chunk, n))
@@ -895,7 +895,7 @@ def run_vision_heads(
         person_detected      dict[str,bool]   path → True when person detected
     """
     import os as _os_sd
-    if _os_sd.environ.get("CULLWISE_SHARED_DECODE", "").strip() == "1":
+    if _os_sd.environ.get("LUMARA_SHARED_DECODE", "").strip() == "1":
         return _run_vision_heads_streaming(
             image_paths, image_embeddings, prompt_embedding, clip_scores,
             genre_ref_embs=genre_ref_embs, lum_stats=lum_stats, progress=progress,

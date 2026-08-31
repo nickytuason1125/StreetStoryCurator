@@ -650,7 +650,7 @@ async def taste_summary():
     never claim an authority level the blend doesn't actually use. The ceiling
     grows with the durable star-rating count:
         <25 ratings → 0.35   ≥25 → 0.45   ≥50 → 0.55   ≥100 → 0.70
-    CULLWISE_PH_WEIGHT_MAX, when set, is the same hard cap the pipeline
+    LUMARA_PH_WEIGHT_MAX, when set, is the same hard cap the pipeline
     applies, so the reported weight can never overstate the blend.
     """
     try:
@@ -664,7 +664,7 @@ async def taste_summary():
     else:          weight, next_at, next_weight = 0.35, 25,  0.45
     try:
         import os as _os
-        cap = _os.environ.get("CULLWISE_PH_WEIGHT_MAX", "").strip()
+        cap = _os.environ.get("LUMARA_PH_WEIGHT_MAX", "").strip()
         if cap:
             weight = min(max(float(cap), 0.20), 0.80)
             next_at = next_weight = None      # cap overrides the ladder

@@ -82,7 +82,7 @@ codebase already prefers refusal over silent degradation (the derive script
 refuses a degenerate span, the encoder floors refuse rather than OOM), and a
 silent curve is both forbidden by contract and undetectable in the output.
 
-An escape hatch, `CULLWISE_ALLOW_UNCALIBRATED`, keeps the old behaviour for
+An escape hatch, `LUMARA_ALLOW_UNCALIBRATED`, keeps the old behaviour for
 development and for the bootstrap: change 2 needs a cull to run at `mid` and
 `low` to regenerate their probe caches, and at that moment those tiers still have
 no ruler. It is declared in `run_profile.SETTINGS` like every other knob,
@@ -165,7 +165,7 @@ Decision: **do not re-cull the back catalogue.** Instead:
 *Persist the inputs going forward.* Extend the LanceDB schema with a
 `fusion_inputs` JSON column holding the per-photo arrays fusion consumes
 (`arr_a`, `arr_t`, `arr_fa`, `arr_lum` and the rest already assembled at the
-`CULLWISE_FUSION_DUMP` site, `grade_pipeline_v2.py:2573`), plus the anchor
+`LUMARA_FUSION_DUMP` site, `grade_pipeline_v2.py:2573`), plus the anchor
 fingerprint the row was graded under. Future ruler changes then become a pure
 CPU recompute, which is what makes this class of problem cheap next time.
 
@@ -178,7 +178,7 @@ already auto-migrates schema on first run.
 
 ### Change 7 — Chore: compact the vector store
 
-`photos.lance` is 15.5 GB across 780 versions. `CULLWISE_LANCE_RETENTION_DAYS`
+`photos.lance` is 15.5 GB across 780 versions. `LUMARA_LANCE_RETENTION_DAYS`
 defaults to 7 but history is plainly not being reclaimed. Run
 `optimize(cleanup_older_than=)` and confirm the retention path actually executes
 on a normal run; a prior audit recovered 894 MB → 18 MB on this same table, so
@@ -195,7 +195,7 @@ Unit tests, written before the fix:
    rejected — this is defect 1, so it gets a failing test first.
 2. A shipped default whose fingerprint matches is accepted.
 3. `_calibrate` with no anchors raises, and does not return per-batch min/max.
-4. `CULLWISE_ALLOW_UNCALIBRATED=1` restores the fallback and logs.
+4. `LUMARA_ALLOW_UNCALIBRATED=1` restores the fallback and logs.
 5. `load_anchors` still prefers a valid user cache over a valid shipped default.
 6. The corpus sampler respects the per-folder cap on a synthetic histogram.
 

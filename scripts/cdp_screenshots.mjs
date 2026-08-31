@@ -1,5 +1,5 @@
 /**
- * scripts/cdp_screenshots.mjs — drive the real Cullwise app headlessly and
+ * scripts/cdp_screenshots.mjs — drive the real Lumara app headlessly and
  * capture screenshots of its actual UI states (no mocks).
  *
  * Flow: spawn Edge (headless, CDP port) → open the app → click "Resume" so the

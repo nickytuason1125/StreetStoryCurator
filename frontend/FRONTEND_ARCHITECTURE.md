@@ -1,6 +1,6 @@
 # Frontend Architecture
 
-Cullwise's UI follows a strict design system (`src/theme/tokens.css`, enforced
+Lumara's UI follows a strict design system (`src/theme/tokens.css`, enforced
 by `npm run build` via `scripts/lint-tokens.mjs`). This document maps the
 **code structure**: what lives where, and the agreed path for shrinking
 `App.tsx`.

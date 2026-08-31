@@ -1,4 +1,4 @@
-# Cullwise
+# Lumara
 
 AI-powered street photography editor. Grades, sequences, and curates your photos using a local vision pipeline — no cloud, no subscription, fully offline after setup.
 
@@ -64,7 +64,7 @@ decides whether a cull runs — not how much RAM the machine has in total.
 - The disk figure is mostly model weights (~22 GB) plus thumbnails and the
   vector store, both of which grow with your library.
 
-Cullwise checks this at launch and prints a warning if the machine is under
+Lumara checks this at launch and prints a warning if the machine is under
 spec. It never refuses to start — browsing, rating and exporting an existing
 library need almost no memory, and only grading has a floor.
 
@@ -72,7 +72,7 @@ library need almost no memory, and only grading has a floor.
 
 ## After Install
 
-- Launch via the **Cullwise** shortcut on your Desktop
+- Launch via the **Lumara** shortcut on your Desktop
 - Or double-click `run_local.bat` inside the folder
 
 ---
@@ -96,7 +96,7 @@ All models run locally. Model weights are downloaded on first launch via Hugging
 ## Folder Layout
 
 ```
-cullwise/
+lumara/
 ├── Setup.bat              ← run this to install
 ├── run_local.bat          ← launch after install
 ├── server.py              ← FastAPI backend

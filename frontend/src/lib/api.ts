@@ -1,5 +1,5 @@
 /**
- * lib/api.ts — the single place Cullwise's frontend talks about the backend.
+ * lib/api.ts — the single place Lumara's frontend talks about the backend.
  *
  * Every network path, its base URL and path sanitisation live here so a
  * route change is a one-file edit, not a grep across a 5k-line component.

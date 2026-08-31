@@ -139,7 +139,7 @@ def _check(name: str, ok: bool, detail: str) -> None:
 
 def main() -> int:
     print("=" * 72)
-    print("CULLWISE RELIABILITY CHECK — real pipeline, no mocks")
+    print("LUMARA RELIABILITY CHECK — real pipeline, no mocks")
     print("=" * 72)
     print(f"target folder : {FOLDER}")
     print(f"RAM at start  : {_ram_available_gb():.2f} GB available")
@@ -212,7 +212,7 @@ def main() -> int:
     total_checks = len(RESULTS)
     rep = ROOT / "reports" / "reliability_report.md"
     rep.parent.mkdir(exist_ok=True)
-    lines = [f"# Cullwise reliability report — {datetime.now():%Y-%m-%d %H:%M}",
+    lines = [f"# Lumara reliability report — {datetime.now():%Y-%m-%d %H:%M}",
              "", f"**{passed}/{total_checks} checks passed** — "
                  f"{FOLDER.name}/ via grade_runner.py, real pipeline.",
              ""]

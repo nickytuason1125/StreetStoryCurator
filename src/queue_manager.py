@@ -48,10 +48,10 @@ def _free_ram_gb() -> float:
 
 
 def _annotate_min_ram_gb() -> float:
-    """Free-RAM floor below which annotation waits. CULLWISE_ANNOTATE_MIN_RAM_GB."""
+    """Free-RAM floor below which annotation waits. LUMARA_ANNOTATE_MIN_RAM_GB."""
     import os
     try:
-        return float(os.environ.get("CULLWISE_ANNOTATE_MIN_RAM_GB", "3.0"))
+        return float(os.environ.get("LUMARA_ANNOTATE_MIN_RAM_GB", "3.0"))
     except (TypeError, ValueError):
         return 3.0
 
@@ -60,7 +60,7 @@ def _annotation_backend_available() -> bool:
     """Return True if the local Qwen2.5-VL GGUF is on disk.
 
     This used to also accept "Ollama answers on 11434", which made the daemon
-    start on a machine that had a running Ollama but none of Cullwise's own
+    start on a machine that had a running Ollama but none of Lumara's own
     weights — every annotation then failed one at a time, in the background,
     where nobody saw it. One backend, one check.
     """

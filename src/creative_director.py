@@ -283,7 +283,7 @@ def _director_pool_size(n_target: int, pool_len: int) -> int:
 def _setting_pool() -> int:
     try:
         import run_profile
-        return run_profile.setting("CULLWISE_DIRECTOR_POOL") or 12
+        return run_profile.setting("LUMARA_DIRECTOR_POOL") or 12
     except Exception:
         return 12
 
@@ -334,7 +334,7 @@ def _revision_enabled() -> bool:
     """
     try:
         import run_profile
-        return bool(run_profile.setting("CULLWISE_STORY_REVISION"))
+        return bool(run_profile.setting("LUMARA_STORY_REVISION"))
     except Exception:
         return False
 
@@ -1685,7 +1685,7 @@ def run_creative_direction(
     # images, not narrative pacing, so its single-pass flow is untouched.
     revision_log: list[dict] = []
     if mode == "story" and not _revision_enabled():
-        _p(0.35, "Sequence review skipped (set CULLWISE_STORY_REVISION=1 to enable)")
+        _p(0.35, "Sequence review skipped (set LUMARA_STORY_REVISION=1 to enable)")
     elif mode == "story":
         _p(0.33, "Reviewing sequence (contact-sheet critique)…")
         try:
@@ -1711,7 +1711,7 @@ def run_creative_direction(
     _want_verdict = False
     try:
         import run_profile as _rp
-        _want_verdict = bool(_rp.setting("CULLWISE_STORY_VERDICT"))
+        _want_verdict = bool(_rp.setting("LUMARA_STORY_VERDICT"))
     except Exception:
         _want_verdict = False
     if not _want_verdict:
@@ -1721,7 +1721,7 @@ def run_creative_direction(
         # chat-template convention. The proper fix is routing it through
         # local_llm.generate (chat completion, shared instance); until then it
         # is opt-in rather than a silent two-minute wait.
-        _p(0.40, "Judge's Verdict skipped (set CULLWISE_STORY_VERDICT=1 to enable)")
+        _p(0.40, "Judge's Verdict skipped (set LUMARA_STORY_VERDICT=1 to enable)")
     else:
       _p(0.36, "Generating Judge's Verdict…")
       try:

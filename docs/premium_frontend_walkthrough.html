@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Cullwise — 2026 Premium Frontend Pass: Full Walkthrough</title>
+<title>Lumara — 2026 Premium Frontend Pass: Full Walkthrough</title>
 <style>
   :root {
     --ink: #171717; --ink2: #444; --ink3: #6e6e6e; --ink4: #9a9a9a;
@@ -50,11 +50,11 @@
 <body>
 <div class="cover">
   <div class="eyebrow">AI photo culler <span style="color:var(--line2)">/</span> engineering walkthrough<span class="dot">.</span></div>
-  <h1>Cullwise<span class="dot">.</span></h1>
+  <h1>Lumara<span class="dot">.</span></h1>
   <div class="sub" style="font-weight:600; color:var(--ink); margin-top:3mm;">The 2026 Premium Frontend Pass — Full Walkthrough</div>
   <p class="sub">How the frontend was rebuilt from a two-palette accretion into a single-source, mechanically-guarded design system — and why every value in it is the way it is.</p>
   <div class="meta">
-    <div><b>Project</b>Cullwise (street-story-curator/frontend)</div>
+    <div><b>Project</b>Lumara (street-story-curator/frontend)</div>
     <div><b>Stack</b>React 18 · TypeScript · Vite · Tailwind 3 · Tauri 2</div>
     <div><b>Type</b>Design-system overhaul</div>
     <div><b>Status</b><span class="check">●</span> Verified — lint, tsc, build</div>
@@ -125,12 +125,12 @@
       <div class="body">Elev-3 card with top-light hairline edge, aperture-mark brand row, display headline with a mark-coloured full stop, three-verb feature strip between hairlines, inverted-ink CTA, resume strip on ground, two soft ambient glows behind.</div>
     </div>
   </div>
-  <img src="../../cdp-shots/hero_ink_cta.png" alt="Cullwise welcome hero, live render"
+  <img src="../../cdp-shots/hero_ink_cta.png" alt="Lumara welcome hero, live render"
        style="width:100%; border:1px solid var(--line2); border-radius:2mm; margin:2mm 0 1mm; page-break-inside:avoid;">
   <p style="font-size:8pt; color:var(--ink4); margin-bottom:4mm;">Live render, localhost:5173 — headless-Chrome capture after the ink-CTA pass.</p>
   <h3>Design decisions worth naming</h3>
   <ul>
-    <li><strong>The full stop is the signature.</strong> <code>Cullwise<span class="dot">.</span></code> — small, confident, and the only warm glyph on the entire stage.</li>
+    <li><strong>The full stop is the signature.</strong> <code>Lumara<span class="dot">.</span></code> — small, confident, and the only warm glyph on the entire stage.</li>
     <li><strong>Three verbs, not three paragraphs.</strong> Graded / Culled / Sequenced — the product described in six words of body copy, separated by hairlines rather than cards-in-cards.</li>
     <li><strong>Ambient glows stay hue-safe.</strong> A <code>--mark-dim</code> radial (15% tint, 48px blur) over a raised-grey radial — present depth, zero contamination, and always behind the card, never behind photographs.</li>
     <li><strong>The resume strip is honest chrome.</strong> Ground-coloured, hairline-separated; session continuity ("Pick up where you left off?") is a first-class citizen of the layout, not a toast.</li>
@@ -187,7 +187,7 @@
     <tr><td><code>scripts/lint-tokens.mjs</code> · <code>check-tdz.mjs</code></td><td>The mechanical guardrails wired into <code>npm run build</code></td></tr>
   </table>
   <div class="callout"><b>To run it:</b> <code>cd street-story-curator/frontend &amp;&amp; npm run dev:full</code> — Vite on <code>:5173</code> with the Python API alongside. <code>npm run build</code> re-ships <code>dist/</code> for the Tauri shell; <code>npm run tauri:build</code> packages the desktop app.</div>
-  <div class="footer-note">Cullwise · 2026 premium frontend pass · generated walkthrough · all values quoted from src/theme/tokens.css at time of writing</div>
+  <div class="footer-note">Lumara · 2026 premium frontend pass · generated walkthrough · all values quoted from src/theme/tokens.css at time of writing</div>
 </section>
 
 

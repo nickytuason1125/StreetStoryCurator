@@ -298,9 +298,9 @@ def test_requirement_covers_every_measured_peak():
 def test_requirement_is_higher_without_draft_decode(monkeypatch):
     """Full-resolution decode measured ~2x the RAM, so it must ask for more."""
     import run_profile as rp
-    monkeypatch.setenv("CULLWISE_DRAFT_DECODE", "0")
+    monkeypatch.setenv("LUMARA_DRAFT_DECODE", "0")
     off = rp.required_ram_gb(250)
-    monkeypatch.setenv("CULLWISE_DRAFT_DECODE", "1")
+    monkeypatch.setenv("LUMARA_DRAFT_DECODE", "1")
     on = rp.required_ram_gb(250)
     assert off > on, f"draft-off ({off}) must need more than draft-on ({on})"
     assert off >= 6.35, "draft-off measured 6.35 GB at 250 photos"
@@ -314,18 +314,18 @@ def test_requirement_does_not_shrink_as_the_job_grows():
 
 
 def test_env_override_still_wins():
-    """CULLWISE_MIN_RAM_GB stays an escape hatch for an unusual machine."""
+    """LUMARA_MIN_RAM_GB stays an escape hatch for an unusual machine."""
     import os
     import run_profile as rp
-    os.environ["CULLWISE_MIN_RAM_GB"] = "1.5"
+    os.environ["LUMARA_MIN_RAM_GB"] = "1.5"
     try:
         assert rp.required_ram_gb(250) == 1.5
     finally:
-        os.environ.pop("CULLWISE_MIN_RAM_GB", None)
+        os.environ.pop("LUMARA_MIN_RAM_GB", None)
 
 
 # ── 7. Rust mirror stays in sync with Python's numbers ───────────────────────
-# native/cullwise-rs/src/main.rs::ram_need_gb copies _RAM_NEED_GB verbatim
+# native/lumara-rs/src/main.rs::ram_need_gb copies _RAM_NEED_GB verbatim
 # because the crate cannot import Python. Its own Rust tests assert the SAME
 # literals, so a Python-side re-measure would leave those green while the two
 # sides silently diverge — exactly the class of bug that put a stale 1.8 in
@@ -337,7 +337,7 @@ def test_rust_ram_mirror_matches_python():
     import re
     import run_profile as rp
 
-    rs_path = _ROOT / "native" / "cullwise-rs" / "src" / "main.rs"
+    rs_path = _ROOT / "native" / "lumara-rs" / "src" / "main.rs"
     if not rs_path.exists():
         pytest.skip(f"Rust shim not present at {rs_path}")
     text = rs_path.read_text(encoding="utf-8")
@@ -372,7 +372,7 @@ def test_rust_ram_mirror_matches_python():
             mismatches.append(f"{label}: rust={rust_v} python={py_v}")
 
     assert not mismatches, (
-        "native/cullwise-rs/src/main.rs::ram_need_gb has drifted from "
+        "native/lumara-rs/src/main.rs::ram_need_gb has drifted from "
         "src/run_profile.py::_RAM_NEED_GB — one side moved without the "
         "other:\n" + "\n".join(mismatches)
     )

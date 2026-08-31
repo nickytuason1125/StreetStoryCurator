@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Cut Cullwise's on-disk footprint from ~24 GB to ~10–17 GB and stop the LanceDB store growing without bound on every re-cull.
+**Goal:** Cut Lumara's on-disk footprint from ~24 GB to ~10–17 GB and stop the LanceDB store growing without bound on every re-cull.
 
 **Architecture:** Three independent changes. (1) The existing `compact_after_write()` gains version reaping via `Table.optimize(cleanup_older_than=…)`, with the retention window declared in `run_profile.SETTINGS`. (2) A dead, syntactically-invalid module is deleted. (3) A two-pass audit — static reference scan plus a runtime open-file trace — identifies unreferenced model weights, which are quarantined rather than deleted.
 
@@ -18,14 +18,14 @@
 - **Verification bar for any pipeline change:** 169 tests pass, AND a real Pro-tier LX3 cull yields `Strong=62 Mid=324 Weak=128` with **zero** per-photo score/grade drift.
 - **Tier pinning for verification runs:** `SIGLIP_TIER=high SIGLIP_MIN_FREE_RAM_GB=1.2 SIGLIP_HARD_MIN_RAM_GB=1.0`. Below 3 GB free the ladder silently drops to Balanced, which changes every score.
 - **Leave `cache/encoder_source.txt` at its live value** during verification so embeddings are reused from LanceDB.
-- Python interpreter is `venv/Scripts/python.exe`. Working directory is `cullwise/`.
+- Python interpreter is `venv/Scripts/python.exe`. Working directory is `lumara/`.
 
 ---
 
 ### Task 1: LanceDB version retention
 
 **Files:**
-- Modify: `src/run_profile.py` (add one entry to `SETTINGS`, near `CULLWISE_LANCE_CHUNK` at line 111)
+- Modify: `src/run_profile.py` (add one entry to `SETTINGS`, near `LUMARA_LANCE_CHUNK` at line 111)
 - Modify: `src/lance_store.py:555-569` (`compact_after_write`)
 - Test: `tests/test_lance_retention.py` (create)
 
@@ -119,7 +119,7 @@ def test_current_version_always_survives(tmp_path):
 def test_retention_setting_is_declared():
     """Undeclared settings raise, so this also pins the spelling."""
     import run_profile
-    days = run_profile.setting("CULLWISE_LANCE_RETENTION_DAYS")
+    days = run_profile.setting("LUMARA_LANCE_RETENTION_DAYS")
     assert isinstance(days, int)
     assert days == 7, "default retention window is 7 days"
 
@@ -140,14 +140,14 @@ def test_cleanup_failure_never_raises(monkeypatch):
 
 Run: `venv\Scripts\python.exe -m pytest tests/test_lance_retention.py -v`
 
-Expected: `test_retention_setting_is_declared` FAILS with `KeyError: undeclared setting 'CULLWISE_LANCE_RETENTION_DAYS'`. The two `optimize` tests should already pass (they exercise lancedb directly, proving the API behaves as assumed). `test_cleanup_failure_never_raises` passes against the current implementation and guards the rewrite.
+Expected: `test_retention_setting_is_declared` FAILS with `KeyError: undeclared setting 'LUMARA_LANCE_RETENTION_DAYS'`. The two `optimize` tests should already pass (they exercise lancedb directly, proving the API behaves as assumed). `test_cleanup_failure_never_raises` passes against the current implementation and guards the rewrite.
 
 - [ ] **Step 3: Declare the setting**
 
-In `src/run_profile.py`, immediately after the `CULLWISE_LANCE_CHUNK` line (line 111):
+In `src/run_profile.py`, immediately after the `LUMARA_LANCE_CHUNK` line (line 111):
 
 ```python
-    "CULLWISE_LANCE_RETENTION_DAYS": Setting(
+    "LUMARA_LANCE_RETENTION_DAYS": Setting(
         int, 7, "keep LanceDB versions this many days; history was unbounded"),
 ```
 
@@ -179,7 +179,7 @@ def compact_after_write() -> None:
     from datetime import timedelta
     try:
         import run_profile as _rp
-        days = max(0, int(_rp.setting("CULLWISE_LANCE_RETENTION_DAYS")))
+        days = max(0, int(_rp.setting("LUMARA_LANCE_RETENTION_DAYS")))
     except Exception:
         days = 7
     try:
@@ -472,7 +472,7 @@ Create `scripts/audit_model_refs.py`:
 
 ```python
 """
-Which files under models/ does Cullwise actually load?
+Which files under models/ does Lumara actually load?
 
 A static grep cannot answer this: paths get built at runtime, so a weight can
 be loaded without its name appearing in any source file. Guessing wrong means

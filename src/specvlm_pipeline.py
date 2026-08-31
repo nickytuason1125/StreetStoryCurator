@@ -484,9 +484,9 @@ def load_anchors(pos_embs: np.ndarray, neg_embs: np.ndarray, tier: "Optional[str
         # the generic scale it would displace.
         # 2026-08-30: the rating baseline is PLACEHOLDER data and must never
         # steer the absolute scale on its own — the preference therefore
-        # requires an explicit CULLWISE_MASTER_ANCHORS=1 on top of a fresh
+        # requires an explicit LUMARA_MASTER_ANCHORS=1 on top of a fresh
         # fingerprint.
-        if (os.environ.get("CULLWISE_MASTER_ANCHORS", "").strip() == "1"
+        if (os.environ.get("LUMARA_MASTER_ANCHORS", "").strip() == "1"
                 and _MASTER_ANCHORS_PATH.exists()):
             m = json.loads(_MASTER_ANCHORS_PATH.read_text(encoding="utf-8"))
             if (m.get("fingerprint") == want

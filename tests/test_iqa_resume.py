@@ -82,11 +82,11 @@ def test_sliced_result_matches_unsliced(monkeypatch):
     a = _args(50)
 
     _fake_iqa(monkeypatch, calls_a)
-    monkeypatch.setenv("CULLWISE_IQA_SLICE", "0")          # no slicing
+    monkeypatch.setenv("LUMARA_IQA_SLICE", "0")          # no slicing
     whole = g._iqa_resumable(ckpt_key="k_whole", **a)
 
     _fake_iqa(monkeypatch, calls_b)
-    monkeypatch.setenv("CULLWISE_IQA_SLICE", "7")          # many slices
+    monkeypatch.setenv("LUMARA_IQA_SLICE", "7")          # many slices
     sliced = g._iqa_resumable(ckpt_key="k_sliced", **a)
 
     assert len(calls_a) == 1 and len(calls_b) > 5, "slicing did not engage"
@@ -97,7 +97,7 @@ def test_sliced_result_matches_unsliced(monkeypatch):
 
 def test_resume_skips_completed_work(monkeypatch):
     """A crash mid-pass must not redo what already succeeded."""
-    monkeypatch.setenv("CULLWISE_IQA_SLICE", "10")
+    monkeypatch.setenv("LUMARA_IQA_SLICE", "10")
     a = _args(50)
 
     calls1 = []
@@ -118,7 +118,7 @@ def test_resume_skips_completed_work(monkeypatch):
 
 def test_resumed_scores_equal_a_clean_run(monkeypatch):
     """Resuming must give the same answer as never having crashed."""
-    monkeypatch.setenv("CULLWISE_IQA_SLICE", "10")
+    monkeypatch.setenv("LUMARA_IQA_SLICE", "10")
     a = _args(40)
 
     _fake_iqa(monkeypatch, [])
@@ -136,7 +136,7 @@ def test_resumed_scores_equal_a_clean_run(monkeypatch):
 
 def test_order_is_preserved(monkeypatch):
     """Results must line up with the caller's path order, not slice order."""
-    monkeypatch.setenv("CULLWISE_IQA_SLICE", "6")
+    monkeypatch.setenv("LUMARA_IQA_SLICE", "6")
     a = _args(30)
     _fake_iqa(monkeypatch, [])
     out = g._iqa_resumable(ckpt_key="k_order", **a)
@@ -145,7 +145,7 @@ def test_order_is_preserved(monkeypatch):
 
 
 def test_corrupt_checkpoint_restarts_cleanly(monkeypatch, tmp_path):
-    monkeypatch.setenv("CULLWISE_IQA_SLICE", "10")
+    monkeypatch.setenv("LUMARA_IQA_SLICE", "10")
     (tmp_path / "k_bad.json").write_text("{{{ not json", encoding="utf-8")
     calls = []
     _fake_iqa(monkeypatch, calls)
@@ -155,7 +155,7 @@ def test_corrupt_checkpoint_restarts_cleanly(monkeypatch, tmp_path):
 
 
 def test_clear_removes_the_checkpoint(monkeypatch):
-    monkeypatch.setenv("CULLWISE_IQA_SLICE", "10")
+    monkeypatch.setenv("LUMARA_IQA_SLICE", "10")
     _fake_iqa(monkeypatch, [])
     g._iqa_resumable(ckpt_key="k_clr", **_args(20))
     assert g._iqa_ckpt_path("k_clr").exists()

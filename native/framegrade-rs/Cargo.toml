@@ -1,8 +1,8 @@
 [package]
-name = "cullwise-rs"
+name = "lumara-rs"
 version = "0.1.0"
 edition = "2021"
-description = "Cullwise native orchestrator — Phase 2 Rust backend core"
+description = "Lumara native orchestrator — Phase 2 Rust backend core"
 
 [dependencies]
 axum = "0.8"

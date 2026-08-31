@@ -1,14 +1,14 @@
 """One-shot brand migration: Lumara → Lumara.
 
-Deprecates the old name across every live source file — code, comments,
-docs, configs, env vars, Tauri/Cargo metadata. Deliberately skipped:
+Second migration in the chain (FrameGrade → Lumara → Lumara). Same
+discipline as scripts/deprecate_framegrade.py: every live source file —
+code, comments, docs, configs, env vars, Tauri/Cargo metadata. Skipped:
 build output (dist/, target/), vendor dirs, caches, generated reports.
 
 Ordered case-sensitive replacements:
     LUMARA  → LUMARA   (env vars, report headers)
+    Lumara  → Lumara   (camel variant)
     Lumara  → Lumara   (brand, docs, UI strings)
-    Lumara → Lumara   (spaced variant)
-    Lumara  → Lumara   (safety)
     lumara  → lumara   (package names, binary names, domains)
 
 After this script: rename Lumara.spec → Lumara.spec and
@@ -34,7 +34,6 @@ REPLACEMENTS = [
     ("LUMARA", "LUMARA"),
     ("Lumara", "Lumara"),
     ("Lumara", "Lumara"),
-    ("Lumara", "Lumara"),
     ("lumara", "lumara"),
 ]
 
@@ -54,8 +53,7 @@ def main() -> int:
             text = p.read_text(encoding="utf-8")
         except Exception:
             continue
-        if "lumara" not in text.lower().replace(" ", "").replace("-", "") \
-           and "lumara" not in text.lower():
+        if "lumara" not in text.lower():
             continue
         new_text = text
         hits = 0

@@ -64,7 +64,7 @@ def test_current_version_always_survives(tmp_path):
 def test_retention_setting_is_declared():
     """Undeclared settings raise, so this also pins the spelling."""
     import run_profile
-    days = run_profile.setting("CULLWISE_LANCE_RETENTION_DAYS")
+    days = run_profile.setting("LUMARA_LANCE_RETENTION_DAYS")
     assert isinstance(days, int)
     assert days == 7, "default retention window is 7 days"
 

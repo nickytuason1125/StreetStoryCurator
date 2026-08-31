@@ -49,9 +49,9 @@ def test_never_larger_than_the_pool():
 
 
 def test_setting_is_declared_so_it_can_be_raised():
-    assert "CULLWISE_DIRECTOR_POOL" in run_profile.SETTINGS
+    assert "LUMARA_DIRECTOR_POOL" in run_profile.SETTINGS
 
 
 def test_setting_overrides_the_default(monkeypatch):
-    monkeypatch.setenv("CULLWISE_DIRECTOR_POOL", "25")
+    monkeypatch.setenv("LUMARA_DIRECTOR_POOL", "25")
     assert cd._director_pool_size(n_target=7, pool_len=500) == 25

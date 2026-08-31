@@ -1,4 +1,4 @@
-# Cullwise Release Checklist
+# Lumara Release Checklist
 
 The complete path from source tree to a public download page. Items marked
 ● require a decision or purchase; everything else is a command.
@@ -12,17 +12,17 @@ The complete path from source tree to a public download page. Items marked
 
 ## 2. Build the engine (10–20 min)
 
-- [ ] `venv\Scripts\pyinstaller.exe Cullwise.spec --noconfirm`
-- [ ] Output: `dist\Cullwise\` (~12.5 GB — CUDA torch, FastAPI, all deps)
+- [ ] `venv\Scripts\pyinstaller.exe Lumara.spec --noconfirm`
+- [ ] Output: `dist\Lumara\` (~12.5 GB — CUDA torch, FastAPI, all deps)
 - [ ] Smoke the engine exe standalone if paranoid: run it, probe :8000/api/health
 
 ## 3. Stage the engine into the Tauri resources (5 min)
 
 ```powershell
-robocopy "dist\Cullwise" `
+robocopy "dist\Lumara" `
   "frontend\src-tauri\resources\binaries\curator-api-x86_64-pc-windows-msvc" `
   /E /MOVE /NFL /NDL /NJH /NP
-Rename-Item "frontend\src-tauri\resources\binaries\curator-api-x86_64-pc-windows-msvc\Cullwise.exe" "curator-api.exe"
+Rename-Item "frontend\src-tauri\resources\binaries\curator-api-x86_64-pc-windows-msvc\Lumara.exe" "curator-api.exe"
 ```
 
 (The /MOVE frees the dist copy; the resources copy is what the installer packs.)
@@ -30,7 +30,7 @@ Rename-Item "frontend\src-tauri\resources\binaries\curator-api-x86_64-pc-windows
 ## 4. Build the installer (20–40 min — LZMA on 12.5 GB)
 
 - [ ] `cd frontend && npm run tauri:build`
-- [ ] Output: `src-tauri\target\release\bundle\nsis\Cullwise_1.0.0_x64-setup.exe`
+- [ ] Output: `src-tauri\target\release\bundle\nsis\Lumara_1.0.0_x64-setup.exe`
 - [ ] Sanity: installer should be **several GB**, not single-digit MB (single-digit = engine missing)
 
 ## 5. Sign (● requires the certificate)
@@ -50,7 +50,7 @@ Rename-Item "frontend\src-tauri\resources\binaries\curator-api-x86_64-pc-windows
 
 ## 7. Distribute
 
-- [ ] Upload `Cullwise_1.0.0_x64-setup.exe` + SHA-256 checksum
+- [ ] Upload `Lumara_1.0.0_x64-setup.exe` + SHA-256 checksum
 - [ ] Download page text: system requirements (Windows 10+, 8 GB RAM min, GPU
       recommended), offline statement, privacy statement (nothing leaves the machine)
 - [ ] Beta users: include the SmartScreen 2-click note until reputation builds

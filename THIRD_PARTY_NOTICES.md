@@ -1,6 +1,6 @@
 # Third-party notices
 
-Cullwise is assembled from third-party libraries and pre-trained model weights.
+Lumara is assembled from third-party libraries and pre-trained model weights.
 This file inventories them. It exists because the app is headed for public
 download, and a download distributes — or causes the user's machine to fetch —
 every item below.
@@ -58,13 +58,13 @@ for a specific reason:
   under **$10,000,000**. Redistribution terms are otherwise standard Apache —
   ship the licence, mark modified files, retain notices. This is a real
   condition, not a formality: it is fine today and becomes a problem exactly if
-  Cullwise succeeds, which is the worst moment to discover it.
+  Lumara succeeds, which is the worst moment to discover it.
 
   The alternative already tested is **Qwen3-4B** (`bartowski/Qwen_Qwen3-4B-GGUF`,
   plain Apache-2.0, no cap). It is more accurate — 6/6 against 5/6 on the same
   trials — but measured end to end on the 16 GB target it took 258.6s and left
   0.66 GB of RAM free, against 155.8s and 2.36 GB for LFM. Switching back is one
-  environment variable: `CULLWISE_LOCAL_LLM_GGUF`.
+  environment variable: `LUMARA_LOCAL_LLM_GGUF`.
 
 - **DeepSeek-R1-Distill was REMOVED on 2026-08-22** and its weights deleted, so
   this row is gone rather than resolved. It was replaced by Qwen3-4B, which is

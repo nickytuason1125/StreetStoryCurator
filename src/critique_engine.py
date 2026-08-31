@@ -414,7 +414,7 @@ def run_jury_critique(image_hash: str) -> dict:
 
     # There used to be an Ollama fallback here (qwen2.5vl:3b, then deepseek-r1:8b)
     # whose failure message told the user to install a third-party service that
-    # nothing in Cullwise's installer set up and no document mentioned. The
+    # nothing in Lumara's installer set up and no document mentioned. The
     # local GGUF above is the supported path; if it is absent, say so and name the
     # remedy we actually ship.
     return {"error": "The critique model is not installed. Run the model "

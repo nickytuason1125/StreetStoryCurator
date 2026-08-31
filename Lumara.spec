@@ -1,12 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 #
-# Cullwise.spec
+# Lumara.spec
 #
 # Usage (run from the project root with venv active):
-#   Windows:  pyinstaller Cullwise.spec
-#   Mac:      pyinstaller Cullwise.spec
+#   Windows:  pyinstaller Lumara.spec
+#   Mac:      pyinstaller Lumara.spec
 #
-# Output lands in dist/Cullwise/
+# Output lands in dist/Lumara/
 # The folder is self-contained — zip it and distribute.
 
 import sys
@@ -169,7 +169,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="Cullwise",
+    name="Lumara",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -188,16 +188,16 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="Cullwise",
+    name="Lumara",
 )
 
 # On Mac, wrap in an .app bundle
 if sys.platform == "darwin":
     app = BUNDLE(
         coll,
-        name="Cullwise.app",
+        name="Lumara.app",
         icon=str(ROOT / "icon.ico"),
-        bundle_identifier="com.cullwise.app",
+        bundle_identifier="com.lumara.app",
         info_plist={
             "NSHighResolutionCapable": True,
             "NSCameraUsageDescription": "Camera access for photo import",

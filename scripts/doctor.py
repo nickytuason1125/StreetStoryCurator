@@ -1,4 +1,4 @@
-"""doctor.py — Cullwise one-click diagnose-and-repair.
+"""doctor.py — Lumara one-click diagnose-and-repair.
 
 Run this when the app misbehaves. It checks everything that has ever actually
 broken an install of this application, explains each result in one sentence,
@@ -281,7 +281,7 @@ def main() -> None:
     args = ap.parse_args()
 
     print("=" * 62)
-    print("Cullwise doctor — checking your installation")
+    print("Lumara doctor — checking your installation")
     print("=" * 62)
 
     check_python()
