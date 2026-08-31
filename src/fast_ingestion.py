@@ -128,10 +128,10 @@ def decode_one(
     slightly different pixels than full decode + Lanczos (mean |drift| 0.0016-
     0.0047 on a 0-1 scale). This repo has been bitten before by a "harmless"
     change that moved grades across a threshold, so callers opt in and the drift
-    is measured, not assumed. LUMARA_DRAFT_DECODE=0 disables globally.
+    is measured, not assumed. FIRSTCUT_DRAFT_DECODE=0 disables globally.
     """
     import os as _os_dd
-    if draft_hint and _os_dd.environ.get("LUMARA_DRAFT_DECODE", "1").strip() == "0":
+    if draft_hint and _os_dd.environ.get("FIRSTCUT_DRAFT_DECODE", "1").strip() == "0":
         draft_hint = None
 
     ext = Path(path).suffix.lower()

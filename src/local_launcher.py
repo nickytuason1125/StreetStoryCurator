@@ -1,5 +1,5 @@
 """
-Lumara — local desktop launcher.
+FirstCut — local desktop launcher.
 Starts FastAPI, then opens the UI in a local pywebview window.
 Errors are written to crash.log in the project root.
 """
@@ -33,7 +33,7 @@ _ROOT = _resolve_root()
 sys.path.insert(0, str(_ROOT))
 import suppress_console
 _LOG    = _ROOT / "crash.log"
-_APP_ID = "StreetPhotography.Lumara.1"
+_APP_ID = "StreetPhotography.FirstCut.1"
 
 # Register a unique App User Model ID before any window is created.
 # Without this, Windows groups our window under "pythonw.exe" and uses
@@ -319,10 +319,10 @@ def _start_frontend_watch():
     # a folder has no frontend source to watch and no reason to own a build
     # toolchain; if node is absent it is also a guaranteed failure on startup.
     #
-    # Set LUMARA_FRONTEND_WATCH=1 while developing. `npm run watch` in a
+    # Set FIRSTCUT_FRONTEND_WATCH=1 while developing. `npm run watch` in a
     # terminal does the same job and shows you its output.
-    if os.environ.get("LUMARA_FRONTEND_WATCH", "") not in ("1", "true", "yes"):
-        _log("Frontend watch not started (set LUMARA_FRONTEND_WATCH=1 for dev)")
+    if os.environ.get("FIRSTCUT_FRONTEND_WATCH", "") not in ("1", "true", "yes"):
+        _log("Frontend watch not started (set FIRSTCUT_FRONTEND_WATCH=1 for dev)")
         return
 
     import subprocess as sp
@@ -545,7 +545,7 @@ def main():
 
         _log(f"Opening local pywebview window: {url}")
         win = webview.create_window(
-            title="Lumara",
+            title="FirstCut",
             url=url,
             width=1400,
             height=900,

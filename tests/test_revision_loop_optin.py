@@ -34,16 +34,16 @@ import run_profile  # noqa: E402
 
 
 def test_setting_is_declared():
-    assert "LUMARA_STORY_REVISION" in run_profile.SETTINGS
+    assert "FIRSTCUT_STORY_REVISION" in run_profile.SETTINGS
 
 
 def test_off_by_default(monkeypatch):
-    monkeypatch.delenv("LUMARA_STORY_REVISION", raising=False)
+    monkeypatch.delenv("FIRSTCUT_STORY_REVISION", raising=False)
     assert cd._revision_enabled() is False
 
 
 def test_opt_in_turns_it_on(monkeypatch):
-    monkeypatch.setenv("LUMARA_STORY_REVISION", "1")
+    monkeypatch.setenv("FIRSTCUT_STORY_REVISION", "1")
     assert cd._revision_enabled() is True
 
 

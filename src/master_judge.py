@@ -29,7 +29,7 @@ Spearman against the photographer's stars beats the incumbent machine
 score's Spearman on the exact same held-out photos. The blend weight used
 at grade time scales with that measured advantage (0.10 floor, 0.40 cap) —
 the hand-tuned grader always keeps a vote. Disable entirely with
-LUMARA_MASTER_JUDGE_OFF=1.
+FIRSTCUT_MASTER_JUDGE_OFF=1.
 
 It also hosts human_anchor_lo_hi(): the derivation of the photographer-
 anchored calibration ruler used by scripts/derive_master_anchors.py, which
@@ -370,7 +370,7 @@ def load(weights_path: "Path | None" = None) -> "dict | None":
     """Promoted weights only. A file whose fingerprint no longer matches the
     canonical feature order is treated as absent — a permuted regression would
     silently score every photo against the wrong coefficients."""
-    if os.environ.get("LUMARA_MASTER_JUDGE_OFF", "").strip():
+    if os.environ.get("FIRSTCUT_MASTER_JUDGE_OFF", "").strip():
         return None
     p = weights_path or _WEIGHTS_PATH
     try:
@@ -497,7 +497,7 @@ def human_anchor_lo_hi(disc_by_star: dict, hi_stars=(4, 5), lo_stars=(1, 2),
 #     algorithm itself — it grades by default for every install, no flags,
 #     no ratings, exactly like the shipped encoder weights. A LOCAL cache
 #     challenger, by contrast, is trained on a user's own ratings and stays
-#     opt-in (LUMARA_MASTER_JUDGE=1): user ratings must never grade.
+#     opt-in (FIRSTCUT_MASTER_JUDGE=1): user ratings must never grade.
 
 def _valid_judge_dict(d: dict) -> bool:
     """A judge record is usable only when it won its exam, matches the
@@ -524,7 +524,7 @@ def _load_shipped() -> "dict | None":
     A stale fingerprint (feature design changed since shipping) is treated
     as absent, loudly."""
     try:
-        if os.environ.get("LUMARA_MASTER_JUDGE_OFF", "").strip():
+        if os.environ.get("FIRSTCUT_MASTER_JUDGE_OFF", "").strip():
             return None
         if not _SHIPPED_PATH.exists():
             return None
@@ -544,17 +544,17 @@ def active() -> tuple:
     """(judge_dict, blend_weight) for THIS grading run, or (None, 0.0).
 
     Precedence, per the two-phase contract:
-      1. kill switch LUMARA_MASTER_JUDGE_OFF=1 → nothing
+      1. kill switch FIRSTCUT_MASTER_JUDGE_OFF=1 → nothing
       2. a local cache challenger won its exam AND the user opted in
-         (LUMARA_MASTER_JUDGE=1) → the local judge — it is newer than
+         (FIRSTCUT_MASTER_JUDGE=1) → the local judge — it is newer than
          whatever was shipped
       3. the shipped master judge → always on, no flags, no ratings
       4. nothing
     """
-    if os.environ.get("LUMARA_MASTER_JUDGE_OFF", "").strip():
+    if os.environ.get("FIRSTCUT_MASTER_JUDGE_OFF", "").strip():
         return None, 0.0
     cache = load()
-    if cache and os.environ.get("LUMARA_MASTER_JUDGE", "").strip() == "1":
+    if cache and os.environ.get("FIRSTCUT_MASTER_JUDGE", "").strip() == "1":
         return cache, _weight_from(cache)
     shipped = _load_shipped()
     if shipped:
@@ -602,7 +602,7 @@ def promote_to_shipped(cache_path: "Path | None" = None,
 # A refit is always SAFE (worst case the challenger loses and nothing changes
 # at grade time), so the only cost worth gating is the ~10-20 s of CPU.
 
-_AUTOFIT_DELTA = max(5, int(os.environ.get("LUMARA_MASTER_AUTOFIT_EVERY", "25") or 25))
+_AUTOFIT_DELTA = max(5, int(os.environ.get("FIRSTCUT_MASTER_AUTOFIT_EVERY", "25") or 25))
 _autofit_lock = threading.Lock()
 _autofit_thread = None
 
@@ -622,13 +622,13 @@ def maybe_autofit(n_now: "int | None" = None) -> dict:
     only ever rewrites cache/master_judge.json (a lost challenge is a record,
     not a regression). Returns {"triggered": bool, "reason": str}."""
     global _autofit_thread
-    if os.environ.get("LUMARA_MASTER_JUDGE", "").strip() != "1":
+    if os.environ.get("FIRSTCUT_MASTER_JUDGE", "").strip() != "1":
         # 2026-08-30: ratings are placeholder data — background refits only
         # make sense once the judge is explicitly opted in. Pure measurement
         # (scripts/master_backtest.py) stays available regardless.
         return {"triggered": False,
                 "reason": "MasterJudge not opted in "
-                          "(set LUMARA_MASTER_JUDGE=1)"}
+                          "(set FIRSTCUT_MASTER_JUDGE=1)"}
     with _autofit_lock:
         if _autofit_thread is not None and _autofit_thread.is_alive():
             return {"triggered": False, "reason": "fit already running"}

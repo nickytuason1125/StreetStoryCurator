@@ -155,9 +155,9 @@ def has_gpu() -> bool:
 
     torch is still the honest signal: onnxruntime lists an execution provider
     when the WHEEL supports it, which is not the same as a device being present.
-    LUMARA_ASSUME_GPU overrides; delete cache/gpu_probe.json to re-probe.
+    FIRSTCUT_ASSUME_GPU overrides; delete cache/gpu_probe.json to re-probe.
     """
-    env = os.environ.get("LUMARA_ASSUME_GPU", "").strip()
+    env = os.environ.get("FIRSTCUT_ASSUME_GPU", "").strip()
     if env:
         return env not in ("0", "false", "no")
     try:

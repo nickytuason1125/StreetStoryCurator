@@ -187,7 +187,7 @@ def main():
 
     W = 62
     print("=" * W)
-    print("LUMARA GRADE-ACCURACY AUDIT")
+    print("FIRSTCUT GRADE-ACCURACY AUDIT")
     print("=" * W)
     print(f"rated photos:          {len(ratings)}")
     print(f"  with machine score:  {len(pairs)}")

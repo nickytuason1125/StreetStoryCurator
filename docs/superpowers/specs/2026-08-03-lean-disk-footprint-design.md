@@ -1,7 +1,7 @@
 # Lean disk footprint — design
 
 **Date:** 2026-08-03
-**Goal:** Cut Lumara's on-disk footprint from ~24 GB to between ~10 and
+**Goal:** Cut FirstCut's on-disk footprint from ~24 GB to between ~10 and
 ~17 GB depending on one user decision, and make what remains a *fixed* cost
 rather than one that grows with use.
 
@@ -9,7 +9,7 @@ rather than one that grows with use.
 
 Measured on the development machine, same day, same hardware:
 
-| | Lumara | Lightroom Classic 15.4.1 |
+| | FirstCut | Lightroom Classic 15.4.1 |
 |---|---|---|
 | Install / model weights | 22.87 GB | 4.20 GB |
 | Working data | 1.03 GB (1,745 photos) | 22.71 GB previews + 0.33 GB catalogs |
@@ -17,7 +17,7 @@ Measured on the development machine, same day, same hardware:
 
 Near parity, but the two numbers behave differently. Lightroom's previews are a
 *marginal* cost that grows with every import — already 22.71 GB across 18
-catalogs on this machine. Lumara's model weights are a *fixed* cost.
+catalogs on this machine. FirstCut's model weights are a *fixed* cost.
 
 That framing was only partly true, which is what prompted this work. Two leaks:
 
@@ -66,7 +66,7 @@ compaction *and* version reaping in one call.
 ### Decisions
 
 - **Retention window, default 7 days.** Declared in the existing `SETTINGS`
-  table as `LUMARA_LANCE_RETENTION_DAYS`, not a literal — per the project's
+  table as `FIRSTCUT_LANCE_RETENTION_DAYS`, not a literal — per the project's
   one-declaration rule. A window rather than "delete all but current" preserves
   a rollback path if a cull writes bad grades.
 - **`delete_unverified=False`.** Refuses to remove fragments it cannot prove are
@@ -209,7 +209,7 @@ Two open questions, deliberately not answered here:
    preference judged by the user.
 
 Against Lightroom Classic's 4.2 GB install plus 22.7 GB of *growing* previews,
-Lumara's ~22 GB remains a fixed cost. That comparison still holds — it was
+FirstCut's ~22 GB remains a fixed cost. That comparison still holds — it was
 never the model weights that made it hold.
 
 ## Risks

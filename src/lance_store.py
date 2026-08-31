@@ -30,7 +30,7 @@ from typing import Optional
 
 # Absolute path anchored to this file — never affected by CWD changes in server threads.
 #
-# LUMARA_LANCE_DIR exists for ONE reason: tests and throwaway harnesses had
+# FIRSTCUT_LANCE_DIR exists for ONE reason: tests and throwaway harnesses had
 # no way to avoid the real store. `data_dir` in a grade request does not
 # redirect it, so pytest wrote its fixtures straight into the photographer's
 # vector store — rows from three separate runs were found sitting in a live
@@ -40,7 +40,7 @@ from typing import Optional
 # It is read once, at import, deliberately. Re-reading per call would let a
 # stray os.environ edit mid-run point half a cull at a different database.
 import os as _os_ls
-_DB_DIR    = str(_os_ls.environ.get("LUMARA_LANCE_DIR")
+_DB_DIR    = str(_os_ls.environ.get("FIRSTCUT_LANCE_DIR")
                  or Path(__file__).resolve().parent.parent / "cache" / "lance.db")
 # One table PER TIER. Each encoder tier produces a different embedding
 # dimension, and _connect_or_create's dim-change path used to respond by
@@ -638,7 +638,7 @@ def compact_after_write() -> None:
     from datetime import timedelta
     try:
         import run_profile as _rp
-        days = max(0, int(_rp.setting("LUMARA_LANCE_RETENTION_DAYS")))
+        days = max(0, int(_rp.setting("FIRSTCUT_LANCE_RETENTION_DAYS")))
     except Exception:
         days = 7
     try:

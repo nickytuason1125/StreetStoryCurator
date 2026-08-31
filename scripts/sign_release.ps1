@@ -1,4 +1,4 @@
-# sign_release.ps1 — code-sign the Lumara build artifacts.
+# sign_release.ps1 — code-sign the FirstCut build artifacts.
 #
 # Two supported certificate routes (pick one):
 #
@@ -36,8 +36,8 @@ param(
 
 $root = Split-Path -Parent $PSScriptRoot
 $targets = @(
-    "$root\frontend\src-tauri\target\release\lumara.exe",
-    "$root\frontend\src-tauri\target\release\bundle\nsis\Lumara_1.0.0_x64-setup.exe"
+    "$root\frontend\src-tauri\target\release\firstcut.exe",
+    "$root\frontend\src-tauri\target\release\bundle\nsis\FirstCut_1.0.0_x64-setup.exe"
 )
 
 if ($Mode -eq "Store" -and -not $Thumbprint) {

@@ -16,7 +16,7 @@
 - Python is the venv interpreter: `./venv/Scripts/python.exe`. The system Python lacks uvicorn and will not run this project.
 - Shell is Git Bash (POSIX sh) on Windows. Use forward slashes.
 - The floor is **never** written as a literal in display code. Exactly one Python function (`run_profile.required_ram_gb`) and one Rust mirror (locked by a parity test) may contain the numbers.
-- The env overrides `LUMARA_MIN_RAM_GB` (absolute override, wins when `> 0`) and `LUMARA_DRAFT_DECODE` (`"0"` disables draft decode, anything else enables) must behave identically in the Python and Rust implementations.
+- The env overrides `FIRSTCUT_MIN_RAM_GB` (absolute override, wins when `> 0`) and `FIRSTCUT_DRAFT_DECODE` (`"0"` disables draft decode, anything else enables) must behave identically in the Python and Rust implementations.
 - Do not change `TierSpec.ram_hard_gb` or `_GRADE_MIN_RAM_GB`'s role. Raising the tier floors deletes the smaller encoder tiers — that regression has been made before and is documented in `run_profile.py`.
 - Frontend tests are plain node scripts under `frontend/scripts/`, named `test-*.mjs`, discovered automatically by `scripts/run-tests.mjs`. Do not add vitest or any test framework.
 - Commit messages follow the repo's existing voice: lowercase conventional prefix, then a sentence describing the user-visible consequence (`fix: the Grade button could not start a grade`).
@@ -228,8 +228,8 @@ git commit -m "fix(ui): the RAM floor is the server's number, not three stale co
 ### Task 2: The Rust telemetry shim serves the real floor
 
 **Files:**
-- Modify: `native/lumara-rs/src/main.rs:63-75` (the `system_ram` handler), plus a new function and a new test module
-- Test: `native/lumara-rs/src/main.rs` (`#[cfg(test)] mod tests` at the end of the file)
+- Modify: `native/firstcut-rs/src/main.rs:63-75` (the `system_ram` handler), plus a new function and a new test module
+- Test: `native/firstcut-rs/src/main.rs` (`#[cfg(test)] mod tests` at the end of the file)
 
 **Interfaces:**
 - Consumes: nothing from Task 1. This task is independent and can be done in either order.
@@ -239,13 +239,13 @@ git commit -m "fix(ui): the RAM floor is the server's number, not three stale co
   fn required_ram_gb(n_photos: u32) -> f64
   ```
 
-Background: `native/lumara-rs` is "slice 1" of a native orchestrator whose stated contract is *byte-compatible response shapes, so the React frontend can point at this process without knowing the difference*. Its `/api/system/ram` handler hardcodes `"ram_min_gb": 1.8`. After the Python change that is a live disagreement between two servers claiming to be interchangeable — and it is the shim that is wrong.
+Background: `native/firstcut-rs` is "slice 1" of a native orchestrator whose stated contract is *byte-compatible response shapes, so the React frontend can point at this process without knowing the difference*. Its `/api/system/ram` handler hardcodes `"ram_min_gb": 1.8`. After the Python change that is a live disagreement between two servers claiming to be interchangeable — and it is the shim that is wrong.
 
 The shim cannot import `run_profile`, so this is a deliberate second implementation. Contain the risk by keeping the arithmetic in a pure function with no env or I/O, and locking the table with tests. The env-reading wrapper stays trivial enough to eyeball.
 
 - [ ] **Step 1: Write the failing test**
 
-Append to the end of `native/lumara-rs/src/main.rs`:
+Append to the end of `native/firstcut-rs/src/main.rs`:
 
 ```rust
 // ── tests ───────────────────────────────────────────────────────────────────
@@ -314,13 +314,13 @@ mod tests {
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `cd native/lumara-rs && cargo test`
+Run: `cd native/firstcut-rs && cargo test`
 
 Expected: FAIL at compile time — `cannot find function 'ram_need_gb' in this scope`. That is the correct failure; the function does not exist yet.
 
 - [ ] **Step 3: Write the implementation**
 
-In `native/lumara-rs/src/main.rs`, immediately above the `// ── handlers: telemetry ──` comment (currently around line 61), insert:
+In `native/firstcut-rs/src/main.rs`, immediately above the `// ── handlers: telemetry ──` comment (currently around line 61), insert:
 
 ```rust
 // ── cull RAM requirement ────────────────────────────────────────────────────
@@ -355,13 +355,13 @@ fn ram_need_gb(draft: bool, n_photos: u32, override_gb: Option<f64>) -> f64 {
 }
 
 /// Env-reading wrapper. Same two variables the Python side honours:
-/// LUMARA_MIN_RAM_GB (absolute override) and LUMARA_DRAFT_DECODE
+/// FIRSTCUT_MIN_RAM_GB (absolute override) and FIRSTCUT_DRAFT_DECODE
 /// ("0" disables scaled decode, which roughly doubles the requirement).
 fn required_ram_gb(n_photos: u32) -> f64 {
-    let override_gb = std::env::var("LUMARA_MIN_RAM_GB")
+    let override_gb = std::env::var("FIRSTCUT_MIN_RAM_GB")
         .ok()
         .and_then(|s| s.trim().parse::<f64>().ok());
-    let draft = std::env::var("LUMARA_DRAFT_DECODE")
+    let draft = std::env::var("FIRSTCUT_DRAFT_DECODE")
         .map(|s| s.trim() != "0")
         .unwrap_or(true);
     ram_need_gb(draft, n_photos, override_gb)
@@ -385,20 +385,20 @@ with:
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `cd native/lumara-rs && cargo test`
+Run: `cd native/firstcut-rs && cargo test`
 
 Expected: `test result: ok. 6 passed; 0 failed`.
 
 - [ ] **Step 5: Confirm the crate still builds clean**
 
-Run: `cd native/lumara-rs && cargo build 2>&1 | tail -20`
+Run: `cd native/firstcut-rs && cargo build 2>&1 | tail -20`
 
 Expected: `Finished` with no warnings about `required_ram_gb` being unused (it is used by the handler).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add native/lumara-rs/src/main.rs
+git add native/firstcut-rs/src/main.rs
 git commit -m "fix: the native shim reported the dead 1.8 GB floor as if it were live"
 ```
 
@@ -502,7 +502,7 @@ git commit -m "chore: ignore the generated audit reports; a stale one was read a
 - Consumes: Tasks 1-3 complete, so the tree holds no line-ending-only diffs and no untracked scratch.
 - Produces: nothing. This is the shipping gate.
 
-Background: this is roughly 285 lines of measured work — draft decode (JPEG DCT-domain downscaling, 279 ms/img decode against 3 ms of model time), the encoder-floor / whole-cull-budget split, the D-FINE 640-not-512 finding, and the `LUMARA_LUM_DRAFT` default flip after a verified zero-bucket-change diff. It is complete and tested; it has simply never been committed. Do not restructure it — commit it.
+Background: this is roughly 285 lines of measured work — draft decode (JPEG DCT-domain downscaling, 279 ms/img decode against 3 ms of model time), the encoder-floor / whole-cull-budget split, the D-FINE 640-not-512 finding, and the `FIRSTCUT_LUM_DRAFT` default flip after a verified zero-bucket-change diff. It is complete and tested; it has simply never been committed. Do not restructure it — commit it.
 
 - [ ] **Step 1: Confirm what is about to be committed**
 
@@ -547,7 +547,7 @@ large cull (n=5000): 4.2
 draft decode on: True
 ```
 
-If `draft decode on` prints `False`, something has `LUMARA_DRAFT_DECODE=0` set in the environment and the floors will read 6.6/7.0. Unset it and re-run.
+If `draft decode on` prints `False`, something has `FIRSTCUT_DRAFT_DECODE=0` set in the environment and the floors will read 6.6/7.0. Unset it and re-run.
 
 - [ ] **Step 5: Commit**
 

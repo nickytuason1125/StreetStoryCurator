@@ -2,7 +2,7 @@ ye# SpecVLM Integration Guide
 
 ## Overview
 
-This guide shows how to integrate the new SpecVLM pipeline into the Lumara codebase while maintaining backward compatibility with existing code.
+This guide shows how to integrate the new SpecVLM pipeline into the FirstCut codebase while maintaining backward compatibility with existing code.
 
 ## New Modules Created
 

@@ -1,7 +1,7 @@
 """
 The default paths must not require Ollama.
 
-Lumara shipped with server.py returning 503 for every non-scan grade when
+FirstCut shipped with server.py returning 503 for every non-scan grade when
 http://localhost:11434 did not answer. Nothing in the project installed Ollama —
 not Setup.ps1, not requirements.txt — and no user-facing document mentioned it,
 while CLAUDE.md rule 5 promised a fully offline app. A correct, complete install
@@ -12,7 +12,7 @@ tests/test_process_boundary.py: the property being protected is "this dependency
 does not come back", and that is a statement about the code, not about one run.
 
 Ollama is still permitted in two places, both opt-in and both off by default:
-Step 4e (LUMARA_STEP4E=1) and its helpers in qwen_vlm_grader/critique_engine.
+Step 4e (FIRSTCUT_STEP4E=1) and its helpers in qwen_vlm_grader/critique_engine.
 The line is that nothing on a DEFAULT path may reach for it.
 """
 from __future__ import annotations
@@ -30,7 +30,7 @@ for p in (str(SRC), str(ROOT)):
 
 _OLLAMA_MARKERS = ("11434", "ollama")
 
-# Opt-in only. Step 4e is gated on LUMARA_STEP4E, which defaults to "0", and
+# Opt-in only. Step 4e is gated on FIRSTCUT_STEP4E, which defaults to "0", and
 # critique_engine keeps the helpers that pass reaches for.
 _ALLOWED = {"qwen_vlm_grader.py", "critique_engine.py", "grade_pipeline_v2.py"}
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Lumara — Onboarding & Launch Wizard
+FirstCut — Onboarding & Launch Wizard
 
 Sequence
 ────────
@@ -486,7 +486,7 @@ def print_success_banner() -> None:
     url_pad = f"{SERVER_URL:<43}"
     print(f"""
   {BD}{G}+======================================================+
-  |   Lumara is running!                             |
+  |   FirstCut is running!                             |
   |                                                      |
   |   Open:  {url_pad}|
   |                                                      |

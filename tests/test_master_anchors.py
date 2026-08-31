@@ -9,7 +9,7 @@ wrong space — which is worse than the generic scale it displaces — so it
 must fall through cleanly to the library scale, loudly.
 
 AND, since 2026-08-30: the rating baseline is placeholder data, so the
-preference itself is OPT-IN — without LUMARA_MASTER_ANCHORS=1 the file
+preference itself is OPT-IN — without FIRSTCUT_MASTER_ANCHORS=1 the file
 is ignored even when fresh.
 
 Run:  venv\\Scripts\\python.exe -m pytest tests/test_master_anchors.py -v
@@ -42,7 +42,7 @@ def _write(path: Path, fingerprint: str, lo: float, hi: float) -> None:
 
 
 def _opt_in(monkeypatch):
-    monkeypatch.setenv("LUMARA_MASTER_ANCHORS", "1")
+    monkeypatch.setenv("FIRSTCUT_MASTER_ANCHORS", "1")
 
 
 def test_fresh_master_anchors_win(tmp_path, monkeypatch):
@@ -87,8 +87,8 @@ def test_inverted_master_anchors_are_ignored(tmp_path, monkeypatch):
 
 def test_without_opt_in_master_anchors_are_ignored(tmp_path, monkeypatch):
     """Ratings are placeholder data: even a FRESH master-anchors file must
-    not steer the absolute scale unless LUMARA_MASTER_ANCHORS=1."""
-    monkeypatch.delenv("LUMARA_MASTER_ANCHORS", raising=False)
+    not steer the absolute scale unless FIRSTCUT_MASTER_ANCHORS=1."""
+    monkeypatch.delenv("FIRSTCUT_MASTER_ANCHORS", raising=False)
     pos, neg = _probes()
     fp = sp.probe_fingerprint(pos, neg)
     master = tmp_path / "master_anchors.json"

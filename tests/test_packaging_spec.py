@@ -2,7 +2,7 @@
 The PyInstaller spec has to keep up with the source tree.
 
 The server split moved 3,800 lines out of server_impl.py into routers/, and
-Lumara.spec was never updated. Nothing failed: tsc passed, the suite
+FirstCut.spec was never updated. Nothing failed: tsc passed, the suite
 passed, the dev server ran, 378 tests were green. Only the PACKAGED app was
 broken, and nobody had built one since. server.py does `from server_impl
 import app`, server_impl calls routers.mount_all(), and neither server_impl.py
@@ -26,13 +26,13 @@ from pathlib import Path
 import pytest
 
 _ROOT = Path(__file__).resolve().parent.parent
-_SPEC = _ROOT / "Lumara.spec"
+_SPEC = _ROOT / "FirstCut.spec"
 
 
 @pytest.fixture(scope="module")
 def spec() -> str:
     if not _SPEC.exists():
-        pytest.skip("Lumara.spec not present")
+        pytest.skip("FirstCut.spec not present")
     return _SPEC.read_text(encoding="utf-8")
 
 

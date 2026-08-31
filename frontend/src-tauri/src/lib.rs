@@ -242,7 +242,7 @@ fn download_engine(base: &str, engine_root: &std::path::Path, triple: &str) -> O
 /// Resolve the engine bundle dir: 1) previously downloaded/extracted engine in
 /// the writable data dir, 2) loose sidecar in resources (local builds),
 /// 3) zip parts shipped in resources (offline distribution),
-/// 4) first-run download from LUMARA_ENGINE_URL (public distribution).
+/// 4) first-run download from FIRSTCUT_ENGINE_URL (public distribution).
 fn resolve_engine(app: &tauri::AppHandle, triple: &str, ext: &str) -> Option<PathBuf> {
     let resource_dir = app.path().resource_dir()
         .map_err(|e| eprintln!("[tauri] resource_dir error: {}", e))
@@ -284,13 +284,13 @@ fn resolve_engine(app: &tauri::AppHandle, triple: &str, ext: &str) -> Option<Pat
     }
 
     // 4) First-run download.
-    if let Ok(base) = env::var("LUMARA_ENGINE_URL") {
+    if let Ok(base) = env::var("FIRSTCUT_ENGINE_URL") {
         if !base.trim().is_empty() {
             eprintln!("[tauri] No engine installed — downloading from {}", base.trim());
             return download_engine(base.trim(), &engine_root, triple);
         }
     }
-    eprintln!("[tauri] ERROR: no engine found and LUMARA_ENGINE_URL is not set — cannot start backend.");
+    eprintln!("[tauri] ERROR: no engine found and FIRSTCUT_ENGINE_URL is not set — cannot start backend.");
     None
 }
 
@@ -301,7 +301,7 @@ fn resolve_engine(app: &tauri::AppHandle, triple: &str, ext: &str) -> Option<Pat
 ///
 /// We set:
 ///   CWD          → the bundle dir  (so models/ and frontend/dist/ resolve)
-///   CURATOR_DATA_DIR → user's AppData/Lumara (writable cache)
+///   CURATOR_DATA_DIR → user's AppData/FirstCut (writable cache)
 fn start_sidecar(app: &tauri::AppHandle) -> Option<Child> {
     let triple      = sidecar_triple();
     let ext         = exe_ext();
@@ -316,9 +316,9 @@ fn start_sidecar(app: &tauri::AppHandle) -> Option<Child> {
         return None;
     }
 
-    // Resolve the writable data directory (AppData\Roaming\Lumara on Windows)
+    // Resolve the writable data directory (AppData\Roaming\FirstCut on Windows)
     let data_dir = app.path().data_dir()
-        .map(|d| d.join("Lumara"))
+        .map(|d| d.join("FirstCut"))
         .unwrap_or_else(|_| bundle_dir.clone());
 
     eprintln!("[tauri] CURATOR_DATA_DIR: {:?}", data_dir);
@@ -380,7 +380,7 @@ pub fn run() {
     {
         let base = env::var("LOCALAPPDATA")
             .unwrap_or_else(|_| std::env::temp_dir().to_string_lossy().into_owned());
-        let wv_data = PathBuf::from(base).join("Lumara").join("WebView2");
+        let wv_data = PathBuf::from(base).join("FirstCut").join("WebView2");
         let _ = std::fs::create_dir_all(&wv_data);
         env::set_var("WEBVIEW2_USER_DATA_FOLDER", &wv_data);
     }
@@ -406,7 +406,7 @@ pub fn run() {
                 "main",
                 webview_url,
             )
-            .title("Lumara")
+            .title("FirstCut")
             // Calm WebView2: no first-run experience, no default-browser-check
             // prompts, no Microsoft UI surfaces inside the app window. NOTE:
             // setting these args REPLACES Tauri's defaults, so Tauri's own

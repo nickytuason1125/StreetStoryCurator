@@ -1,4 +1,4 @@
-//! lumara-rs — Lumara native orchestrator, slice 1.
+//! firstcut-rs — FirstCut native orchestrator, slice 1.
 //!
 //! Implements the state/telemetry surface of the Python server's API with
 //! byte-compatible response shapes, so the React frontend can point at this
@@ -90,13 +90,13 @@ fn ram_need_gb(draft: bool, n_photos: u32, override_gb: Option<f64>) -> f64 {
 }
 
 /// Env-reading wrapper. Same two variables the Python side honours:
-/// LUMARA_MIN_RAM_GB (absolute override) and LUMARA_DRAFT_DECODE
+/// FIRSTCUT_MIN_RAM_GB (absolute override) and FIRSTCUT_DRAFT_DECODE
 /// ("0" disables scaled decode, which roughly doubles the requirement).
 fn required_ram_gb(n_photos: u32) -> f64 {
-    let override_gb = std::env::var("LUMARA_MIN_RAM_GB")
+    let override_gb = std::env::var("FIRSTCUT_MIN_RAM_GB")
         .ok()
         .and_then(|s| s.trim().parse::<f64>().ok());
-    let draft = std::env::var("LUMARA_DRAFT_DECODE")
+    let draft = std::env::var("FIRSTCUT_DRAFT_DECODE")
         .map(|s| s.trim() != "0")
         .unwrap_or(true);
     ram_need_gb(draft, n_photos, override_gb)
@@ -224,7 +224,7 @@ async fn catalog_save(
 
 #[tokio::main]
 async fn main() {
-    let port: u16 = std::env::var("LUMARA_RS_PORT")
+    let port: u16 = std::env::var("FIRSTCUT_RS_PORT")
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(8001);
@@ -246,7 +246,7 @@ async fn main() {
         .with_state(app_state);
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-    println!("[lumara-rs] listening on http://{addr}");
+    println!("[firstcut-rs] listening on http://{addr}");
     let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");
     axum::serve(listener, app).await.unwrap();
 }

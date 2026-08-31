@@ -4,7 +4,7 @@ The floors here are not guesses. Each one is enforced somewhere in the app
 already; the problem was that nothing said so until a run was underway:
 
   1.5 GB free   the SigLIP encoder refuses to load below this and the failure
-                looks like a hang (see the run-lumara skill's gotchas)
+                looks like a hang (see the run-firstcut skill's gotchas)
   3.8 GB free   the whole-cull grade floor (run_profile.required_ram_gb) the
                 pre-grade modal gate now enforces
   5.0 GB free   what "comfortable" means: ~2 GB for the encode subprocess

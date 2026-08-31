@@ -733,9 +733,9 @@ def _dedup_chunk_size(n: int) -> int:
     grade.
 
     Peak memory is O(chunk x n) floats; 512 rows against 10k photos is ~20 MB,
-    which is nothing next to the encoder. LUMARA_DEDUP_CHUNK overrides.
+    which is nothing next to the encoder. FIRSTCUT_DEDUP_CHUNK overrides.
     """
-    _env = os.environ.get("LUMARA_DEDUP_CHUNK")
+    _env = os.environ.get("FIRSTCUT_DEDUP_CHUNK")
     if _env:
         try:
             return max(64, min(int(_env), max(n, 1)))
@@ -843,7 +843,7 @@ def _iqa_resumable(
     commits to LanceDB.
 
     Slice size trades resumability against re-loading the detector per slice;
-    LUMARA_IQA_SLICE tunes it (0 disables slicing entirely).
+    FIRSTCUT_IQA_SLICE tunes it (0 disables slicing entirely).
     """
     _p = progress or (lambda f, d: None)
     n = len(image_paths)
@@ -853,7 +853,7 @@ def _iqa_resumable(
                                    comp_eligible_paths, vlm_breakdowns)
 
     try:
-        _slice = int(os.environ.get("LUMARA_IQA_SLICE", "400"))
+        _slice = int(os.environ.get("FIRSTCUT_IQA_SLICE", "400"))
     except ValueError:
         _slice = 400
     if _slice <= 0 or n <= _slice:
@@ -1887,11 +1887,11 @@ def run_v2(
                 # expensive VLM entirely and keep their CLIP grade — the VLM
                 # spends its seconds ranking contenders, not confirming trash.
                 # Threshold is conservative: anything ≥ 0.30 still gets the
-                # full VLM look. Disable with LUMARA_FUNNEL=0.
+                # full VLM look. Disable with FIRSTCUT_FUNNEL=0.
                 _funnel_results: dict = {}
                 _vlm_paths = list(paths_to_rate)
                 import os as _os_fn
-                if _os_fn.environ.get("LUMARA_FUNNEL", "1") != "0" and len(paths_to_rate) >= 8:
+                if _os_fn.environ.get("FIRSTCUT_FUNNEL", "1") != "0" and len(paths_to_rate) >= 8:
                     try:
                         from specvlm_pipeline import SpecVLMPipeline as _SpecPre
                         _pre = _SpecPre()
@@ -1917,9 +1917,9 @@ def run_v2(
                         # pre-culled, so an all-strong batch keeps its best.
                         # Culled photos keep their CLIP grade (_grader=
                         # "clip-funnel") — nothing is deleted; toggle off with
-                        # LUMARA_FUNNEL=0 or dial LUMARA_FUNNEL_FRAC=0.
-                        _FUNNEL_FRAC = float(_os_fn.environ.get("LUMARA_FUNNEL_FRAC", "0.35"))
-                        _FUNNEL_CEIL = float(_os_fn.environ.get("LUMARA_FUNNEL_CEIL", "0.50"))
+                        # FIRSTCUT_FUNNEL=0 or dial FIRSTCUT_FUNNEL_FRAC=0.
+                        _FUNNEL_FRAC = float(_os_fn.environ.get("FIRSTCUT_FUNNEL_FRAC", "0.35"))
+                        _FUNNEL_CEIL = float(_os_fn.environ.get("FIRSTCUT_FUNNEL_CEIL", "0.50"))
                         _scored_pre  = sorted(_pre_res, key=lambda r: float(r.score))
                         _n_cull      = int(len(_scored_pre) * _FUNNEL_FRAC)
                         for _fr in _scored_pre[:_n_cull]:
@@ -2153,8 +2153,8 @@ def run_v2(
     #    250 photos  58.7 vs 55.0 photos/min,  0 grade-bucket changes
     # Per-photo drift was identical to the run without it, i.e. this flag moved
     # no score at all on either set. Verified, so it defaults ON; set
-    # LUMARA_LUM_DRAFT=0 to go back to full-resolution lum reads.
-    _LUM_DRAFT = os.environ.get("LUMARA_LUM_DRAFT", "1").strip() == "1"
+    # FIRSTCUT_LUM_DRAFT=0 to go back to full-resolution lum reads.
+    _LUM_DRAFT = os.environ.get("FIRSTCUT_LUM_DRAFT", "1").strip() == "1"
 
     def _lum_stats(path: str):
         try:
@@ -2577,13 +2577,13 @@ def run_v2(
     fused        = np.where(route2b_mask, fused_r2b, fused)
 
     # ── Fusion input dump (opt-in, for offline ablation) ─────────────────────
-    # LUMARA_FUSION_DUMP=<path.npz> writes every per-photo signal that feeds
+    # FIRSTCUT_FUSION_DUMP=<path.npz> writes every per-photo signal that feeds
     # Step 4d plus the resulting score. That lets the scoring formula's many
     # hand-tuned constants (archetype weights, VLP 0.556, anchor floor 0.58,
     # soft-focus +0.15, street ±0.06, the penalty gates) be ablated against real
     # user ratings OFFLINE — one grade run, many experiments — instead of
     # re-grading for each variant. Off by default; pure instrumentation.
-    _dump_to = os.environ.get("LUMARA_FUSION_DUMP", "").strip()
+    _dump_to = os.environ.get("FIRSTCUT_FUSION_DUMP", "").strip()
     if _dump_to:
         try:
             np.savez(
@@ -2688,13 +2688,13 @@ def run_v2(
     # on-demand when the user selects a photo and calls POST /api/critique/details.
     # Only global_score (overrides fusion) and vlm_bboxes are stored.
     #
-    # OPT-IN (LUMARA_STEP4E=1) as of 2026-06-11: on this 6 GB machine the
+    # OPT-IN (FIRSTCUT_STEP4E=1) as of 2026-06-11: on this 6 GB machine the
     # Ollama VLM is always CPU-bound — the latency probe skipped the pass on
     # every observed run, but each cull still paid ~25-40 s of warmup+eviction
     # to find that out. The refinement only contributed a ±0.08 spatial nudge
     # + 25% blend; bbox overlays fall back to YOLO synthesis regardless.
     import os as _os_4e
-    if not scan_mode and _os_4e.environ.get("LUMARA_STEP4E", "0") == "1":
+    if not scan_mode and _os_4e.environ.get("FIRSTCUT_STEP4E", "0") == "1":
         try:
             from critique_engine import _check_ollama_available
             from qwen_vlm_grader import (
@@ -3012,16 +3012,16 @@ def run_v2(
     # grader, and rating a photo must never change how any image is graded
     # (the early rating baseline was explicitly placeholder data). The taste
     # blend therefore runs ONLY when explicitly enabled with
-    # LUMARA_PERSONAL_TASTE=1; otherwise grades stand on the grader alone
+    # FIRSTCUT_PERSONAL_TASTE=1; otherwise grades stand on the grader alone
     # and the head simply trains/records without touching any score.
     _p(0.87, "Refining scores…")
     pers         = np.full(n, 0.5, dtype=np.float32)
     final_scores = scores_arr.copy()  # copy so Soft-Focus gate doesn't mutate scores_arr
     _ph_weights  = Path("cache/personal_head.pt")
-    _taste_on    = os.environ.get("LUMARA_PERSONAL_TASTE", "").strip() == "1"
+    _taste_on    = os.environ.get("FIRSTCUT_PERSONAL_TASTE", "").strip() == "1"
     if _ph_weights.exists() and not _taste_on:
         print("[v2] PersonalHead weights present but the taste blend is OPT-IN "
-              "(set LUMARA_PERSONAL_TASTE=1 to enable) — ratings never "
+              "(set FIRSTCUT_PERSONAL_TASTE=1 to enable) — ratings never "
               "affect grading by default")
     if _ph_weights.exists() and _taste_on:
         print("[v2] PersonalHead weights found — confidence-adaptive taste blend")
@@ -3090,7 +3090,7 @@ def run_v2(
             elif _n_ratings >= 50:  _w_ceil = 0.55
             elif _n_ratings >= 25:  _w_ceil = 0.45
             else:                   _w_ceil = 0.35
-            _env_cap = os.environ.get("LUMARA_PH_WEIGHT_MAX", "").strip()
+            _env_cap = os.environ.get("FIRSTCUT_PH_WEIGHT_MAX", "").strip()
             if _env_cap:
                 # Explicit override wins as a HARD CAP (escape hatch); sanity-
                 # clamped so it can neither go negative-float nor past 0.80.
@@ -3115,14 +3115,14 @@ def run_v2(
     # BUILD phase (offline): challengers trained on a rating baseline only
     #   ever write records; a local cache challenger may blend ONLY when it
     #   won its held-out exam AND the user explicitly opted in
-    #   (LUMARA_MASTER_JUDGE=1) — user ratings must never grade.
+    #   (FIRSTCUT_MASTER_JUDGE=1) — user ratings must never grade.
     # RUN phase (what every user gets): the SHIPPED master judge
     #   (data/master_judge_defaults.json, baked by promote_to_shipped()) is
     #   part of the algorithm itself — it grades by default for every
     #   install, no flags, no ratings, like the shipped encoder weights.
     # Precedence and guards live in master_judge.active(); the kill switch
-    # LUMARA_MASTER_JUDGE_OFF=1 disables everything.
-    if not os.environ.get("LUMARA_MASTER_JUDGE_OFF", "").strip():
+    # FIRSTCUT_MASTER_JUDGE_OFF=1 disables everything.
+    if not os.environ.get("FIRSTCUT_MASTER_JUDGE_OFF", "").strip():
         try:
             import master_judge as _mj
             _mj_judge, _mj_w = _mj.active()
@@ -3204,7 +3204,7 @@ def run_v2(
         # slice is dropped before the next one is built. The write is identical:
         # upsert_batch is a merge_insert keyed on `path`, so N calls of C records
         # commit exactly what one call of N records did.
-        _LANCE_CHUNK = int(os.environ.get("LUMARA_LANCE_CHUNK", "500"))
+        _LANCE_CHUNK = int(os.environ.get("FIRSTCUT_LANCE_CHUNK", "500"))
         _written = 0
         for _c0 in range(0, n, _LANCE_CHUNK):
             _c1 = min(_c0 + _LANCE_CHUNK, n)
@@ -3453,7 +3453,7 @@ if __name__ == "__main__":
     import argparse, sys, time as _cli_time
 
     _parser = argparse.ArgumentParser(
-        description="Lumara — vision grading pipeline",
+        description="FirstCut — vision grading pipeline",
         formatter_class=argparse.RawTextHelpFormatter,
     )
     _parser.add_argument(
@@ -3478,7 +3478,7 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
     print("=" * 62)
-    print(f"  Lumara — pipeline test run")
+    print(f"  FirstCut — pipeline test run")
     print(f"  input_dir : {_args.input_dir}")
     print(f"  mode      : {_args.mode}")
     print("=" * 62)

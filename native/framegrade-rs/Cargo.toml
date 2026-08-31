@@ -1,8 +1,8 @@
 [package]
-name = "lumara-rs"
+name = "firstcut-rs"
 version = "0.1.0"
 edition = "2021"
-description = "Lumara native orchestrator — Phase 2 Rust backend core"
+description = "FirstCut native orchestrator — Phase 2 Rust backend core"
 
 [dependencies]
 axum = "0.8"

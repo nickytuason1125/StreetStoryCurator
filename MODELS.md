@@ -1,6 +1,6 @@
 # Optional Models Integration
 
-This document explains how to integrate optional models for enhanced grading in Lumara.
+This document explains how to integrate optional models for enhanced grading in FirstCut.
 
 ## YuNet Face Detection Model
 

@@ -1,11 +1,11 @@
 @echo off
 setlocal EnableDelayedExpansion
-title Lumara
+title FirstCut
 cd /d "%~dp0"
 
 echo.
 echo  ================================================================
-echo   Lumara
+echo   FirstCut
 echo  ================================================================
 echo.
 
@@ -74,7 +74,7 @@ if exist "venv\Scripts\pythonw.exe" (
 :install_full
 ::  FIRST-RUN INSTALL
 :: ──────────────────────────────────────────────────────────────────
-echo  First launch — installing Lumara.
+echo  First launch — installing FirstCut.
 echo  This takes 10-20 minutes depending on your connection.
 echo  Do not close this window.
 echo.
@@ -153,12 +153,12 @@ set APP_DIR=%~dp0
 set APP_DIR=!APP_DIR:~0,-1!
 powershell -NoProfile -NonInteractive -Command ^
     "$ws = New-Object -ComObject WScript.Shell; " ^
-    "$lnk = $ws.CreateShortcut([Environment]::GetFolderPath('Desktop') + '\Lumara.lnk'); " ^
+    "$lnk = $ws.CreateShortcut([Environment]::GetFolderPath('Desktop') + '\FirstCut.lnk'); " ^
     "$lnk.TargetPath = 'wscript.exe'; " ^
     "$lnk.Arguments = '/b \"!APP_DIR!\launch_hidden.vbs\"'; " ^
     "$lnk.WorkingDirectory = '!APP_DIR!'; " ^
     "$lnk.IconLocation = '!APP_DIR!\icon.ico'; " ^
-    "$lnk.Description = 'Lumara — AI Photo Culler'; " ^
+    "$lnk.Description = 'FirstCut — AI Photo Culler'; " ^
     "$lnk.Save(); Write-Host 'Shortcut created.'" 2>nul
 
 echo setup_ok > venv\.setup_ok

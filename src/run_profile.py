@@ -124,65 +124,65 @@ SETTINGS = {
     "SIGLIP_TIER":            Setting(str, "", "force a tier; empty = auto-select"),
     "SIGLIP_HF_DIR":          Setting(str, "", "override the lean checkpoint dir"),
     "SIGLIP_ENC_USE_OC":      Setting(bool, False, "force the heavy open_clip loader"),
-    "LUMARA_ENCODER":     Setting(str, "", "'onnx' or 'torch'; empty = auto"),
-    "LUMARA_ASSUME_GPU":  Setting(str, "", "skip the GPU probe (testing)"),
-    "LUMARA_ORT_PROVIDERS": Setting(str, "", "comma-separated ONNX provider order"),
+    "FIRSTCUT_ENCODER":     Setting(str, "", "'onnx' or 'torch'; empty = auto"),
+    "FIRSTCUT_ASSUME_GPU":  Setting(str, "", "skip the GPU probe (testing)"),
+    "FIRSTCUT_ORT_PROVIDERS": Setting(str, "", "comma-separated ONNX provider order"),
     # batching / chunking — all FIXED per device, never derived from free RAM,
     # which is what made 47 of 514 grades wobble between identical runs
     "SIGLIP_ENC_BATCH":       Setting(int, 0, "encode batch; 0 = per-device default"),
     "SIGLIP_ENC_CHUNK":       Setting(int, 0, "encode chunk; 0 = default"),
-    "LUMARA_DEDUP_CHUNK": Setting(int, 0, "dedup similarity block size"),
-    "LUMARA_DFINE_CHUNK": Setting(int, 0, "person-detector chunk"),
-    "LUMARA_IQA_CHUNK":   Setting(int, 0, "IQA decode chunk (RAM-bounded)"),
-    "LUMARA_LANCE_CHUNK": Setting(int, 500, "rows per LanceDB write"),
-    "LUMARA_LANCE_RETENTION_DAYS": Setting(
+    "FIRSTCUT_DEDUP_CHUNK": Setting(int, 0, "dedup similarity block size"),
+    "FIRSTCUT_DFINE_CHUNK": Setting(int, 0, "person-detector chunk"),
+    "FIRSTCUT_IQA_CHUNK":   Setting(int, 0, "IQA decode chunk (RAM-bounded)"),
+    "FIRSTCUT_LANCE_CHUNK": Setting(int, 500, "rows per LanceDB write"),
+    "FIRSTCUT_LANCE_RETENTION_DAYS": Setting(
         int, 7, "keep LanceDB versions this many days; history was unbounded"),
-    "LUMARA_STREAM_CHUNK": Setting(int, 0, "streaming stage chunk"),
+    "FIRSTCUT_STREAM_CHUNK": Setting(int, 0, "streaming stage chunk"),
     # RAM floors
     "SIGLIP_MIN_FREE_RAM_GB": Setting(float, 0.0, "override soft floor; 0 = per-tier"),
     "SIGLIP_HARD_MIN_RAM_GB": Setting(float, 0.0, "override hard floor; 0 = per-tier"),
-    "LUMARA_MIN_RAM_GB":  Setting(float, 0.0, "legacy alias of the soft floor"),
-    "LUMARA_ANNOTATE_MIN_RAM_GB": Setting(float, 2.0, "skip annotation below this"),
+    "FIRSTCUT_MIN_RAM_GB":  Setting(float, 0.0, "legacy alias of the soft floor"),
+    "FIRSTCUT_ANNOTATE_MIN_RAM_GB": Setting(float, 2.0, "skip annotation below this"),
     # quality gates
-    "LUMARA_BLUR_MIN":    Setting(float, 0.0, "blur rejection threshold"),
-    "LUMARA_FLAT_STD":    Setting(float, 0.0, "flat/void frame std threshold"),
-    "LUMARA_FUNNEL":      Setting(bool, True, "percentile pre-cull funnel"),
-    "LUMARA_FUNNEL_FRAC": Setting(float, 0.35, "fraction kept by the funnel"),
-    "LUMARA_FUNNEL_CEIL": Setting(int, 0, "max photos through the funnel"),
-    "LUMARA_STEP4E":      Setting(bool, True, "borderline re-judge pass"),
-    "LUMARA_PH_WEIGHT_MAX": Setting(float, 0.0,
+    "FIRSTCUT_BLUR_MIN":    Setting(float, 0.0, "blur rejection threshold"),
+    "FIRSTCUT_FLAT_STD":    Setting(float, 0.0, "flat/void frame std threshold"),
+    "FIRSTCUT_FUNNEL":      Setting(bool, True, "percentile pre-cull funnel"),
+    "FIRSTCUT_FUNNEL_FRAC": Setting(float, 0.35, "fraction kept by the funnel"),
+    "FIRSTCUT_FUNNEL_CEIL": Setting(int, 0, "max photos through the funnel"),
+    "FIRSTCUT_STEP4E":      Setting(bool, True, "borderline re-judge pass"),
+    "FIRSTCUT_PH_WEIGHT_MAX": Setting(float, 0.0,
         "hard cap on taste-model authority; 0 = auto (scales with rating "
         "baseline: <25→0.35, ≥25→0.45, ≥50→0.55, ≥100→0.70)"),
     # decode
-    "LUMARA_SHARED_DECODE": Setting(bool, True, "reuse decoded frames across stages"),
-    "LUMARA_DFINE_DRAFT": Setting(bool, True, "DCT-domain draft decode for detection"),
-    "LUMARA_LUM_DRAFT":   Setting(bool, True, "draft decode for luminance stats"),
-    "LUMARA_DRAFT_DECODE": Setting(bool, True,
+    "FIRSTCUT_SHARED_DECODE": Setting(bool, True, "reuse decoded frames across stages"),
+    "FIRSTCUT_DFINE_DRAFT": Setting(bool, True, "DCT-domain draft decode for detection"),
+    "FIRSTCUT_LUM_DRAFT":   Setting(bool, True, "draft decode for luminance stats"),
+    "FIRSTCUT_DRAFT_DECODE": Setting(bool, True,
         "scaled JPEG decode for grading; drives required_ram_gb(). Declared "
         "here for discoverability only — draft_decode_enabled() below keeps "
         "its own literal '!= \"0\"' parse rather than routing through "
         "setting(), because setting()'s bool rule ('0'/'false'/'no'/'off' are "
-        "falsy) would diverge from the Rust mirror at native/lumara-rs/"
+        "falsy) would diverge from the Rust mirror at native/firstcut-rs/"
         "src/main.rs (which also treats only \"0\" as off), reintroducing the "
         "exact cross-language drift this module exists to remove"),
-    "LUMARA_GATE_WORKERS": Setting(int, 0, "early-gate worker threads; 0 = auto"),
-    "LUMARA_IQA_SLICE":   Setting(int, 0, "IQA slice size"),
+    "FIRSTCUT_GATE_WORKERS": Setting(int, 0, "early-gate worker threads; 0 = auto"),
+    "FIRSTCUT_IQA_SLICE":   Setting(int, 0, "IQA slice size"),
     # local LLM (replaces the Ollama HTTP dependency)
-    "LUMARA_LOCAL_LLM_GGUF": Setting(str, "", "override the text GGUF path"),
-    "LUMARA_LOCAL_LLM_MIN_RAM_GB": Setting(
+    "FIRSTCUT_LOCAL_LLM_GGUF": Setting(str, "", "override the text GGUF path"),
+    "FIRSTCUT_LOCAL_LLM_MIN_RAM_GB": Setting(
         float, 0.0, "override the text-GGUF RAM floor; 0 = derive from weight size"),
-    "LUMARA_DIRECTOR_POOL": Setting(
+    "FIRSTCUT_DIRECTOR_POOL": Setting(
         int, 12, "candidates shown to the Art Director; prefill cost is superlinear"),
-    "LUMARA_USE_RAG_CONCEPTS": Setting(
+    "FIRSTCUT_USE_RAG_CONCEPTS": Setting(
         bool, True, "inject book-derived RAG phrases into prompts and "
-        "Story/Competition selection; set LUMARA_USE_RAG_CONCEPTS=0 to disable"),
-    "LUMARA_STORY_REVISION": Setting(
+        "Story/Competition selection; set FIRSTCUT_USE_RAG_CONCEPTS=0 to disable"),
+    "FIRSTCUT_STORY_REVISION": Setting(
         bool, False, "contact-sheet critique pass; ~200s per iteration on CPU"),
-    "LUMARA_STORY_VERDICT": Setting(
+    "FIRSTCUT_STORY_VERDICT": Setting(
         bool, False, "Judge's Verdict narrative; ~92s on CPU"),
     # diagnostics
-    "LUMARA_RAM_TRACE":   Setting(bool, False, "log RSS/peak per stage"),
-    "LUMARA_FUSION_DUMP": Setting(bool, False, "dump per-photo fusion terms"),
+    "FIRSTCUT_RAM_TRACE":   Setting(bool, False, "log RSS/peak per stage"),
+    "FIRSTCUT_FUSION_DUMP": Setting(bool, False, "dump per-photo fusion terms"),
 }
 
 
@@ -283,7 +283,7 @@ class RunProfile:
     @property
     def ram_soft_gb(self) -> float:
         override = (setting("SIGLIP_MIN_FREE_RAM_GB")
-                    or setting("LUMARA_MIN_RAM_GB"))
+                    or setting("FIRSTCUT_MIN_RAM_GB"))
         if override:
             return override
         if not self.has_lean_checkpoint:
@@ -320,7 +320,7 @@ class RunProfile:
         against 1024-d images. Vision and text asking the same question is the
         point of putting this here.
         """
-        sel = str(setting("LUMARA_ENCODER")).lower()
+        sel = str(setting("FIRSTCUT_ENCODER")).lower()
         if sel == "torch":
             return False
         graph = self.onnx_text if text else self.onnx_vision
@@ -336,7 +336,7 @@ class RunProfile:
 
     @property
     def ort_providers(self) -> list:
-        pref = str(setting("LUMARA_ORT_PROVIDERS"))
+        pref = str(setting("FIRSTCUT_ORT_PROVIDERS"))
         if pref:
             return [p.strip() for p in pref.split(",") if p.strip()]
         return ["CUDAExecutionProvider", "DmlExecutionProvider",
@@ -358,7 +358,7 @@ def _env_key() -> tuple:
     """The inputs the profile is derived from."""
     return (str(setting("SIGLIP_TIER")).lower(),
             str(setting("SIGLIP_HF_DIR")),
-            str(setting("LUMARA_ASSUME_GPU")),
+            str(setting("FIRSTCUT_ASSUME_GPU")),
             bool(setting("SIGLIP_ENC_USE_OC")))
 
 
@@ -394,7 +394,7 @@ def _gpu_present() -> bool:
     encode subprocess, and initialising CUDA there faults the parent with
     0xC0000005 when the child exits.
     """
-    env = str(setting("LUMARA_ASSUME_GPU"))
+    env = str(setting("FIRSTCUT_ASSUME_GPU"))
     if env:
         return env.lower() not in ("0", "false", "no")
     try:
@@ -431,13 +431,13 @@ def _gpu_present() -> bool:
 _RAM_NEED_GB = {
     #                    <=300 photos   >300 photos (extrapolated)
     True:  (3.8, 4.2),   # draft decode on  (the default)
-    False: (6.6, 7.0),   # draft decode off (LUMARA_DRAFT_DECODE=0)
+    False: (6.6, 7.0),   # draft decode off (FIRSTCUT_DRAFT_DECODE=0)
 }
 
 
 def draft_decode_enabled() -> bool:
     """Whether JPEGs are decoded at reduced scale. Drives the RAM requirement."""
-    return os.environ.get("LUMARA_DRAFT_DECODE", "1").strip() != "0"
+    return os.environ.get("FIRSTCUT_DRAFT_DECODE", "1").strip() != "0"
 
 
 def required_ram_gb(n_photos: int = 0) -> float:
@@ -449,7 +449,7 @@ def required_ram_gb(n_photos: int = 0) -> float:
     floor, so it admitted culls that then drove the machine to 0.10 GB free and
     into the pagefile (111 s versus 25 s for the same folder with RAM to spare).
 
-    Warning: the LUMARA_MIN_RAM_GB override read here also aliases
+    Warning: the FIRSTCUT_MIN_RAM_GB override read here also aliases
     RunProfile.ram_soft_gb's "legacy alias of the soft floor" (see SETTINGS and
     ram_soft_gb above, ~line 278) — setting it to escape this cull gate on a
     tight machine silently disables the encoder's own batch-reduction
@@ -458,7 +458,7 @@ def required_ram_gb(n_photos: int = 0) -> float:
     small, large = _RAM_NEED_GB[draft_decode_enabled()]
     need = small if n_photos <= 300 else large
     try:
-        override = float(os.environ.get("LUMARA_MIN_RAM_GB", "") or 0)
+        override = float(os.environ.get("FIRSTCUT_MIN_RAM_GB", "") or 0)
     except ValueError:
         override = 0.0
     return override if override > 0 else need

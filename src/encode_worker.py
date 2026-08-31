@@ -46,7 +46,7 @@ def _device():
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
-# ── ONNX image encoder (opt-in: LUMARA_ENCODER=onnx) ─────────────────────
+# ── ONNX image encoder (opt-in: FIRSTCUT_ENCODER=onnx) ─────────────────────
 # Profiling showed the encoder's RAM is dominated by the FRAMEWORK, not the
 # model: torch 0.36 GB + transformers 1.60 GB, while the weights themselves
 # mmap to VRAM for ~0.01 GB. onnxruntime-gpu imports for 0.03 GB and runs the
@@ -123,7 +123,7 @@ def _onnx_enabled() -> bool:
     """ONNX is the DEFAULT for image encoding once the graph exists.
 
     Measured in a real grade: 2.70 GB -> 1.18 GB peak for the per-photo work,
-    at equal speed. LUMARA_ENCODER=torch forces the PyTorch path back — the
+    at equal speed. FIRSTCUT_ENCODER=torch forces the PyTorch path back — the
     escape hatch matters because the two are not bit-identical (fp16 kernel
     differences put embedding cosine at ~0.9997, which moved 2 of 135 borderline
     grades), so any suspicion about a shoot can be A/B'd in one run.
@@ -154,7 +154,7 @@ def _onnx_session(graph: str = ""):
     #   CPU      everywhere, always the last resort
     # Only providers actually present in the installed onnxruntime build are
     # used, so setting this on a machine without that wheel degrades to CPU
-    # rather than failing. LUMARA_ORT_PROVIDERS overrides the order.
+    # rather than failing. FIRSTCUT_ORT_PROVIDERS overrides the order.
     _order = _PROFILE.ort_providers
     _have = ort.get_available_providers()
     prov = [p for p in _order if p in _have] or ["CPUExecutionProvider"]

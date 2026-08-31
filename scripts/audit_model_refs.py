@@ -1,5 +1,5 @@
 """
-Which files under models/ does Lumara actually load?
+Which files under models/ does FirstCut actually load?
 
 A static grep cannot answer this: paths get built at runtime, so a weight can be
 loaded without its name appearing in any source file. Guessing wrong means

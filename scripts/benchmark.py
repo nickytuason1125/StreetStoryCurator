@@ -1,4 +1,4 @@
-"""benchmark.py — repeatable performance & accuracy harness for Lumara.
+"""benchmark.py — repeatable performance & accuracy harness for FirstCut.
 
 Measures, on this machine, right now:
   1. CULL      — full grade of dataset_images/ through the real grade_runner
@@ -237,7 +237,7 @@ def _write_report(cull: dict | None, seq: dict | None, story: dict | None) -> Pa
     REPORTS.mkdir(exist_ok=True)
     p = REPORTS / "benchmark_report.md"
     L: list[str] = []
-    L.append(f"# Lumara benchmark — {datetime.now():%Y-%m-%d %H:%M}")
+    L.append(f"# FirstCut benchmark — {datetime.now():%Y-%m-%d %H:%M}")
     L.append("")
     L.append(f"Machine: {os.cpu_count()} logical cores · "
              f"{_ram_total():.1f} GB RAM · dataset: {DATASET.name}/")

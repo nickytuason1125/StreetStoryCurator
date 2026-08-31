@@ -83,7 +83,7 @@ GGUF_MODELS: tuple = (
     # 155.8s and left 2.36 GB. Identical cohesion, 0.891. A model that makes the
     # machine unusable while it thinks is not the more accurate choice in
     # practice. Qwen3-4B remains a good pick on a machine with real headroom --
-    # set LUMARA_LOCAL_LLM_GGUF to switch back.
+    # set FIRSTCUT_LOCAL_LLM_GGUF to switch back.
     #
     # Licence is a real trade: LFM Open v1.0 is Apache-like but caps commercial
     # use at $10M annual revenue, where Qwen3 is plain Apache-2.0.

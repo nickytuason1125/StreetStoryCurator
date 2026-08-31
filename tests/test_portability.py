@@ -100,11 +100,11 @@ def test_gpu_probe_result_is_cached_on_disk():
 def test_has_gpu_env_override():
     import os
     for val, expect in (("1", True), ("0", False), ("true", True), ("no", False)):
-        os.environ["LUMARA_ASSUME_GPU"] = val
+        os.environ["FIRSTCUT_ASSUME_GPU"] = val
         try:
             assert tier_select.has_gpu() is expect
         finally:
-            os.environ.pop("LUMARA_ASSUME_GPU", None)
+            os.environ.pop("FIRSTCUT_ASSUME_GPU", None)
 
 
 def test_select_never_raises_on_any_combination():
@@ -118,8 +118,8 @@ def test_select_never_raises_on_any_combination():
 def _worker(monkeypatch, *, gpu: bool, tier: str = "high", sel: str = ""):
     import os
     monkeypatch.setenv("SIGLIP_TIER", tier)
-    monkeypatch.setenv("LUMARA_ENCODER", sel)
-    monkeypatch.setenv("LUMARA_ASSUME_GPU", "1" if gpu else "0")
+    monkeypatch.setenv("FIRSTCUT_ENCODER", sel)
+    monkeypatch.setenv("FIRSTCUT_ASSUME_GPU", "1" if gpu else "0")
     sys.modules.pop("encode_worker", None)
     mod = importlib.import_module("encode_worker")
     mod._GPU_CACHE = None

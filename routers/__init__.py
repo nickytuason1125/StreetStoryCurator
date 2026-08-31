@@ -1,4 +1,4 @@
-"""Route modules for the Lumara API (Milestone 4 split).
+"""Route modules for the FirstCut API (Milestone 4 split).
 
 Each module owns one cluster of endpoints and mounts an APIRouter.
 Shared state and helpers stay in server_impl (the monolith's module)

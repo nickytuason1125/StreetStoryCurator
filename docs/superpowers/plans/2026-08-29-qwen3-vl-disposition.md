@@ -15,7 +15,7 @@
 - Repo root for every command: `street-story-curator/`. Paths are relative to it.
 - Python is the venv interpreter: `./venv/Scripts/python.exe`.
 - All JSON in this repo must be read with `encoding='utf-8'` — the default Windows cp1252 codec fails on `_ab_*.json` and on `cache/user_ratings.json` (verified: `UnicodeDecodeError` at byte 0x8f).
-- **Never delete model weights.** The established precedent in this repo is to move them off the working disk with a documented restore path (the RAG source books went to `D:\lumara_bench\rag_source` on 2026-08-13). A mistake here costs a multi-gigabyte re-download.
+- **Never delete model weights.** The established precedent in this repo is to move them off the working disk with a documented restore path (the RAG source books went to `D:\firstcut_bench\rag_source` on 2026-08-13). A mistake here costs a multi-gigabyte re-download.
 - Do not re-run the tournament. Every number this plan needs is already on disk from the 2026-06-14 run; recomputing them needs a GPU and hours, and would answer a question that is already answered.
 - Do not remove the `qwen3_vl` dispatch in `qwen_vlm_grader.py:836` or the scale anchors in `niche_registry.py:939`. They are inert without weights, they cost nothing, and they are what makes a future re-evaluation cheap.
 
@@ -443,14 +443,14 @@ git commit -m "docs: a closed rejection was reading as pending work on a tool th
 ### Task 4: Archive the weights off the working disk
 
 **Files:**
-- Move: `models/qwen3_vl/` → `D:\lumara_bench\rejected_models\qwen3_vl\`
+- Move: `models/qwen3_vl/` → `D:\firstcut_bench\rejected_models\qwen3_vl\`
 - Modify: `BUILD.md` (append a restore path)
 
 **Interfaces:**
 - Consumes: Task 1's test passing (nothing requires the weights) and Task 2's numbers (the rejection holds).
 - Produces: nothing.
 
-Background: 8.3 GB of a rejected candidate on the working disk. The precedent for this repo is the RAG source books, moved to `D:\lumara_bench\rag_source` on 2026-08-13 rather than deleted. Follow it. **This step is a move, never a delete** — if the destination drive is unavailable, stop and ask rather than improvising.
+Background: 8.3 GB of a rejected candidate on the working disk. The precedent for this repo is the RAG source books, moved to `D:\firstcut_bench\rag_source` on 2026-08-13 rather than deleted. Follow it. **This step is a move, never a delete** — if the destination drive is unavailable, stop and ask rather than improvising.
 
 - [ ] **Step 1: Confirm the safety gate is green**
 
@@ -460,7 +460,7 @@ Expected: `4 passed`. If anything fails, stop — something needs these weights.
 
 - [ ] **Step 2: Confirm the destination exists and has room**
 
-Run: `ls -d /d/lumara_bench 2>/dev/null && df -h /d | tail -1`
+Run: `ls -d /d/firstcut_bench 2>/dev/null && df -h /d | tail -1`
 
 Expected: the directory listing, and free space comfortably above 9 GB.
 
@@ -475,8 +475,8 @@ Expected: roughly `8.3G` and 10 files. Write both numbers down — Step 5 verifi
 - [ ] **Step 4: Move, do not copy-then-delete**
 
 ```bash
-mkdir -p /d/lumara_bench/rejected_models
-mv models/qwen3_vl /d/lumara_bench/rejected_models/qwen3_vl
+mkdir -p /d/firstcut_bench/rejected_models
+mv models/qwen3_vl /d/firstcut_bench/rejected_models/qwen3_vl
 ```
 
 A `mv` across drives on Windows is a copy followed by a source delete, and it will not remove the source unless the copy succeeded. Do not substitute `rm -rf` for any part of this.
@@ -486,8 +486,8 @@ A `mv` across drives on Windows is a copy followed by a source delete, and it wi
 Run:
 
 ```bash
-du -sh /d/lumara_bench/rejected_models/qwen3_vl && \
-find /d/lumara_bench/rejected_models/qwen3_vl -type f | wc -l && \
+du -sh /d/firstcut_bench/rejected_models/qwen3_vl && \
+find /d/firstcut_bench/rejected_models/qwen3_vl -type f | wc -l && \
 ls models/qwen3_vl 2>&1 | head -1
 ```
 
@@ -513,9 +513,9 @@ so a future re-evaluation does not need a multi-gigabyte re-download.
 
 | model | archived to | size | why |
 |---|---|---|---|
-| Qwen3-VL-4B | `D:\lumara_bench\rejected_models\qwen3_vl\` | 8.3 GB | rejected 2026-06-14; rho +0.078 vs the photographer's stars (chance is +0.149) — see MODELS.md |
+| Qwen3-VL-4B | `D:\firstcut_bench\rejected_models\qwen3_vl\` | 8.3 GB | rejected 2026-06-14; rho +0.078 vs the photographer's stars (chance is +0.149) — see MODELS.md |
 
-To restore one: `mv /d/lumara_bench/rejected_models/qwen3_vl models/qwen3_vl`.
+To restore one: `mv /d/firstcut_bench/rejected_models/qwen3_vl models/qwen3_vl`.
 Nothing else is required — `src/qwen_vlm_grader.py` dispatches on the config's
 `model_type`, so the model works again as soon as the directory is back.
 ```

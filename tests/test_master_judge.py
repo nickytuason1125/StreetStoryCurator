@@ -242,7 +242,7 @@ def test_fit_records_history_across_refits(tmp_path):
 
 
 def test_maybe_autofit_gates_on_new_rating_delta(tmp_path, monkeypatch):
-    monkeypatch.setenv("LUMARA_MASTER_JUDGE", "1")
+    monkeypatch.setenv("FIRSTCUT_MASTER_JUDGE", "1")
     wp = tmp_path / "w.json"
     wp.write_text(json.dumps({"n": 100, "promoted": False}), encoding="utf-8")
     monkeypatch.setattr(mj, "_WEIGHTS_PATH", wp)
@@ -294,8 +294,8 @@ def test_won_exam_ships_and_grades_without_opt_in(tmp_path, monkeypatch):
     # fresh install: no cache record, no opt-in flags — shipped still grades
     monkeypatch.setattr(mj, "_WEIGHTS_PATH", tmp_path / "absent.json")
     monkeypatch.setattr(mj, "_SHIPPED_PATH", shipped)
-    monkeypatch.delenv("LUMARA_MASTER_JUDGE", raising=False)
-    monkeypatch.delenv("LUMARA_MASTER_JUDGE_OFF", raising=False)
+    monkeypatch.delenv("FIRSTCUT_MASTER_JUDGE", raising=False)
+    monkeypatch.delenv("FIRSTCUT_MASTER_JUDGE_OFF", raising=False)
     judge, w = mj.active()
     assert judge is not None
     assert judge["_source"] == "shipped"
@@ -314,15 +314,15 @@ def test_cache_opt_in_beats_shipped_fresher_locally(tmp_path, monkeypatch):
     mj.fit_from_rows(_synthetic_rows(seed=12), weights_path=cache)   # newer local
     monkeypatch.setattr(mj, "_WEIGHTS_PATH", cache)
     monkeypatch.setattr(mj, "_SHIPPED_PATH", shipped)
-    monkeypatch.delenv("LUMARA_MASTER_JUDGE_OFF", raising=False)
+    monkeypatch.delenv("FIRSTCUT_MASTER_JUDGE_OFF", raising=False)
 
     # without opt-in → the SHIPPED master grades (local ratings never do)
-    monkeypatch.delenv("LUMARA_MASTER_JUDGE", raising=False)
+    monkeypatch.delenv("FIRSTCUT_MASTER_JUDGE", raising=False)
     judge, _ = mj.active()
     assert judge["_source"] == "shipped"
 
     # with opt-in → the locally-promoted challenger takes over
-    monkeypatch.setenv("LUMARA_MASTER_JUDGE", "1")
+    monkeypatch.setenv("FIRSTCUT_MASTER_JUDGE", "1")
     judge, _ = mj.active()
     assert judge["_source"] == "cache"
 
@@ -337,8 +337,8 @@ def test_stale_shipped_judge_is_ignored(tmp_path, monkeypatch):
     shipped.write_text(json.dumps(d), encoding="utf-8")
     monkeypatch.setattr(mj, "_WEIGHTS_PATH", tmp_path / "absent.json")
     monkeypatch.setattr(mj, "_SHIPPED_PATH", shipped)
-    monkeypatch.delenv("LUMARA_MASTER_JUDGE", raising=False)
-    monkeypatch.delenv("LUMARA_MASTER_JUDGE_OFF", raising=False)
+    monkeypatch.delenv("FIRSTCUT_MASTER_JUDGE", raising=False)
+    monkeypatch.delenv("FIRSTCUT_MASTER_JUDGE_OFF", raising=False)
     judge, w = mj.active()
     assert judge is None and w == 0.0
 
@@ -350,23 +350,23 @@ def test_kill_switch_beats_everything(tmp_path, monkeypatch):
     mj.promote_to_shipped(cache_path=cache, shipped_path=shipped)
     monkeypatch.setattr(mj, "_WEIGHTS_PATH", cache)
     monkeypatch.setattr(mj, "_SHIPPED_PATH", shipped)
-    monkeypatch.setenv("LUMARA_MASTER_JUDGE", "1")
-    monkeypatch.setenv("LUMARA_MASTER_JUDGE_OFF", "1")
+    monkeypatch.setenv("FIRSTCUT_MASTER_JUDGE", "1")
+    monkeypatch.setenv("FIRSTCUT_MASTER_JUDGE_OFF", "1")
     judge, w = mj.active()
     assert judge is None and w == 0.0
 
 
 def test_maybe_autofit_requires_opt_in(monkeypatch):
     """Ratings are placeholder data: no background refit unless the judge is
-    explicitly enabled with LUMARA_MASTER_JUDGE=1."""
-    monkeypatch.delenv("LUMARA_MASTER_JUDGE", raising=False)
+    explicitly enabled with FIRSTCUT_MASTER_JUDGE=1."""
+    monkeypatch.delenv("FIRSTCUT_MASTER_JUDGE", raising=False)
     out = mj.maybe_autofit(n_now=9999)
     assert out["triggered"] is False
     assert "opted in" in out["reason"]
 
 
 def test_maybe_autofit_respects_opt_in(tmp_path, monkeypatch):
-    monkeypatch.setenv("LUMARA_MASTER_JUDGE", "1")
+    monkeypatch.setenv("FIRSTCUT_MASTER_JUDGE", "1")
     wp = tmp_path / "w.json"
     wp.write_text(json.dumps({"n": 100, "promoted": False}), encoding="utf-8")
     monkeypatch.setattr(mj, "_WEIGHTS_PATH", wp)

@@ -29,7 +29,7 @@ Wiring is one line — run_v2 wraps its progress callback:
 Every stage already calls _p(frac, desc), so no call site changes and the desc
 text reaching the SSE/UI is untouched.
 
-LUMARA_RAM_TRACE=0 disables. Every path is wrapped in try/except:
+FIRSTCUT_RAM_TRACE=0 disables. Every path is wrapped in try/except:
 instrumentation must never break a grade.
 """
 from __future__ import annotations
@@ -37,7 +37,7 @@ from __future__ import annotations
 import os
 import threading
 
-_ENABLED  = os.environ.get("LUMARA_RAM_TRACE", "1").strip() != "0"
+_ENABLED  = os.environ.get("FIRSTCUT_RAM_TRACE", "1").strip() != "0"
 _SAMPLE_S = 0.4
 
 _stage_max: dict = {}          # label -> peak RSS (GB) seen while it was current

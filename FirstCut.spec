@@ -1,12 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 #
-# Lumara.spec
+# FirstCut.spec
 #
 # Usage (run from the project root with venv active):
-#   Windows:  pyinstaller Lumara.spec
-#   Mac:      pyinstaller Lumara.spec
+#   Windows:  pyinstaller FirstCut.spec
+#   Mac:      pyinstaller FirstCut.spec
 #
-# Output lands in dist/Lumara/
+# Output lands in dist/FirstCut/
 # The folder is self-contained — zip it and distribute.
 
 import sys
@@ -169,7 +169,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="Lumara",
+    name="FirstCut",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -188,16 +188,16 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="Lumara",
+    name="FirstCut",
 )
 
 # On Mac, wrap in an .app bundle
 if sys.platform == "darwin":
     app = BUNDLE(
         coll,
-        name="Lumara.app",
+        name="FirstCut.app",
         icon=str(ROOT / "icon.ico"),
-        bundle_identifier="com.lumara.app",
+        bundle_identifier="com.firstcut.app",
         info_plist={
             "NSHighResolutionCapable": True,
             "NSCameraUsageDescription": "Camera access for photo import",

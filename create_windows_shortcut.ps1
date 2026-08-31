@@ -1,8 +1,8 @@
-# Creates a one-click desktop shortcut for Lumara.
+# Creates a one-click desktop shortcut for FirstCut.
 # Usage: right-click and run in PowerShell, or run from an elevated PowerShell prompt if required.
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$shortcutName = 'Lumara.lnk'
+$shortcutName = 'FirstCut.lnk'
 $desktopPath = [Environment]::GetFolderPath('Desktop')
 $shortcutPath = Join-Path $desktopPath $shortcutName
 
@@ -15,7 +15,7 @@ $shortcut.TargetPath = $targetPath
 $shortcut.Arguments = $arguments
 $shortcut.WorkingDirectory = $scriptDir
 $shortcut.IconLocation = "$targetPath,0"
-$shortcut.Description = 'Launch Lumara locally with embedded pywebview'
+$shortcut.Description = 'Launch FirstCut locally with embedded pywebview'
 $shortcut.Save()
 
 Write-Host "Created desktop shortcut: $shortcutPath"

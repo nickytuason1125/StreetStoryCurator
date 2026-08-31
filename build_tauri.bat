@@ -2,7 +2,7 @@
 setlocal
 
 echo ============================================================
-echo  Lumara — Tauri v2 Build
+echo  FirstCut — Tauri v2 Build
 echo ============================================================
 
 :: Set up MSVC linker environment (puts the correct link.exe first in PATH)
@@ -49,6 +49,6 @@ echo.
 echo ============================================================
 echo  BUILD COMPLETE
 echo  Installer: frontend\src-tauri\target\release\bundle\nsis\
-echo  Portable exe: frontend\src-tauri\target\release\lumara.exe
+echo  Portable exe: frontend\src-tauri\target\release\firstcut.exe
 echo ============================================================
 pause

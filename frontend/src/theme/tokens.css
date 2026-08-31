@@ -1,5 +1,5 @@
 /* ─────────────────────────────────────────────────────────────────────────────
- * Lumara design tokens — THE single source of truth.
+ * FirstCut design tokens — THE single source of truth.
  *
  * This file is the ONLY place in the frontend permitted to contain a raw hex
  * colour or a raw px size. `npm run lint:tokens` fails the build on any hex or

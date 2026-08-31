@@ -1,5 +1,5 @@
 """
-Lumara — CLI entrypoint.
+FirstCut — CLI entrypoint.
 
 Usage
 -----
@@ -35,7 +35,7 @@ logger = logging.getLogger("main")
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Lumara — Frontier 2026 Edition",
+        description="FirstCut — Frontier 2026 Edition",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -96,7 +96,7 @@ def main() -> None:
     from __version__ import __version__ as _version
     import uvicorn
     logger.info(
-        f"Starting Lumara v{_version}  host={args.host}  port={args.port}  "
+        f"Starting FirstCut v{_version}  host={args.host}  port={args.port}  "
         f"force_frontier={args.force_frontier}"
     )
     uvicorn.run(

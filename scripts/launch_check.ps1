@@ -3,7 +3,7 @@
 # For each run: launches the installed app, waits for boot, then verifies:
 #   1. the app process is up
 #   2. WebView2 children run in the ISOLATED user-data folder
-#      (%LOCALAPPDATA%\Lumara\WebView2 — proves the isolation fix is live)
+#      (%LOCALAPPDATA%\FirstCut\WebView2 — proves the isolation fix is live)
 #   3. no new msedge.exe / chrome.exe browser processes spawned
 #      (a "Microsoft tab" would appear as new browser processes)
 #   4. the backend answers /api/health
@@ -11,7 +11,7 @@
 # Usage:  .\launch_check.ps1 -Runs 3 [-Exe <path>]
 param(
     [int]$Runs = 3,
-    [string]$Exe = "$env:LOCALAPPDATA\Lumara\lumara.exe"
+    [string]$Exe = "$env:LOCALAPPDATA\FirstCut\firstcut.exe"
 )
 
 function BrowserWindowCount {
@@ -22,7 +22,7 @@ function BrowserWindowCount {
 }
 function IsolatedWebViewCount {
     @(Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" |
-        Where-Object { $_.CommandLine -like '*Lumara\WebView2*' }).Count
+        Where-Object { $_.CommandLine -like '*FirstCut\WebView2*' }).Count
 }
 
 $results = @()
@@ -31,7 +31,7 @@ for ($i = 1; $i -le $Runs; $i++) {
     Start-Process $Exe
     Start-Sleep -Seconds 30        # backend boot + webview init
 
-    $app       = @(Get-Process lumara -ErrorAction SilentlyContinue).Count
+    $app       = @(Get-Process firstcut -ErrorAction SilentlyContinue).Count
     $isolated  = IsolatedWebViewCount
     $edgeAfter = BrowserWindowCount
     $delta     = $edgeAfter - $edgeBefore
@@ -54,7 +54,7 @@ for ($i = 1; $i -le $Runs; $i++) {
         $i, $app, $isolated, $delta, $health, $(if ($ok) { 'PASS' } else { 'FAIL' }))
 
     # cleanup between runs: close the app and its backend
-    Get-Process lumara -ErrorAction SilentlyContinue | Stop-Process -Force
+    Get-Process firstcut -ErrorAction SilentlyContinue | Stop-Process -Force
     Get-Process pythonw, python -ErrorAction SilentlyContinue | Stop-Process -Force
     Start-Sleep -Seconds 3
 }

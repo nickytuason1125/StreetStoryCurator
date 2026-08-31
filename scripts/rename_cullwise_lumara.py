@@ -1,18 +1,18 @@
-"""One-shot brand migration: Lumara → Lumara.
+"""One-shot brand migration: FirstCut → FirstCut.
 
-Second migration in the chain (FrameGrade → Lumara → Lumara). Same
+Second migration in the chain (FrameGrade → FirstCut → FirstCut). Same
 discipline as scripts/deprecate_framegrade.py: every live source file —
 code, comments, docs, configs, env vars, Tauri/Cargo metadata. Skipped:
 build output (dist/, target/), vendor dirs, caches, generated reports.
 
 Ordered case-sensitive replacements:
-    LUMARA  → LUMARA   (env vars, report headers)
-    Lumara  → Lumara   (camel variant)
-    Lumara  → Lumara   (brand, docs, UI strings)
-    lumara  → lumara   (package names, binary names, domains)
+    FIRSTCUT  → FIRSTCUT   (env vars, report headers)
+    FirstCut  → FirstCut   (camel variant)
+    FirstCut  → FirstCut   (brand, docs, UI strings)
+    firstcut  → firstcut   (package names, binary names, domains)
 
-After this script: rename Lumara.spec → Lumara.spec and
-"Install Lumara.bat" → "Install Lumara.bat" on disk.
+After this script: rename FirstCut.spec → FirstCut.spec and
+"Install FirstCut.bat" → "Install FirstCut.bat" on disk.
 """
 from __future__ import annotations
 
@@ -31,10 +31,10 @@ EXTS = {".py", ".tsx", ".ts", ".html", ".json", ".md", ".css", ".mjs",
         ".vbs", ".cfg"}
 
 REPLACEMENTS = [
-    ("LUMARA", "LUMARA"),
-    ("Lumara", "Lumara"),
-    ("Lumara", "Lumara"),
-    ("lumara", "lumara"),
+    ("FIRSTCUT", "FIRSTCUT"),
+    ("FirstCut", "FirstCut"),
+    ("FirstCut", "FirstCut"),
+    ("firstcut", "firstcut"),
 ]
 
 
@@ -53,7 +53,7 @@ def main() -> int:
             text = p.read_text(encoding="utf-8")
         except Exception:
             continue
-        if "lumara" not in text.lower():
+        if "firstcut" not in text.lower():
             continue
         new_text = text
         hits = 0

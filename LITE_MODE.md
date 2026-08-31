@@ -1,6 +1,6 @@
-# Running Lumara light — low-RAM machines, no GPU, any OS
+# Running FirstCut light — low-RAM machines, no GPU, any OS
 
-Lumara adapts to the machine it is on. On a laptop with no graphics card
+FirstCut adapts to the machine it is on. On a laptop with no graphics card
 and little free memory, use **Lite mode** — it trades some analysis depth for
 a much smaller memory footprint and faster culls.
 
@@ -32,12 +32,12 @@ nothing else differs.
 ```bash
 # macOS / Linux
 export SIGLIP_TIER=low          # pin the small encoder
-export LUMARA_LITE=1        # lite defaults (scan-first, min workers)
+export FIRSTCUT_LITE=1        # lite defaults (scan-first, min workers)
 python server.py
 
 # Windows (cmd)
 set SIGLIP_TIER=low
-set LUMARA_LITE=1
+set FIRSTCUT_LITE=1
 python server.py
 ```
 

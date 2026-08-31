@@ -56,7 +56,7 @@ def main() -> int:
     W = 64
     n_snap = sum(1 for r in rows if r["from_snapshot"])
     print("=" * W)
-    print("LUMARA MASTER BACKTEST (ground truth = your stars)")
+    print("FIRSTCUT MASTER BACKTEST (ground truth = your stars)")
     print("=" * W)
     print(f"1. COVERAGE")
     print(f"   measurable ratings:   {len(rows)}")

@@ -17,7 +17,7 @@ import tempfile
 from pathlib import Path
 
 _TMP = Path(tempfile.mkdtemp(prefix="fg_test_lance_"))
-os.environ["LUMARA_LANCE_DIR"] = str(_TMP / "lance.db")
+os.environ["FIRSTCUT_LANCE_DIR"] = str(_TMP / "lance.db")
 
 
 def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001
