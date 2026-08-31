@@ -546,6 +546,14 @@ def _in_process_pull_stream_locked(model_name: str):
                     ok_all = False
                     continue
                 r.raise_for_status()
+                if r.status_code == 416:
+                    # Range beyond EOF: the .part is bigger than the source file
+                    # (inflation from an older buggy resume). Start over.
+                    have, append = 0, False
+                    r.close()
+                    headers = {}
+                    r = _rq.get(url, stream=True, timeout=(15, 90), allow_redirects=True)
+                    r.raise_for_status()
                 # A server that ignores Range answers 200 — restart cleanly.
                 append = (r.status_code == 206 and have > 0)
                 done = have if append else 0
@@ -561,7 +569,34 @@ def _in_process_pull_stream_locked(model_name: str):
                             yield (_j.dumps({"name": f"gguf:{key}", "status": "progress",
                                              "received_gb": round(done / 1e9, 2),
                                              "total_gb": m.size_gb}) + "\n").encode()
-            part.replace(dest)   # same directory — atomic on NTFS
+                # Finalize ONLY on an exact byte count. An inflated or short
+                # .part means an old buggy resume or a truncated transfer —
+                # llama.cpp tolerates trailing garbage, so the only reliable
+                # check is equality with what the server said it sent.
+                expect = have + int(r.headers.get("Content-Length", -1)) if append \
+                    else int(r.headers.get("Content-Length", -1))
+                actual = part.stat().st_size
+                if expect > 0 and actual != expect:
+                    part.unlink(missing_ok=True)
+                    raise RuntimeError(
+                        f"size mismatch after download: got {actual} bytes, "
+                        f"server said {expect} — part discarded, retry starts clean")
+                # Finalize against a rename lock (WinError 32): antivirus and
+                # search indexers briefly hold fresh multi-hundred-MB files
+                # exactly when os.replace needs exclusive access. Retry with
+                # backoff — the lock always clears within seconds.
+                import time as _t
+                last_err: Exception | None = None
+                for _attempt in range(6):
+                    try:
+                        part.replace(dest)   # same directory — atomic on NTFS
+                        last_err = None
+                        break
+                    except OSError as oe:
+                        last_err = oe
+                        _t.sleep(2 + _attempt * 3)
+                if last_err is not None:
+                    raise last_err
             yield (_j.dumps({"name": f"gguf:{key}", "status": "ok"}) + "\n").encode()
         except Exception as exc:
             yield (_j.dumps({"name": f"gguf:{key}", "status": "fail",

@@ -89,3 +89,5 @@ dist/
 build_pyi/
 pyi_build*.log
 *.err
+
+models/
