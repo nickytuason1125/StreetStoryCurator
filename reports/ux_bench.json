@@ -1,0 +1,17 @@
+{
+  "base": "http://127.0.0.1:8000",
+  "generated": "2026-08-31T05:11:33.778Z",
+  "checks": {
+    "domContentLoaded": 83,
+    "fcp": null,
+    "gridPopulated": 1645,
+    "thumbCount": 60,
+    "scroll": {
+      "idleFps": 191.2,
+      "scrollFps": 237.7
+    },
+    "heapAfterScrollMB": 171,
+    "interactionMs": 8482,
+    "heapFinalMB": 192
+  }
+}

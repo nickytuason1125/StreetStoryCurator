@@ -34,6 +34,7 @@ from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form, Reque
 from fastapi.responses import JSONResponse, FileResponse, StreamingResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from starlette.concurrency import run_in_threadpool
 from pathlib import Path
 from pydantic import BaseModel, field_validator
@@ -632,6 +633,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# GZip: the slim catalog alone is ~33 MB of JSON for a 60k library; the
+# WebView fetches it on every cold start. Compressing the wire payload
+# (~10× for JSON) turns a multi-second fetch into a fraction of one.
+# minimum_size keeps tiny responses (health, thumbs) uncompressed.
+app.add_middleware(GZipMiddleware, minimum_size=2048)
 
 # ── Security: isolate the local API from other origins ───────────────────────
 # This server binds 127.0.0.1, but every website the user visits can still reach

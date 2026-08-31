@@ -2,12 +2,13 @@
 session catalog and photo flags. Moved verbatim from server.py
 (Milestone 4 split) — decorators retargeted app -> router, shared
 state imported lazily from server_impl inside each handler."""
+import gzip
 import json
 import os
 import threading
 import time
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -110,6 +111,39 @@ _NO_CACHE_HEADERS = {
     "Pragma": "no-cache",
 }
 
+# ── Catalog read cache ──────────────────────────────────────────────────────
+# catalog.json is ~55 MB for a 60k library. Before this cache, EVERY
+# /api/catalog, /api/photo-detail and /api/catalog/save re-read and
+# re-parsed the whole file (~1-2 s each — measured by scripts/bench_api.py).
+# The cache is keyed on (path, mtime, size): any external write (re-grade,
+# manual edit) invalidates it automatically; saves prime it with the doc
+# they just wrote.
+_CATALOG_CACHE: dict = {"key": None, "data": None}
+_CATALOG_CACHE_LOCK = threading.Lock()
+
+
+def _load_catalog_cached():
+    """Return the parsed catalog dict, re-reading only when the file changed."""
+    if not _CATALOG_PATH.exists():
+        return None
+    st = _CATALOG_PATH.stat()
+    key = (_CATALOG_PATH.name, st.st_mtime, st.st_size)
+    with _CATALOG_CACHE_LOCK:
+        if _CATALOG_CACHE["key"] != key or _CATALOG_CACHE["data"] is None:
+            _CATALOG_CACHE["data"] = json.loads(
+                _CATALOG_PATH.read_text(encoding="utf-8"))
+            _CATALOG_CACHE["key"] = key
+        return _CATALOG_CACHE["data"]
+
+
+# ── Serialized slim-response cache ──────────────────────────────────────────
+# Building the slim payload (64k row copies + JSON dump) costs ~2 s of CPU
+# per call even with the parse cached, and the output only changes when
+# catalog.json changes. So cache the SERIALIZED body and its gzip: an
+# unchanged catalog serves pre-compressed bytes straight from memory.
+_SLIM_CACHE: dict = {"key": None, "gz": b""}
+
+
 @router.get("/api/catalog")
 async def get_catalog(full: bool = False):
     _DATA_DIR, _atomic_write_text, analyzer = _impl()
@@ -126,16 +160,24 @@ async def get_catalog(full: bool = False):
         else:
             return JSONResponse({"exists": False}, headers=_NO_CACHE_HEADERS)
     try:
-        data = json.loads(source.read_text(encoding="utf-8"))
-        # Slim payload (default): breakdown + reasoning_log are per-photo
-        # heavyweights (aspects, bboxes, logs) the gallery never renders.
-        # Including them made the payload — and the WebView's JSON parse —
-        # scale with library size. They are fetched per-photo via
-        # /api/photo-detail when a photo is selected, and survive saves via
-        # the merge in /api/catalog/save. ?full=1 keeps the old behaviour
-        # for consumers that genuinely need every field (XMP export).
-        if not full:
-            data = {
+        if not fallback and not full:
+            st = _CATALOG_PATH.stat()
+            key = (_CATALOG_PATH.name, st.st_mtime, st.st_size)
+            with _CATALOG_CACHE_LOCK:
+                if _SLIM_CACHE["key"] == key and _SLIM_CACHE["gz"]:
+                    return Response(content=_SLIM_CACHE["gz"],
+                                    media_type="application/json",
+                                    headers={**_NO_CACHE_HEADERS,
+                                             "Content-Encoding": "gzip"})
+            data = _load_catalog_cached() or {"photos": []}
+            # Slim payload (default): breakdown + reasoning_log are per-photo
+            # heavyweights (aspects, bboxes, logs) the gallery never renders.
+            # Including them made the payload — and the WebView's JSON parse —
+            # scale with library size. They are fetched per-photo via
+            # /api/photo-detail when a photo is selected, and survive saves via
+            # the merge in /api/catalog/save. ?full=1 keeps the old behaviour
+            # for consumers that genuinely need every field (XMP export).
+            slim = {
                 **data,
                 "photos": [
                     {k: v for k, v in p.items()
@@ -143,6 +185,20 @@ async def get_catalog(full: bool = False):
                     for p in data.get("photos", [])
                 ],
             }
+            body = json.dumps({"exists": True, "fallback": False, **slim},
+                              ensure_ascii=False).encode("utf-8")
+            gz = gzip.compress(body, 5)
+            with _CATALOG_CACHE_LOCK:
+                _SLIM_CACHE["key"] = key
+                _SLIM_CACHE["gz"] = gz
+            return Response(content=gz, media_type="application/json",
+                            headers={**_NO_CACHE_HEADERS,
+                                     "Content-Encoding": "gzip"})
+        if fallback:
+            data = json.loads(source.read_text(encoding="utf-8"))
+        else:
+            # Cached parse (mtime/size key) — was a full 55 MB re-read per call.
+            data = _load_catalog_cached() or {"photos": []}
         return JSONResponse({"exists": True, "fallback": fallback, **data},
                             headers=_NO_CACHE_HEADERS)
     except Exception:
@@ -163,7 +219,8 @@ async def get_photo_detail(path: str = ""):
         else:
             return JSONResponse({"exists": False, "photo": None})
     try:
-        data = json.loads(source.read_text(encoding="utf-8"))
+        # Cached parse — was a full 55 MB re-read per selection (~1 s).
+        data = _load_catalog_cached() or {}
         entry = next((p for p in data.get("photos", [])
                       if p.get("path") == path), None)
         return JSONResponse({"exists": entry is not None, "photo": entry},
@@ -184,10 +241,10 @@ async def save_catalog(payload: dict):
     # always win; only ABSENT keys fall back to the stored value.
     existing: dict = {}
     try:
-        if _CATALOG_PATH.exists():
-            old = json.loads(_CATALOG_PATH.read_text(encoding="utf-8"))
-            existing = {p.get("path"): p for p in old.get("photos", [])
-                        if p.get("path")}
+        # Cached parse — the merge no longer re-reads 55 MB per save.
+        old = _load_catalog_cached() or {}
+        existing = {p.get("path"): p for p in old.get("photos", [])
+                    if p.get("path")}
     except Exception:
         existing = {}
     merged = []
@@ -202,6 +259,12 @@ async def save_catalog(payload: dict):
             "saved_at":  time.strftime("%Y-%m-%dT%H:%M:%S"),
         }, ensure_ascii=False, indent=2),
     )
+    # Prime the read cache with the doc just written — the next catalog or
+    # photo-detail call must not re-parse the file we only just serialized.
+    st = _CATALOG_PATH.stat()
+    with _CATALOG_CACHE_LOCK:
+        _CATALOG_CACHE["key"] = (_CATALOG_PATH.name, st.st_mtime, st.st_size)
+        _CATALOG_CACHE["data"] = {"photos": merged, "folders": folders}
     return {"ok": True}
 
 @router.post("/api/catalog/clear")

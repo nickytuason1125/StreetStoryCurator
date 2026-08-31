@@ -1,0 +1,111 @@
+{
+  "fails": [],
+  "thresholds": {
+    "api": {
+      "health_warm.p50": 100,
+      "catalog_slim.p50": 500,
+      "photo_detail_hot.p50": 50,
+      "thumb_warm_avg.p50": 25,
+      "star_roundtrip.p50": 1500
+    },
+    "browser": {
+      "domContentLoaded": 3000,
+      "gridPopulated": 8000,
+      "interactionMs": 15000,
+      "heapAfterScrollMB": 600
+    },
+    "browser_floor": {
+      "scroll.scrollFps": 45
+    }
+  },
+  "api": {
+    "health_warm": {
+      "n": 12,
+      "p50": 2.7,
+      "p90": 2.8,
+      "p99": 2.9,
+      "max": 2.9,
+      "mean": 2.6
+    },
+    "engine_health": {
+      "n": 4,
+      "p50": 1.8,
+      "p90": 1.9,
+      "p99": 1.9,
+      "max": 1.9,
+      "mean": 1.7
+    },
+    "catalog_slim": {
+      "n": 10,
+      "p50": 99.9,
+      "p90": 106.6,
+      "p99": 106.6,
+      "max": 106.6,
+      "mean": 98.1,
+      "bytes": 35948552
+    },
+    "catalog_full": {
+      "n": 2,
+      "p50": 2088.5,
+      "p90": 2088.5,
+      "p99": 2088.5,
+      "max": 2088.5,
+      "mean": 2003.4,
+      "bytes": 53593173
+    },
+    "photo_detail_hot": {
+      "n": 10,
+      "p50": 1.8,
+      "p90": 2.3,
+      "p99": 2.3,
+      "max": 2.3,
+      "mean": 1.9
+    },
+    "thumb_first_touch": {
+      "n": 20,
+      "p50": 3.2,
+      "p90": 4.2,
+      "p99": 4.2,
+      "max": 4.2,
+      "mean": 3.3
+    },
+    "thumb_warm_avg": {
+      "n": 5,
+      "p50": 2.5,
+      "p90": 2.6,
+      "p99": 2.6,
+      "max": 2.6,
+      "mean": 2.5,
+      "bytes_per_thumb": 4042
+    },
+    "star_roundtrip": {
+      "n": 3,
+      "p50": 513.4,
+      "p90": 779.3,
+      "p99": 779.3,
+      "max": 779.3,
+      "mean": 588.7
+    },
+    "places": {
+      "n": 4,
+      "p50": 2.6,
+      "p90": 23.0,
+      "p99": 23.0,
+      "max": 23.0,
+      "mean": 7.5
+    }
+  },
+  "browser": {
+    "domContentLoaded": 83,
+    "fcp": null,
+    "gridPopulated": 1645,
+    "thumbCount": 60,
+    "scroll": {
+      "idleFps": 191.2,
+      "scrollFps": 237.7
+    },
+    "heapAfterScrollMB": 171,
+    "interactionMs": 8482,
+    "heapFinalMB": 192
+  }
+}
