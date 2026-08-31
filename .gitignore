@@ -88,3 +88,4 @@ native/framegrade-rs/target/
 dist/
 build_pyi/
 pyi_build*.log
+*.err
