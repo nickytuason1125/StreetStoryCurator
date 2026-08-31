@@ -1,0 +1,8 @@
+﻿22: export const API = import.meta.env.VITE_API_URL || (isTauri() ? "http://127.0.0.1:8000" : "http://127.0.0.1:8000");
+    try {
+      setCurrentDownloadModel('optional models');
+      setDownloadProgress(0);
+      const resp = await fetch(`${API}/api/models/pull`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model_name: 'optional' }),

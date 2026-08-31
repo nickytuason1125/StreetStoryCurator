@@ -1,0 +1,3 @@
+﻿8000 owner: curator-api started 08/31/2026 18:11:43
+path: C:\Users\Nicky Tuason\AppData\Roaming\engine\curator-api-x86_64-pc-windows-msvc\curator-api.exe
+/api/models/pull in openapi: True

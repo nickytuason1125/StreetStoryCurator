@@ -1,0 +1,1 @@
+﻿58f986d Fix: restore missing @router.post models/pull decorator (route was unreachable, downloads 405); deploy script kills engine before copying (locked-file silent failure); engine rebuild with console=False

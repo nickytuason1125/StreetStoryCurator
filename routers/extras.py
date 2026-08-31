@@ -471,6 +471,15 @@ except Exception as _e:
 class ModelPullRequest(BaseModel):
     model_name: str
 
+import threading as _threading
+
+# Serializes model pulls. Two pulls racing on the same .part file end with
+# WinError 32 (sharing violation) at the final rename — a double-click, a
+# second app window, or UI + API both pulling. A held lock = one download
+# at a time; everyone else gets told instead of corrupting the file.
+_PULL_LOCK = _threading.Lock()
+
+
 def _in_process_pull_stream(model_name: str):
     """Frozen-engine model downloads: plain HTTP with range-resume.
 
@@ -481,6 +490,18 @@ def _in_process_pull_stream(model_name: str):
     vocabulary fetch_models.py uses, so the existing UI progress banner
     works unchanged.
     """
+    import json as _j
+    if not _PULL_LOCK.acquire(blocking=False):
+        yield (_j.dumps({"name": "plan", "status": "skip",
+                         "message": "a download is already running — wait for it to finish"}) + "\n").encode()
+        return
+    try:
+        yield from _in_process_pull_stream_locked(model_name)
+    finally:
+        _PULL_LOCK.release()
+
+
+def _in_process_pull_stream_locked(model_name: str):
     import json as _j
     try:
         import model_registry as _mr
