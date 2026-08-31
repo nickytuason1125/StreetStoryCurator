@@ -440,7 +440,7 @@ def draft_decode_enabled() -> bool:
     return os.environ.get("FIRSTCUT_DRAFT_DECODE", "1").strip() != "0"
 
 
-def required_ram_gb(n_photos: int = 0) -> float:
+def required_ram_gb(n_photos: int = 0, scan_mode: bool = False) -> float:
     """Free RAM (GB) a cull of `n_photos` needs, at whole-process-tree level.
 
     Use this for "can this machine run a cull", never TierSpec.ram_hard_gb —
@@ -448,6 +448,12 @@ def required_ram_gb(n_photos: int = 0) -> float:
     constant cannot serve both: the old 1.8 GB gate was Balanced's ENCODER
     floor, so it admitted culls that then drove the machine to 0.10 GB free and
     into the pagefile (111 s versus 25 s for the same folder with RAM to spare).
+
+    scan_mode charges the measured encoder-only figure instead of the
+    IQA-inclusive one: scan genuinely skips IQA (the expensive pass), and the
+    reliability/benchmark harness measured the whole scan process tree at
+    1.01 GB peak RSS (reports/benchmark_report.md). 2.0 GB is that measurement
+    with ~2× headroom — not an invented constant.
 
     Warning: the FIRSTCUT_MIN_RAM_GB override read here also aliases
     RunProfile.ram_soft_gb's "legacy alias of the soft floor" (see SETTINGS and
@@ -457,6 +463,8 @@ def required_ram_gb(n_photos: int = 0) -> float:
     """
     small, large = _RAM_NEED_GB[draft_decode_enabled()]
     need = small if n_photos <= 300 else large
+    if scan_mode:
+        need = min(need, 2.0)
     try:
         override = float(os.environ.get("FIRSTCUT_MIN_RAM_GB", "") or 0)
     except ValueError:

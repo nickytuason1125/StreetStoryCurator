@@ -231,7 +231,8 @@ async def grade_photos_v2_stream(req: GradeRequest):
                                  if _f.lower().endswith(_exts))
             except OSError:
                 pass
-        _need_gb = _rp_ram.required_ram_gb(0 if req.scan_mode else _n_photos)
+        _need_gb = _rp_ram.required_ram_gb(0 if req.scan_mode else _n_photos,
+                                           scan_mode=req.scan_mode)
         if _free_gb < _need_gb:
             return JSONResponse(
                 status_code=503,
