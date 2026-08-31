@@ -390,6 +390,17 @@ pub fn run() {
     let handle_for_exit  = server_handle.clone();
 
     tauri::Builder::default()
+        // ── Single instance ─────────────────────────────────────────────────
+        // A second launch must never spawn a second UI. During a first-run
+        // engine download the first launch can look dead for minutes; without
+        // this guard users double-click again and end up with a stack of
+        // blank windows ("tabs"). The callback focuses the existing window.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![generate_sequence])
@@ -434,16 +445,16 @@ pub fn run() {
                     eprintln!("[tauri] [debug] Project root: {:?}", project_root);
                     start_python_server(&project_root)
                 } else {
-                    // ── Release: prefer PyInstaller sidecar, fall back to venv ─
+                    // ── Release: PyInstaller sidecar only. ──────────────────
+                    // No venv fallback here. On a machine that happens to have
+                    // the source tree, a sidecar hiccup used to spawn
+                    // local_launcher.py, which opens a SECOND pywebview UI on
+                    // top of the Tauri window — the "mystery blank windows" —
+                    // and could stack one per launch. If the sidecar is
+                    // genuinely missing, the loading screen surfaces the error
+                    // and the user reinstalls; it must not invent a second app.
                     eprintln!("[tauri] [release] Starting sidecar...");
-                    let sidecar = start_sidecar(&app_handle);
-                    if sidecar.is_some() {
-                        sidecar
-                    } else {
-                        eprintln!("[tauri] Sidecar not found — falling back to venv Python.");
-                        let project_root = find_project_root();
-                        start_python_server(&project_root)
-                    }
+                    start_sidecar(&app_handle)
                 };
 
                 *handle_clone.lock().unwrap() = child;
