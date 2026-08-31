@@ -111,7 +111,7 @@ _NO_CACHE_HEADERS = {
 }
 
 @router.get("/api/catalog")
-async def get_catalog():
+async def get_catalog(full: bool = False):
     _DATA_DIR, _atomic_write_text, analyzer = _impl()
     # Fallback: a failed re-grade moves the live catalog to .pre-regrade.bak.
     # Serving the backup here keeps Resume working after a failed re-grade
@@ -127,20 +127,77 @@ async def get_catalog():
             return JSONResponse({"exists": False}, headers=_NO_CACHE_HEADERS)
     try:
         data = json.loads(source.read_text(encoding="utf-8"))
+        # Slim payload (default): breakdown + reasoning_log are per-photo
+        # heavyweights (aspects, bboxes, logs) the gallery never renders.
+        # Including them made the payload — and the WebView's JSON parse —
+        # scale with library size. They are fetched per-photo via
+        # /api/photo-detail when a photo is selected, and survive saves via
+        # the merge in /api/catalog/save. ?full=1 keeps the old behaviour
+        # for consumers that genuinely need every field (XMP export).
+        if not full:
+            data = {
+                **data,
+                "photos": [
+                    {k: v for k, v in p.items()
+                     if k not in ("breakdown", "reasoning_log")}
+                    for p in data.get("photos", [])
+                ],
+            }
         return JSONResponse({"exists": True, "fallback": fallback, **data},
                             headers=_NO_CACHE_HEADERS)
     except Exception:
         return JSONResponse({"exists": False}, headers=_NO_CACHE_HEADERS)
+
+
+@router.get("/api/photo-detail")
+async def get_photo_detail(path: str = ""):
+    """One photo's full catalog entry (breakdown, reasoning_log) — the lazy
+    counterpart of the slimmed /api/catalog. Serves the same .pre-regrade.bak
+    fallback so a selected photo still resolves after a failed re-grade."""
+    _DATA_DIR, _atomic_write_text, analyzer = _impl()
+    source = _CATALOG_PATH
+    if not _CATALOG_PATH.exists():
+        bak = _CATALOG_PATH.with_name("catalog.json.pre-regrade.bak")
+        if bak.exists():
+            source = bak
+        else:
+            return JSONResponse({"exists": False, "photo": None})
+    try:
+        data = json.loads(source.read_text(encoding="utf-8"))
+        entry = next((p for p in data.get("photos", [])
+                      if p.get("path") == path), None)
+        return JSONResponse({"exists": entry is not None, "photo": entry},
+                            headers=_NO_CACHE_HEADERS)
+    except Exception:
+        return JSONResponse({"exists": False, "photo": None})
+
 
 @router.post("/api/catalog/save")
 async def save_catalog(payload: dict):
     _DATA_DIR, _atomic_write_text, analyzer = _impl()
     photos  = payload.get("photos", [])
     folders = payload.get("folders", [])
+    # Merge against the stored catalog: the frontend works on a slimmed
+    # payload (breakdown/reasoning_log excluded for render speed), so fields
+    # absent from the incoming rows must survive from the stored entry —
+    # otherwise every save would permanently erase them. Incoming fields
+    # always win; only ABSENT keys fall back to the stored value.
+    existing: dict = {}
+    try:
+        if _CATALOG_PATH.exists():
+            old = json.loads(_CATALOG_PATH.read_text(encoding="utf-8"))
+            existing = {p.get("path"): p for p in old.get("photos", [])
+                        if p.get("path")}
+    except Exception:
+        existing = {}
+    merged = []
+    for p in photos:
+        prev = existing.get(p.get("path"))
+        merged.append({**prev, **p} if prev else p)
     _atomic_write_text(
         _CATALOG_PATH,
         json.dumps({
-            "photos":    photos,
+            "photos":    merged,
             "folders":   folders,
             "saved_at":  time.strftime("%Y-%m-%dT%H:%M:%S"),
         }, ensure_ascii=False, indent=2),

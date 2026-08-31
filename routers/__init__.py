@@ -1,4 +1,4 @@
-"""Route modules for the FrameGrade API (Milestone 4 split).
+"""Route modules for the Cullwise API (Milestone 4 split).
 
 Each module owns one cluster of endpoints and mounts an APIRouter.
 Shared state and helpers stay in server_impl (the monolith's module)

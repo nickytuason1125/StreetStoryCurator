@@ -28,9 +28,9 @@ import os as _os
 # PASS this gate and are graded downstream — where the SigLIP zero-shot grader's
 # "intentional soft focus / vintage" positive probe gives them a fair score
 # (intent-aware amnesty). Do NOT raise this to catch soft photos; that is the
-# grader's job, not the bouncer's. Tunable via FRAMEGRADE_BLUR_MIN for the field.
+# grader's job, not the bouncer's. Tunable via CULLWISE_BLUR_MIN for the field.
 try:
-    _BLUR_VAR_MIN = float(_os.environ.get("FRAMEGRADE_BLUR_MIN", "4.0"))
+    _BLUR_VAR_MIN = float(_os.environ.get("CULLWISE_BLUR_MIN", "4.0"))
 except (TypeError, ValueError):
     _BLUR_VAR_MIN = 4.0
 _CENTER_CROP_PCT = 0.60  # evaluate centre 60% of frame; avoids vignette/border bias
@@ -38,9 +38,9 @@ _CENTER_CROP_PCT = 0.60  # evaluate centre 60% of frame; avoids vignette/border 
 # Flat-block technical floor: a grey/black/white/empty frame (half-written, locked,
 # or corrupt decode) has pixel std-dev near zero. Below this it is a TECHNICAL
 # FAILURE — the AI models would otherwise hallucinate a composition on a void.
-# Tunable via FRAMEGRADE_FLAT_STD.
+# Tunable via CULLWISE_FLAT_STD.
 try:
-    _FLAT_STD_MIN = float(_os.environ.get("FRAMEGRADE_FLAT_STD", "2.0"))
+    _FLAT_STD_MIN = float(_os.environ.get("CULLWISE_FLAT_STD", "2.0"))
 except (TypeError, ValueError):
     _FLAT_STD_MIN = 2.0
 
@@ -54,9 +54,9 @@ def decode_workers(n: int, mb_per_worker: float = 120.0,
     N × (frame size) all at once. Sizing off *currently free* RAM makes this
     self-tuning the same way _iqa_chunk_size does for the IQA decode window: a
     starved machine drops to `lo` workers instead of OOM-ing, a roomy one runs
-    the full `hi`. Override with FRAMEGRADE_GATE_WORKERS.
+    the full `hi`. Override with CULLWISE_GATE_WORKERS.
     """
-    _env = _os.environ.get("FRAMEGRADE_GATE_WORKERS")
+    _env = _os.environ.get("CULLWISE_GATE_WORKERS")
     if _env:
         try:
             return max(1, min(int(_env), max(n, 1)))

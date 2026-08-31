@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-FrameGrade — Onboarding & Launch Wizard
+Cullwise — Onboarding & Launch Wizard
 
 Sequence
 ────────
@@ -128,11 +128,12 @@ def _need(label: str, detail: str = "") -> str:
 def print_banner() -> None:
     print()
     print(f"  {BD}{C}+======================================================+{RS}")
-    print(f"  {BD}{C}|       M A G N U M   E N G I N E                     |{RS}")
-    print(f"  {BD}{C}|       Street Photography Curation AI  v4.0           |{RS}")
+    print(f"  {BD}{C}|       C U L L W I S E                                |{RS}")
+    print(f"  {BD}{C}|       AI Photo Culling  v1.0                          |{RS}")
     print(f"  {BD}{C}+======================================================+{RS}")
-    print(f"  {DM}  100% Offline  ·  SigLIP-2  ·  DeepSeek-R1  ·  LanceDB{RS}")
+    print(f"  {DM}  100% Offline  ·  SigLIP-2  ·  TOPIQ IQA  ·  LanceDB{RS}")
     print()
+
 
 
 # ── Silent checks (run before printing anything) ──────────────────────────────
@@ -178,6 +179,19 @@ def _check_frontend() -> bool:
     return (ROOT / "frontend" / "dist" / "index.html").exists()
 
 
+def _check_disk_gb() -> float:
+    import shutil
+    return shutil.disk_usage(str(ROOT)).free / 1e9
+
+
+def _check_ram_gb() -> float:
+    try:
+        import psutil
+        return psutil.virtual_memory().available / 1e9
+    except Exception:
+        return 0.0
+
+
 # ── Full checklist display ────────────────────────────────────────────────────
 
 def print_system_checklist(
@@ -200,11 +214,12 @@ def print_system_checklist(
     else:
         print(_warn("Python dependencies", deps_err or "some packages may be missing"))
 
-    # 2. Ollama
+    # 2. Ollama (OPTIONAL — deprecated engine, only needed for legacy deep-grade)
     if ollama_ok:
-        print(_ok("Ollama", f"running at {OLLAMA_BASE}"))
+        print(_ok("Ollama (optional)", f"running at {OLLAMA_BASE}"))
     else:
-        print(_fail("Ollama", "not running — install from https://ollama.com/download"))
+        print(_warn("Ollama (optional)", "not running — basic grading works without it"))
+
 
     # 3. AI Models
     missing: list[str] = []
@@ -471,7 +486,7 @@ def print_success_banner() -> None:
     url_pad = f"{SERVER_URL:<43}"
     print(f"""
   {BD}{G}+======================================================+
-  |   FrameGrade is running!                             |
+  |   Cullwise is running!                             |
   |                                                      |
   |   Open:  {url_pad}|
   |                                                      |
@@ -514,6 +529,8 @@ def main() -> None:
     print(f"  {DM}  Running system checks…{RS}", end="", flush=True)
 
     deps_ok, deps_err = _check_dependencies()
+    disk_gb           = _check_disk_gb()
+    ram_gb            = _check_ram_gb()
     ollama_ok         = _check_ollama()
     installed         = _get_installed_models() if ollama_ok else set()
     model_status      = _check_models(installed)
@@ -522,28 +539,46 @@ def main() -> None:
     _clear_line()
 
     # ── Print full checklist at once ──────────────────────────────────────────
-    missing = print_system_checklist(deps_ok, deps_err, ollama_ok, model_status, frontend_ok)
+    print(f"  {BD}System Checklist{RS}")
+    print(SEP)
 
-    # ── Block if Ollama is offline ────────────────────────────────────────────
+    # 0. Disk + RAM pre-flight
+    if disk_gb < 12:
+        print(_fail("Disk space", f"only {disk_gb:.1f} GB free — need ≥ 12 GB for models"))
+    else:
+        print(_ok("Disk space", f"{disk_gb:.1f} GB free"))
+
+    if ram_gb < 0.75:
+        print(_fail("Available RAM", f"only {ram_gb:.1f} GB — grading will be refused"))
+    elif ram_gb < 4:
+        print(_warn("Available RAM", f"{ram_gb:.1f} GB free — close apps for best performance"))
+    else:
+        print(_ok("Available RAM", f"{ram_gb:.1f} GB free"))
+
+    # 1. Python dependencies
+    if deps_ok:
+        print(_ok("Python dependencies"))
+    else:
+        print(_warn("Python dependencies", deps_err or "some packages may be missing"))
+
+    # 2. Ollama is OPTIONAL (deprecated engine) — warn, never block
     if not ollama_ok:
-        wait_for_ollama_interactive()
-        # Re-check models after Ollama comes up
-        installed    = _get_installed_models()
-        model_status = _check_models(installed)
-        missing      = [m for m, ok in model_status.items() if not ok]
+        print(f"  {Y}  Ollama not running — LLM features (Story, Jury) unavailable.{RS}")
+        print(f"  {DM}  Basic grading (SigLIP-2 + IQA) works without it.{RS}")
+    else:
+        # 3. Check + download optional LLM models via Ollama
+        missing = [m for m, ok in model_status.items() if not ok]
+        if missing:
+            if download_consent_gate(missing):
+                pull_models(missing)
+            else:
+                print(f"\n  {Y}  Skipping downloads.{RS}")
+                print(f"  {DM}  LLM features unavailable until models are installed.{RS}\n")
+        else:
+            print(f"  {G}  All models present — nothing to download.{RS}\n")
 
     # ── Legacy cleanup (silent) ───────────────────────────────────────────────
-    legacy_cleanup(installed)
-
-    # ── Download missing models ───────────────────────────────────────────────
-    if missing:
-        if download_consent_gate(missing):
-            pull_models(missing)
-        else:
-            print(f"\n  {Y}  Skipping downloads.{RS}")
-            print(f"  {DM}  Jury Critique and Story features will be unavailable until models are installed.{RS}\n")
-    else:
-        print(f"  {G}  All models present — nothing to download.{RS}\n")
+    legacy_cleanup(installed if ollama_ok else set())
 
     # ── Build frontend if needed ──────────────────────────────────────────────
     ensure_frontend()

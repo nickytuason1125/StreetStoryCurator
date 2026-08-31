@@ -1,6 +1,6 @@
 # Optional Models Integration
 
-This document explains how to integrate optional models for enhanced grading in FrameGrade.
+This document explains how to integrate optional models for enhanced grading in Cullwise.
 
 ## YuNet Face Detection Model
 

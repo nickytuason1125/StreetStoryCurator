@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react';
+﻿import { useEffect, useState } from 'react';
 import { X, ArrowUp, FolderOpen, HardDrive } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { cn } from '../../lib/cn';
 import { Thumb } from '../photo/Thumb';
 import { API } from '../../lib/api';
 
-/* ── Folder browser modal ───────────────────────────────────────── */
+/* â”€â”€ Folder browser modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 /* Native-feeling explorer for picking the working folder. Extracted
  * verbatim from App.tsx during the views split; all state stays owned
  * by App and arrives through props. */
@@ -28,7 +28,7 @@ export function FolderBrowser({ mode, bPath, setBPath, bFolders, bImages, bSelFo
   /* Roots come from the SERVER, which is the side that can actually see the
    * disk. These used to be five hardcoded literals pointing at one developer's
    * user profile, so on any other machine every shortcut was a dead link. And
-   * no drive was listed at all — the browser only ever lists a directory you
+   * no drive was listed at all â€” the browser only ever lists a directory you
    * have already named, so a library on D:/ or E:/ simply could not be reached
    * without typing the path by hand. /api/places answers both. */
   const [places, setPlaces] = useState<{ label: string; path: string }[]>([]);
@@ -125,7 +125,7 @@ export function FolderBrowser({ mode, bPath, setBPath, bFolders, bImages, bSelFo
             <div className="flex-1 overflow-y-auto p-4">
               {loading ? (
                 <div className="flex h-full items-center justify-center text-ink-3">
-                  <span className="text-sm">Reading folder…</span>
+                  <span className="text-sm">Reading folderâ€¦</span>
                 </div>
               ) : bFolders.length===0 && bImages.length===0 ? (
                 <div className="flex h-full flex-col items-center justify-center gap-2 text-ink-3">
@@ -165,7 +165,7 @@ export function FolderBrowser({ mode, bPath, setBPath, bFolders, bImages, bSelFo
                           </div>
                         ))}
                         {bImages.length > 30 && (
-                          <div className="flex h-thumb items-center justify-center rounded-sm border border-line bg-raised px-3">
+                          <div className="flex h-thumb min-w-[96px] flex-1 items-center justify-center rounded-sm border border-line bg-raised px-3">
                             <span className="t-num text-xs text-ink-3">+{bImages.length-30} more</span>
                           </div>
                         )}

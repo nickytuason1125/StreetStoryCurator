@@ -427,7 +427,7 @@ def main() -> int:
     free = _free_disk_gb(_ROOT)
 
     if not args.json:
-        print(f"\nFrameGrade — model download")
+        print(f"\nCullwise — model download")
         print(f"  encoder tier : {label}  ({reason})")
         print(f"  to download  : ~{pending:.1f} GB")
         print(f"  free disk    : {free:.1f} GB\n")

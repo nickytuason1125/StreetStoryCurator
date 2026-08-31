@@ -1,12 +1,12 @@
-# FrameGrade benchmark — 2026-08-29 18:20
+# FrameGrade benchmark — 2026-08-30 15:59
 
 Machine: 16 logical cores · 16.8 GB RAM · dataset: dataset_images/
 
 ## Cull
-- Mode: **full** · ok: True
+- Mode: **scan** · ok: True
 - Photos graded: **100**
-- Wall time: **24.5 s** (0.24 s/image)
-- Peak process-tree RSS: **2.76 GB**
+- Wall time: **23.1 s** (0.23 s/image)
+- Peak process-tree RSS: **1.01 GB**
 - Last pipeline stages seen:
   - 89% — Assigning grades…
   - 90% — Reading photo details…
@@ -16,7 +16,7 @@ Machine: 16 logical cores · 16.8 GB RAM · dataset: dataset_images/
   - 100% — Done
 
 ## Sequence (MOGCO beam)
-- Time: **0.4 s** for 5 slots
+- Time: **0.22 s** for 5 slots
 - Deterministic across two runs: **True**
 - Global score: 3.6311
 

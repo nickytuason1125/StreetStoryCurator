@@ -1,6 +1,6 @@
-# Running FrameGrade light — low-RAM machines, no GPU, any OS
+# Running Cullwise light — low-RAM machines, no GPU, any OS
 
-FrameGrade adapts to the machine it is on. On a laptop with no graphics card
+Cullwise adapts to the machine it is on. On a laptop with no graphics card
 and little free memory, use **Lite mode** — it trades some analysis depth for
 a much smaller memory footprint and faster culls.
 
@@ -32,12 +32,12 @@ nothing else differs.
 ```bash
 # macOS / Linux
 export SIGLIP_TIER=low          # pin the small encoder
-export FRAMEGRADE_LITE=1        # lite defaults (scan-first, min workers)
+export CULLWISE_LITE=1        # lite defaults (scan-first, min workers)
 python server.py
 
 # Windows (cmd)
 set SIGLIP_TIER=low
-set FRAMEGRADE_LITE=1
+set CULLWISE_LITE=1
 python server.py
 ```
 

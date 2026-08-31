@@ -69,7 +69,7 @@ if getattr(sys, 'frozen', False):
     # on update and may sit under Program Files, which is read-only.
     _DATA_DIR = Path(os.environ.get(
         'CURATOR_DATA_DIR',
-        str(Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'FrameGrade')))
+        str(Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'Cullwise')))
     _DATA_DIR.mkdir(parents=True, exist_ok=True)
 else:
     _EXE_DIR = Path(__file__).parent

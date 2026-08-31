@@ -27,11 +27,11 @@ import { Field, TextArea } from "./components/ui/Field";
 import { StarRating } from "./components/ui/StarRating";
 import { ExifPanel } from "./components/ExifPanel";
 import { Thumb } from "./components/photo/Thumb";
-import { Filmstrip, GridView } from "./components/views/GridView";
+import { Filmstrip, GridView as GridViewRaw } from "./components/views/GridView";
 import { AnchorPicker } from "./components/views/AnchorPicker";
 import { WelcomeStage } from "./components/views/WelcomeStage";
-import { LoupeStage } from "./components/views/LoupeStage";
-import { AnalysisPanel } from "./components/views/AnalysisPanel";
+import { LoupeStage as LoupeStageRaw } from "./components/views/LoupeStage";
+import { AnalysisPanel as AnalysisPanelRaw } from "./components/views/AnalysisPanel";
 import { CreativeDirector } from "./components/views/CreativeDirector";
 import { regionGuide, tierColor, tierIcon, tierHeat } from "./lib/regions";
 import type { RegionTier } from "./lib/regions";
@@ -47,6 +47,14 @@ import { APP_VERSION } from "./lib/version";
 import { useGuardedInterval } from "./hooks/useGuardedInterval";
 import { useWindowedGrid } from "./hooks/useWindowedGrid";
 import { gc, ramReadiness } from "./lib/grading";
+
+/* The three hot views are memoized at the import boundary: during grading,
+ * progress ticks re-render App, but with stable props these 60 KB+ subtrees
+ * are skipped entirely. Prop stability is maintained by useCallback handlers
+ * (handleGridSelect / handleToggleDupes) and memoized derived data. */
+const GridView      = memo(GridViewRaw);
+const LoupeStage    = memo(LoupeStageRaw);
+const AnalysisPanel = memo(AnalysisPanelRaw);
 
 /* The second palette that used to live here is gone.
  *
@@ -462,6 +470,9 @@ export default function App() {
   const [toast,      setToast]      = useState<{msg: string; type: "success"|"error"|"info"} | null>(null);
   const [catalogSaveFailed, setCatalogSaveFailed] = useState(false);
   const [selId,      setSelId]      = useState<string | null>(null);
+  /* Rehydrated per-photo detail (breakdown/reasoning_log) for the selected
+   * photo — catalog rows ship slim; an entry here means "already fetched". */
+  const [detailById, setDetailById] = useState<Record<string, any>>({});
   const [nicheRec,   setNicheRec]   = useState<any>(null);
   const [nicheDetecting, setNicheDetecting] = useState(false);
   const [infoTab,    setInfoTab]    = useState<"exif"|"breakdown"|"analysis">("breakdown");
@@ -567,7 +578,7 @@ export default function App() {
   const [juryCritPath,   setJuryCritPath]   = useState<string | null>(null);
   // ── Engine health state ───────────────────────────────────────────────────
   const [engineHealth,        setEngineHealth]        = useState<{ status: "checking"|"online"|"offline"; missing: string[] }>({ status: "checking", missing: [] });
-  const [ollamaPs,            setOllamaPs]            = useState<{name:string; size_vram:number; size_total:number}[]>([]);
+  /* ollamaPs state removed 2026-08-30: polled every 15 s, never rendered anywhere. */
   const [bannerDismissed,     setBannerDismissed]     = useState(false);
   const [isDownloading,       setIsDownloading]       = useState(false);
   const [downloadProgress,    setDownloadProgress]    = useState(0);
@@ -686,40 +697,47 @@ export default function App() {
         const d = await r.json();
         const status = d.status ?? "offline";
         if (status === "offline") setBannerDismissed(false);
-        setEngineHealth({ status, missing: d.missing_models ?? [] });
+        // change-guard: a new object identity every poll re-rendered the whole
+        // tree 6×/min even when nothing changed. Identity moves on real change.
+        setEngineHealth(prev => {
+          const missing = d.missing_models ?? [];
+          const same = prev.status === status &&
+                       (prev.missing ?? []).join("\u0000") === missing.join("\u0000");
+          return same ? prev : { status, missing };
+        });
       } else {
         setBannerDismissed(false);
-        setEngineHealth({ status: "offline", missing: [] });
+        setEngineHealth(prev => prev.status === "offline" && (prev.missing ?? []).length === 0
+          ? prev : { status: "offline", missing: [] });
       }
     } catch {
       setBannerDismissed(false);
-      setEngineHealth({ status: "offline", missing: [] });
+      setEngineHealth(prev => prev.status === "offline" && (prev.missing ?? []).length === 0
+        ? prev : { status: "offline", missing: [] });
     }
   }, []);
 
   useGuardedInterval(fetchEngineHealth, 10_000, [fetchEngineHealth]);
 
-  const fetchOllamaPs = useCallback(async () => {
-    try {
-      const r = await fetch(`${API}/api/ollama/status`);
-      if (r.ok) {
-        const d = await r.json();
-        setOllamaPs(d.models ?? []);
-      } else {
-        setOllamaPs([]);
-      }
-    } catch {
-      setOllamaPs([]);
-    }
-  }, []);
-
-  useGuardedInterval(fetchOllamaPs, 15_000, [fetchOllamaPs]);
+  /* fetchOllamaPs removed 2026-08-30: ollamaPs was polled every 15 s but never
+     rendered anywhere — a dead state whose only effect was one full-tree
+     re-render per poll. */
 
   // Live RAM poll — cheap psutil-only endpoint, every 2 s, paused while hidden.
+  // Change-guarded: identical readings return the previous state object so the
+  // 2 s poll no longer re-renders the whole tree when the numbers didn't move.
   const fetchSysRam = useCallback(async () => {
     try {
       const r = await fetch(`${API}/api/system/ram`);
-      if (r.ok) setSysRam(await r.json());
+      if (r.ok) {
+        const d = await r.json();
+        setSysRam(prev => {
+          const same = prev && prev.ram_free_gb === d.ram_free_gb &&
+                       prev.ram_total_gb === d.ram_total_gb &&
+                       prev.ram_percent === d.ram_percent;
+          return same ? prev : d;
+        });
+      }
     } catch { /* leave last reading */ }
   }, []);
   useGuardedInterval(fetchSysRam, 2_000, [fetchSysRam]);
@@ -829,7 +847,32 @@ export default function App() {
       .catch(() => {});
   }, []);
 
-  const sel = useMemo(() => photos.find(p => p.id === selId) ?? photos[0] ?? null, [photos, selId]);
+  const sel = useMemo(() => {
+    const base = photos.find(p => p.id === selId) ?? photos[0] ?? null;
+    if (!base) return null;
+    // Catalog rows are slimmed for render speed (no breakdown / reasoning_log);
+    // the selected photo is rehydrated from /api/photo-detail on demand.
+    const det = detailById[base.id];
+    return det ? { ...base, ...det } : base;
+  }, [photos, selId, detailById]);
+
+  /* Lazy detail fetch — runs once per selected photo whose catalog row is
+   * slim. detailById[id] is written even on a miss (null entry) so a photo
+   * with no stored detail can never re-trigger the fetch loop. */
+  useEffect(() => {
+    if (!sel || sel.breakdown || detailById[sel.id] !== undefined) return;
+    let cancelled = false;
+    fetch(`${API}/api/photo-detail?path=${encodeURIComponent(sanitizePath(sel.path))}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (cancelled) return;
+        setDetailById(prev => ({ ...prev, [sel.id]: (d && d.photo) || {} }));
+      })
+      .catch(() => {
+        if (!cancelled) setDetailById(prev => ({ ...prev, [sel.id]: {} }));
+      });
+    return () => { cancelled = true; };
+  }, [sel, detailById]);
 
   /* Duplicate group stats — the single source for both the Duplicates tab
    * count and the Similar Shots header, so the two numbers always agree.
@@ -1734,6 +1777,13 @@ export default function App() {
 
   const isGrading = loading;
   const isDone    = !loading && photos.length > 0 && photos.some(p => p.grade !== 'Pending');
+  // Stable handlers for the memoized hot views — without these, inline closures
+  // would defeat React.memo on every App render.
+  const handleGridSelect = useCallback((id: string) => {
+    setSelId(id);
+    if (isDone) setLoupeMode('loupe');
+  }, [isDone]);
+  const handleToggleDupes = useCallback(() => setShowDuplicates(v => !v), []);
   // If grading is reset/cleared, don't stay on a post-grade tab
   useEffect(() => {
     if (!isDone && mainTab !== 'gallery') setMainTab('gallery');
@@ -1823,7 +1873,7 @@ export default function App() {
                 which tells someone staring at a stopped app precisely nothing. */}
             <p className="t-label !text-alarm-crit">Not connected</p>
             <p className="max-w-[38ch] text-center text-sm text-ink">
-              FrameGrade can't reach its engine, so nothing can be graded yet.
+              Cullwise can't reach its engine, so nothing can be graded yet.
             </p>
             <p className="max-w-[42ch] text-center text-xs text-ink-3">
               It usually means the engine is still starting. Give it a few seconds and retry —
@@ -1837,7 +1887,7 @@ export default function App() {
         ) : (
           <>
             <div style={{ width:40, height:40, border:`3px solid ${T.raisedHover}`, borderTopColor:T.ink3, borderRadius:'var(--r-round)', animation:'spin .8s linear infinite' }}/>
-            <span style={{ fontSize:'var(--text-sm)', color:T.ink2, letterSpacing:'var(--track-body)' }}>Starting FrameGrade…</span>
+            <span style={{ fontSize:'var(--text-sm)', color:T.ink2, letterSpacing:'var(--track-body)' }}>Starting Cullwise…</span>
           </>
         )}
       </div>
@@ -2266,10 +2316,10 @@ export default function App() {
         {/* Brand — aperture mark in the grease-pencil colour. The one warm
             pixel in the chrome: it is the product's signature, the same
             reservation a physical camera brand earns on its dial. */}
-        <div className="flex shrink-0 items-center gap-1 pr-1" title={`FrameGrade v${APP_VERSION}`}>
+        <div className="flex shrink-0 items-center gap-1 pr-1" title={`Cullwise v${APP_VERSION}`}>
           <Aperture size={15} strokeWidth={1.8} style={{ color: T.mark }}/>
           <span className="text-md text-ink"
-                style={{ fontFamily: 'var(--font-display)', fontWeight: 650, letterSpacing: 'var(--track-brand)' }}>FrameGrade</span>
+                style={{ fontFamily: 'var(--font-display)', fontWeight: 650, letterSpacing: 'var(--track-brand)' }}>Cullwise</span>
         </div>
         <div className="h-4 w-px shrink-0 bg-line-strong"/>
 
@@ -2680,7 +2730,7 @@ export default function App() {
               <GridView
                 photos={filteredPhotos}
                 selId={selId}
-                onSelect={id => { setSelId(id); if (isDone) setLoupeMode('loupe'); }}
+                onSelect={handleGridSelect}
                 usedPaths={allUsedPaths}
                 selectMode={selectMode}
                 setSelectMode={setSelectMode}
@@ -2691,7 +2741,7 @@ export default function App() {
                 nicheDetecting={nicheDetecting}
                 dupesCount={redacted.size}
                 showDuplicates={showDuplicates}
-                onToggleDupes={() => setShowDuplicates(v => !v)}
+                onToggleDupes={handleToggleDupes}
                 shownCount={filteredPhotos.length}
               />
               </ErrorBoundary>

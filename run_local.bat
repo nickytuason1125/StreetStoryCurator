@@ -1,10 +1,12 @@
 @echo off
 cd /d "%~dp0"
 
-:: Kill stale backend (both python.exe and pythonw.exe) and WebView2
+:: Kill stale backend (python/pythonw). NOTE: msedgewebview2.exe is
+:: deliberately NOT killed — force-killing the WebView2 runtime made Edge pop
+:: recovery/"restore pages" tabs on the next launch (the "Microsoft tab"
+:: annoyance). The Tauri shell manages its own WebView2 lifecycle.
 taskkill /F /FI "IMAGENAME eq python.exe"         >nul 2>&1
 taskkill /F /FI "IMAGENAME eq pythonw.exe"        >nul 2>&1
-taskkill /F /FI "IMAGENAME eq msedgewebview2.exe" >nul 2>&1
 
 :: Free ports 8000 (API) and 5173 (Vite dev) if anything still holds them
 for /f "tokens=5" %%a in ('netstat -aon 2^>nul ^| findstr ":8000 " ^| findstr "LISTENING"') do (

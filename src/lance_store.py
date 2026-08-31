@@ -30,7 +30,7 @@ from typing import Optional
 
 # Absolute path anchored to this file — never affected by CWD changes in server threads.
 #
-# FRAMEGRADE_LANCE_DIR exists for ONE reason: tests and throwaway harnesses had
+# CULLWISE_LANCE_DIR exists for ONE reason: tests and throwaway harnesses had
 # no way to avoid the real store. `data_dir` in a grade request does not
 # redirect it, so pytest wrote its fixtures straight into the photographer's
 # vector store — rows from three separate runs were found sitting in a live
@@ -40,7 +40,7 @@ from typing import Optional
 # It is read once, at import, deliberately. Re-reading per call would let a
 # stray os.environ edit mid-run point half a cull at a different database.
 import os as _os_ls
-_DB_DIR    = str(_os_ls.environ.get("FRAMEGRADE_LANCE_DIR")
+_DB_DIR    = str(_os_ls.environ.get("CULLWISE_LANCE_DIR")
                  or Path(__file__).resolve().parent.parent / "cache" / "lance.db")
 # One table PER TIER. Each encoder tier produces a different embedding
 # dimension, and _connect_or_create's dim-change path used to respond by
@@ -413,6 +413,18 @@ def upsert_batch(records: list[dict]) -> None:
         print(f"[lance] Write verification skipped: {_ve}")
 
 
+def query_light_all() -> list[dict]:
+    """All rows WITHOUT the 1536-d embedding blob — path, grade, score and
+    personal_score only. A 64k library costs a few MB instead of ~400 MB of
+    boxed Python floats. Use for grade-level scans (contrastive picking for
+    the star flow); fetch embeddings per-path via query_by_paths when needed."""
+    tbl = _open_table()
+    with _lock:
+        rows = tbl.search().select(
+            ["path", "grade", "score", "personal_score"]).to_list()
+    return [_row_to_dict(r) for r in rows]
+
+
 def query_by_paths(paths: list[str]) -> list[dict]:
     """Fetch rows by path list. Missing paths are silently omitted."""
     if not paths:
@@ -626,7 +638,7 @@ def compact_after_write() -> None:
     from datetime import timedelta
     try:
         import run_profile as _rp
-        days = max(0, int(_rp.setting("FRAMEGRADE_LANCE_RETENTION_DAYS")))
+        days = max(0, int(_rp.setting("CULLWISE_LANCE_RETENTION_DAYS")))
     except Exception:
         days = 7
     try:

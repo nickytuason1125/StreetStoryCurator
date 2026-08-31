@@ -1,4 +1,4 @@
-# FrameGrade — System Architecture
+# Cullwise — System Architecture
 
 > Lead Systems Architect Reference — generated 2026-05-26
 >

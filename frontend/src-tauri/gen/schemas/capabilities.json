@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default permissions for FrameGrade","local":true,"windows":["main"],"permissions":["core:default","dialog:allow-open"]}}
+{"default":{"identifier":"default","description":"Default permissions for Cullwise","local":true,"windows":["main"],"permissions":["core:default","dialog:allow-open"]}}

@@ -310,6 +310,22 @@ async def grade_photos_v2_stream(req: GradeRequest):
             except Exception:
                 pass
 
+            # ── Hard DISK gate: a full drive fails persistence SILENTLY. ─────
+            # Observed 2026-08-30 with 0 bytes free: the grade itself ran and
+            # returned done, then catalog merge_write and Lance compaction
+            # died with OSError Errno 28 — the work completed but could not
+            # be saved. Refusing up front is the honest, crash-proof
+            # behaviour (mirror of the RAM gate above).
+            try:
+                import shutil as _sh_gate
+                _disk_gb = _sh_gate.disk_usage(str(_DATA_DIR)).free / 1e9
+                if _disk_gb < 1.0:
+                    yield f"data: {_json.dumps({'error': f'Refused: only {_disk_gb:.2f} GB disk free on the app drive — grades would complete but their results cannot be saved (catalog/Lance writes fail on a full disk). Free up space and retry.'})}\n\n"
+                    print(f"[server] Grade REFUSED pre-spawn: {_disk_gb:.2f} GB disk free", flush=True)
+                    return
+            except Exception:
+                pass
+
             import win_job as _wj
             _proc = _wj.popen(
                 [sys.executable, _runner, _req_path, _prog_path],
@@ -549,6 +565,17 @@ async def personal_star(payload: dict):
         except Exception as _e_snap:
             print(f"[star] score snapshot skipped: {_e_snap}")
 
+        # MasterJudge auto-refit: fires in a daemon thread once enough NEW
+        # ratings have banked since the last champion/challenger fit (see
+        # src/master_judge.maybe_autofit). A lost challenge only rewrites the
+        # record — grades are untouched — so this is always safe to fire.
+        # Never blocks this request.
+        try:
+            import master_judge as _mj
+            _mj.maybe_autofit()
+        except Exception as _e_mj:
+            print(f"[star] MasterJudge autofit check skipped: {_e_mj}")
+
         # Queue DPO event: auto grade → user star grade
         try:
             import background_dpo_trainer as _dpo
@@ -556,26 +583,42 @@ async def personal_star(payload: dict):
         except Exception as _e_dpo:
             print(f"[star] DPO queue skipped: {_e_dpo}")
 
-        # PersonalHead pair update: find a contrastive photo
-        all_rows    = ls.query_all()
-        contrastive = [r for r in all_rows
-                       if r["path"] != path
-                       and _RANK.get(r.get("grade") or "Mid ⚠️", 1) != star_rank]
+        # PersonalHead pair update: find a contrastive photo.
+        # Memory fix (2026-08-30): this used to run ls.query_all() — loading
+        # all 64k rows WITH embeddings (~400 MB of boxed floats) on every
+        # star — and then rewrote personal scores for the whole store, which
+        # OOM'd Lance's external sort under memory pressure. Now: a light scan
+        # picks a contrastive path, only that row's embedding is fetched, and
+        # the personal-score refresh covers just the two affected photos. Full
+        # propagation happens on the periodic retrain, which already rewrites
+        # all scores.
+        light_rows   = ls.query_light_all()
+        contrastive  = [r for r in light_rows
+                        if r.get("path") != path
+                        and _RANK.get(r.get("grade") or "Mid ⚠️", 1) != star_rank]
 
         loss = 0.0
         if contrastive:
             other      = _random.choice(contrastive[:40])
-            other_emb  = other["embedding"]
-            other_grade = other.get("grade") or "Mid ⚠️"
-            loss = await run_in_threadpool(ph.update, this_emb, star_grade, other_emb, other_grade)
+            other_rows = ls.query_by_paths([other["path"]])
+            other_emb  = other_rows[0]["embedding"] if other_rows else None
 
-            # Refresh personal scores across all stored photos
-            if all_rows:
-                all_embs = np.stack([r["embedding"] for r in all_rows])
-                new_pers = await run_in_threadpool(ph.score, all_embs)
-                ls.update_personal_scores(
-                    {r["path"]: float(s) for r, s in zip(all_rows, new_pers)}
-                )
+            if other_emb is not None:
+                other_grade = other_rows[0].get("grade") or "Mid ⚠️"
+                loss = await run_in_threadpool(
+                    ph.update, this_emb, star_grade, other_emb, other_grade)
+
+                # Refresh personal scores for ONLY the two affected photos —
+                # the periodic retrain propagates the new head store-wide.
+                new_scores = {}
+                for emb_obj, pth in ((this_emb, path), (other_emb, other["path"])):
+                    try:
+                        new_scores[pth] = float(ph.score(
+                            np.asarray([emb_obj], dtype=np.float32))[0])
+                    except Exception:
+                        pass
+                if new_scores:
+                    ls.update_personal_scores(new_scores)
 
         # Auto-retrain the whole baseline every _RETRAIN_EVERY new ratings —
         # incremental pair-updates drift toward recent ratings; a periodic full
@@ -607,7 +650,7 @@ async def taste_summary():
     never claim an authority level the blend doesn't actually use. The ceiling
     grows with the durable star-rating count:
         <25 ratings → 0.35   ≥25 → 0.45   ≥50 → 0.55   ≥100 → 0.70
-    FRAMEGRADE_PH_WEIGHT_MAX, when set, is the same hard cap the pipeline
+    CULLWISE_PH_WEIGHT_MAX, when set, is the same hard cap the pipeline
     applies, so the reported weight can never overstate the blend.
     """
     try:
@@ -621,7 +664,7 @@ async def taste_summary():
     else:          weight, next_at, next_weight = 0.35, 25,  0.45
     try:
         import os as _os
-        cap = _os.environ.get("FRAMEGRADE_PH_WEIGHT_MAX", "").strip()
+        cap = _os.environ.get("CULLWISE_PH_WEIGHT_MAX", "").strip()
         if cap:
             weight = min(max(float(cap), 0.20), 0.80)
             next_at = next_weight = None      # cap overrides the ladder
@@ -666,13 +709,14 @@ def _gather_rating_samples() -> list:
         r = rows.get(p)
         if r is None:
             continue
+        src = _rs.get_source(p)
         emb = r.get("embedding")
         if emb is not None:
-            out.append((np.asarray(emb, dtype=np.float32), _g(int(s))))
+            out.append((np.asarray(emb, dtype=np.float32), _g(int(s)), src))
         elif isinstance(r.get("score"), (int, float)):
             # No embedding available — synthesize a degenerate 1-D sample so
             # PersonalHead at least sees the score↔star relationship.
-            out.append((np.asarray([float(r["score"])], dtype=np.float32), _g(int(s))))
+            out.append((np.asarray([float(r["score"])], dtype=np.float32), _g(int(s)), src))
     return out
 
 
@@ -700,6 +744,17 @@ def _retrain_personal_baseline() -> dict:
 async def personal_retrain(payload: dict = None):
     """Manually retrain the PersonalHead on the full durable rating baseline."""
     stats = await run_in_threadpool(_retrain_personal_baseline)
+    return JSONResponse({"ok": True, **stats})
+
+
+@router.post("/api/master/retrain")
+async def master_retrain(payload: dict = None):
+    """Refit the MasterJudge head on the master star baseline and run the
+    champion/challenger challenge. CPU-only (~10-20 s); returns the verdict:
+    promoted true/false, held-out rho vs the incumbent's, and the fit history.
+    A lost challenge rewrites the record only — grade output is untouched."""
+    import master_judge as mj
+    stats = await run_in_threadpool(mj.fit)
     return JSONResponse({"ok": True, **stats})
 
 

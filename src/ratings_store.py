@@ -88,8 +88,16 @@ def get_score_snapshot(path: str) -> dict | None:
     return {"score": v.get("score"), "personal_score": v.get("personal_score")}
 
 
+def get_source(path: str) -> str:
+    """'tpe_master' for the permanently-authoritative baseline ratings, '' for
+    an ordinary rating or an unrated path. See PersonalHead.fit()'s docstring
+    for what this controls."""
+    v = _read_raw().get(path)
+    return v.get("source", "") if isinstance(v, dict) else ""
+
+
 def set_rating(path: str, stars: int, score: float | None = None,
-               personal_score: float | None = None) -> None:
+               personal_score: float | None = None, source: str | None = None) -> None:
     """Persist (or clear, when stars==0) one rating to BOTH the primary store and
     the mirror backup, atomically. Two synced copies = a deleted/corrupt primary
     self-recovers on the next read.
@@ -98,17 +106,28 @@ def set_rating(path: str, stars: int, score: float | None = None,
     right after a LanceDB lookup), pass it through — it's snapshotted onto the
     rating so agreement can still be measured after a later re-grade changes or
     removes the live row for this exact path.
+
+    `source`, when passed, is stamped onto the entry (e.g. "tpe_master"); when
+    omitted, any existing source tag on this path is preserved rather than
+    wiped — the star endpoint calls this twice per rating (once immediately
+    with just stars, once more after the score lookup) and the second call
+    must not silently untag a master rating.
     """
     if not path:
         return
     with _lock:
         cur = _read_raw()
         if stars and int(stars) > 0:
+            existing = cur.get(path)
+            prior_source = existing.get("source") if isinstance(existing, dict) else None
             entry: dict = {"stars": int(stars)}
             if score is not None:
                 entry["score"] = float(score)
             if personal_score is not None:
                 entry["personal_score"] = float(personal_score)
+            final_source = source if source is not None else prior_source
+            if final_source:
+                entry["source"] = final_source
             cur[path] = entry
         else:
             cur.pop(path, None)

@@ -63,10 +63,10 @@ def _chunk_size(n: int) -> int:
 
     The memory reason is gone: draft-decoding to 640px cut each image from
     ~24 MB to ~1.2 MB, so a fixed batch of 16 costs ~20 MB — nothing worth
-    trading determinism for. FRAMEGRADE_DFINE_CHUNK still overrides.
+    trading determinism for. CULLWISE_DFINE_CHUNK still overrides.
     """
     import os as _os
-    _env = _os.environ.get("FRAMEGRADE_DFINE_CHUNK")
+    _env = _os.environ.get("CULLWISE_DFINE_CHUNK")
     if _env:
         try:
             return max(1, min(int(_env), max(n, 1)))
@@ -135,14 +135,14 @@ def unload() -> None:
 
 
 
-# Draft-decode is revertible: FRAMEGRADE_DFINE_DRAFT=0 restores full-resolution
+# Draft-decode is revertible: CULLWISE_DFINE_DRAFT=0 restores full-resolution
 # decoding. It is 3.8x faster (690 -> 182 ms/img) because the processor resizes
 # everything to 640x640 anyway, but it does change the pixels the detector sees,
 # which moved 3 of 135 borderline grades in an A/B. Flag exists so that can be
 # re-tested on any shoot without a code change.
 def _draft_enabled() -> bool:
     import os as _os
-    return _os.environ.get("FRAMEGRADE_DFINE_DRAFT", "1").strip() != "0"
+    return _os.environ.get("CULLWISE_DFINE_DRAFT", "1").strip() != "0"
 
 
 def _open_rgb(path: str):

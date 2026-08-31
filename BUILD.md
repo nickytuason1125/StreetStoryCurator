@@ -1,4 +1,4 @@
-# Building FrameGrade for Distribution
+# Building Cullwise for Distribution
 
 ## Prerequisites (all platforms)
 
@@ -30,49 +30,10 @@ pip install pyinstaller
 ## Windows
 
 ```bash
-pyinstaller \
-  --onefile \
-  --windowed \
-  --name FrameGrade \
-  --icon assets/icon.ico \
-  --distpath dist \
-  --workpath build \
-  --specpath build \
-  --hidden-import=gradio \
-  --hidden-import=gradio.themes \
-  --hidden-import=gradio.themes.base \
-  --hidden-import=gradio.themes.utils \
-  --hidden-import=gradio.components \
-  --hidden-import=gradio.blocks \
-  --hidden-import=gradio.routes \
-  --hidden-import=gradio.queueing \
-  --hidden-import=gradio.networking \
-  --hidden-import=aiofiles \
-  --hidden-import=fastapi \
-  --hidden-import=uvicorn \
-  --hidden-import=uvicorn.loops.auto \
-  --hidden-import=uvicorn.protocols.http.auto \
-  --hidden-import=uvicorn.protocols.websockets.auto \
-  --hidden-import=uvicorn.lifespan.on \
-  --hidden-import=websockets.legacy.server \
-  --hidden-import=webview \
-  --hidden-import=webview.platforms.winforms \
-  --hidden-import=clr_loader \
-  --hidden-import=torch \
-  --hidden-import=torchvision \
-  --hidden-import=clip \
-  --hidden-import=clip.model \
-  --hidden-import=clip.simple_tokenizer \
-  --hidden-import=cv2 \
-  --hidden-import=PIL.Image \
-  --hidden-import=ftfy \
-  --hidden-import=regex \
-  --collect-data=gradio \
-  --collect-data=gradio_client \
-  src/desktop_app.py
+pyinstaller Cullwise.spec
 ```
 
-Output: `dist/FrameGrade.exe`
+Output: `dist/Cullwise.exe`
 
 ### VS Code shortcut
 
@@ -84,54 +45,16 @@ in `.vscode/tasks.json`.
 ## macOS
 
 ```bash
-pyinstaller \
-  --onefile \
-  --windowed \
-  --name FrameGrade \
-  --icon assets/icon.icns \
-  --distpath dist \
-  --workpath build \
-  --specpath build \
-  --hidden-import=gradio \
-  --hidden-import=gradio.themes \
-  --hidden-import=gradio.themes.base \
-  --hidden-import=gradio.themes.utils \
-  --hidden-import=gradio.components \
-  --hidden-import=gradio.blocks \
-  --hidden-import=gradio.routes \
-  --hidden-import=gradio.queueing \
-  --hidden-import=gradio.networking \
-  --hidden-import=aiofiles \
-  --hidden-import=fastapi \
-  --hidden-import=uvicorn \
-  --hidden-import=uvicorn.loops.auto \
-  --hidden-import=uvicorn.protocols.http.auto \
-  --hidden-import=uvicorn.protocols.websockets.auto \
-  --hidden-import=uvicorn.lifespan.on \
-  --hidden-import=websockets.legacy.server \
-  --hidden-import=webview \
-  --hidden-import=webview.platforms.cocoa \
-  --hidden-import=torch \
-  --hidden-import=torchvision \
-  --hidden-import=clip \
-  --hidden-import=clip.model \
-  --hidden-import=clip.simple_tokenizer \
-  --hidden-import=cv2 \
-  --hidden-import=PIL.Image \
-  --hidden-import=ftfy \
-  --hidden-import=regex \
-  --collect-data=gradio \
-  --collect-data=gradio_client \
-  src/desktop_app.py
+pyinstaller Cullwise.spec
 ```
 
-Output: `dist/FrameGrade` (single binary) or `dist/FrameGrade.app`
+Output: `dist/Cullwise` (single binary) or `dist/Cullwise.app`
 (app bundle — omit `--onefile` to produce the `.app` directory).
 
 > macOS Gatekeeper will quarantine unsigned binaries. To let users run them:
 > ```bash
-> xattr -cr dist/FrameGrade.app
-> codesign --force --deep --sign - dist/FrameGrade.app
+> xattr -cr dist/Cullwise.app
+> codesign --force --deep --sign - dist/Cullwise.app
 > ```
 > For distribution outside the App Store an Apple Developer ID is required.
 
@@ -140,47 +63,10 @@ Output: `dist/FrameGrade` (single binary) or `dist/FrameGrade.app`
 ## Linux
 
 ```bash
-pyinstaller \
-  --onefile \
-  --windowed \
-  --name FrameGrade \
-  --distpath dist \
-  --workpath build \
-  --specpath build \
-  --hidden-import=gradio \
-  --hidden-import=gradio.themes \
-  --hidden-import=gradio.themes.base \
-  --hidden-import=gradio.themes.utils \
-  --hidden-import=gradio.components \
-  --hidden-import=gradio.blocks \
-  --hidden-import=gradio.routes \
-  --hidden-import=gradio.queueing \
-  --hidden-import=gradio.networking \
-  --hidden-import=aiofiles \
-  --hidden-import=fastapi \
-  --hidden-import=uvicorn \
-  --hidden-import=uvicorn.loops.auto \
-  --hidden-import=uvicorn.protocols.http.auto \
-  --hidden-import=uvicorn.protocols.websockets.auto \
-  --hidden-import=uvicorn.lifespan.on \
-  --hidden-import=websockets.legacy.server \
-  --hidden-import=webview \
-  --hidden-import=webview.platforms.gtk \
-  --hidden-import=torch \
-  --hidden-import=torchvision \
-  --hidden-import=clip \
-  --hidden-import=clip.model \
-  --hidden-import=clip.simple_tokenizer \
-  --hidden-import=cv2 \
-  --hidden-import=PIL.Image \
-  --hidden-import=ftfy \
-  --hidden-import=regex \
-  --collect-data=gradio \
-  --collect-data=gradio_client \
-  src/desktop_app.py
+pyinstaller Cullwise.spec
 ```
 
-Output: `dist/FrameGrade` (ELF binary, no extension)
+Output: `dist/Cullwise` (ELF binary, no extension)
 
 > Linux builds require `python3-gi`, `gir1.2-webkit2-4.0`, and `libgtk-3-dev` for
 > pywebview's GTK backend. Install with:
@@ -200,8 +86,8 @@ git tag v1.0.0
 git push origin v1.0.0
 
 # Create the release and attach the binary in one command
-gh release create v1.0.0 dist/FrameGrade.exe \
-  --title "FrameGrade v1.0.0" \
+gh release create v1.0.0 dist/Cullwise.exe \
+  --title "Cullwise v1.0.0" \
   --notes "First public release. Offline street photo grading & sequencing."
 ```
 
@@ -210,13 +96,13 @@ To attach multiple platform binaries to the **same** release
 
 ```bash
 # From Windows — attach .exe
-gh release upload v1.0.0 dist/FrameGrade.exe
+gh release upload v1.0.0 dist/Cullwise.exe
 
 # From macOS — attach macOS binary
-gh release upload v1.0.0 "dist/FrameGrade-macos"
+gh release upload v1.0.0 "dist/Cullwise-macos"
 
 # From Linux — attach Linux binary
-gh release upload v1.0.0 "dist/FrameGrade-linux"
+gh release upload v1.0.0 "dist/Cullwise-linux"
 ```
 
 ### Option B — GitHub Actions (automated, recommended)
@@ -230,11 +116,10 @@ upload assets automatically when a tag is pushed. Each job runs:
   with: { python-version: "3.11" }
 - run: pip install -r requirements.txt
         git+https://github.com/openai/CLIP.git
-        pyinstaller
-- run: pyinstaller --onefile --windowed ... src/desktop_app.py
+        pyinstaller Cullwise.spec
 - uses: actions/upload-release-asset@v1
   with:
-    asset_path: dist/FrameGrade${{ matrix.ext }}
+    asset_path: dist/Cullwise${{ matrix.ext }}
 ```
 
 ---

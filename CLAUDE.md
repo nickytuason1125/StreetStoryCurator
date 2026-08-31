@@ -1,4 +1,14 @@
-# FrameGrade — Frontier 2026 Architectural Contract
+# Cullwise — formerly FrameGrade (renamed 2026-08-30)
+
+> **Deprecation notice:** the product formerly known as **FrameGrade** is now
+> **Cullwise**. All user-facing strings, docs, env vars (`FRAMEGRADE_*` →
+> `CULLWISE_*`), the Tauri identity (`com.cullwise.app`), the Rust crate, and
+> the PyInstaller spec (`Cullwise.spec`) were migrated in one pass
+> (`scripts/deprecate_framegrade.py`). If an old script still sets a
+> `FRAMEGRADE_*` variable, rename it to `CULLWISE_*` — the old names are
+> deprecated and will not be recognized going forward.
+
+# Cullwise — Frontier 2026 Architectural Contract
 
 ## Model Stack (Sequential, VRAM-safe)
 
@@ -99,7 +109,7 @@ Score blend (grade_pipeline_v2 Step 5): **confidence-adaptive** —
 `conf = |head-0.5|/0.5`. A neutral head (~0.5, i.e. a genre it hasn't learned)
 collapses `w` to the 0.20 floor → identical to the legacy flat 0.80/0.20, so it
 can never regress; a confident head rises toward `ceil` (env
-`FRAMEGRADE_PH_WEIGHT_MAX`, default 0.35, clamped ≤0.60) so taste becomes a
+`CULLWISE_PH_WEIGHT_MAX`, default 0.35, clamped ≤0.60) so taste becomes a
 first-class vote only where it has coverage. Adding a few ratings in a new genre
 raises the head's confidence there → grades shift toward the user's taste
 automatically, with zero effect where it hasn't learned.
@@ -139,6 +149,79 @@ Runtime enforcement (`src/frontier_config.py`):
 
 Tests: `tests/test_frontier_lock.py` covers all enforcement paths.
 
+## Ratings Are Never Ground Truth (2026-08-30)
+
+**Product rule: star ratings must never change how any image is graded —
+for anyone.** The 794-photo rating baseline (LX3/TPE, tagged `tpe_master`
+in `cache/user_ratings.json`) was explicitly PLACEHOLDER data. Ratings are
+collected in `ratings_store` purely as *measurement and learning data*;
+the grader stays objective and absolute by default.
+
+Measured against the placeholder baseline (`scripts/master_backtest.py`):
+incumbent grader ρ = +0.87, bands monotone, aspect signal =
+Composition +0.64 · Narrative +0.51 · Technical +0.38 · Lighting +0.33 ·
+**Human/Culture −0.15**. This informed the tooling below; it does not
+steer grading.
+
+The master algorithm follows a TWO-PHASE contract:
+
+| Phase | What happens | Rating influence |
+|---|---|---|
+| **BUILD** (offline) | challengers train on a rating baseline (`scripts/master_backtest.py --fit`, `POST /api/master/retrain`, background auto-refit every 25 new ratings); each fit runs a champion/challenger exam on held-out photos and writes a record to `cache/master_judge.json` | records only — grades are untouched |
+| **SHIP** (deliberate, operator-run) | a challenger that WON its exam is baked into `data/master_judge_defaults.json` via `scripts/promote_master_judge.py` / `promote_to_shipped()` — refused for anything unpromoted, stale, or incomplete | the curated training data becomes part of the algorithm |
+| **RUN** (every install) | the SHIPPED master judge grades BY DEFAULT — no flags, no ratings, like the shipped encoder weights; precedence + guards in `master_judge.active()` | zero |
+
+Opt-in flags (default OFF) for non-shipped influence:
+
+| Flag | Enables | Guardrails |
+|---|---|---|
+| `CULLWISE_PERSONAL_TASTE=1` | PersonalHead taste blend (Step 5) | confidence-adaptive 0.20–0.70 weight, tier-mismatch guard |
+| `CULLWISE_MASTER_JUDGE=1` | local cache challenger + background auto-refit | champion/challenger promotion required |
+| `CULLWISE_MASTER_ANCHORS=1` | human-anchored calibration ruler (`cache/master_anchors.json`) | probe-fingerprint freshness + lo/hi span + 3★ monotonicity refusal |
+| `CULLWISE_MASTER_JUDGE_OFF=1` | kill switch — disables the shipped master judge too | — |
+
+Non-negotiables:
+- Never default-on the opt-in flags; never hand-edit `promoted` to true;
+  never ship an unpromoted record. An unpromoted `cache/master_judge.json`
+  is a RECORD of a lost challenge, not a bug.
+- Precedence in `active()`: kill switch → opted-in local challenger →
+  shipped master → nothing. The shipped master needs no flags; a local
+  challenger always needs its opt-in.
+- The stacked design `[machine score, 5 aspects]` is load-bearing: the
+  aspect-only challenger lost 0.78 vs 0.87. "Aesthetic" is NOT a judge
+  feature — it IS the base grader score and doesn't exist in breakdowns
+  at grade time.
+- Every fit appends to the `history` list in cache/master_judge.json
+  (last 20: n, rho_holdout, rho_baseline, promoted) — the ρ trend IS the
+  improvement log.
+- The placeholder-trained PersonalHead weights were parked as
+  `cache/personal_head.placeholder.bak.pt/.npz` (recoverable by renaming
+  back); grading never loads them unless the taste flag is on.
+
+## Reliability & Benchmark Tooling (2026-08-30)
+
+| Tool | What it measures |
+|---|---|
+| `scripts/benchmark.py [--scan|--deep|--skip-cull|--full-story]` | cull wall time, s/image, peak process-tree RSS, per-stage timeline; MOGCO sequencing determinism (run twice) → `reports/benchmark_report.md` |
+| `scripts/reliability_check.py` | repeat-run score determinism (0 drift tolerated), process hygiene (no stray workers, `grading.lock` cleaned), corrupt-file resilience, empty-folder behaviour, RAM floor, **disk head-room** → `reports/reliability_report.md` |
+
+Measured on this machine (RTX 3060 Laptop, 16.8 GB RAM, 100-photo dataset):
+full cull **56 s / 0.56 s per photo / 2.75 GB peak**; scan cull **23 s /
+0.23 s per photo / 1.01 GB peak**; sequencing deterministic, 0.22 s.
+
+Reliability findings baked into code that day:
+- **A full app-drive fails persistence silently** — with 0 bytes free, a
+  grade completed and then `catalog_store.merge_write` + Lance compaction
+  died with OSError Errno 28 (work lost). The server grade path now has a
+  **hard DISK gate** (mirror of the RAM gate): refuses below 1 GB free on
+  the app drive with a clear message. Do not remove it.
+- High-tier culling needs ≥ ~1.8 GB *available* RAM just for SigLIP-2 — on
+  a 16 GB desktop under normal load this is the binding constraint, not
+  CPU/GPU. Scan mode (1 GB peak) is the fallback for loaded machines.
+- A corrupt .jpg among good ones is dropped with a logged warning; the run
+  completes and the good photos grade. Never "fix" this by widening the
+  try/except to hide other errors.
+
 ## Story / Competition (2026-08-23)
 
 Selection runs over the WHOLE graded pool via `src/story_selector.py`, not the
@@ -151,8 +234,8 @@ Two stages are OPT-IN because they were measured, not guessed:
 
 | Setting | Default | Cost when on |
 |---|---|---|
-| `FRAMEGRADE_STORY_REVISION` | off | ~200s per iteration (170s to encode one contact sheet on CPU) |
-| `FRAMEGRADE_STORY_VERDICT` | off | ~92s for a 200-token narrative |
+| `CULLWISE_STORY_REVISION` | off | ~200s per iteration (170s to encode one contact sheet on CPU) |
+| `CULLWISE_STORY_VERDICT` | off | ~92s for a 200-token narrative |
 
 With both off a Story run is **57.5s** end to end. With them on it did not
 return in ten minutes.
@@ -161,7 +244,7 @@ Also measured, and load-bearing:
 - Grammar-constrained decoding DEGRADES selection: 11/14 against 14/14
   unconstrained, biasing toward small ids. Do not add it back.
 - Manifest size drives latency superlinearly: 25 candidates 36.1s, 12 candidates
-  4.7s. `FRAMEGRADE_DIRECTOR_POOL` defaults to 12.
+  4.7s. `CULLWISE_DIRECTOR_POOL` defaults to 12.
 - Shot type does NOT discriminate in a street library: largest face measured was
   0.88% of frame against an 8% "close" boundary. Do not build narrative roles on
   camera distance.

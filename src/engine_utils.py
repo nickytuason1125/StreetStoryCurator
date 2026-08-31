@@ -1,5 +1,5 @@
 """
-engine_utils.py — Production utilities for FrameGrade.
+engine_utils.py — Production utilities for Cullwise.
 
 Four capabilities (all optional-import-safe; degrade gracefully):
   1. pHash deduplication  — hybrid perceptual + cosine similarity

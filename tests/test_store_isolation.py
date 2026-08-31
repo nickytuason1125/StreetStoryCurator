@@ -21,8 +21,8 @@ REAL_DB = _ROOT / "cache" / "lance.db"
 
 
 def test_the_override_is_set_for_the_session():
-    assert os.environ.get("FRAMEGRADE_LANCE_DIR"), \
-        "conftest.py must set FRAMEGRADE_LANCE_DIR before any test imports lance_store"
+    assert os.environ.get("CULLWISE_LANCE_DIR"), \
+        "conftest.py must set CULLWISE_LANCE_DIR before any test imports lance_store"
 
 
 def test_lance_store_points_somewhere_temporary():

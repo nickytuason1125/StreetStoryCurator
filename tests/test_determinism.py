@@ -51,8 +51,8 @@ import {module} as m
 print(m.{func}({arg}))
 """
     env = dict(os.environ)
-    for k in ("FRAMEGRADE_DFINE_CHUNK", "FRAMEGRADE_IQA_CHUNK",
-              "FRAMEGRADE_DEDUP_CHUNK", "SIGLIP_ENC_BATCH"):
+    for k in ("CULLWISE_DFINE_CHUNK", "CULLWISE_IQA_CHUNK",
+              "CULLWISE_DEDUP_CHUNK", "SIGLIP_ENC_BATCH"):
         env.pop(k, None)
     out = subprocess.run([sys.executable, "-c", code], capture_output=True,
                          text=True, cwd=str(_ROOT), timeout=300, env=env)
@@ -99,9 +99,9 @@ print(s._auto_enc_batch())
 
 
 @pytest.mark.parametrize("module,func,arg,env_var", [
-    ("dfine_detector",       "_chunk_size",       514, "FRAMEGRADE_DFINE_CHUNK"),
-    ("vision_grading_heads", "_iqa_chunk_size",   514, "FRAMEGRADE_IQA_CHUNK"),
-    ("grade_pipeline_v2",    "_dedup_chunk_size", 514, "FRAMEGRADE_DEDUP_CHUNK"),
+    ("dfine_detector",       "_chunk_size",       514, "CULLWISE_DFINE_CHUNK"),
+    ("vision_grading_heads", "_iqa_chunk_size",   514, "CULLWISE_IQA_CHUNK"),
+    ("grade_pipeline_v2",    "_dedup_chunk_size", 514, "CULLWISE_DEDUP_CHUNK"),
 ])
 def test_env_override_still_works(module, func, arg, env_var):
     """Pinning must not remove the escape hatch for a memory-tight machine."""

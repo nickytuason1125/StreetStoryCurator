@@ -63,7 +63,7 @@ def load_concepts(for_display: bool = False) -> list:
         return _read_concepts_file()
     try:
         import run_profile
-        if not run_profile.setting("FRAMEGRADE_USE_RAG_CONCEPTS"):
+        if not run_profile.setting("CULLWISE_USE_RAG_CONCEPTS"):
             return []
     except Exception:
         return []          # cannot confirm opt-in -> do not inject

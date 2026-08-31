@@ -8,7 +8,7 @@ decode_one(draft_hint=N) asks libjpeg to downscale in the DCT domain instead.
 These tests lock the properties that make that safe:
   1. the decode still covers the hint (never smaller — that would lose detail)
   2. the hint never UPscales a small image
-  3. FRAMEGRADE_DRAFT_DECODE=0 restores the exact previous pixels
+  3. CULLWISE_DRAFT_DECODE=0 restores the exact previous pixels
   4. non-JPEG paths are unaffected
 """
 from __future__ import annotations
@@ -68,10 +68,10 @@ def test_draft_decode_is_smaller_than_full(big_jpeg):
 
 
 def test_env_kill_switch_restores_full_decode(big_jpeg, monkeypatch):
-    """FRAMEGRADE_DRAFT_DECODE=0 must give back byte-identical old behaviour."""
+    """CULLWISE_DRAFT_DECODE=0 must give back byte-identical old behaviour."""
     from fast_ingestion import decode_one
     full = decode_one(big_jpeg, pin=False)
-    monkeypatch.setenv("FRAMEGRADE_DRAFT_DECODE", "0")
+    monkeypatch.setenv("CULLWISE_DRAFT_DECODE", "0")
     off = decode_one(big_jpeg, pin=False, draft_hint=512)
     assert off is not None and full is not None
     assert off.shape == full.shape

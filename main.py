@@ -1,5 +1,5 @@
 """
-FrameGrade — CLI entrypoint.
+Cullwise — CLI entrypoint.
 
 Usage
 -----
@@ -35,7 +35,7 @@ logger = logging.getLogger("main")
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="FrameGrade — Frontier 2026 Edition",
+        description="Cullwise — Frontier 2026 Edition",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -96,7 +96,7 @@ def main() -> None:
     from __version__ import __version__ as _version
     import uvicorn
     logger.info(
-        f"Starting FrameGrade v{_version}  host={args.host}  port={args.port}  "
+        f"Starting Cullwise v{_version}  host={args.host}  port={args.port}  "
         f"force_frontier={args.force_frontier}"
     )
     uvicorn.run(

@@ -64,13 +64,20 @@ fn find_project_root() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
-/// Spawn the Python FastAPI server in dev mode and return the child handle.
+/// Spawn the Python FastAPI server in dev/fallback mode and return the child handle.
+///
+/// Uses `src/local_launcher.py` — the proven daily-driver path (it redirects
+/// stdout/stderr to crash.log, because under pythonw sys.stdout is None and a
+/// bare `server.py` silently dies before uvicorn binds). `server.py` is kept
+/// only as a last-resort fallback.
 fn start_python_server(project_root: &std::path::Path) -> Option<Child> {
     let venv_python = project_root.join("venv/Scripts/pythonw.exe");
-    let server_py   = project_root.join("server.py");
+    let launcher_py  = project_root.join("src").join("local_launcher.py");
+    let server_py    = project_root.join("server.py");
 
-    if !server_py.exists() {
-        eprintln!("[tauri] ERROR: server.py not found at {:?}", server_py);
+    let script = if launcher_py.exists() { launcher_py } else { server_py };
+    if !script.exists() {
+        eprintln!("[tauri] ERROR: no launcher script found at {:?}", script);
         return None;
     }
 
@@ -80,10 +87,10 @@ fn start_python_server(project_root: &std::path::Path) -> Option<Child> {
         PathBuf::from("pythonw")
     };
 
-    eprintln!("[tauri] Starting: {:?} {:?}", python_exe, server_py);
+    eprintln!("[tauri] Starting: {:?} {:?}", python_exe, script);
 
     let mut cmd = Command::new(&python_exe);
-    cmd.arg(&server_py).current_dir(project_root);
+    cmd.arg(&script).current_dir(project_root);
     // Suppress the console window that would otherwise flash on Windows.
     #[cfg(target_os = "windows")]
     cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
@@ -102,7 +109,7 @@ fn start_python_server(project_root: &std::path::Path) -> Option<Child> {
 ///
 /// We set:
 ///   CWD          → the bundle dir  (so models/ and frontend/dist/ resolve)
-///   CURATOR_DATA_DIR → user's AppData/FrameGrade (writable cache)
+///   CURATOR_DATA_DIR → user's AppData/Cullwise (writable cache)
 fn start_sidecar(app: &tauri::AppHandle) -> Option<Child> {
     let resource_dir = app.path().resource_dir()
         .map_err(|e| eprintln!("[tauri] resource_dir error: {}", e))
@@ -110,7 +117,20 @@ fn start_sidecar(app: &tauri::AppHandle) -> Option<Child> {
 
     let triple      = sidecar_triple();
     let ext         = exe_ext();
-    let bundle_dir  = resource_dir.join("binaries").join(format!("curator-api-{}", triple));
+    // Tauri v2 resource placement varies by config form: the glob may preserve
+    // the "resources/" prefix or strip it depending on version. Check both.
+    let candidates = [
+        resource_dir.join("binaries").join(format!("curator-api-{}", triple)),
+        resource_dir.join("resources").join("binaries").join(format!("curator-api-{}", triple)),
+    ];
+    let bundle_dir = candidates.iter().find(|d| d.join(format!("curator-api{}", ext)).exists());
+    let bundle_dir = match bundle_dir {
+        Some(d) => d.clone(),
+        None => {
+            eprintln!("[tauri] ERROR: sidecar exe not found in any resource location — did you run build-backend.bat?");
+            return None;
+        }
+    };
     let exe_path    = bundle_dir.join(format!("curator-api{}", ext));
 
     eprintln!("[tauri] Sidecar bundle dir: {:?}", bundle_dir);
@@ -121,9 +141,9 @@ fn start_sidecar(app: &tauri::AppHandle) -> Option<Child> {
         return None;
     }
 
-    // Resolve the writable data directory (AppData\Roaming\FrameGrade on Windows)
+    // Resolve the writable data directory (AppData\Roaming\Cullwise on Windows)
     let data_dir = app.path().data_dir()
-        .map(|d| d.join("FrameGrade"))
+        .map(|d| d.join("Cullwise"))
         .unwrap_or_else(|_| bundle_dir.clone());
 
     eprintln!("[tauri] CURATOR_DATA_DIR: {:?}", data_dir);
@@ -174,6 +194,21 @@ async fn generate_sequence(prompt: Option<String>) -> Result<String, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // ── WebView2 isolation (Windows) ─────────────────────────────────────────
+    // Give the app its own WebView2 user-data folder instead of sharing Edge's
+    // profile state. Without this, shared Edge state leaks in: first-run
+    // experiences, "restore pages?" recovery tabs after a crash, and the
+    // occasional Microsoft tab opening at launch. MUST be set before the
+    // first webview is created — WebView2 reads it at environment init.
+    #[cfg(target_os = "windows")]
+    {
+        let base = env::var("LOCALAPPDATA")
+            .unwrap_or_else(|_| std::env::temp_dir().to_string_lossy().into_owned());
+        let wv_data = PathBuf::from(base).join("Cullwise").join("WebView2");
+        let _ = std::fs::create_dir_all(&wv_data);
+        env::set_var("WEBVIEW2_USER_DATA_FOLDER", &wv_data);
+    }
+
     let server_handle: Arc<Mutex<Option<Child>>> = Arc::new(Mutex::new(None));
     let handle_for_setup = server_handle.clone();
     let handle_for_exit  = server_handle.clone();
@@ -195,7 +230,14 @@ pub fn run() {
                 "main",
                 webview_url,
             )
-            .title("FrameGrade")
+            .title("Cullwise")
+            // Calm WebView2: no first-run experience, no default-browser-check
+            // prompts, no Microsoft UI surfaces inside the app window. NOTE:
+            // setting these args REPLACES Tauri's defaults, so Tauri's own
+            // disable-features list is included verbatim.
+            .additional_browser_args(
+                "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --no-first-run --no-default-browser-check",
+            )
             .inner_size(1400.0, 900.0)
             .min_inner_size(960.0, 640.0)
             .resizable(true)

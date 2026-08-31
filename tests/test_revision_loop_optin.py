@@ -34,16 +34,16 @@ import run_profile  # noqa: E402
 
 
 def test_setting_is_declared():
-    assert "FRAMEGRADE_STORY_REVISION" in run_profile.SETTINGS
+    assert "CULLWISE_STORY_REVISION" in run_profile.SETTINGS
 
 
 def test_off_by_default(monkeypatch):
-    monkeypatch.delenv("FRAMEGRADE_STORY_REVISION", raising=False)
+    monkeypatch.delenv("CULLWISE_STORY_REVISION", raising=False)
     assert cd._revision_enabled() is False
 
 
 def test_opt_in_turns_it_on(monkeypatch):
-    monkeypatch.setenv("FRAMEGRADE_STORY_REVISION", "1")
+    monkeypatch.setenv("CULLWISE_STORY_REVISION", "1")
     assert cd._revision_enabled() is True
 
 

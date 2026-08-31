@@ -46,13 +46,29 @@ export function ExportModal({ photos, filterGrade, onClose }: { photos: any[]; f
   const handleExportXmp = async () => {
     setXmpState('busy');
     try {
+      // The render-path catalog payload is slimmed (no breakdown/critique) —
+      // XMP metadata needs those fields, so pull the full records once here
+      // and fall back to whatever the rows carry for freshly graded photos.
+      let byPath: Map<string, any> | null = null;
+      try {
+        const fullRes = await fetch(`${API}/api/catalog?full=1`);
+        if (fullRes.ok) {
+          const full = await fullRes.json();
+          byPath = new Map<string, any>((full.photos ?? []).map((p: any) => [p.path, p]));
+        }
+      } catch { /* slim rows still carry fresh-grade fields */ }
       const res = await fetch(`${API}/api/export/metadata`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ photos: photos.map(p => ({
-          path: p.path, grade: p.grade, score: p.score,
-          critique: p.critique, breakdown: p.breakdown, nima_score: p.nima_score,
-        })) }),
+        body: JSON.stringify({ photos: photos.map(p => {
+          const f = byPath?.get(p.path) ?? {};
+          return {
+            path: p.path, grade: p.grade, score: p.score,
+            critique: f.critique ?? p.critique,
+            breakdown: f.breakdown ?? p.breakdown,
+            nima_score: f.nima_score ?? p.nima_score,
+          };
+        }) }),
       });
       const data = await res.json();
       setXmpCount(data.exported ?? 0);

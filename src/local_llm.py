@@ -62,7 +62,7 @@ def _setting(name: str, default):
 
 
 def model_path() -> Path:
-    override = str(_setting("FRAMEGRADE_LOCAL_LLM_GGUF", "") or "")
+    override = str(_setting("CULLWISE_LOCAL_LLM_GGUF", "") or "")
     if override:
         return Path(override)
     import model_registry
@@ -122,7 +122,7 @@ def required_ram_gb() -> float:
     errs high, which is the safe direction: refusing costs a fallback that is
     now reported, while admitting costs the user their machine.
     """
-    override = float(_setting("FRAMEGRADE_LOCAL_LLM_MIN_RAM_GB", 0.0) or 0.0)
+    override = float(_setting("CULLWISE_LOCAL_LLM_MIN_RAM_GB", 0.0) or 0.0)
     if override:
         return override
     try:

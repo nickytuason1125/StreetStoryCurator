@@ -106,7 +106,7 @@ export function WelcomeStage({ catalogBanner, onOpenFolder, onResume, onStartFre
                         small, confident, the only warm glyph on the stage. */}
                     <div className="flex flex-col gap-2">
                       <h1 className="t-display text-ink">
-                        FrameGrade<span style={{ color: T.mark }}>.</span>
+                        Cullwise<span style={{ color: T.mark }}>.</span>
                       </h1>
                       <p className="text-md text-ink-2" style={{ maxWidth: '46ch' }}>
                         Open a folder of photos and get straight to your

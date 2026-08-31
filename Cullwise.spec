@@ -1,12 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 #
-# FrameGrade.spec
+# Cullwise.spec
 #
 # Usage (run from the project root with venv active):
-#   Windows:  pyinstaller FrameGrade.spec
-#   Mac:      pyinstaller FrameGrade.spec
+#   Windows:  pyinstaller Cullwise.spec
+#   Mac:      pyinstaller Cullwise.spec
 #
-# Output lands in dist/FrameGrade/
+# Output lands in dist/Cullwise/
 # The folder is self-contained — zip it and distribute.
 
 import sys
@@ -169,7 +169,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="FrameGrade",
+    name="Cullwise",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -188,16 +188,16 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="FrameGrade",
+    name="Cullwise",
 )
 
 # On Mac, wrap in an .app bundle
 if sys.platform == "darwin":
     app = BUNDLE(
         coll,
-        name="FrameGrade.app",
+        name="Cullwise.app",
         icon=str(ROOT / "icon.ico"),
-        bundle_identifier="com.framegrade.app",
+        bundle_identifier="com.cullwise.app",
         info_plist={
             "NSHighResolutionCapable": True,
             "NSCameraUsageDescription": "Camera access for photo import",

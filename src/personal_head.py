@@ -65,6 +65,26 @@ _LR         = 3e-4
 _STEPS      = 5        # gradient steps per update call
 
 
+def _margin_for_rank_gap(gap: int) -> float:
+    """Margin grows with how far apart the two grades sit.
+
+    A 5★ vs 1★ disagreement is a stronger statement about taste than 3★ vs 2★,
+    so it trains with a proportionally wider margin (0.10 per band gap + the
+    base band, capped at 0.20): Strong↔Mid and Mid↔Weak keep the historical
+    0.10, Strong↔Weak gets 0.15. Previously every pair pulled with the same
+    0.10 force, so adjacent-grade noise and chasm-grade signal taught the head
+    at identical volume."""
+    gap = max(0, int(gap))
+    return min(_MARGIN * (1.0 + 0.5 * max(0, gap - 1)), 2.0 * _MARGIN)
+
+
+def _hinge(sa, sb, margin: float):
+    """MarginRankingLoss for y=+1 (sa must outrank sb) with a per-pair margin.
+    Equivalent to nn.MarginRankingLoss(margin)(sa, sb, +1) — inlined because
+    the margin now varies per pair and the module fixes one at construction."""
+    return torch.clamp(margin - (sa - sb), min=0.0).mean()
+
+
 def _get_head(embed_dim: int = _DEFAULT_EMBED_DIM) -> tuple[PersonalHead, torch.optim.Adam]:
     global _head, _opt
     if _head is None:
@@ -134,10 +154,10 @@ def update(
     y   = float(np.sign(r1 - r2))
     if y == 0.0:
         return 0.0
+    margin = _margin_for_rank_gap(abs(r1 - r2))
 
     t1  = torch.tensor(emb1, dtype=torch.float32).unsqueeze(0)
     t2  = torch.tensor(emb2, dtype=torch.float32).unsqueeze(0)
-    criterion = nn.MarginRankingLoss(margin=_MARGIN)
     # forward() squeezes to shape (1,), so the target must be (1,) too —
     # a (1,1) target raises "All input tensors should have same dimension"
     # and (because the frontend swallows the 500) silently no-ops training.
@@ -147,7 +167,8 @@ def update(
     for _ in range(_STEPS):
         opt.zero_grad()
         s1, s2 = head(t1), head(t2)
-        loss   = criterion(s1, s2, _y)
+        # y=±1 folds into the hinge directly: max(0, margin − y·(s1−s2))
+        loss = torch.clamp(margin - _y * (s1 - s2), min=0.0).mean()
         loss.backward()
         opt.step()
         last_loss = float(loss.item())
@@ -167,11 +188,26 @@ def update_batch(pairs: list[dict]) -> float:
     return total / max(len(pairs), 1)
 
 
+_MASTER_SOURCE = "tpe_master"
+_MASTER_PAIR_FLOOR = 0.30  # >=30% of every combo's pairs always involve a master-tagged sample
+
+
 def fit(samples: list[tuple], epochs: int = 3, pairs_per_combo: int = 120) -> dict:
     """
     Full retrain from scratch on the entire labelled baseline.
 
-    samples: [(embedding(np.ndarray), grade_str), ...] for every rated photo.
+    samples: [(embedding(np.ndarray), grade_str), ...] or
+             [(embedding(np.ndarray), grade_str, source_str), ...] for every
+             rated photo. A sample tagged source=="tpe_master" is the
+             permanently-authoritative baseline (currently: the TPE ratings) —
+             pure random pair-sampling would let it dilute away as the rest of
+             the rating history grows into the thousands, so at least
+             _MASTER_PAIR_FLOOR of each combo's pairs are forced to involve a
+             master-tagged sample on at least one side, regardless of how
+             large the general pool gets. Everything else still trains
+             normally and still moves the score — this only puts a floor under
+             the master set's influence, it doesn't cap anyone else's.
+
     Resets the head and trains on balanced ranking pairs across grade tiers, so
     the fit reflects the WHOLE baseline rather than the drift of incremental
     per-rating updates. Use this when the baseline grows (e.g. every N new
@@ -182,10 +218,17 @@ def fit(samples: list[tuple], epochs: int = 3, pairs_per_combo: int = 120) -> di
     global _head, _opt
     import random
 
-    by: dict[str, list] = {"Strong ✅": [], "Mid ⚠️": [], "Weak ❌": []}
-    for emb, gr in samples:
-        if gr in by:
-            by[gr].append(np.asarray(emb, dtype=np.float32))
+    by:      dict[str, list] = {"Strong ✅": [], "Mid ⚠️": [], "Weak ❌": []}
+    by_master: dict[str, list] = {"Strong ✅": [], "Mid ⚠️": [], "Weak ❌": []}
+    for s in samples:
+        emb, gr = s[0], s[1]
+        src = s[2] if len(s) > 2 else ""
+        if gr not in by:
+            continue
+        e = np.asarray(emb, dtype=np.float32)
+        by[gr].append(e)
+        if src == _MASTER_SOURCE:
+            by_master[gr].append(e)
     n = sum(len(v) for v in by.values())
     if n == 0:
         return {"n": 0, "pairs": 0, "loss": 0.0, "tiers": {}}
@@ -193,33 +236,44 @@ def fit(samples: list[tuple], epochs: int = 3, pairs_per_combo: int = 120) -> di
     dim = int(np.asarray(samples[0][0]).flatten().shape[0])
     _head = PersonalHead(embed_dim=dim)
     _opt  = torch.optim.Adam(_head.parameters(), lr=_LR)
-    crit  = nn.MarginRankingLoss(margin=_MARGIN)
 
     pairs = []
     for hi, lo in (("Strong ✅", "Weak ❌"), ("Strong ✅", "Mid ⚠️"), ("Mid ⚠️", "Weak ❌")):
         if by[hi] and by[lo]:
-            for _ in range(pairs_per_combo):
-                pairs.append((random.choice(by[hi]), random.choice(by[lo])))
+            has_master = by_master[hi] or by_master[lo]
+            n_floor = int(pairs_per_combo * _MASTER_PAIR_FLOOR) if has_master else 0
+            # Margin scales with how far apart the two tiers are: Strong↔Weak
+            # is a stronger taste statement than Mid↔Weak (see
+            # _margin_for_rank_gap) and now trains with proportionally more force.
+            margin = _margin_for_rank_gap(_GRADE_RANK[hi] - _GRADE_RANK[lo])
+            for i in range(pairs_per_combo):
+                if i < n_floor:
+                    a = random.choice(by_master[hi]) if by_master[hi] else random.choice(by[hi])
+                    b = random.choice(by_master[lo]) if by_master[lo] else random.choice(by[lo])
+                else:
+                    a = random.choice(by[hi])
+                    b = random.choice(by[lo])
+                pairs.append((a, b, margin))
     if not pairs:
         return {"n": n, "pairs": 0, "loss": 0.0,
                 "tiers": {k: len(v) for k, v in by.items()}}
 
     _head.train()
-    y = torch.tensor([1.0])
     last = 0.0
     for _ in range(max(1, epochs)):
         random.shuffle(pairs)
-        for a, b in pairs:
+        for a, b, margin in pairs:
             _opt.zero_grad()
             sa = _head(torch.tensor(a).unsqueeze(0))
             sb = _head(torch.tensor(b).unsqueeze(0))
-            loss = crit(sa, sb, y)
+            loss = _hinge(sa, sb, margin)
             loss.backward()
             _opt.step()
             last = float(loss.item())
     _save()
     return {"n": n, "pairs": len(pairs), "loss": round(last, 5),
-            "tiers": {k: len(v) for k, v in by.items()}}
+            "tiers": {k: len(v) for k, v in by.items()},
+            "master_tiers": {k: len(v) for k, v in by_master.items()}}
 
 
 def _save() -> None:

@@ -345,6 +345,7 @@ def _raw_discriminant(
 _SCORE_FLOOR = 0.10
 _SCORE_CEIL  = 0.95
 _ANCHORS_PATH = Path(__file__).resolve().parent.parent / "cache" / "calibration_anchors.json"
+_MASTER_ANCHORS_PATH = Path(__file__).resolve().parent.parent / "cache" / "master_anchors.json"
 
 
 def probe_fingerprint(pos_embs: np.ndarray, neg_embs: np.ndarray) -> str:
@@ -472,10 +473,33 @@ def load_anchors(pos_embs: np.ndarray, neg_embs: np.ndarray, tier: "Optional[str
 
     try:
         import json
+        want = probe_fingerprint(pos_embs, neg_embs)
+        # ── Human-anchored scale: OPT-IN, and fresh when opted in ─────────────
+        # cache/master_anchors.json (scripts/derive_master_anchors.py) anchors
+        # the ruler at the photographer's own 1-2★ / 4-5★ discriminant
+        # quartiles instead of library-volume percentiles, so the absolute
+        # 0.60/0.41 thresholds mean THIS photographer's quality distribution.
+        # Fingerprint-guarded exactly like the corpus anchors — a stale human
+        # scale grades against the wrong encoder space, which is worse than
+        # the generic scale it would displace.
+        # 2026-08-30: the rating baseline is PLACEHOLDER data and must never
+        # steer the absolute scale on its own — the preference therefore
+        # requires an explicit CULLWISE_MASTER_ANCHORS=1 on top of a fresh
+        # fingerprint.
+        if (os.environ.get("CULLWISE_MASTER_ANCHORS", "").strip() == "1"
+                and _MASTER_ANCHORS_PATH.exists()):
+            m = json.loads(_MASTER_ANCHORS_PATH.read_text(encoding="utf-8"))
+            if (m.get("fingerprint") == want
+                    and float(m.get("hi", 0)) > float(m.get("lo", 0))):
+                print("[specvlm] calibration anchors: MASTER-derived "
+                      "(photographer star baseline — scripts/"
+                      "derive_master_anchors.py)")
+                return float(m["lo"]), float(m["hi"])
+            print("[specvlm] master anchors present but STALE (fingerprint/"
+                  "span) — using the library-percentile scale")
         if not _ANCHORS_PATH.exists():
             return _fallback("no calibration anchors yet")
         d = json.loads(_ANCHORS_PATH.read_text(encoding="utf-8"))
-        want = probe_fingerprint(pos_embs, neg_embs)
         if d.get("fingerprint") != want:
             return _fallback(f"calibration anchors are STALE "
                              f"({d.get('fingerprint')} != {want})")

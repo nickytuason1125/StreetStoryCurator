@@ -122,9 +122,12 @@ def personal_shift_lines(ppairs, rho):
 
 
 def main():
-    ratings = json.loads(
-        (ROOT / "cache" / "user_ratings.json").read_text(encoding="utf-8"))
-    ratings = ratings.get("ratings", ratings)
+    import ratings_store as _rs
+    ratings = _rs.load()   # {path: stars(int)} — handles both the legacy bare-int
+                            # format and the current {"stars":..., "source":...} dict
+                            # format; a raw json.loads() here breaks the moment any
+                            # entry has been through set_rating() since dicts became
+                            # the write format.
     if not ratings:
         print("No user ratings found — rate some photos first.")
         return
@@ -149,8 +152,6 @@ def main():
                                            "grade": p.get("grade", "")}
                 print(f"[report] joined against catalog: {len(rows)} scored photos")
                 break
-
-    import ratings_store as _rs
 
     pairs = []      # (score, stars)
     ppairs = []     # (personal_score, stars)
@@ -186,7 +187,7 @@ def main():
 
     W = 62
     print("=" * W)
-    print("FRAMEGRADE GRADE-ACCURACY AUDIT")
+    print("CULLWISE GRADE-ACCURACY AUDIT")
     print("=" * W)
     print(f"rated photos:          {len(ratings)}")
     print(f"  with machine score:  {len(pairs)}")

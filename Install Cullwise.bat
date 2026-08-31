@@ -1,17 +1,17 @@
 @echo off
 setlocal EnableDelayedExpansion
-title FrameGrade - One-Click Install
+title Cullwise - One-Click Install
 cd /d "%~dp0"
 
 echo.
 echo  ================================================================
-echo    FrameGrade  -  One-Click Installer
+echo    Cullwise  -  One-Click Installer
 echo  ================================================================
 echo.
 
 :: ── Already installed? Just launch. ───────────────────────────────
 if exist "venv\.setup_ok" (
-    echo  FrameGrade is already installed.
+    echo  Cullwise is already installed.
     echo  Launching...
     start "" wscript.exe //b "%~dp0launch_hidden.vbs"
     timeout /t 2 >nul
@@ -79,7 +79,7 @@ if %ERRORLEVEL% neq 0 (
 echo        OK
 
 :: ── STEP 3+4: full install + shortcut (delegates to Start.bat) ────
-echo  [3/4] Installing FrameGrade components...
+echo  [3/4] Installing Cullwise components...
 echo        (PyTorch, AI libraries, UI build - 10-20 minutes)
 call "%~dp0Start.bat"
 if not exist "venv\.setup_ok" (
@@ -91,7 +91,7 @@ if not exist "venv\.setup_ok" (
 echo  [4/4] Done!
 echo.
 echo  ================================================================
-echo   FrameGrade is installed and launching now.
+echo   Cullwise is installed and launching now.
 echo   A shortcut has been placed on your Desktop -
 echo   from now on, double-click THAT to start the app instantly.
 echo  ================================================================

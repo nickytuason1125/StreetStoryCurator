@@ -180,7 +180,7 @@ def purge_prefix(prefix: str, path: Optional[Path] = None) -> int:
     photographer's picture at all, so leaving a tombstone for it is just a
     second kind of pollution.
 
-    Written for the harness in .claude/skills/run-framegrade/driver.py, which
+    Written for the harness in .claude/skills/run-cullwise/driver.py, which
     grades five synthetic frames and previously purged only its LanceDB rows —
     so running the ship-readiness smoke test permanently salted the real
     catalog, and once the temp folder was gone, salted it with entries pointing

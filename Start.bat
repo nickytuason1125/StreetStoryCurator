@@ -1,11 +1,11 @@
 @echo off
 setlocal EnableDelayedExpansion
-title FrameGrade
+title Cullwise
 cd /d "%~dp0"
 
 echo.
 echo  ================================================================
-echo   FrameGrade
+echo   Cullwise
 echo  ================================================================
 echo.
 
@@ -74,7 +74,7 @@ if exist "venv\Scripts\pythonw.exe" (
 :install_full
 ::  FIRST-RUN INSTALL
 :: ──────────────────────────────────────────────────────────────────
-echo  First launch — installing FrameGrade.
+echo  First launch — installing Cullwise.
 echo  This takes 10-20 minutes depending on your connection.
 echo  Do not close this window.
 echo.
@@ -153,12 +153,12 @@ set APP_DIR=%~dp0
 set APP_DIR=!APP_DIR:~0,-1!
 powershell -NoProfile -NonInteractive -Command ^
     "$ws = New-Object -ComObject WScript.Shell; " ^
-    "$lnk = $ws.CreateShortcut([Environment]::GetFolderPath('Desktop') + '\FrameGrade.lnk'); " ^
+    "$lnk = $ws.CreateShortcut([Environment]::GetFolderPath('Desktop') + '\Cullwise.lnk'); " ^
     "$lnk.TargetPath = 'wscript.exe'; " ^
     "$lnk.Arguments = '/b \"!APP_DIR!\launch_hidden.vbs\"'; " ^
     "$lnk.WorkingDirectory = '!APP_DIR!'; " ^
     "$lnk.IconLocation = '!APP_DIR!\icon.ico'; " ^
-    "$lnk.Description = 'FrameGrade — AI Photo Culler'; " ^
+    "$lnk.Description = 'Cullwise — AI Photo Culler'; " ^
     "$lnk.Save(); Write-Host 'Shortcut created.'" 2>nul
 
 echo setup_ok > venv\.setup_ok
