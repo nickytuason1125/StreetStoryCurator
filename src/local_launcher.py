@@ -498,6 +498,41 @@ def _reexec_in_venv_if_needed() -> None:
 
 def main():
     _reexec_in_venv_if_needed()
+
+    # ── Single-instance guard (shortcut layer) ──────────────────────────────
+    # The Tauri release shell has its own guard, but the Desktop shortcut runs
+    # THIS file directly — without this, a second double-click spawns a second
+    # pywebview window (the "blank tab multiplier"). Semantics: one WINDOW, not
+    # one process — if the decoupled backend is running with no window (window
+    # was closed, cull in flight), a second launch still opens a window to
+    # reattach; if a window already exists, it gets focused and we exit.
+    _lock = None
+    # NOTE: the detached backend runs this same file with --server-only — the
+    # guard is for the WINDOW process only, or the backend would try to open
+    # its own window.
+    _is_backend = "--server-only" in sys.argv
+    if sys.platform == "win32" and not _is_backend:
+        import ctypes
+        _lock = ctypes.windll.kernel32.CreateMutexW(None, False, "FirstCutLauncherMutex")
+        if ctypes.windll.kernel32.GetLastError() == 183:   # ERROR_ALREADY_EXISTS
+            hwnd = ctypes.windll.user32.FindWindowW(None, "FirstCut")
+            if hwnd:
+                ctypes.windll.user32.ShowWindow(hwnd, 9)          # SW_RESTORE
+                ctypes.windll.user32.SetForegroundWindow(hwnd)
+                _log("Second launch: existing FirstCut window focused; exiting")
+                return
+            _log("Second launch: backend running with no window — opening a window to reattach")
+    elif sys.platform == "darwin" and not _is_backend:
+        # POSIX: window count via pgrep of the launcher (best effort; no
+        # cross-process focus — a second launch just exits if one is running).
+        import fcntl, subprocess as _sp
+        _lock_fp = open("/tmp/firstcut_launcher.lock", "w")  # noqa: SIM115
+        try:
+            fcntl.flock(_lock_fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            _log("Second launch detected (lock held); exiting")
+            return
+
     port = 8000
     url = f"http://127.0.0.1:{port}"
 
@@ -558,11 +593,31 @@ def main():
         def _post_start():
             """Called by webview.start() in its own thread after the webview loop starts."""
             _log("[diag] _post_start called")
-            loaded = win.events.loaded.wait(5)
-            _log(f"[diag] loaded.wait returned {loaded}")
+            # WebView2's first-ever start can easily exceed 5 s (profile init,
+            # AV scanning) — the old 5 s wait declared the page dead while the
+            # load events were still on their way, leaving a blank "FirstCut"
+            # window. Wait patiently, re-navigate once, then give up gracefully.
+            loaded = False
+            for attempt in range(6):          # up to ~30 s
+                if win.events.loaded.wait(5):
+                    loaded = True
+                    break
+                _log(f"[diag] loaded.wait attempt {attempt + 1} timed out")
             if not loaded:
-                _log("[diag] page never loaded!")
+                _log("[diag] page still not loaded — re-navigating once")
+                try:
+                    win.load_url(url)
+                    loaded = bool(win.events.loaded.wait(15))
+                except Exception as exc:
+                    _log(f"[diag] re-navigate failed: {exc}")
+            if not loaded:
+                _log("[diag] page never loaded — closing the blank window")
+                try:
+                    win.destroy()
+                except Exception:
+                    pass
                 return
+            _log("[diag] loaded.wait returned True")
             _stamp_icon(_icon)
 
             def _diag():
