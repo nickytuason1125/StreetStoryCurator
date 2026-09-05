@@ -588,6 +588,8 @@ def main():
             resizable=True,
             text_select=False,
             js_api=FolderApi(),
+            background_color="#0d0d0d",   # app bg — a slow WebView2 start shows
+                                           # the app's tone, not a white "blank"
         )
 
         def _post_start():

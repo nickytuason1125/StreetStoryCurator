@@ -256,6 +256,7 @@ def main():
                 min_size=(960, 640),
                 resizable=True, text_select=False,
                 js_api=FolderApi(),
+                background_color="#0d0d0d",
             )
             webview.start()
             _log("pywebview window closed — exiting")

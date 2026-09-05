@@ -266,20 +266,23 @@ async def grade_photos_v2_stream(req: GradeRequest):
             try:
                 import psutil as _ps_gate
                 _free_gb = _ps_gate.virtual_memory().available / 1e9
-                if _free_gb < 0.75:
+                # Measured thrash line: at 2.0 GB free the encode subprocess
+                # (~4 GB peak, HF fp16 loader) pagefiles the machine into
+                # "app unusable" — the user's own report, 2026-09. Below 2.2 GB
+                # a cull is refused with alternatives; 2.2–3.0 GB runs but
+                # warns. The old 0.75 GB floor was the point of machine death,
+                # not the point where the experience dies.
+                if _free_gb < 2.2:
                     import json as _sj
-                    # Tiered refusal: the hard floor stays hard (measured 0.01 GB
-                    # free + 1.2 GB pagefile growth), but the refusal carries
-                    # structured alternatives so the UI can act, not just fail.
-                    yield f"data: {_json.dumps({'error': f'Refused: only {_free_gb:.1f} GB RAM free and a cull needs ~2.5 GB — running it would freeze this machine (measured). Close a few apps and retry.', 'alternatives': {'close_apps': True, 'smaller_selection': True}})}\n\n"
+                    yield f"data: {_json.dumps({'error': f'Refused: only {_free_gb:.1f} GB RAM free and a cull needs ~2.5 GB — at this level the machine page-thrashes and the app freezes (measured). Close a few apps — a browser tab or two is usually enough — and retry.', 'alternatives': {'close_apps': True, 'smaller_selection': True}})}\n\n"
                     print(f"[server] Grade REFUSED pre-spawn: {_free_gb:.2f} GB free", flush=True)
                     return
-                if _free_gb < 2.0:
+                if _free_gb < 3.0:
                     import json as _sj
                     # Tight-but-viable band: warn once, do not block. The cull
                     # runs slower here; the checkpoint + Resume recover it if
                     # the machine still runs out mid-way.
-                    yield f"data: {_json.dumps({'notice': f'Tight RAM: {_free_gb:.1f} GB free — the cull will run slower. Closing a few apps or grading a smaller selection keeps it fast.'})}\n\n"
+                    yield f"data: {_json.dumps({'notice': f'Tight RAM: {_free_gb:.1f} GB free — the cull will run slower. Closing a few apps keeps it fast.'})}\n\n"
                     print(f"[server] Grade advisory: tight RAM {_free_gb:.2f} GB free — proceeding", flush=True)
             except Exception:
                 pass
