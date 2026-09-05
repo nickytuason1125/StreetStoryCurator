@@ -26,13 +26,14 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 const VARIANTS: Record<Variant, string> = {
-  // Bordered, transparent — the default for toolbar actions.
-  default: 'bg-transparent border border-line-strong text-ink-2 hover:bg-raised hover:text-ink active:bg-raised-hover',
+  // Ghost — transparent at rest, borderless; the container appears
+  // only as a hover/press luminance step. A toolbar of boxes reads as 2015.
+  default: 'bg-transparent border border-transparent text-ink-2 hover:bg-raised hover:text-ink active:bg-raised-hover',
   // No border. For dense clusters where borders would create visual noise.
   quiet: 'bg-transparent border border-transparent text-ink-3 hover:bg-raised hover:text-ink active:bg-raised-hover',
   // Filled. Emphasis via luminance, not hue. The inset top-light hairline gives
   // the fill physical presence — the same edge --shadow-3 paints on dialogs.
-  solid: 'bg-raised border border-line-strong text-ink hover:bg-raised-hover active:bg-raised [box-shadow:inset_0_1px_0_rgb(255_255_255/_.06)]',
+  solid: 'bg-raised border border-transparent text-ink hover:bg-raised-hover active:bg-raised [box-shadow:inset_0_1px_0_rgb(255_255_255/_.06)]',
   // Inverted ink — the strongest step the chrome may take. Full-luminance fill,
   // well-coloured label: a white button on the dark ground. Reserved for the
   // one primary action on a screen (the welcome hero's CTA); still strictly
@@ -40,7 +41,7 @@ const VARIANTS: Record<Variant, string> = {
   // than swapping tokens, so the inversion survives the cursor.
   ink: 'bg-ink border border-ink text-well hover:opacity-90 active:opacity-85',
   // The one place chrome may take a hue: a destructive action.
-  danger: 'bg-transparent border border-line-strong text-ink-2 hover:border-alarm-crit hover:text-alarm-crit active:bg-raised',
+  danger: 'bg-transparent border border-transparent text-ink-2 hover:text-alarm-crit active:bg-raised',
 };
 
 const SIZES: Record<Size, string> = {
@@ -56,7 +57,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
     <button
       ref={ref}
       className={cn(
-        'inline-flex items-center justify-center rounded-sm font-sans font-medium',
+        'inline-flex items-center justify-center rounded-md font-sans font-medium',
         'cursor-pointer select-none whitespace-nowrap',
         'transition duration-fast ease active:scale-[.98]',
         'disabled:opacity-reject disabled:cursor-not-allowed disabled:hover:bg-transparent',

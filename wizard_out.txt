@@ -1,0 +1,338 @@
+
+  [1m[96m+======================================================+[0m
+  [1m[96m|       F I R S T C U T                                |[0m
+  [1m[96m|       AI Photo Culling  v1.0                          |[0m
+  [1m[96m+======================================================+[0m
+  [2m  100% Offline  ·  SigLIP-2  ·  TOPIQ IQA  ·  LanceDB[0m
+
+  [2m  Running system checks…[0m[2K  [1mSystem Checklist[0m
+  [2m──────────────────────────────────────────────────────[0m
+  [92m  ✓[0m  Machine: AMD64 Windows  [2mNo CUDA-capable NVIDIA GPU detected — the compact CPU engine will be used (full quality, slower culling).[0m
+  [92m  ✓[0m  GPU  [2msimulated CPU-only (FIRSTCUT_FORCE_CPU=1) (0.0 GB VRAM)[0m
+  [93m  ⚠[0m  Engine flavor  [2mCPU -- full quality, slower (~11 s/photo)[0m
+  [92m  ✓[0m  Disk space  [2m122.0 GB free[0m
+  [91m  ✗[0m  Available RAM  [2monly 0.3 GB — grading will be refused[0m
+  [92m  ✓[0m  Python dependencies
+  [92m  All models present — nothing to download.[0m
+
+
+  [92m  ✓ Frontend up to date[0m
+
+  [1mLaunching server…[0m  [2mC:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator\venv\Scripts\python.exe server.py[0m
+
+  [2m  Waiting for server..[2K  [2m  INFO:     Application startup complete.[0m
+  [2m  Waiting for server [92mready![0m
+
+  [1m[92m+======================================================+
+  |   FirstCut is running!                             |
+  |                                                      |
+  |   Open:  http://127.0.0.1:8000                      |
+  |                                                      |
+  |   Press Ctrl+C in this window to stop the server.   |
+  +======================================================+[0m
+
+  [2m  INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)[0m
+  [2m  ============================================================[0m
+  [2m  EXECUTING FROM PHYSICAL PATH: C:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator\src\grade_pipeline_v2.py[0m
+  [2m  sys.path[0]:                  C:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator\src[0m
+  [2m  ============================================================[0m
+  [2m  [autotune] RAM 16.8/0.3 GB free, VRAM 6.4 GB â†’ QWEN_BS_CEIL=4 QWEN_VRAM_RESERVE=0.8 SIGLIP_MIN_FREE_RAM_GB=2.0 THUMB_POOLS=2/1[0m
+  [2m  [server] cudnn.benchmark enabled[0m
+  [2m  [server] Startup: catalog.json present â€” Resume available[0m
+  [2m  [lance_store] DB path: C:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator\cache\lance.db[0m
+  [2m  [server] LanceDB table pre-opened OK[0m
+  [2m  [qm] Async annotation daemon started[0m
+  [2m  [server] Grade worker started (pid=12648)[0m
+  [2m  INFO:     127.0.0.1:59145 - "GET / HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:59144 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:51015 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:61623 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:64451 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:58569 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:57501 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:51015 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:59144 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:64451 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET / HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54709 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:58569 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:57501 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60189 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:51015 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:59144 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:64451 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:58569 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60189 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:51015 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:59144 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET / HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56146 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:57464 - "GET /api/rag/concepts HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:51521 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:59664 - "GET /api/creative-direction/used-count HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:59615 - "GET /api/flags/load HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/catalog?t=1788240349641 HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:64451 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:58569 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60189 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:51015 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56902 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:57464 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:59664 - "GET /api/models/status HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:59144 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60998 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:59615 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50405 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49259 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:51521 - "GET /favicon.png HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60414 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:63152 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:59664 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50405 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:59144 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60998 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:63152 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:51521 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49259 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60414 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:59615 - "GET /favicon.png HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60414 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:59615 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60414 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:59144 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60414 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:63152 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:58166 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60414 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:62751 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60414 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56333 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60414 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:53790 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60414 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:65420 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60414 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:53994 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:65485 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60414 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50415 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60414 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60166 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60414 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:57767 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60414 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:61886 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60414 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:59643 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:62848 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60414 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:57393 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60414 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60311 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60414 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:63470 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60414 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49806 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60414 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:61913 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:65362 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60414 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60766 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60414 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:62416 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60414 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60894 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60414 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:53783 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60414 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55004 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:63881 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60414 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:58960 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60414 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:58529 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60414 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:59749 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60414 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:59876 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60414 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54141 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60713 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60414 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:60414 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55258 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50348 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55258 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:53483 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55258 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:49239 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:54160 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:52526 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:50060 - "GET /api/health/engine HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55360 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:56641 - "GET /api/system/ram HTTP/1.1" 200 OK[0m
+  [2m  INFO:     127.0.0.1:55258 - "GET /api/system/ram HTTP/1.1" 200 OK[0m

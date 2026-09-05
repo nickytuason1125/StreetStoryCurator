@@ -153,8 +153,16 @@ def detect_faces(bgr: np.ndarray, conf: float = _CONF) -> list:
             x, y, fw, fh = (float(v) / scale for v in f[:4])
             pts = [(float(f[4 + 2 * i]) / scale, float(f[5 + 2 * i]) / scale)
                    for i in range(5)]
+            # Normalized box as fractions of the FULL frame — the coordinate
+            # system the Close-Ups UI and crops need, independent of the
+            # decode resolution this detection ran at.
+            nx = max(0.0, min(1.0, x / w))
+            ny = max(0.0, min(1.0, y / h))
+            nw = max(0.0, min(1.0 - nx, fw / w))
+            nh = max(0.0, min(1.0 - ny, fh / h))
             out.append({
                 "box": [max(0.0, x), max(0.0, y), fw, fh],
+                "norm": [round(nx, 5), round(ny, 5), round(nw, 5), round(nh, 5)],
                 "confidence": float(f[-1]),
                 # order is fixed by YuNet's output layout
                 "landmarks": {"right_eye": pts[0], "left_eye": pts[1],
@@ -263,3 +271,59 @@ def metrics_for_path(path: str, conf: float = _CONF) -> dict:
         return face_metrics(img, conf)
     except Exception:
         return face_metrics(None)
+
+
+def faces_for_ui(path: str, crop_px: int = 72) -> dict:
+    """Close-Ups payload for one photo: summary verdicts + per-face crops.
+
+    One decode and ONE detection pass produce everything the panel needs —
+    metrics_for_path would re-decode and re-detect per face, which on a
+    5-face frame means five YuNet runs where one suffices.
+
+    Crops are base64 JPEG data URIs (~2-3 KB each), padded 25% around the
+    box so a face is never cropped at the hairline, clamped to the frame.
+    This is the only place eye state is mentioned: it is NOT measured (see
+    eye_state_available), and the UI says so rather than staying silent.
+    """
+    out = {"available": True, "faces_detected": 0, "faces": [],
+           "subject_in_focus": None, "focus_ratio": None,
+           "eye_state_supported": False}
+    if not available():
+        out["available"] = False
+        return out
+    try:
+        img, _src = _load_small(path)
+        if img is None:
+            out["available"] = False
+            return out
+        rgb = img.convert("RGB")
+        bgr = np.asarray(rgb)[:, :, ::-1].copy()
+        faces = detect_faces(bgr)
+        metrics = face_metrics(bgr)          # verdicts re-use the same decode
+        out.update({k: metrics.get(k) for k in
+                    ("faces_detected", "largest_face_frac",
+                     "subject_in_focus", "focus_ratio", "eye_state_supported")})
+        W, H = rgb.size
+        for f in faces[:12]:
+            x, y, fw, fh = f["box"]
+            pad = 0.25 * max(fw, fh)
+            cx0 = max(0, int(x - pad)); cy0 = max(0, int(y - pad))
+            cx1 = min(W, int(x + fw + pad)); cy1 = min(H, int(y + fh + pad))
+            crop_uri = None
+            if cx1 > cx0 and cy1 > cy0:
+                import base64, io
+                crop = rgb.crop((cx0, cy0, cx1, cy1))
+                crop.thumbnail((crop_px, crop_px))
+                buf = io.BytesIO()
+                crop.save(buf, "JPEG", quality=82)
+                crop_uri = "data:image/jpeg;base64," + base64.b64encode(
+                    buf.getvalue()).decode("ascii")
+            out["faces"].append({
+                "norm": f.get("norm"),
+                "confidence": round(f["confidence"], 3),
+                "area_frac": round(f["area_frac"], 5),
+                "crop": crop_uri,
+            })
+        return out
+    except Exception:
+        return out

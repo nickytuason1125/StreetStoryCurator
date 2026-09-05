@@ -41,7 +41,7 @@ export function Segmented<T extends string>({
     <div
       role="tablist"
       className={cn(
-        'inline-flex shrink-0 overflow-hidden rounded-sm border border-line-strong bg-well',
+        'inline-flex shrink-0 gap-1 rounded-md border border-line bg-well',
         className,
       )}
     >
@@ -55,10 +55,9 @@ export function Segmented<T extends string>({
             title={o.title}
             onClick={() => onChange(o.value)}
             className={cn(
-              'relative inline-flex h-6 items-center justify-center gap-1 border-0 text-sm font-medium',
+              'relative inline-flex h-6 items-center justify-center gap-1 rounded-sm border-0 text-sm font-medium',
               'cursor-pointer whitespace-nowrap transition-colors duration-fast ease',
               iconOnly ? 'w-8' : 'px-3',
-              i > 0 && 'border-l border-line-strong',
               active
                 ? 'bg-raised-hover text-ink'
                 : 'bg-transparent text-ink-3 hover:bg-raised hover:text-ink',

@@ -587,7 +587,9 @@ _STREET_NEG_PROBES: list[str] = [
     "red eye flash reflection ugly snapshot amateur failure",
 ]
 
-_EXIF_LOCK = threading.Lock()
+_EXIF_LOCK = None   # E1: was a threading.Lock guarding EXIF access that moved
+                    # out of this module — the lock had no remaining users.
+                    # (import threading below still serves _ProgressTicker.)
 
 # Module-level grader status — updated each run, read by /api/models/status.
 _grader_status: dict = {

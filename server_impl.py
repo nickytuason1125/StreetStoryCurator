@@ -625,8 +625,12 @@ _APP_PORT = int(os.environ.get("CURATOR_PORT", "8000"))
 # visited read local-photo responses cross-origin — removed.
 _CORS_ORIGINS = [
     f"http://127.0.0.1:{_APP_PORT}", f"http://localhost:{_APP_PORT}",
-    "http://127.0.0.1:5173", "http://localhost:5173",   # Vite dev
 ]
+if not getattr(sys, "frozen", False):
+    # L2: the Vite dev server is trusted only in source builds. A frozen
+    # (PyInstaller) install has no dev server, so allow-listing :5173 there
+    # is attack surface without a purpose.
+    _CORS_ORIGINS += ["http://127.0.0.1:5173", "http://localhost:5173"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_CORS_ORIGINS,
@@ -639,37 +643,82 @@ app.add_middleware(
 # minimum_size keeps tiny responses (health, thumbs) uncompressed.
 app.add_middleware(GZipMiddleware, minimum_size=2048)
 
+# ── I1: unhandled exceptions never reach the client as raw text ──────────────
+# A handler crash used to bubble up as an opaque 500 with no trail (or, where
+# handlers pre-format str(e), as raw exception text that can carry local file
+# paths). Everything is now logged server-side with a crash id; the client
+# gets a generic message plus the id to quote in a bug report.
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception):
+    import uuid as _uuid, traceback as _tb
+    _eid = _uuid.uuid4().hex[:12]
+    print(f"[server] UNHANDLED {_eid} {request.method} {request.url.path}: {exc!r}", flush=True)
+    _tb.print_exc()
+    return JSONResponse(
+        status_code=500,
+        content={"error": "Internal server error — see crash.log", "id": _eid},
+    )
+
+
 # ── Security: isolate the local API from other origins ───────────────────────
 # This server binds 127.0.0.1, but every website the user visits can still reach
 # it. Without this guard a malicious page could read local photos (/api/photo?
 # path=…), enumerate folders (/api/browse-folder) and CSRF the state-changing
 # endpoints. Defense = Fetch-Metadata Resource Isolation + Host pinning:
-#   1. Host header must be localhost — blocks DNS-rebinding (a hostile domain
-#      re-resolving to 127.0.0.1 to look same-origin).
+#   1. Host header MUST be localhost, and MUST be present — an empty Host used
+#      to skip the check entirely (fail-open). Blocks DNS-rebinding (a hostile
+#      domain re-resolving to 127.0.0.1 to look same-origin).
 #   2. Reject /api/* when Sec-Fetch-Site is cross-site/cross-origin. WebView2 is
-#      Chromium and always sends Sec-Fetch-Site; it is a forbidden header, so page
-#      JS cannot forge it. Same-origin (the app) and same-site (Vite dev, different
-#      port) are allowed; a request with no such header (non-browser) is allowed
-#      through the Host check only — browsers are the only cross-origin threat.
+#      Chromium and always sends Sec-Fetch-Site; it is a forbidden header, so
+#      page JS cannot forge it. Same-origin (the app) and same-site (Vite dev,
+#      different port) are allowed.
+#   3. State-changing methods (POST/PUT/DELETE/PATCH) must additionally prove
+#      browser-legitimate context: a well-formed Sec-Fetch-Site, OR the custom
+#      X-Requested-With: FirstCut header the frontend sends. This closes the
+#      stripped-header hole: a privacy extension or proxy that removes
+#      Sec-Fetch-* no longer restores CSRF reach, because simple cross-origin
+#      requests (form/img) cannot set custom headers — and setting one via
+#      fetch() forces a CORS preflight this server rejects. Non-browser
+#      clients (scripts, curl) pass by sending X-Requested-With: FirstCut.
+#   4. A top-level navigation sends sec-fetch-mode: navigate. No legitimate app
+#      request navigates to an API route (all data calls are same-origin
+#      fetch/XHR → mode "cors"), but a phishing link like
+#      <a href="http://127.0.0.1:8000/api/photo?path=…"> does. Reject it.
 _ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1"}
+_API_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+_API_TOKEN = "FirstCut"
 
 @app.middleware("http")
 async def _security_isolation(request: Request, call_next):
     if request.url.path.startswith("/api/"):
         host = (request.headers.get("host") or "").rsplit(":", 1)[0].strip("[]")
-        if host and host not in _ALLOWED_HOSTS:
+        if host not in _ALLOWED_HOSTS:
             return JSONResponse(status_code=403, content={"error": "Forbidden host"})
-        if (request.headers.get("sec-fetch-site") or "") in ("cross-site", "cross-origin"):
+        sec_fetch_site = (request.headers.get("sec-fetch-site") or "")
+        if sec_fetch_site in ("cross-site", "cross-origin"):
             return JSONResponse(
                 status_code=403,
                 content={"error": "Cross-origin access to the local API is blocked."},
             )
-        # A top-level navigation sends sec-fetch-site: none, which passes above.
-        # No legitimate app request navigates to an API route (all data calls are
-        # same-origin fetch/XHR → mode "cors"), but a phishing link like
+        # No legitimate app request navigates to an API route (all data calls
+        # are same-origin fetch/XHR → mode "cors"), but a phishing link like
         # <a href="http://127.0.0.1:8000/api/photo?path=…"> does. Reject it.
         if (request.headers.get("sec-fetch-mode") or "") == "navigate":
             return JSONResponse(status_code=404, content={"error": "Not found"})
+        # M1: fail closed on state-changing methods when the browser context
+        # cannot be established — see note 3 above.
+        if request.method not in _API_SAFE_METHODS:
+            if sec_fetch_site in ("same-origin", "same-site", "none"):
+                pass
+            elif request.headers.get("x-requested-with") == _API_TOKEN:
+                pass
+            else:
+                return JSONResponse(
+                    status_code=403,
+                    content={"error": "Missing browser-context headers. "
+                                      "Non-browser clients must send "
+                                      "X-Requested-With: FirstCut."},
+                )
     return await call_next(request)
 
 
@@ -840,6 +889,11 @@ DIST = _find_dist()
 
 @app.get("/{full_path:path}")
 async def serve_spa(full_path: str):
+    # API paths must never fall through to the SPA shell: a wrong-method or
+    # typo'd API GET used to "succeed" with 200 + index.html, masking client
+    # bugs (GET /api/catalog/clear looked like it worked). A real 404 instead.
+    if full_path == "api" or full_path.startswith("api/"):
+        raise HTTPException(404, "Not found")
     # Path-traversal guard: `%2e%2e/…` in the :path param would otherwise let
     # DIST / full_path escape the web root and serve arbitrary files on disk
     # (confirmed: GET /%2e%2e/%2e%2e/README.md returned the repo file). Resolve

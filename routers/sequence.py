@@ -314,7 +314,15 @@ async def mogco_sequence_endpoint(payload: dict):
         beam_width  = int(payload.get("beam_width", 4))
         min_score   = float(payload.get("min_score", 0.45))
 
-        if len(photos) < target:
+        # `photos` is the frontend-supplied pool — required for pareto mode
+        # (it scores payload embeddings) and optional for beam mode, which
+        # queries DuckDB itself. The old blanket guard refused server-side
+        # beam runs that would have succeeded: an empty payload hit
+        # "Need at least 5 photos." while 9k graded frames sat in the pool.
+        if mode == "pareto" and not photos:
+            return JSONResponse({"sequence": [], "error":
+                                 "Pareto mode needs the graded photos in the payload."})
+        if photos and len(photos) < target:
             return JSONResponse({"sequence": [], "error": f"Need at least {target} photos."})
 
         from photo_cache import get_photo_cache

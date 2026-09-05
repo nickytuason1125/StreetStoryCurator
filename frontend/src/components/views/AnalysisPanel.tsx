@@ -1,4 +1,5 @@
 import { Layers, Eye, EyeOff, Wand2, Copy, Download, RefreshCw } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import { Button } from '../ui/Button';
 import { Thumb } from '../photo/Thumb';
 import { StarRating } from '../ui/StarRating';
@@ -25,6 +26,7 @@ export function AnalysisPanel({
   reasoningOverlayUrl, buildReasoningFromBreakdown,
   infoTab, setInfoTab, selectedIds, setSelectedIds,
   handleCopyPath, handleSetStars, setMainTab, copied,
+  onFindPerson,
   handleGenerate, handleCreateFromSelection,
   hasPrev, hasNext, selIdx, filteredPhotos,
 }: {
@@ -40,9 +42,30 @@ export function AnalysisPanel({
   selectedIds: Set<string>; setSelectedIds: React.Dispatch<React.SetStateAction<Set<string>>>;
   handleCopyPath: (path: string) => void; handleSetStars: (id: string, stars: number) => void;
   setMainTab: (v: string) => void; copied: boolean;
+  onFindPerson: (paths: string[]) => void;
   handleGenerate: () => void; handleCreateFromSelection: () => void;
   hasPrev: boolean; hasNext: boolean; selIdx: number; filteredPhotos: any[];
 }) {
+  /* Close-Ups cache — /api/photo-faces computed once per path per session.
+   * Fetched only while the analysis tab is open, so browsing the grid never
+   * pays the ~0.4 s YuNet pass; a photo with no faces caches {faces_detected:0}
+   * and renders nothing. */
+  const [facesByPath, setFacesByPath] = useState<Record<string, any>>({});
+  useEffect(() => {
+    if (!sel?.path || infoTab !== 'analysis') return;
+    if (facesByPath[sel.path] !== undefined) return;
+    let cancelled = false;
+    fetch(`${API}/api/photo-faces?path=${encodeURIComponent(sel.path)}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (cancelled) return;
+        setFacesByPath(prev => ({ ...prev, [sel.path]: d || {} }));
+      })
+      .catch(() => {
+        if (!cancelled) setFacesByPath(prev => ({ ...prev, [sel.path]: {} }));
+      });
+    return () => { cancelled = true; };
+  }, [sel?.path, infoTab, facesByPath]);
   return (
     <>
             {photos.length > 0 && <div style={{ width:rightW, flexShrink:0, background:T.surface, borderLeft:`1px solid ${T.line}`, display:'flex', flexDirection:'column', overflow:'hidden' }}>
@@ -249,6 +272,76 @@ export function AnalysisPanel({
                             <span style={{ fontSize:'var(--text-sm)', fontWeight:600, letterSpacing:'var(--track-label)', color:gradeCol }}>{tierWord.toUpperCase()}</span>
                           </div>
                         )}
+                        {/* Taste vote — engine telemetry, deliberately kept OUT of the
+                            score hero (see the comment there). It lives here, in the
+                            analysis tab, where the reader is already reading the
+                            machine's internals. Rendered only when this photo has a
+                            personal score; the weight formula mirrors
+                            grade_pipeline_v2 Step 5 (0.20 floor, 0.70 ceiling at
+                            100+ banked ratings) so the two can be checked against
+                            each other. */}
+                        {typeof sel.personal_score === 'number' && typeof sel.score === 'number' && (() => {
+                          const p = sel.personal_score as number;
+                          const conf = Math.min(Math.abs(p - 0.5) / 0.5, 1);
+                          const w = 0.20 + (0.70 - 0.20) * conf;
+                          const blended = (1 - w) * (sel.score as number) + w * p;
+                          return (
+                            <div title={`Your taste head (trained on your star ratings) scored this frame ${p.toFixed(2)} vs the machine's ${(sel.score as number).toFixed(2)}. The final score blended them at ${Math.round((1 - w) * 100)}% machine / ${Math.round(w * 100)}% taste — taste weight scales with the head's confidence, from a 20% floor to a 70% ceiling.`}
+                              style={{ display:'flex', alignItems:'center', gap:8, padding:'6px 10px',
+                                borderRadius:'var(--r-md)', background:T.raised, border:'1px solid ' + T.line }}>
+                              <div style={{ width:6, height:6, borderRadius:'var(--r-round)', background:T.gradeStrong, flexShrink:0 }}/>
+                              <span style={{ fontSize:'var(--text-xs)', fontWeight:700, letterSpacing:'var(--track-label)', color:T.ink3 }}>YOUR TASTE</span>
+                              <span className="t-num" style={{ fontSize:'var(--text-xs)', color:T.ink, fontWeight:600, marginLeft:'auto' }}>
+                                {p.toFixed(2)} · {Math.round(w * 100)}% → {blended.toFixed(2)}
+                              </span>
+                            </div>
+                          );
+                        })()}
+                        {/* Close-Ups — face crops + honest verdicts. Computed on
+                            demand by /api/photo-faces (one YuNet pass, cached
+                            per path for the session) so rows graded before
+                            geometry was persisted get the same panel as fresh
+                            grades. Hidden entirely for photos with no faces. */}
+                        {(() => {
+                          const fu = sel?.path ? facesByPath[sel.path] : undefined;
+                          if (!fu || !fu.available) return null;
+                          const n = fu.faces_detected ?? 0;
+                          if (!n) return null;
+                          const verdict = fu.subject_in_focus === true
+                            ? { t: 'Subject in focus', c: T.gradeStrong }
+                            : fu.subject_in_focus === false
+                              ? { t: 'Soft subject — likely missed focus', c: T.gradeWeak }
+                              : { t: 'Face too small to judge focus', c: T.ink3 };
+                          return (
+                            <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+                              <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                                <span style={{ fontSize:'var(--text-xs)', fontWeight:700, letterSpacing:'var(--track-label)', color:T.ink3 }}>
+                                  FACES · {n}
+                                </span>
+                                <span className="t-num" style={{ fontSize:'var(--text-xs)', color: verdict.c, fontWeight:600 }}>
+                                  {verdict.t}
+                                </span>
+                              </div>
+                              {(fu.faces ?? []).some((f: any) => f.crop) && (
+                                <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
+                                  {fu.faces.map((f: any, i: number) => f.crop && (
+                                    <button key={i}
+                                      title={`Face ${i + 1} of ${n} — click to find this person across the library`}
+                                      onClick={() => onFindPerson([`${sel.path}|${i}`])}
+                                      style={{ padding:0, cursor:'pointer', background:'none', border:`1px solid ${T.line}`, borderRadius:'var(--r-md)', display:'block' }}>
+                                      <img src={f.crop} alt="" decoding="async"
+                                        style={{ width:48, height:48, objectFit:'cover', borderRadius:'calc(var(--r-md) - 1px)', display:'block' }}/>
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                              <p style={{ margin:0, fontSize:'var(--text-xs)', color:T.ink4, lineHeight:'var(--leading-prose)' }}>
+                                Eye state is not measured — a landmark is a position, not a blink
+                                verdict, and a wrong "eyes closed" would silently delete keepers.
+                              </p>
+                            </div>
+                          );
+                        })()}
                         {/* Verdict */}
                         {verdict && (
                           <p style={{ fontSize:'var(--text-sm)', color:T.ink2, lineHeight:'var(--leading-prose)', margin:0, fontStyle:'italic' }}>{verdict}</p>

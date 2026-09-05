@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Aperture, FolderOpen } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { T } from '../../theme/tokens';
@@ -12,6 +13,11 @@ import { T } from '../../theme/tokens';
 export function WelcomeStage({ catalogBanner, onOpenFolder, onResume, onStartFresh }: {
   catalogBanner: boolean; onOpenFolder: () => void; onResume: () => void; onStartFresh: () => void;
 }) {
+  // Start fresh wipes the resume catalog (64k photos on a live library).
+  // Two-step inline confirm: first click arms, second click executes, and
+  // the escape hatch ("Keep it") is right next to it — no modal plumbing,
+  // no window.confirm, and the destructive click can't happen by reflex.
+  const [confirmFresh, setConfirmFresh] = useState(false);
   return (
     <div className="relative flex w-full items-center justify-center">
                   {/* Blueprint grid — fine engineering lines under everything,
@@ -129,8 +135,19 @@ export function WelcomeStage({ catalogBanner, onOpenFolder, onResume, onStartFre
                       <>
                         <span className="flex-1 text-sm text-ink-3">Pick up where you left off?</span>
                         <Button variant="default" size="sm" onClick={onResume}>Resume</Button>
-                        <Button size="sm" variant="quiet" onClick={onStartFresh}>
-                          Start fresh
+                        {confirmFresh && (
+                          <Button variant="default" size="sm" onClick={() => setConfirmFresh(false)}>
+                            Keep it
+                          </Button>
+                        )}
+                        <Button size="sm"
+                          variant={confirmFresh ? 'solid' : 'quiet'}
+                          onClick={() => {
+                            if (!confirmFresh) { setConfirmFresh(true); return; }
+                            setConfirmFresh(false);
+                            onStartFresh();
+                          }}>
+                          {confirmFresh ? 'Sure? Clears all grades' : 'Start fresh'}
                         </Button>
                       </>
                     ) : (

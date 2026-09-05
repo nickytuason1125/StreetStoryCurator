@@ -307,6 +307,11 @@ async def search_semantic(q: str = Query(default="", description="Free-text phot
         loop    = _aio.get_running_loop()
         results = await loop.run_in_executor(None, lambda: _ss(query=q, limit=20))
         return JSONResponse({"results": results, "query": q})
+    except MemoryError as exc:
+        # The encoder's RAM gate refused. 503 (resource state, retry later) is
+        # the honest status — a 500 told clients the server was broken when it
+        # was merely out of memory.
+        raise HTTPException(503, f"Semantic search unavailable: {exc}")
     except Exception as exc:
         raise HTTPException(500, f"Semantic search failed: {exc}")
 
@@ -690,8 +695,16 @@ async def health_engine():
         import model_registry as _mr
         missing = [m.dest.name for m in _mr.missing_gguf()]
         present = len(_mr.GGUF_MODELS) - len(missing)
+        # Build identity: lets the frontend (and tests) detect a stale
+        # backend — a server started before an update still serves the old
+        # policy while the UI ships the new one, and nothing else reveals it.
+        try:
+            from __version__ import __version__ as _v
+        except Exception:
+            _v = "unknown"
         return {"status": "online" if present else "offline",
-                "missing_models": missing}
+                "missing_models": missing,
+                "version": _v}
 
     result = await asyncio.get_running_loop().run_in_executor(None, _check_sync)
     return JSONResponse(result)
@@ -700,6 +713,13 @@ async def health_engine():
 @router.get("/api/annotations/{image_hash:path}")
 async def get_annotations(image_hash: str):
     """Return has_annotations, score_factors, and eye_overlay_url for a single image."""
+    # L3: the :path converter permits "/" and "..", and image_hash is
+    # interpolated into overlay file paths below. Restrict it to hash-like
+    # content so the endpoint can never address anything outside
+    # static/eye_feature_overlays (it was an arbitrary file-existence oracle).
+    import re as _re
+    if not _re.fullmatch(r"[0-9A-Za-z_.-]+", image_hash):
+        raise HTTPException(400, "Invalid image hash")
     # Resolve eye overlay URLs for canvas_renderer.py outputs
     _overlay_base = _UNIT_ROOT / "static" / "eye_feature_overlays"
     _verified     = _overlay_base / f"verified_{image_hash}.png"

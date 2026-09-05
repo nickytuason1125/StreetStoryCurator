@@ -810,10 +810,16 @@ print(p if p else '', end='')
 @router.post("/api/export/metadata")
 async def export_metadata_endpoint(payload: dict):
     """
-    Write XMP/JSON sidecars for a list of graded photos.
+    Write XMP sidecars for a list of graded photos.
     payload: { photos: [{path, grade, score, critique, breakdown, nima_score}],
                dest: optional output folder }
     Returns list of {source, sidecar} pairs.
+
+    The whole batch runs in the threadpool: this handler is async, and
+    stress-testing an 804-photo export (scripts/stress_xmp.py) showed the
+    inline loop froze the event loop for the full ~5s of disk writes — the
+    UI and every other request stalled for the duration. Same contract,
+    same response; the writes just happen off-loop now.
     """
     from engine_utils import export_metadata
     photos  = payload.get("photos", [])
@@ -821,14 +827,19 @@ async def export_metadata_endpoint(payload: dict):
     dest = str(_safe_dir_path(raw_dest)) if raw_dest else None
     if not photos:
         raise HTTPException(400, "No photos provided")
-    results = []
-    for p in photos:
-        try:
-            src = _safe_image_path(p["path"])
-            sidecar = export_metadata(str(src), p, out_dir=dest)
-            results.append({"source": p["path"], "sidecar": sidecar})
-        except Exception as e:
-            results.append({"source": p["path"], "error": str(e)})
+
+    def _export_batch() -> list:
+        results = []
+        for p in photos:
+            try:
+                src = _safe_image_path(p["path"])
+                sidecar = export_metadata(str(src), p, out_dir=dest)
+                results.append({"source": p["path"], "sidecar": sidecar})
+            except Exception as e:
+                results.append({"source": p["path"], "error": str(e)})
+        return results
+
+    results = await run_in_threadpool(_export_batch)
     return JSONResponse({"exported": len([r for r in results if "sidecar" in r]),
                          "results": results})
 

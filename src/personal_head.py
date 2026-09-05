@@ -30,6 +30,7 @@ Weights are persisted to cache/personal_head.pt after every update.
 from __future__ import annotations
 
 import json
+import threading
 import numpy as np
 import torch
 import torch.nn as nn
@@ -55,6 +56,14 @@ class PersonalHead(nn.Module):
 
 
 # ── Singleton ─────────────────────────────────────────────────────────────────
+
+# H1: every entry point below (lazy init, update()'s backward/step, fit()'s
+# wholesale _head/_opt reassignment, score()'s forward read) runs on real
+# threadpool threads — star-ratings from the UI, the every-25-ratings
+# auto-retrain, manual retrain — with NO serialization between them. Two
+# racing update() calls corrupt gradients; a fit() mid-update orphans the
+# optimizer outright. RLock, not Lock: fit() → _save() → _get_head() nests.
+_LOCK = threading.RLock()
 
 _head: Optional[PersonalHead] = None
 _opt:  Optional[torch.optim.Adam] = None
@@ -87,30 +96,31 @@ def _hinge(sa, sb, margin: float):
 
 def _get_head(embed_dim: int = _DEFAULT_EMBED_DIM) -> tuple[PersonalHead, torch.optim.Adam]:
     global _head, _opt
-    if _head is None:
-        _head = PersonalHead(embed_dim=embed_dim)
-        if _WEIGHTS_PATH.exists():
-            try:
-                # weights_only=True: _save() writes a plain state_dict, so there
-                # is nothing here that needs the pickle machinery. Without it a
-                # .pt on disk is an arbitrary-code-execution vector at startup —
-                # the file lives in a user-writable cache dir and this app is
-                # meant to be distributed, so "we wrote it ourselves" is not a
-                # property that survives shipping.
-                saved = torch.load(_WEIGHTS_PATH, map_location="cpu", weights_only=True)
-                # Infer saved embed_dim from first Linear weight shape
-                saved_dim = saved.get("net.0.weight", torch.zeros(1, embed_dim)).shape[1]
-                if saved_dim == embed_dim:
-                    _head.load_state_dict(saved)
-                else:
-                    print(
-                        f"[PersonalHead] Saved weights dim={saved_dim} ≠ current dim={embed_dim}. "
-                        "Discarding old weights — head will retrain from scratch."
-                    )
-            except Exception:
-                pass
-        _opt = torch.optim.Adam(_head.parameters(), lr=_LR)
-    return _head, _opt   # type: ignore[return-value]
+    with _LOCK:
+        if _head is None:
+            _head = PersonalHead(embed_dim=embed_dim)
+            if _WEIGHTS_PATH.exists():
+                try:
+                    # weights_only=True: _save() writes a plain state_dict, so there
+                    # is nothing here that needs the pickle machinery. Without it a
+                    # .pt on disk is an arbitrary-code-execution vector at startup —
+                    # the file lives in a user-writable cache dir and this app is
+                    # meant to be distributed, so "we wrote it ourselves" is not a
+                    # property that survives shipping.
+                    saved = torch.load(_WEIGHTS_PATH, map_location="cpu", weights_only=True)
+                    # Infer saved embed_dim from first Linear weight shape
+                    saved_dim = saved.get("net.0.weight", torch.zeros(1, embed_dim)).shape[1]
+                    if saved_dim == embed_dim:
+                        _head.load_state_dict(saved)
+                    else:
+                        print(
+                            f"[PersonalHead] Saved weights dim={saved_dim} ≠ current dim={embed_dim}. "
+                            "Discarding old weights — head will retrain from scratch."
+                        )
+                except Exception:
+                    pass
+            _opt = torch.optim.Adam(_head.parameters(), lr=_LR)
+        return _head, _opt   # type: ignore[return-value]
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -127,10 +137,11 @@ def score(embeddings: np.ndarray) -> np.ndarray:
     """
     embed_dim = embeddings.shape[1] if embeddings.ndim == 2 else _DEFAULT_EMBED_DIM
     head, _ = _get_head(embed_dim=embed_dim)
-    head.eval()
-    with torch.no_grad():
-        t    = torch.tensor(embeddings, dtype=torch.float32)
-        pref = head(t).numpy()
+    with _LOCK:
+        head.eval()
+        with torch.no_grad():
+            t    = torch.tensor(embeddings, dtype=torch.float32)
+            pref = head(t).numpy()
     return pref.astype(np.float32)
 
 
@@ -144,37 +155,38 @@ def update(
     Run `_STEPS` Margin Ranking Loss gradient steps given two embeddings
     and their human-assigned grades.  Returns the final loss value.
     """
-    embed_dim = int(np.asarray(emb1).flatten().shape[0])
-    head, opt = _get_head(embed_dim=embed_dim)
-    head.train()
+    with _LOCK:
+        embed_dim = int(np.asarray(emb1).flatten().shape[0])
+        head, opt = _get_head(embed_dim=embed_dim)
+        head.train()
 
-    r1  = _GRADE_RANK.get(grade1, 1)
-    r2  = _GRADE_RANK.get(grade2, 1)
-    # y = +1 if emb1 should score higher, -1 if lower, 0 if equal
-    y   = float(np.sign(r1 - r2))
-    if y == 0.0:
-        return 0.0
-    margin = _margin_for_rank_gap(abs(r1 - r2))
+        r1  = _GRADE_RANK.get(grade1, 1)
+        r2  = _GRADE_RANK.get(grade2, 1)
+        # y = +1 if emb1 should score higher, -1 if lower, 0 if equal
+        y   = float(np.sign(r1 - r2))
+        if y == 0.0:
+            return 0.0
+        margin = _margin_for_rank_gap(abs(r1 - r2))
 
-    t1  = torch.tensor(emb1, dtype=torch.float32).unsqueeze(0)
-    t2  = torch.tensor(emb2, dtype=torch.float32).unsqueeze(0)
-    # forward() squeezes to shape (1,), so the target must be (1,) too —
-    # a (1,1) target raises "All input tensors should have same dimension"
-    # and (because the frontend swallows the 500) silently no-ops training.
-    _y = torch.tensor([y], dtype=torch.float32)
+        t1  = torch.tensor(emb1, dtype=torch.float32).unsqueeze(0)
+        t2  = torch.tensor(emb2, dtype=torch.float32).unsqueeze(0)
+        # forward() squeezes to shape (1,), so the target must be (1,) too —
+        # a (1,1) target raises "All input tensors should have same dimension"
+        # and (because the frontend swallows the 500) silently no-ops training.
+        _y = torch.tensor([y], dtype=torch.float32)
 
-    last_loss = 0.0
-    for _ in range(_STEPS):
-        opt.zero_grad()
-        s1, s2 = head(t1), head(t2)
-        # y=±1 folds into the hinge directly: max(0, margin − y·(s1−s2))
-        loss = torch.clamp(margin - _y * (s1 - s2), min=0.0).mean()
-        loss.backward()
-        opt.step()
-        last_loss = float(loss.item())
+        last_loss = 0.0
+        for _ in range(_STEPS):
+            opt.zero_grad()
+            s1, s2 = head(t1), head(t2)
+            # y=±1 folds into the hinge directly: max(0, margin − y·(s1−s2))
+            loss = torch.clamp(margin - _y * (s1 - s2), min=0.0).mean()
+            loss.backward()
+            opt.step()
+            last_loss = float(loss.item())
 
-    _save()
-    return last_loss
+        _save()
+        return last_loss
 
 
 def update_batch(pairs: list[dict]) -> float:
@@ -215,65 +227,66 @@ def fit(samples: list[tuple], epochs: int = 3, pairs_per_combo: int = 120) -> di
 
     Returns {"n": rated, "pairs": npairs, "loss": last, "tiers": {...}}.
     """
-    global _head, _opt
-    import random
+    with _LOCK:
+        global _head, _opt
+        import random
 
-    by:      dict[str, list] = {"Strong ✅": [], "Mid ⚠️": [], "Weak ❌": []}
-    by_master: dict[str, list] = {"Strong ✅": [], "Mid ⚠️": [], "Weak ❌": []}
-    for s in samples:
-        emb, gr = s[0], s[1]
-        src = s[2] if len(s) > 2 else ""
-        if gr not in by:
-            continue
-        e = np.asarray(emb, dtype=np.float32)
-        by[gr].append(e)
-        if src == _MASTER_SOURCE:
-            by_master[gr].append(e)
-    n = sum(len(v) for v in by.values())
-    if n == 0:
-        return {"n": 0, "pairs": 0, "loss": 0.0, "tiers": {}}
+        by:      dict[str, list] = {"Strong ✅": [], "Mid ⚠️": [], "Weak ❌": []}
+        by_master: dict[str, list] = {"Strong ✅": [], "Mid ⚠️": [], "Weak ❌": []}
+        for s in samples:
+            emb, gr = s[0], s[1]
+            src = s[2] if len(s) > 2 else ""
+            if gr not in by:
+                continue
+            e = np.asarray(emb, dtype=np.float32)
+            by[gr].append(e)
+            if src == _MASTER_SOURCE:
+                by_master[gr].append(e)
+        n = sum(len(v) for v in by.values())
+        if n == 0:
+            return {"n": 0, "pairs": 0, "loss": 0.0, "tiers": {}}
 
-    dim = int(np.asarray(samples[0][0]).flatten().shape[0])
-    _head = PersonalHead(embed_dim=dim)
-    _opt  = torch.optim.Adam(_head.parameters(), lr=_LR)
+        dim = int(np.asarray(samples[0][0]).flatten().shape[0])
+        _head = PersonalHead(embed_dim=dim)
+        _opt  = torch.optim.Adam(_head.parameters(), lr=_LR)
 
-    pairs = []
-    for hi, lo in (("Strong ✅", "Weak ❌"), ("Strong ✅", "Mid ⚠️"), ("Mid ⚠️", "Weak ❌")):
-        if by[hi] and by[lo]:
-            has_master = by_master[hi] or by_master[lo]
-            n_floor = int(pairs_per_combo * _MASTER_PAIR_FLOOR) if has_master else 0
-            # Margin scales with how far apart the two tiers are: Strong↔Weak
-            # is a stronger taste statement than Mid↔Weak (see
-            # _margin_for_rank_gap) and now trains with proportionally more force.
-            margin = _margin_for_rank_gap(_GRADE_RANK[hi] - _GRADE_RANK[lo])
-            for i in range(pairs_per_combo):
-                if i < n_floor:
-                    a = random.choice(by_master[hi]) if by_master[hi] else random.choice(by[hi])
-                    b = random.choice(by_master[lo]) if by_master[lo] else random.choice(by[lo])
-                else:
-                    a = random.choice(by[hi])
-                    b = random.choice(by[lo])
-                pairs.append((a, b, margin))
-    if not pairs:
-        return {"n": n, "pairs": 0, "loss": 0.0,
-                "tiers": {k: len(v) for k, v in by.items()}}
+        pairs = []
+        for hi, lo in (("Strong ✅", "Weak ❌"), ("Strong ✅", "Mid ⚠️"), ("Mid ⚠️", "Weak ❌")):
+            if by[hi] and by[lo]:
+                has_master = by_master[hi] or by_master[lo]
+                n_floor = int(pairs_per_combo * _MASTER_PAIR_FLOOR) if has_master else 0
+                # Margin scales with how far apart the two tiers are: Strong↔Weak
+                # is a stronger taste statement than Mid↔Weak (see
+                # _margin_for_rank_gap) and now trains with proportionally more force.
+                margin = _margin_for_rank_gap(_GRADE_RANK[hi] - _GRADE_RANK[lo])
+                for i in range(pairs_per_combo):
+                    if i < n_floor:
+                        a = random.choice(by_master[hi]) if by_master[hi] else random.choice(by[hi])
+                        b = random.choice(by_master[lo]) if by_master[lo] else random.choice(by[lo])
+                    else:
+                        a = random.choice(by[hi])
+                        b = random.choice(by[lo])
+                    pairs.append((a, b, margin))
+        if not pairs:
+            return {"n": n, "pairs": 0, "loss": 0.0,
+                    "tiers": {k: len(v) for k, v in by.items()}}
 
-    _head.train()
-    last = 0.0
-    for _ in range(max(1, epochs)):
-        random.shuffle(pairs)
-        for a, b, margin in pairs:
-            _opt.zero_grad()
-            sa = _head(torch.tensor(a).unsqueeze(0))
-            sb = _head(torch.tensor(b).unsqueeze(0))
-            loss = _hinge(sa, sb, margin)
-            loss.backward()
-            _opt.step()
-            last = float(loss.item())
-    _save()
-    return {"n": n, "pairs": len(pairs), "loss": round(last, 5),
-            "tiers": {k: len(v) for k, v in by.items()},
-            "master_tiers": {k: len(v) for k, v in by_master.items()}}
+        _head.train()
+        last = 0.0
+        for _ in range(max(1, epochs)):
+            random.shuffle(pairs)
+            for a, b, margin in pairs:
+                _opt.zero_grad()
+                sa = _head(torch.tensor(a).unsqueeze(0))
+                sb = _head(torch.tensor(b).unsqueeze(0))
+                loss = _hinge(sa, sb, margin)
+                loss.backward()
+                _opt.step()
+                last = float(loss.item())
+        _save()
+        return {"n": n, "pairs": len(pairs), "loss": round(last, 5),
+                "tiers": {k: len(v) for k, v in by.items()},
+                "master_tiers": {k: len(v) for k, v in by_master.items()}}
 
 
 def _save() -> None:

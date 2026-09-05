@@ -49,7 +49,7 @@ export function Chip({ label, value, tone = 'neutral', numeric, title, className
     <span
       title={title}
       className={cn(
-        'inline-flex h-6 shrink-0 items-center gap-1 rounded-sm border px-2',
+        'inline-flex h-6 shrink-0 items-center gap-1 rounded-md border px-2',
         'transition-colors duration-fast ease',
         TONES[tone],
         className,

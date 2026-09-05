@@ -735,3 +735,127 @@ def _row_to_dict(r: dict) -> dict:
         "revision_history":   _safe_str(r.get("revision_history")),
         "folder_key":         _safe_str(r.get("folder_key")),
     }
+
+
+# ── Faces table (People Filter) ───────────────────────────────────────────────
+# One row per detected face: (path, face_idx, embedding). Same DB file and the
+# same tier-scoped naming convention as the main table, so a quality-tier
+# switch can never mix vector spaces. Populated by
+# scripts/backfill_face_embeddings.py (RAM-gated, resumable) — grading itself
+# never writes here, so the People index can be rebuilt without re-grading.
+# /api/people-search searches it; absence of a table simply means "not
+# indexed yet", never an error.
+
+_FACES_TBL = None
+_FACES_DIM: "Optional[int]" = None
+
+
+def _faces_table_name() -> str:
+    return f"{_TBL_NAME}_faces"
+
+
+def _faces_schema(dim: int):
+    import pyarrow as pa
+    return pa.schema([
+        pa.field("path",      pa.string()),
+        pa.field("face_idx",  pa.int32()),
+        pa.field("embedding", pa.list_(pa.float32(), dim)),
+        pa.field("area_frac", pa.float32()),
+        pa.field("encoder_source", pa.string()),
+    ])
+
+
+def _open_faces_table():
+    """Open (or create) the faces table, matching whatever dimension the
+    active encoder emits. A stored table with a DIFFERENT dimension belongs
+    to another tier — quarantined by rename, not deleted, then recreated."""
+    global _FACES_TBL, _FACES_DIM
+    if _FACES_TBL is not None:
+        return _FACES_TBL
+    import lancedb
+    db = lancedb.connect(_DB_DIR)
+    name = _faces_table_name()
+    dim = int(_EMBED_DIM)
+    with _lock:
+        if name in db.table_names():
+            tbl = db.open_table(name)
+            stored = tbl.schema.field("embedding").type.list_size
+            if stored != dim:
+                keep = f"{name}.dim{stored}"
+                try:
+                    import shutil
+                    shutil.move(str(Path(_DB_DIR) / f"{name}.lance"),
+                                str(Path(_DB_DIR) / f"{keep}.lance"))
+                except Exception:
+                    pass
+                tbl = db.create_table(name, schema=_faces_schema(dim))
+            _FACES_TBL, _FACES_DIM = tbl, stored
+        else:
+            _FACES_TBL, _FACES_DIM = db.create_table(name, schema=_faces_schema(dim)), dim
+    return _FACES_TBL
+
+
+def upsert_face_embeddings(rows: list) -> int:
+    """rows: [{path, face_idx, embedding, area_frac}]. Deletes all existing
+    rows for each affected path first — a re-detect may change face count
+    or order, and stale (path, idx) pairs would corrupt search results."""
+    if not rows:
+        return 0
+    tbl = _open_faces_table()
+    tag = current_encoder_tag()
+    paths = sorted({r["path"] for r in rows})
+    with _lock:
+        for pth in paths:
+            try:
+                tbl.delete(f"path = '{pth}'")
+            except Exception:
+                pass
+        tbl.add([{**r, "encoder_source": tag} for r in rows])
+    return len(rows)
+
+
+def faces_count_for_path(path: str) -> int:
+    """Index status for one path: how many of its faces are embedded."""
+    try:
+        tbl = _open_faces_table()
+        with _lock:
+            rows = (tbl.search()
+                       .where(f"path = '{path}'", prefilter=True)
+                       .select(["face_idx"]).limit(64).to_list())
+        return len(rows)
+    except Exception:
+        return 0
+
+
+def face_embedding_for(path: str, face_idx: int):
+    """The stored embedding for one (path, face_idx), or None when the photo
+    hasn't been indexed (caller answers 'not indexed yet', never an error)."""
+    try:
+        tbl = _open_faces_table()
+        with _lock:
+            rows = (tbl.search()
+                       .where(f"path = '{path}' AND face_idx = {int(face_idx)}",
+                              prefilter=True)
+                       .select(["embedding"]).limit(1).to_list())
+        if not rows:
+            return None
+        return np.array(rows[0]["embedding"], dtype=np.float32)
+    except Exception:
+        return None
+
+
+def search_faces(query_emb: np.ndarray, top_k: int = 400) -> list:
+    """kNN over face embeddings. Returns raw rows (path, face_idx,
+    _distance, area_frac); smaller _distance = more similar."""
+    tbl = _open_faces_table()
+    q = np.asarray(query_emb, dtype=np.float32).flatten().tolist()
+    if len(q) < _FACES_DIM:
+        q += [0.0] * (_FACES_DIM - len(q))
+    q = q[:_FACES_DIM]
+    with _lock:
+        return tbl.search(q).limit(int(top_k)).to_list()
+
+
+def close_faces_table() -> None:
+    global _FACES_TBL
+    _FACES_TBL = None

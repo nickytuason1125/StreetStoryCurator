@@ -343,6 +343,15 @@ def attach_face_signals(gallery: list, person_detected: dict) -> int:
             continue
         if metrics.get("faces_detected"):
             entry["face"] = {k: v for k, v in metrics.items() if k != "faces"}
+            # Persist normalized boxes (grade-time path) — the Close-Ups panel
+            # recomputes crops on demand via /api/photo-faces for rows graded
+            # before this field existed, but fresh grades carry geometry so
+            # face filters and any future offline UI work without re-detect.
+            boxes = [{"norm": f.get("norm"), "confidence": round(f["confidence"], 3),
+                      "area_frac": round(f["area_frac"], 5)}
+                     for f in (metrics.get("faces") or [])[:12] if f.get("norm")]
+            if boxes:
+                entry["face"]["boxes"] = boxes
             n += 1
     if n:
         print(f"[v2] Face/focus signals computed for {n} photos")

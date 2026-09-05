@@ -128,7 +128,7 @@ def _need(label: str, detail: str = "") -> str:
 def print_banner() -> None:
     print()
     print(f"  {BD}{C}+======================================================+{RS}")
-    print(f"  {BD}{C}|       C U L L W I S E                                |{RS}")
+    print(f"  {BD}{C}|       F I R S T C U T                                |{RS}")
     print(f"  {BD}{C}|       AI Photo Culling  v1.0                          |{RS}")
     print(f"  {BD}{C}+======================================================+{RS}")
     print(f"  {DM}  100% Offline  ·  SigLIP-2  ·  TOPIQ IQA  ·  LanceDB{RS}")
@@ -525,6 +525,13 @@ def wait_for_ollama_interactive() -> None:
 def main() -> None:
     print_banner()
 
+    # Hardware/OS capability FIRST -- an unsupported machine must learn why
+    # before any download starts, not via a mystery crash mid-install.
+    sys.path.insert(0, str(ROOT / "src"))
+    import machine_profile as _mp
+    profile = _mp.detect(force=True)
+    flavor = _mp.engine_flavor(profile)
+
     # ── Run all checks silently first ─────────────────────────────────────────
     print(f"  {DM}  Running system checks…{RS}", end="", flush=True)
 
@@ -541,6 +548,21 @@ def main() -> None:
     # ── Print full checklist at once ──────────────────────────────────────────
     print(f"  {BD}System Checklist{RS}")
     print(SEP)
+
+    # 0a. Hardware/OS capability -- the gate everything else depends on
+    cap_icon = _ok if profile.verdict != "unsupported" else _fail
+    print(cap_icon(f"Machine: {profile.arch} {profile.os_name.capitalize()}", profile.reason))
+    print(_ok("GPU", f"{profile.gpu_name} ({profile.vram_gb:.1f} GB VRAM)"))
+    if flavor == "cuda":
+        print(_ok("Engine flavor", "CUDA -- full speed (~0.6 s/photo)"))
+    elif flavor == "cpu":
+        print(_warn("Engine flavor", "CPU -- full quality, slower (~11 s/photo)"))
+    else:
+        print(_fail("Engine flavor", "no compatible engine for this machine"))
+        print(f"\n  {R}{BD}This machine cannot run FirstCut yet.{RS}")
+        print(f"  {R}  {profile.reason}{RS}\n")
+        sys.exit(2)
+
 
     # 0. Disk + RAM pre-flight
     if disk_gb < 12:

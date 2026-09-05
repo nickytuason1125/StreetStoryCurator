@@ -521,6 +521,12 @@ export default function App() {
   const [showTweaks, setShowTweaks] = useState(false);
   const [filterGrade,setFilterGrade] = useState<string | null>(null);
   const [filterStars,setFilterStars] = useState<number | null>(null);
+  /* Face-signal filter — 'any': at least one detected face; 'soft': the
+   * subject was detected but measures softer than the frame (face_signals
+   * focus ratio < 0.6), i.e. the missed-focus case no aesthetic grader
+   * catches. null: off. Works on the 24k+ existing rows that already carry
+   * grade-time face summaries — no re-grade needed. */
+  const [filterFaces,setFilterFaces] = useState<'any'|'soft'|null>(null);
   const [sortScore,  setSortScore]   = useState<'desc'|'asc'|null>(null);
   const [exportModal,setExportModal] = useState(false);
   const [selectedIds,setSelectedIds] = useState<Set<string>>(new Set());
@@ -530,6 +536,8 @@ export default function App() {
   const [dragOver,    setDragOver]      = useState(false);
   const [backendReady,   setBackendReady]   = useState(false);
   const [backendError,   setBackendError]   = useState(false);
+  // Batch 4: non-null when the backend's build version disagrees with the UI's.
+  const [staleBackend,   setStaleBackend]   = useState<string | null>(null);
   const [graderStatus,   setGraderStatus]   = useState<{last_mode:string,draft_available:boolean,verify_available:boolean,last_error:string|null,qwen_warm:boolean,qwen_loading:boolean,qwen_download_pct:number|null,warmup_done:boolean,warmup_running:boolean,compute_device?:string,vram_free_gb?:number|null,vram_total_gb?:number|null,gpu_name?:string|null,ram_free_gb?:number|null,ram_total_gb?:number|null,ram_min_gb?:number}|null>(null);
   // Live system-memory snapshot, polled every 2 s (see /api/system/ram) so the RAM
   // readiness indicator tracks Task Manager in real time rather than refreshing
@@ -697,6 +705,13 @@ export default function App() {
         const d = await r.json();
         const status = d.status ?? "offline";
         if (status === "offline") setBannerDismissed(false);
+        // Batch 4: version handshake — the backend reports the build it is
+        // running. If it disagrees with the UI bundle, the server predates a
+        // restart (the stale-instance failure mode: old code, old safety
+        // policy, old endpoints behind a UI that expects the new ones).
+        const v = d.version;
+        if (v && v !== "unknown" && v !== APP_VERSION) setStaleBackend(v);
+        else setStaleBackend(null);
         // change-guard: a new object identity every poll re-rendered the whole
         // tree 6×/min even when nothing changed. Identity moves on real change.
         setEngineHealth(prev => {
@@ -929,13 +944,16 @@ export default function App() {
       if (searchResults !== null && !searchResults.has(p.path)) return false; // semantic search filter
       if (!showDuplicates && redacted.has(p.path)) return false;   // non-best duplicates hidden unless toggled
       const starsOk = filterStars === null || p.stars === filterStars;
-      if (filterGrade) return gradeLabel(p.grade) === filterGrade && starsOk;
+      const facesOk = filterFaces === null
+        || (filterFaces === 'any' ? ((p as any).face?.faces_detected ?? 0) > 0
+                                  : (p as any).face?.subject_in_focus === false);
+      if (filterGrade) return gradeLabel(p.grade) === filterGrade && starsOk && facesOk;
       if (carouselPaths.has(p.path)) return true;                   // sequence photos always visible when no grade filter
-      return starsOk;
+      return starsOk && facesOk;
     });
     if (!sortScore) return base;
     return [...base].sort((a, b) => sortScore === 'desc' ? b.score - a.score : a.score - b.score);
-  }, [photos, filterGrade, filterStars, redacted, showDuplicates, sortScore, carousel, searchResults]);
+  }, [photos, filterGrade, filterStars, filterFaces, redacted, showDuplicates, sortScore, carousel, searchResults]);
 
   /* Star rating — declared BEFORE the keyboard effect below: that effect lists
    * handleSetStars in its dependency array, and deps arrays evaluate during
@@ -1276,13 +1294,19 @@ export default function App() {
   }, [juryCritPath, juryCritique]);
 
   /* folder browser */
+  // Sequence guard: rapid folder clicks used to race — a slow response for an
+  // earlier folder could land last and paint the WRONG folder's contents.
+  // Monotonic sequence: only the newest request may touch state.
+  const browserSeqRef = useRef(0);
   const loadBrowser = useCallback(async (path: string) => {
+    const seq = ++browserSeqRef.current;
     setBLoading(true);
     try {
       const r = await axios.post(`${API}/api/browse-folder`, { folder_path: path });
+      if (seq !== browserSeqRef.current) return;   // superseded by a newer browse
       setBFolders(r.data.folders || []);
       setBImages(r.data.images || []);
-    } catch { } finally { setBLoading(false); }
+    } catch { } finally { if (seq === browserSeqRef.current) setBLoading(false); }
   }, []);
 
   const goUp = useCallback(() => {
@@ -1385,7 +1409,14 @@ export default function App() {
   }, [notify]);
 
   /* grade — uses SSE stream so large folders never time out */
+  // Re-entrancy guard: the check here and the set at setLoading(true) both
+  // run synchronously before the first await, so a fast double-click's
+  // second invocation dies immediately instead of firing a second
+  // /api/grade/v2/stream. The backend's 409 single-flight guard is the
+  // second layer, not the first.
+  const gradeBusyRef = useRef(false);
   const handleGrade = useCallback(async (forceRescan = false, skipModal = false) => {
+    if (gradeBusyRef.current) return;
     const safePath = sanitizePath(folder);
     if (!safePath && folders.length === 0) { notify("Enter a folder path, or use Open folder to browse.", "error"); return; }
     if (!skipModal) {
@@ -1404,6 +1435,7 @@ export default function App() {
       // /api/recommend-niche endpoint for the (currently unused) scan path.
       return;
     }
+    gradeBusyRef.current = true;
     setLoading(true);
     setGradeProgress(0);
     setGradeDesc("");
@@ -1524,6 +1556,7 @@ export default function App() {
         notify(`${msg}`, 'error');
       }
     }
+    gradeBusyRef.current = false;
     setLoading(false);
     setGradeProgress(0);
   }, [folder, folders, preset, notify, applyCatalog]);
@@ -1801,6 +1834,33 @@ export default function App() {
     n === 0 ? gradeFiltered.filter(p => !p.stars).length
             : gradeFiltered.filter(p => p.stars === n).length
   );
+  const faceCounts = {
+    any:  gradeFiltered.filter(p => ((p as any).face?.faces_detected ?? 0) > 0).length,
+    soft: gradeFiltered.filter(p => (p as any).face?.subject_in_focus === false).length,
+  };
+  /* People search — clicking a face crop in the loupe kNN-searches the faces
+   * table and filters the gallery to the matching photos via searchResults
+   * (the same path-set filter semantic search uses). */
+  const handleFindPerson = async (tokens: string[]) => {
+    if (!tokens.length) return;
+    const [path, idxStr] = tokens[0].split('|');
+    notify('Finding this person…');
+    try {
+      const r = await fetch(`${API}/api/people-search?path=${encodeURIComponent(path)}&idx=${idxStr}`);
+      const d = await r.json();
+      if (!d.indexed) {
+        notify("This face isn't indexed yet — run scripts/backfill_face_embeddings.py to build the People index.", 'error');
+        return;
+      }
+      const matches: any[] = d.matches ?? [];
+      setSearchResults(new Set(matches.map((m: any) => m.path)));
+      setFilterGrade(null); setFilterStars(null); setFilterFaces(null);
+      setMainTab('gallery');
+      notify(`People search — ${matches.length} frame${matches.length !== 1 ? 's' : ''} of this person`, 'success');
+    } catch {
+      notify('People search failed — check the server log.', 'error');
+    }
+  };
   const selIdx    = filteredPhotos.findIndex(p => p.id === selId);
   const hasPrev   = selIdx > 0;
   const hasNext   = selIdx < filteredPhotos.length - 1;
@@ -2269,7 +2329,7 @@ export default function App() {
                       variant sitting next to a bordered one. */}
                   <Button
                     variant="solid"
-                    disabled={!!_notReady}
+                    disabled={!!_notReady || loading}
                     autoFocus
                     onClick={() => { setPreGradeModal(null); handleGrade(rescanAll, true); }}
                     icon={(graderStatus?.qwen_loading || graderStatus?.warmup_running)
@@ -2281,6 +2341,26 @@ export default function App() {
               );
             })()}
           </div>
+        </div>
+      )}
+
+      {/* Batch 4: stale-backend banner — the version handshake's UI half.
+          Shown when the 10 s health poll reports a backend build that
+          disagrees with this UI bundle. A page reload cannot fix it (the
+          fix is restarting the backend), so there is no action button. */}
+      {staleBackend && (
+        <div role="status"
+          className="fixed inset-x-0 top-0 z-[600] flex items-center justify-center gap-3
+                     border-b border-line-strong bg-raised px-3 py-1 text-xs text-ink"
+          style={{ background: 'var(--alarm-warn, var(--raised))' }}>
+          <span>
+            Backend is running v{staleBackend} but this UI is v{APP_VERSION} —
+            the server needs a restart to pick up the new build. Some actions
+            may misbehave until then.
+          </span>
+          <Button size="sm" variant="quiet" onClick={() => setStaleBackend(null)}>
+            Dismiss
+          </Button>
         </div>
       )}
 
@@ -2311,7 +2391,7 @@ export default function App() {
             drag on an invisible bar. Wrapping spends height, and only when the
             window is actually too narrow, to keep every control reachable.
             min-h rather than h so a single-row header is unchanged. */}
-        <div className="glass elev-2 flex min-h-toolbar min-w-0 flex-wrap items-center gap-y-1 gap-x-2 rounded-md border border-line-strong px-2 py-1">
+        <div className="glass elev-2 flex min-h-toolbar min-w-0 flex-wrap items-center gap-y-1 gap-x-2 rounded-lg border border-line px-2 py-1">
 
         {/* Brand — aperture mark in the grease-pencil colour. The one warm
             pixel in the chrome: it is the product's signature, the same
@@ -2321,7 +2401,7 @@ export default function App() {
           <span className="text-md text-ink"
                 style={{ fontFamily: 'var(--font-display)', fontWeight: 650, letterSpacing: 'var(--track-brand)' }}>FirstCut</span>
         </div>
-        <div className="h-4 w-px shrink-0 bg-line-strong"/>
+        <div className="h-4 w-px shrink-0 bg-line"/>
 
         <Button onClick={openBrowser} title="Open folder" icon={<FolderOpen size={13}/>}>
           {photos.length > 0 ? (folders.length > 1 ? `${folders.length} folders` : folder.split(/[\\/]/).pop()) : 'Open folder'}
@@ -2474,7 +2554,7 @@ export default function App() {
           />
         )}
 
-        {isDone && <div className="h-4 w-px shrink-0 bg-line-strong"/>}
+        {isDone && <div className="h-4 w-px shrink-0 bg-line"/>}
 
         {isDone && (
           <Button
@@ -2487,7 +2567,7 @@ export default function App() {
           </Button>
         )}
 
-        {isDone && <div className="h-4 w-px shrink-0 bg-line-strong"/>}
+        {isDone && <div className="h-4 w-px shrink-0 bg-line"/>}
 
         {/* Main views. Counts sit in the segment rather than inside the label
             string, so they render in tabular figures and the tab stops resizing
@@ -2704,15 +2784,32 @@ export default function App() {
             })}
           </div>
 
-          <div className="h-4 w-px shrink-0 bg-line-strong"/>
+          <div className="h-4 w-px shrink-0 bg-line"/>
 
           <Button size="sm" variant={filterStars === 0 ? 'solid' : 'quiet'}
             onClick={() => setFilterStars(filterStars === 0 ? null : 0)}>
             Unrated <span className="t-num ml-1 opacity-70">{starCounts[0]}</span>
           </Button>
 
-          {filterStars !== null && (
-            <Button size="sm" variant="quiet" onClick={() => setFilterStars(null)}>Clear</Button>
+          <div className="h-4 w-px shrink-0 bg-line"/>
+
+          {/* Face-signal filters — powered by the grade-time face summaries
+              (24k+ rows already carry them). "Soft subject" is the
+              missed-focus case the aesthetic grader can't see. */}
+          <Button size="sm" variant={filterFaces === 'any' ? 'solid' : 'quiet'}
+            onClick={() => setFilterFaces(filterFaces === 'any' ? null : 'any')}>
+            Faces <span className="t-num ml-1 opacity-70">{faceCounts.any}</span>
+          </Button>
+          <Button size="sm" variant={filterFaces === 'soft' ? 'solid' : 'quiet'}
+            title="Faces detected but the subject measures softer than the frame — likely missed focus"
+            onClick={() => setFilterFaces(filterFaces === 'soft' ? null : 'soft')}>
+            Soft subject <span className="t-num ml-1 opacity-70">{faceCounts.soft}</span>
+          </Button>
+
+          {(filterStars !== null || filterFaces !== null) && (
+            <Button size="sm" variant="quiet" onClick={() => {
+              setFilterStars(null); setFilterFaces(null);
+            }}>Clear</Button>
           )}
 
         </div>
@@ -2799,6 +2896,7 @@ export default function App() {
               infoTab={infoTab} setInfoTab={setInfoTab}
               selectedIds={selectedIds} setSelectedIds={setSelectedIds}
               handleCopyPath={handleCopyPath} handleSetStars={handleSetStars} setMainTab={setMainTab} copied={copied}
+              onFindPerson={handleFindPerson}
               handleGenerate={handleGenerate} handleCreateFromSelection={handleCreateFromSelection}
               hasPrev={hasPrev} hasNext={hasNext} selIdx={selIdx} filteredPhotos={filteredPhotos}
             />}
@@ -2831,6 +2929,7 @@ export default function App() {
                 <div style={{ display:'flex', alignItems:'center', gap:8 }}>
                   <span style={{ fontSize:'var(--text-xs)', color:T.ink3, whiteSpace:'nowrap' }}>Thumb size</span>
                   <input type="range" min={60} max={130} step={4} value={filmThumbH}
+                    aria-label="Thumbnail size"
                     onChange={e => setFilmThumbH(Number(e.target.value))}
                     style={{ width:80, accentColor:T.ink, cursor:'pointer' }}/>
                   <span style={{ fontSize:'var(--text-xs)', color:T.ink2, fontVariantNumeric:'tabular-nums', minWidth:22 }}>{filmThumbH}</span>

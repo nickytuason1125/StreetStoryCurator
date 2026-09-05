@@ -277,6 +277,19 @@ async def clear_catalog():
     it does not need a confirmation dialogue here — it needs the same recovery
     copy the rebuild paths already write, which /api/catalog then serves.
     """
+    # M3 gate: a clear racing an in-flight grade's merge_write is
+    # last-writer-wins — either the clear silently undoes itself, or a
+    # just-finished grade's results vanish into the backup with no error
+    # surfaced. Refuse while a cull is running, consistent with the
+    # grade-start single-flight guard (the mirror race — a grade starting
+    # during this sub-millisecond clear — remains theoretically open and is
+    # accepted; the grade handler is the long operation worth gating).
+    from server_impl import _grading_active
+    if _grading_active.is_set():
+        raise HTTPException(
+            409,
+            "A grade is running — wait for it to finish before clearing the catalog.",
+        )
     _DATA_DIR, _atomic_write_text, analyzer = _impl()
     try:
         import catalog_store

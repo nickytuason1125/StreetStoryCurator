@@ -5,7 +5,8 @@ Four capabilities (all optional-import-safe; degrade gracefully):
   1. pHash deduplication  — hybrid perceptual + cosine similarity
   2. LocalVectorDB        — sqlite-vec ANN search with cosine fallback
   3. FolderWatcher        — watchdog-based incremental file event listener
-  4. XMP/JSON sidecar export — pyexiv2 if available, else JSON sidecar
+  4. XMP sidecar export — Adobe-namespace sidecars (rating/label/description +
+     a firstcut: private namespace); never writes into the original file
 
 IMPORTANT: None of these change any existing API contract or grading logic.
 They are additive utilities consumed by server.py endpoints only.
@@ -375,70 +376,85 @@ class _WatchdogBridge:
 
 def export_metadata(path: str, meta: dict, out_dir: str | None = None) -> str:
     """
-    Write grade/score/critique to XMP sidecar (via pyexiv2) if available,
-    otherwise write a JSON sidecar next to the original file.
+    Write grade/score/critique/stars to an Adobe XMP sidecar beside the photo
+    (or into out_dir). The original file is NEVER opened for writing — the
+    2026-08 contract is non-destructive, and the previous pyexiv2 path
+    violated it by embedding XMP into the original on close().
 
-    `meta` keys used:  score, grade, critique, breakdown, nima_score
+    What Lightroom / Capture One actually read:
+      xmp:Rating          — the USER's star rating (durable ratings_store),
+                            not a machine-score conversion; omitted when 0
+      photoshop:Label     — colour label Lightroom maps by name:
+                            Strong→Green, Mid→Yellow, Weak→Red
+      dc:description      — the critique text
+    FirstCut detail travels losslessly in a private namespace:
+      firstcut:Grade / Score / PersonalScore / NimaScore / Breakdown
 
-    Returns the path of the sidecar file written.
+    Returns the path of the sidecar written.
     """
+    from xml.sax.saxutils import escape as _xml_escape
+
     src = Path(path)
     dest_dir = Path(out_dir) if out_dir else src.parent
 
-    # ── Try pyexiv2 first (embeds XMP into a copy / sidecar) ─────────────────
-    try:
-        import pyexiv2  # type: ignore
-        sidecar = dest_dir / (src.stem + ".xmp")
-        img = pyexiv2.Image(path)
-        rating = max(0, min(5, round(meta.get("score", 0) * 5)))
-        xmp_data = {
-            "Xmp.xmp.Rating":     str(rating),
-            "Xmp.dc.description": meta.get("critique", ""),
-            "Xmp.xmp.Label":      meta.get("grade", ""),
-            "Xmp.xmp.Nickname":   json.dumps(meta.get("breakdown", {})),
-        }
-        img.modify_xmp(xmp_data)
-        img.close()
-        # Write companion .xmp sidecar so Lightroom/Capture One can read it
-        with open(sidecar, "w", encoding="utf-8") as f:
-            f.write(_minimal_xmp(path, xmp_data))
-        return str(sidecar)
-    except Exception:
-        pass
+    grade_raw   = str(meta.get("grade") or "").strip()
+    grade_clean = grade_raw.split()[0] if grade_raw else ""    # "Strong ✅" -> "Strong"
+    _LABEL = {"Strong": "Green", "Mid": "Yellow", "Weak": "Red"}
+    label = _LABEL.get(grade_clean, "")
 
-    # ── JSON sidecar fallback ─────────────────────────────────────────────────
-    sidecar = dest_dir / (src.stem + ".json")
-    payload = {
-        "path":       str(src),
-        "score":      meta.get("score"),
-        "grade":      meta.get("grade"),
-        "critique":   meta.get("critique"),
-        "breakdown":  meta.get("breakdown", {}),
-        "nima_score": meta.get("nima_score"),
-    }
-    with open(sidecar, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
-    return str(sidecar)
+    stars = int(meta.get("stars") or 0)
+    if stars <= 0:
+        # The user's own stars are the human ground truth — never convert the
+        # machine score into a rating (that fabricated consent the user never
+        # gave). Enrich from the durable store when the payload didn't carry it.
+        try:
+            import ratings_store as _rs
+            stars = int(_rs.get(str(src)))
+        except Exception:
+            stars = 0
+    stars = max(0, min(5, stars))
 
+    # Attribute values: escape XML specials INCLUDING quotes.
+    def _attr(v) -> str:
+        return _xml_escape(str(v), {'"': "&quot;"})
 
-def _minimal_xmp(image_path: str, xmp: dict) -> str:
-    """Minimal XMP sidecar readable by Lightroom / Capture One / Bridge."""
-    # Convert pyexiv2 dot-notation keys (e.g. "Xmp.xmp.Rating") to XML prefix:local
-    def _tag(key: str) -> str:
-        parts = key.split(".", 2)
-        return f"{parts[1]}:{parts[2]}" if len(parts) == 3 else key
+    attrs: list[str] = []
+    if stars:
+        attrs.append(f'xmp:Rating="{stars}"')
+    if label:
+        attrs.append(f'photoshop:Label="{_attr(label)}"')
+    critique = str(meta.get("critique") or "").strip()
+    if critique:
+        attrs.append(f'dc:description="{_attr(critique)}"')
+    if grade_clean:
+        attrs.append(f'firstcut:Grade="{_attr(grade_clean)}"')
+    if meta.get("score") is not None:
+        attrs.append(f'firstcut:Score="{float(meta["score"]):.4f}"')
+    if meta.get("personal_score") is not None:
+        attrs.append(f'firstcut:PersonalScore="{float(meta["personal_score"]):.4f}"')
+    if meta.get("nima_score") is not None:
+        attrs.append(f'firstcut:NimaScore="{float(meta["nima_score"]):.4f}"')
+    bd = meta.get("breakdown")
+    if isinstance(bd, dict) and bd:
+        attrs.append(f'firstcut:Breakdown="{_attr(json.dumps(bd, separators=(",", ":"))) }"')
 
-    desc_parts = "\n      ".join(
-        f"<{_tag(k)}>{v}</{_tag(k)}>" for k, v in xmp.items()
-    )
-    return f"""<?xpacket begin="\xef\xbb\xbf" id="W5M0MpCehiHzreSzNTczkc9d"?>
-<x:xmpmeta xmlns:x="adobe:ns:meta/">
+    desc_attrs = ("\n        " + "\n        ".join(attrs)) if attrs else ""
+    xmp_doc = f"""<?xpacket begin="\ufeff" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="FirstCut 1.0">
   <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
     <rdf:Description rdf:about=""
-      xmlns:xmp="http://ns.adobe.com/xap/1.0/"
-      xmlns:dc="http://purl.org/dc/elements/1.1/">
-      {desc_parts}
-    </rdf:Description>
+        xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+        xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/"
+        xmlns:dc="http://purl.org/dc/elements/1.1/"
+        xmlns:firstcut="https://firstcut.app/ns/1.0/"{desc_attrs}/>
   </rdf:RDF>
 </x:xmpmeta>
 <?xpacket end="w"?>"""
+
+    sidecar = dest_dir / (src.stem + ".xmp")
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    # utf-8-sig writes the BOM as the FIRST bytes of the file, where Adobe
+    # readers expect it (the xpacket begin attribute repeats it by convention).
+    with open(sidecar, "w", encoding="utf-8-sig", newline="\n") as f:
+        f.write(xmp_doc)
+    return str(sidecar)

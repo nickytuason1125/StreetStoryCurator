@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
+import { Button } from './components/ui/Button'
 
 interface Props { children: ReactNode; /** inline = contain within a panel (per-view); overlay = fullscreen (root). */ variant?: 'overlay' | 'inline'; label?: string }
 interface State { error: Error | null; info: ErrorInfo | null }
@@ -57,11 +58,9 @@ export default class ErrorBoundary extends Component<Props, State> {
           <span style={{ color: 'var(--ink-3)', fontSize: 'var(--text-sm)', textAlign: 'center' }}>
             {String(error.message ?? error).slice(0, 200)}
           </span>
-          <button onClick={this.reset}
-            style={{ padding: 'var(--sp-1) var(--sp-3)', fontSize: 'var(--text-xs)', fontWeight: 600, cursor: 'pointer',
-              background: 'var(--raised)', color: 'var(--ink)', border: '1px solid var(--line-strong)', borderRadius: 'var(--r-sm)' }}>
+          <Button size="sm" onClick={this.reset}>
             Retry
-          </button>
+          </Button>
         </div>
       )
     }
@@ -86,16 +85,12 @@ export default class ErrorBoundary extends Component<Props, State> {
         <div style={{ display: 'flex', gap: 'var(--sp-2)', marginBottom: 'var(--sp-6)' }}>
           {/* Emphasis by luminance, not hue — the recovery action is not a
               destructive one, and the accent is reserved regardless. */}
-          <button onClick={this.reset}
-            style={{ padding: 'var(--sp-2) var(--sp-4)', fontSize: 'var(--text-sm)', fontWeight: 600, cursor: 'pointer',
-              background: 'var(--raised)', color: 'var(--ink)', border: '1px solid var(--line-strong)', borderRadius: 'var(--r-sm)' }}>
+          <Button variant="solid" onClick={this.reset}>
             Back to gallery
-          </button>
-          <button onClick={() => window.location.reload()}
-            style={{ padding: 'var(--sp-2) var(--sp-4)', fontSize: 'var(--text-sm)', fontWeight: 600, cursor: 'pointer',
-              background: 'transparent', color: 'var(--ink-2)', border: '1px solid var(--line-strong)', borderRadius: 'var(--r-sm)' }}>
+          </Button>
+          <Button variant="default" onClick={() => window.location.reload()}>
             Reload app
-          </button>
+          </Button>
         </div>
         <div style={{ color: 'var(--alarm-crit)', fontWeight: 600, marginBottom: 'var(--sp-1)' }}>
           {String(error.message ?? error)}

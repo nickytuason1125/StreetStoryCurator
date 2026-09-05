@@ -8,6 +8,16 @@ Windows multiprocessing uses "spawn" (not fork).
 import os, sys, json, traceback as _tb
 from pathlib import Path
 
+# PersonalHead taste blend — ON by default as of 2026-09. The 2026-08-30
+# opt-in gate (grade_pipeline_v2 Step 5) was set while the rating baseline
+# was still placeholder data; that era ended — cache/user_ratings.json now
+# holds 795 real ratings (tpe_master), the head was retrained on them, and
+# its 1536-d input width matches the Pro tier exactly (verified from the
+# npz mirror), so the blend engages rather than skipping on tier mismatch.
+# setdefault keeps FIRSTCUT_PERSONAL_TASTE=0 working as an explicit
+# opt-out for anyone who wants ratings to stay pure curation.
+os.environ.setdefault("FIRSTCUT_PERSONAL_TASTE", "1")
+
 # Suppress cmd-window flashes from child processes (same patch as server.py).
 try:
     import suppress_console  # noqa: F401

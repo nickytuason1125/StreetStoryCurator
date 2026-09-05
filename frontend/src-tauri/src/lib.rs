@@ -202,6 +202,58 @@ fn download_with_resume(url: &str, dest: &std::path::Path) -> Result<bool, Strin
     Ok(true)
 }
 
+/// GPU flavor for the first-run engine download: "cuda" (NVIDIA, ≥4 GB) or
+/// "cpu". Mirrors src/machine_profile.py so the shell can choose the right
+/// engine BEFORE any Python exists on the machine. One PowerShell WMI query,
+/// cached to <data_dir>/machine.json (the engine reuses the same file).
+fn detect_engine_flavor(data_dir: &std::path::Path) -> String {
+    let cache = data_dir.join("machine.json");
+    if let Ok(txt) = std::fs::read_to_string(&cache) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(txt.trim()) {
+            if let Some(verdict) = v.get("verdict").and_then(|x| x.as_str()) {
+                return match verdict {
+                    "full" => "cuda".to_string(),
+                    _ => "cpu".to_string(),
+                };
+            }
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let out = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command",
+                "Get-CimInstance Win32_VideoController | Select-Object Name,AdapterRAM | ConvertTo-Json"])
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+            .output();
+        if let Ok(o) = out {
+            let txt = String::from_utf8_lossy(&o.stdout).to_string();
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(txt.trim()) {
+                let empty = Vec::new();
+                let cards = v.as_array().unwrap_or(&empty);
+                let mut nvidia = false;
+                let mut vram_gb: f64 = 0.0;
+                for c in cards {
+                    let name = c.get("Name").and_then(|x| x.as_str())
+                        .unwrap_or("").to_lowercase();
+                    let ram = c.get("AdapterRAM").and_then(|x| x.as_f64())
+                        .unwrap_or(0.0) / 1e9;
+                    if name.contains("nvidia") || name.contains("geforce")
+                        || name.contains("rtx") || name.contains("quadro") {
+                        nvidia = true;
+                        vram_gb = vram_gb.max(ram);
+                    }
+                }
+                let verdict = if nvidia && vram_gb >= 4.0 { "full" } else { "cpu-flavor" };
+                let _ = std::fs::create_dir_all(data_dir);
+                let _ = std::fs::write(&cache,
+                    format!("{{\"verdict\":\"{}\"}}", verdict));
+                return if nvidia && vram_gb >= 4.0 { "cuda".into() } else { "cpu".into() };
+            }
+        }
+    }
+    "cpu".into()
+}
+
 /// Download every engine part from `base` (e.g. https://host/engine/1.0.0/),
 /// extracting each as it lands. Returns the bundle dir on success.
 fn download_engine(base: &str, engine_root: &std::path::Path, triple: &str) -> Option<PathBuf> {
@@ -283,11 +335,28 @@ fn resolve_engine(app: &tauri::AppHandle, triple: &str, ext: &str) -> Option<Pat
         return Some(engine_root.join(&name));
     }
 
-    // 4) First-run download.
+    // 4) First-run download. The flavor segment (cuda|cpu) is chosen by the
+    // machine's GPU — a CPU-only laptop downloads a ~3 GB engine, not a
+    // 16 GB CUDA one it cannot accelerate. A HEAD probe on part-01 decides
+    // flavor-path vs flat layout (hosts that predate flavors), so a mid-
+    // download network error never causes a cross-flavor second attempt.
     if let Ok(base) = env::var("FIRSTCUT_ENGINE_URL") {
-        if !base.trim().is_empty() {
-            eprintln!("[tauri] No engine installed — downloading from {}", base.trim());
-            return download_engine(base.trim(), &engine_root, triple);
+        let base = base.trim().to_string();
+        if !base.is_empty() {
+            let data_dir = engine_root
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| resource_dir.clone());
+            let flavor = detect_engine_flavor(&data_dir);
+            eprintln!("[tauri] No engine installed — GPU flavor: {}", flavor);
+            let flavored = format!("{}/{}", base, flavor);
+            let has_flavor = ureq::head(&format!("{}/curator-engine-01.zip", flavored))
+                .call()
+                .map(|r| r.status() == 200)
+                .unwrap_or(false);
+            let chosen = if has_flavor { flavored } else { base.clone() };
+            eprintln!("[tauri] downloading engine from {}", chosen);
+            return download_engine(&chosen, &engine_root, triple);
         }
     }
     eprintln!("[tauri] ERROR: no engine found and FIRSTCUT_ENGINE_URL is not set — cannot start backend.");

@@ -99,6 +99,24 @@ def main() -> None:
         f"Starting FirstCut v{_version}  host={args.host}  port={args.port}  "
         f"force_frontier={args.force_frontier}"
     )
+
+    # Bind pre-flight: when the port is already held — usually a stale FirstCut
+    # server from a previous session, still running OLD code and OLD safety
+    # policy — uvicorn's only output was a raw errno-10048 line, and the
+    # launcher looked broken. Name the likely cause and the fix instead.
+    import socket as _socket
+    with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _probe:
+        try:
+            _probe.bind((args.host, args.port))
+        except OSError:
+            logger.error(
+                f"Port {args.port} on {args.host} is already in use — most likely a "
+                f"stale FirstCut server from an earlier session, still running older "
+                f"code. Close it (Task Manager → python.exe, or run kill_ports.ps1) "
+                f"and relaunch; until then the UI may disagree with the backend."
+            )
+            raise SystemExit(1)
+
     uvicorn.run(
         "server:app",
         host=args.host,

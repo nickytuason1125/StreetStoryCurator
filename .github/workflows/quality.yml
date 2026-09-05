@@ -7,6 +7,25 @@ on:
     branches: [main]
 
 jobs:
+  pytest:
+    name: Python — test suite
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run test suite
+        # windows-latest matches the development platform: several tests
+        # exercise Windows-specific behaviour (win_job, path semantics).
+        run: python -m pytest tests -q --no-header
+
   python:
     name: Python — lint + security
     runs-on: ubuntu-latest

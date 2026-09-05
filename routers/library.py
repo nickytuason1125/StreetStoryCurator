@@ -67,7 +67,9 @@ async def serve_thumb(path: str = Query(...)):
     safe_name = _thumb_cache_name(src)
     thumb_path = THUMB_DIR / safe_name
     if thumb_path.exists():
-        return FileResponse(str(thumb_path))
+        # Explicit type: Windows' registry-backed mimetypes can mislabel .webp
+        # as text/plain, and strict MIME clients would then refuse the image.
+        return FileResponse(str(thumb_path), media_type="image/webp")
     # RAM guard: while a cull is running, do NOT decode a fresh thumbnail on demand.
     # Fresh RAW decodes (rawpy) + the full-preview fallback below spike RAM and
     # compete with the grade's SigLIP encode (~3.5 GB) on a memory-tight machine.
@@ -78,7 +80,7 @@ async def serve_thumb(path: str = Query(...)):
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(_THUMB_ONDEMAND, _gen_one_thumb, str(src))
     if thumb_path.exists():
-        return FileResponse(str(thumb_path))
+        return FileResponse(str(thumb_path), media_type="image/webp")
     # RAW/HEIC that produced no thumbnail (e.g. no embedded preview) → render a
     # full preview as a last resort.
     if src.suffix.lower() in (_RAW_EXTS | _HEIC_EXTS):
@@ -86,6 +88,63 @@ async def serve_thumb(path: str = Query(...)):
         if preview:
             return FileResponse(str(preview), media_type="image/jpeg")
     raise HTTPException(404, "Thumbnail could not be created")
+
+
+@router.get("/api/photo-faces")
+async def photo_faces(path: str = Query(...)):
+    """Close-Ups payload for one photo: face verdicts + per-face crops.
+
+    On demand (not grade-time) so the 64k rows graded before face geometry
+    was persisted get the same panel as fresh grades — one ~0.4 s CPU pass
+    per photo, run off the event loop. Never blocks grading: YuNet is a
+    232 KB CPU model, not part of the VRAM/RAM budget.
+    """
+    p = _safe_image_path(path)
+
+    def _compute():
+        import face_signals
+        return face_signals.faces_for_ui(str(p))
+
+    data = await run_in_threadpool(_compute)
+    return JSONResponse(data)
+
+
+@router.get("/api/people-search")
+async def people_search(path: str = Query(...), idx: int = Query(0)):
+    """Find every photo containing a face similar to the clicked one.
+
+    Reads the stored embedding for (path, face_idx) from the faces table and
+    kNN-searches that table. MEASURED calibration (2026-09, 87-photo live
+    index): same-appearance faces cluster at L2 0.70-0.80, everything else
+    spreads 0.80-0.97 with no clean gap — SigLIP-2 is an appearance encoder,
+    not a face-identity model, so this finds similar-looking people (strongest
+    within a shoot/burst), not biometric identity. Default cutoff 0.80 keeps
+    the close-match cluster; matches are sorted best-first so the gallery
+    leads with the strongest. A dedicated face-recognition embedding
+    (ArcFace-class) is the future upgrade for strict identity.
+    {indexed: false} = People index hasn't been built for this photo yet
+    (scripts/backfill_face_embeddings.py).
+    """
+    p = _safe_image_path(path)
+
+    def _search() -> dict:
+        import lance_store as ls
+        emb = ls.face_embedding_for(str(p), idx)
+        if emb is None:
+            return {"indexed": False, "matches": []}
+        rows = ls.search_faces(emb, top_k=600)
+        best: dict = {}
+        for r in rows:
+            rp = r.get("path", "")
+            d = float(r.get("_distance", 99.0))
+            if rp not in best or d < best[rp]["distance"]:
+                best[rp] = {"path": rp, "distance": round(d, 4)}
+        matches = [m for m in best.values() if m["distance"] <= 0.80]
+        matches.sort(key=lambda m: m["distance"])
+        return {"indexed": True, "matches": matches[:500]}
+
+    data = await run_in_threadpool(_search)
+    return JSONResponse(data)
 
 
 @router.get("/api/photo")

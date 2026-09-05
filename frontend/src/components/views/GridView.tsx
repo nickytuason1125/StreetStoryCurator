@@ -24,6 +24,10 @@ export const FilmThumb = memo(function FilmThumb({
     <button
       data-sel={isSel ? '1' : '0'}
       onClick={() => onSelect(p.id)}
+      // H2/M5: same accessible-name contract as the contact-sheet cell — the
+      // filmstrip's flag/star/grade signals are all visual (aria-hidden or
+      // bare SVG), so the name carries the full state instead.
+      aria-label={`${(p.path.split(/[\\/]/).pop() ?? '').replace(/\.[^.]+$/, '')} — ${gradeLabel(p.grade)}${p.stars > 0 ? `, ${p.stars} stars` : ''}${isUsed ? ', used' : ''}${isSel || isSelected ? ', selected' : ''}`}
       className={cn(
         'group flex shrink-0 cursor-pointer flex-col gap-px border-0 p-px',
         'rounded-sm outline outline-2 transition-[colors,outline-color,transform] duration-fast ease active:scale-[.99]',
@@ -170,7 +174,7 @@ export function GridView({
             </Button>
           )}
 
-          <div className="h-4 w-px shrink-0 bg-line-strong"/>
+          <div className="h-4 w-px shrink-0 bg-line"/>
           <label className="flex items-center gap-1">
             <span className="t-label">Size</span>
             <input type="range" min={140} max={420} step={20} value={density}
@@ -181,7 +185,7 @@ export function GridView({
 
           {onToggleDupes && dupesCount !== undefined && dupesCount > 0 && (
             <>
-              <div className="h-4 w-px shrink-0 bg-line-strong"/>
+              <div className="h-4 w-px shrink-0 bg-line"/>
               <Button size="sm" variant={showDuplicates ? 'solid' : 'quiet'} onClick={onToggleDupes}
                 title={showDuplicates ? 'Hide duplicate shots' : 'Show duplicate shots'}
                 icon={<Copy size={10}/>}>
@@ -236,6 +240,11 @@ export function GridView({
             const isPending = gradeKey(p.grade) === 'pending';
             return (
               <button key={p.id} onClick={() => selectMode ? toggleSelect(p.id) : onSelect(p.id)}
+                // H2: the grade was previously conveyed only by aria-hidden
+                // colour chips and rules (and Mid renders no chip at all), so a
+                // screen reader got NO verdict for any photo. The accessible
+                // name now carries everything the cell shows visually.
+                aria-label={`${(p.path.split(/[\\/]/).pop() ?? '').replace(/\.[^.]+$/, '')} — ${isPending ? 'not graded yet' : gradeLabel(p.grade)}${p.stars > 0 ? `, ${p.stars} star${p.stars === 1 ? '' : 's'}` : ''}${isUsed ? ', used' : ''}${isChecked ? ', checked' : ''}${isCurrent ? ', current' : ''}`}
                 className={cn(
                   'group relative flex cursor-pointer flex-col border-0 bg-transparent p-0',
                   'rounded-cell outline outline-2 outline-offset-2',
@@ -269,10 +278,9 @@ export function GridView({
                       contradict the rule under the very same cell. */}
                   {badge && (
                     <span aria-hidden
-                      className="t-label pointer-events-none absolute left-1 top-1 animate-chip-in rounded-md px-1 py-px"
-                      style={{ background: T.glass, color: badge }}>
-                      {gradeLabel(p.grade)}
-                    </span>
+                      className="pointer-events-none absolute left-1 top-1 h-2 w-2 animate-chip-in rounded-full ring-1 ring-black/40"
+                      style={{ background: badge }}
+                    />
                   )}
                   {/* The score is NOT repeated over the frame. It already has
                       two renderings on this cell: the number in the caption

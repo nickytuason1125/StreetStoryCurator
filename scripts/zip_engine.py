@@ -1,7 +1,7 @@
 """Package the PyInstaller engine into chunked zip resources.
 
 Why: tauri-build's resources glob stack-overflows on the 8k-file engine
-tree, AND NSIS (32-bit) cannot mmap files > 2 GB â€” so neither the loose
+tree, AND NSIS (32-bit) cannot mmap files > 2 GB Ã¢â‚¬â€ so neither the loose
 tree nor one big zip can ship. Chunked independent zips (~1.6 GB each)
 avoid both limits; the shell extracts every part on first launch
 (lib.rs start_sidecar) and NSIS recompresses for distribution.
@@ -15,8 +15,18 @@ import sys
 import zipfile
 from pathlib import Path
 
-SRC = Path(r"E:\firstcut-engine")  # engine staging (C: is too small to hold the loose tree)
-DST_DIR = Path(__file__).resolve().parent.parent / "frontend/src-tauri/resources"
+import argparse
+
+_ap = argparse.ArgumentParser()
+_ap.add_argument("--flavor", choices=("cuda", "cpu"), default="cuda",
+                 help="cuda = E:/firstcut-engine staging; cpu = dist-cpu (build_engine_cpu.py output)")
+_args = _ap.parse_args()
+
+if _args.flavor == "cpu":
+    SRC = Path(__file__).resolve().parent.parent / "dist-cpu" / "FirstCut"
+else:
+    SRC = Path(r"E:\\firstcut-engine")  # engine staging (C: is too small to hold the loose tree)
+DST_DIR = Path(__file__).resolve().parent.parent / "frontend/src-tauri/resources" / _args.flavor
 PART_LIMIT = 1_600_000_000  # stay well under NSIS's 2 GB mmap limit
 TRIPLE = "x86_64-pc-windows-msvc"
 

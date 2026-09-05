@@ -18,7 +18,7 @@ from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, field_validator, validator, model_validator
 
 from server_impl import (  # shared state & helpers
-    Path, _BG_EXECUTOR, _CATALOG_PATH, _DATA_DIR, _grading_active, _release_annotation_model, _trim_crash_log, analyzer, annotation_queue, asyncio, gpu_lock, os, sys,
+    Path, _CATALOG_PATH, _DATA_DIR, _grading_active, _release_annotation_model, _trim_crash_log, analyzer, annotation_queue, asyncio, gpu_lock, os, sys,
 )
 import json
 
@@ -33,7 +33,7 @@ import json
 # it (the route still registers) and neither did the harness, which invokes
 # grade_runner.py directly and never goes through this handler.
 _UNIT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-from routers.library import GradeRequest, _precompute_clusters, _run_vlm_deep_review
+from routers.library import GradeRequest
 
 router = APIRouter()
 
@@ -67,56 +67,6 @@ def __getattr__(name):
     import server_impl as _si
     return getattr(_si, name)
 
-
-@router.post("/api/grade")
-async def grade_photos(req: GradeRequest):
-    import asyncio
-    global GLOBAL_CLUSTER_CACHE
-    if not os.path.isdir(req.folder_path):
-        raise HTTPException(400, "Invalid folder path")
-    try:
-        loop = asyncio.get_running_loop()
-        results = await loop.run_in_executor(
-            None,
-            lambda: analyzer.analyze_folder(req.folder_path, preset=req.preset, force_rescan=True),
-        )
-
-        # Load any VLM critique results already on disk from a prior deep_review run.
-        from pathlib import Path as _Path
-        import json as _json
-        _grade_cache_path = _DATA_DIR / "cache" / "vlm_rationale_cache.json"
-        _vlm_grades: dict = (
-            _json.loads(_grade_cache_path.read_text(encoding="utf-8"))
-            if _grade_cache_path.exists() else {}
-        )
-
-        gallery = [{
-            "path":        r[0],
-            "grade":       r[1]["grade"],
-            "score":       r[1]["score"],
-            "critique":    r[1]["critique"],
-            "breakdown":   r[1]["breakdown"],
-            "nima_score":  r[1].get("nima_score"),
-            "sim_flag":    r[1].get("sim_flag",   ""),
-            "cluster_id":  r[1].get("cluster_id", -1),
-            "faces":       r[1].get("faces", 0),
-            "rationale": _vlm_grades.get(r[0]),   # None until background task completes
-        } for r in results]
-        strong = sum(1 for g in gallery if "Strong" in g["grade"])
-        mid    = sum(1 for g in gallery if "Mid"    in g["grade"])
-        weak   = sum(1 for g in gallery if "Weak"   in g["grade"])
-
-        # Invalidate stale cache for a new folder, then kick off background tasks.
-        GLOBAL_CLUSTER_CACHE = {}
-        _BG_EXECUTOR.submit(_precompute_clusters, req.folder_path, results)
-        if req.deep_review:
-            _BG_EXECUTOR.submit(_run_vlm_deep_review, results)
-
-        return JSONResponse({"status": "success", "total": len(gallery),
-                             "strong": strong, "mid": mid, "weak": weak,
-                             "data": gallery})
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/api/ollama/status")
@@ -172,10 +122,15 @@ async def grade_photos_v2_stream(req: GradeRequest):
     from fastapi.responses import StreamingResponse
 
     # ── Single-flight guard ────────────────────────────────────────────────
-    # _grading_active is only SET inside _stream_with_lock() once the SSE body
-    # starts iterating, so without this check a reload mid-grade, a second
-    # window, or a double-fired modal each spawn their own grade_runner
-    # subprocess — competing for gpu_lock, VRAM, and the RAM floor.
+    # The check runs here and _grading_active is SET just before the
+    # StreamingResponse is returned. Everything between the two is
+    # synchronous (listdir, psutil, json — no awaits), so on the event loop
+    # no second request can slip between check and set. The flag used to be
+    # set only inside _stream_with_lock(), AFTER `await gpu_lock.acquire()` —
+    # a genuine yield point — leaving a window where a reload mid-grade, a
+    # second window, or a double-fired modal each spawned their own
+    # grade_runner subprocess, competing for gpu_lock, VRAM, and the RAM
+    # floor. This generator's finally remains the single CLEAR point.
     if _grading_active.is_set():
         raise HTTPException(
             409,
@@ -246,21 +201,29 @@ async def grade_photos_v2_stream(req: GradeRequest):
     async def _stream_with_lock():
         # Hold gpu_lock for the full grading run so the annotation daemon
         # cannot load its GGUF concurrently and bust the 5.5 GB VRAM ceiling.
+        # EVERYTHING from the acquire onward sits inside the try: the prelude
+        # used to run outside it, so a failure there leaked gpu_lock — and,
+        # now that the handler owns the single-flight SET, would have wedged
+        # the guard until restart. This generator owns only the CLEAR.
         _gl = gpu_lock
-        if _gl is not None:
-            await _gl.acquire()
-        # Free RAM held by background work before the grade's heavy model loads:
-        #   - the niche detector's CLIP (~0.7 GB), reloads on the next folder-select
-        #   - pause the background thumbnail prewarm (RAW decodes spike RAM)
+        _acquired = False
+        _proc = None
+        _req_path = None
+        _prog_path = None
         try:
-            import fast_niche_detector as _fnd_rel
-            _fnd_rel.release()
-        except Exception:
-            pass
-        _release_annotation_model()   # free the ~1.5-4 GB annotation model
-        _precull_ram_sweep()          # parent-cache sweep BEFORE the encode subprocess spawns
-        _grading_active.set()
-        try:
+            if _gl is not None:
+                await _gl.acquire()
+                _acquired = True
+            # Free RAM held by background work before the grade's heavy model loads:
+            #   - the niche detector's CLIP (~0.7 GB), reloads on the next folder-select
+            #   - pause the background thumbnail prewarm (RAW decodes spike RAM)
+            try:
+                import fast_niche_detector as _fnd_rel
+                _fnd_rel.release()
+            except Exception:
+                pass
+            _release_annotation_model()   # free the ~1.5-4 GB annotation model
+            _precull_ram_sweep()          # parent-cache sweep BEFORE the encode subprocess spawns
             import tempfile as _tf, subprocess as _sp
 
             # ── Run the grade as a CLEAN subprocess (grade_runner.py) ───────────
@@ -425,9 +388,13 @@ async def grade_photos_v2_stream(req: GradeRequest):
                 try: os.unlink(_tmp)
                 except Exception: pass
             _grading_active.clear()   # resume background thumbnail prewarm
-            if _gl is not None:
+            if _gl is not None and _acquired:
                 _gl.release()
 
+    # SET here, not inside the generator — see the single-flight comment above.
+    # Every early-return above (400, 503) has already been passed, so the flag
+    # cannot outlive a refused request.
+    _grading_active.set()
     return StreamingResponse(_stream_with_lock(), media_type="text/event-stream")
 
 
@@ -630,9 +597,36 @@ async def personal_star(payload: dict):
             global _ratings_since_retrain
             _ratings_since_retrain += 1
             if _ratings_since_retrain >= _RETRAIN_EVERY:
+                # L5: the old code discarded the task reference (failures
+                # surfaced only as "exception was never retrieved") and reset
+                # the counter BEFORE the retrain ran, so a failed retrain
+                # waited another 25 ratings to retry. The done-callback now
+                # logs the outcome and restores the counter on failure.
+                fired_at = _ratings_since_retrain
                 _ratings_since_retrain = 0
                 import asyncio as _aio
-                _aio.create_task(run_in_threadpool(_retrain_personal_baseline))
+
+                def _on_retrain_done(task: "_aio.Future") -> None:
+                    global _ratings_since_retrain
+                    try:
+                        if task.cancelled():
+                            _ratings_since_retrain = fired_at
+                            print("[star] auto-retrain cancelled — counter restored", flush=True)
+                            return
+                        exc = task.exception()
+                        if exc is not None:
+                            _ratings_since_retrain = fired_at
+                            print(f"[star] auto-retrain FAILED — counter restored to "
+                                  f"{fired_at}: {exc}", flush=True)
+                        else:
+                            print("[star] auto-retrain completed", flush=True)
+                    except Exception as _e_cb:
+                        print(f"[star] auto-retrain callback error: {_e_cb}", flush=True)
+
+                _task = _aio.create_task(run_in_threadpool(_retrain_personal_baseline))
+                _task.add_done_callback(_on_retrain_done)
+                _AUTO_RETRAIN_TASKS.add(_task)
+                _task.add_done_callback(_AUTO_RETRAIN_TASKS.discard)
                 retrained = "scheduled"
         except Exception as _e_rt:
             print(f"[star] auto-retrain schedule skipped: {_e_rt}")
@@ -679,6 +673,9 @@ async def taste_summary():
 # and fits the PersonalHead from scratch (stable for 100s of ratings).
 _RETRAIN_EVERY = 25
 _ratings_since_retrain = 0
+# L5: strong references to in-flight auto-retrain tasks, so a running retrain
+# can never be garbage-collected mid-flight.
+_AUTO_RETRAIN_TASKS: set = set()
 
 
 def _gather_rating_samples() -> list:
@@ -843,121 +840,5 @@ async def sort_files(payload: dict):
         print(f"[sort-files] failed: {e}", flush=True)
         raise HTTPException(500, "Could not sort the files — see the server log for details.")
 
-
-@router.post("/api/grade/stream")
-async def grade_photos_stream(req: GradeRequest):
-    """Streams grading progress as SSE, then emits the full result as the final event."""
-    import asyncio, json
-    from fastapi.responses import StreamingResponse
-
-    global GLOBAL_CLUSTER_CACHE
-
-    # Resolve which folders to grade — multi-folder takes priority
-    all_folders = [str(Path(fp).resolve()) for fp in req.folder_paths if os.path.isdir(fp)]
-    if not all_folders:
-        if req.folder_path and os.path.isdir(req.folder_path):
-            all_folders = [req.folder_path]
-        else:
-            raise HTTPException(400, "No valid folder path provided")
-
-    loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
-    aqueue: asyncio.Queue = asyncio.Queue()
-
-    def _progress(frac: float, desc: str = "") -> None:
-        loop.call_soon_threadsafe(
-            aqueue.put_nowait, {"progress": round(frac, 3), "desc": desc}
-        )
-
-    async def _run() -> None:
-        global GLOBAL_CLUSTER_CACHE
-        try:
-            # Grade each folder; combine all results
-            n = len(all_folders)
-            combined: list = []
-            for i, fp in enumerate(all_folders):
-                def _folder_progress(frac: float, desc: str = "", _i=i, _n=n) -> None:
-                    _progress((_i + frac) / _n, desc)
-                folder_results = await loop.run_in_executor(
-                    None,
-                    lambda _fp=fp: analyzer.analyze_folder(
-                        _fp, preset=req.preset,
-                        force_rescan=True, progress=_folder_progress,
-                    ),
-                )
-                combined.extend(folder_results)
-            results = combined
-
-            from pathlib import Path as _Path
-            import json as _json
-            _grade_cache_path = _DATA_DIR / "cache" / "vlm_rationale_cache.json"
-            _vlm_grades: dict = (
-                _json.loads(_grade_cache_path.read_text(encoding="utf-8"))
-                if _grade_cache_path.exists() else {}
-            )
-            gallery = [{
-                "path":        r[0],
-                "grade":       r[1]["grade"],
-                "score":       r[1]["score"],
-                "critique":    r[1]["critique"],
-                "breakdown":   r[1]["breakdown"],
-                "nima_score":  r[1].get("nima_score"),
-                "sim_flag":    r[1].get("sim_flag", ""),
-                "cluster_id":  r[1].get("cluster_id", -1),
-                "faces":       r[1].get("faces", 0),
-                "rationale": _vlm_grades.get(r[0]),
-            } for r in results]
-            strong = sum(1 for g in gallery if "Strong" in g["grade"])
-            mid    = sum(1 for g in gallery if "Mid"    in g["grade"])
-            weak   = sum(1 for g in gallery if "Weak"   in g["grade"])
-            GLOBAL_CLUSTER_CACHE = {}
-            _BG_EXECUTOR.submit(_precompute_clusters, all_folders[0], results)
-            if req.deep_review:
-                _BG_EXECUTOR.submit(_run_vlm_deep_review, results)
-
-            # Run MOGCO beam search now that DuckDB is populated.
-            # Enrich paths with gallery metadata so the frontend can render directly.
-            mogco_sequence: list = []
-            try:
-                from mogco_sequencer import run_mogco_sequence
-                beam = await loop.run_in_executor(None, run_mogco_sequence)
-                if beam.get("paths"):
-                    info_by_path = {g["path"]: g for g in gallery}
-                    for path, slot, obj in zip(
-                        beam["paths"], beam["slots"], beam["beam_objectives"]
-                    ):
-                        frame = dict(info_by_path.get(path, {"path": path}))
-                        frame["slot"]             = slot
-                        frame["mogco_objectives"] = obj
-                        frame["engine"]           = "mogco-beam"
-                        mogco_sequence.append(frame)
-            except Exception:
-                pass  # MOGCO failure never blocks grading result
-
-            await aqueue.put({
-                "done": True, "total": len(gallery),
-                "strong": strong, "mid": mid, "weak": weak, "data": gallery,
-                "mogco_sequence": mogco_sequence,
-            })
-        except Exception as exc:
-            await aqueue.put({"error": str(exc)})
-
-    asyncio.create_task(_run())
-
-    async def _generate():
-        while True:
-            try:
-                msg = await asyncio.wait_for(aqueue.get(), timeout=300)
-            except asyncio.TimeoutError:
-                yield "data: {\"ping\":true}\n\n"
-                continue
-            yield f"data: {json.dumps(msg)}\n\n"
-            if msg.get("done") or msg.get("error"):
-                break
-
-    return StreamingResponse(
-        _generate(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
 
 

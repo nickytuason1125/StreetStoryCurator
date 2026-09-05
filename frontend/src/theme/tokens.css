@@ -36,8 +36,8 @@
   --surface:      #161616;  /* panels, header, filmstrip rail, modals          */
   --raised:       #202020;  /* controls, inputs, chips                         */
   --raised-hover: #2a2a2a;  /* THE hover token: +11 luminance, no hue          */
-  --line:         #262626;  /* hairline dividers                               */
-  --line-strong:  #3d3d3d;  /* panel edges, active control borders             */
+  --line:         #232323;  /* hairline dividers                               */
+  --line-strong:  #373737;  /* panel edges, active control borders             */
 
   /* Chrome that floats ABOVE the artwork (filmstrip scrubber, loupe chrome,
    * floating toolbars). Translucent + blurred so the photograph stays present

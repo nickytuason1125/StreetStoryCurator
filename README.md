@@ -91,6 +91,11 @@ library need almost no memory, and only grading has a floor.
 
 All models run locally. Model weights are downloaded on first launch via HuggingFace / ultralytics (cached in `~/.cache/huggingface` and `models/`).
 
+> **Offline note:** after setup, everything runs with no network. The one
+> exception is `POST /api/models/pull` — an explicit, user-initiated action
+> (Setup / the Models panel) that downloads *optional* GGUF models from
+> HuggingFace. Nothing phones home on its own; no telemetry, no usage pings.
+
 ---
 
 ## Folder Layout

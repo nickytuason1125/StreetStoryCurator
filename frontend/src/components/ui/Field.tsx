@@ -1,3 +1,4 @@
+import { cloneElement, isValidElement, useId } from 'react';
 import type { ReactNode, TextareaHTMLAttributes } from 'react';
 import { cn } from '../../lib/cn';
 
@@ -20,14 +21,23 @@ export function Field({
   children: ReactNode;
   className?: string;
 }) {
+  const generated = useId();
+  const childId = isValidElement(children)
+    ? ((children.props as { id?: string }).id)
+    : undefined;
+  const controlId = childId ?? generated;
+  const control = isValidElement(children) && !childId
+    ? cloneElement(children as React.ReactElement<{ id?: string }>, { id: controlId })
+    : children;
+
   return (
     <div className={cn('flex flex-col gap-2', className)}>
       <div className="flex items-center justify-between gap-2">
-        <span className="t-label">{label}</span>
+        <label htmlFor={controlId} className="t-label">{label}</label>
         {action}
       </div>
       {hint && <p className="-mt-1 text-sm text-ink-3">{hint}</p>}
-      {children}
+      {control}
     </div>
   );
 }

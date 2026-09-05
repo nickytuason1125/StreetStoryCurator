@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import type { ReactNode } from 'react';
 import { X } from 'lucide-react';
 import { cn } from '../../lib/cn';
@@ -38,12 +39,25 @@ export function Modal({
 }) {
   const panel = useRef<HTMLDivElement>(null);
   const restoreTo = useRef<Element | null>(null);
+  // M6: the focus trap only protects keyboard Tab — a screen reader's virtual
+  // cursor can still reach the occluded page behind the modal. The dialog now
+  // renders through a portal to <body>, so everything inside #root is the app
+  // itself and can be inerted wholesale while the dialog is open (restored on
+  // unmount). Nested modals are safe: they portal to body too, never into #root.
+  const inerted = useRef<HTMLElement[]>([]);
 
   useEffect(() => {
     restoreTo.current = document.activeElement;
     panel.current?.focus();
     const el = panel.current;
     if (el) openDialogs.push(el);
+    const root = document.getElementById('root');
+    if (root) {
+      for (const child of Array.from(root.children)) {
+        const el2 = child as HTMLElement;
+        if (!el2.inert) { el2.inert = true; inerted.current.push(el2); }
+      }
+    }
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         // Only the topmost open dialog consumes Escape.
@@ -79,11 +93,14 @@ export function Modal({
       // Remove from the registry so the modal underneath becomes topmost.
       const idx = openDialogs.indexOf(el);
       if (idx >= 0) openDialogs.splice(idx, 1);
+      // Restore the occluded app for the next dialog or for plain browsing.
+      for (const el2 of inerted.current) { el2.inert = false; }
+      inerted.current = [];
       (restoreTo.current as HTMLElement | null)?.focus?.();
     };
   }, [onClose]);
 
-  return (
+  return createPortal(
     <div
       className="fixed inset-0 z-[500] flex items-center justify-center bg-scrim"
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
@@ -122,6 +139,7 @@ export function Modal({
           </div>
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
