@@ -68,9 +68,9 @@ if getattr(sys, 'frozen', False):
     os.chdir(_BUNDLE_DIR)
     # Writable state stays OUT of the bundle: _internal is reinstalled wholesale
     # on update and may sit under Program Files, which is read-only.
+    from platform_compat import app_data_dir
     _DATA_DIR = Path(os.environ.get(
-        'CURATOR_DATA_DIR',
-        str(Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'FirstCut')))
+        'CURATOR_DATA_DIR', str(app_data_dir())))
     _DATA_DIR.mkdir(parents=True, exist_ok=True)
 else:
     _EXE_DIR = Path(__file__).parent

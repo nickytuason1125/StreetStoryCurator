@@ -43,6 +43,12 @@ _OC     = {t: (_rp.spec_for(t).model_tag, _rp.spec_for(t).oc_cache)
 
 
 def _device():
+    # Apple Silicon: MPS is opt-in (FIRSTCUT_TORCH_DEVICE=mps) until verified
+    # on real hardware — a wrong device answer here silently changes every
+    # embedding, and the deterministic-CPU fallback is always correct.
+    forced = os.environ.get("FIRSTCUT_TORCH_DEVICE", "")
+    if forced and forced != "auto":
+        return forced
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 

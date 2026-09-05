@@ -1844,7 +1844,7 @@ export default function App() {
   const handleFindPerson = async (tokens: string[]) => {
     if (!tokens.length) return;
     const [path, idxStr] = tokens[0].split('|');
-    notify('Finding this person…');
+    notify('Finding similar faces…');
     try {
       const r = await fetch(`${API}/api/people-search?path=${encodeURIComponent(path)}&idx=${idxStr}`);
       const d = await r.json();
@@ -1856,7 +1856,10 @@ export default function App() {
       setSearchResults(new Set(matches.map((m: any) => m.path)));
       setFilterGrade(null); setFilterStars(null); setFilterFaces(null);
       setMainTab('gallery');
-      notify(`People search — ${matches.length} frame${matches.length !== 1 ? 's' : ''} of this person`, 'success');
+      // Honest semantics: SigLIP-2 is an appearance encoder, not a biometric
+      // one — the matches are similar-looking faces, best first (measured
+      // 2026-09: same-appearance ≈0.70–0.80 L2, everything else 0.80–0.97).
+      notify(`Found ${matches.length} frame${matches.length !== 1 ? 's' : ''} with a similar-looking face — best first`, 'success');
     } catch {
       notify('People search failed — check the server log.', 'error');
     }

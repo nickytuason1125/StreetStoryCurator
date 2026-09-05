@@ -96,6 +96,18 @@ def _wait_for_server(url, retries=120, interval=0.25):
 
 
 def _find_browser():
+    # macOS first (Intel + ARM — same .app layout), then Windows paths.
+    if sys.platform == "darwin":
+        for app, browser_type in (
+            ("Google Chrome", "chrome"),
+            ("Microsoft Edge", "edge"),
+            ("Chromium", "chrome"),
+            ("Firefox", "firefox"),
+        ):
+            p = Path("/Applications") / f"{app}.app"
+            if p.exists():
+                return str(p / "Contents" / "MacOS" / app), browser_type
+        return None, None
     # Try Edge first, then Chrome, then Firefox
     candidates = [
         (r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe", "edge"),
@@ -169,7 +181,8 @@ def main():
         if browser_path:
             if browser_type == "edge":
                 # Isolated Edge profile so the app window is always separate
-                profile_dir = Path(os.environ.get("LOCALAPPDATA", _ROOT)) / "FirstCut" / "EdgeProfile"
+                from platform_compat import app_data_dir
+                profile_dir = app_data_dir() / "EdgeProfile"
                 profile_dir.mkdir(parents=True, exist_ok=True)
 
                 cmd = [
@@ -184,7 +197,8 @@ def main():
                 _log(f"Opening Edge app mode: {url}")
             elif browser_type == "chrome":
                 # Chrome app mode
-                profile_dir = Path(os.environ.get("LOCALAPPDATA", _ROOT)) / "FirstCut" / "ChromeProfile"
+                from platform_compat import app_data_dir
+                profile_dir = app_data_dir() / "ChromeProfile"
                 profile_dir.mkdir(parents=True, exist_ok=True)
 
                 cmd = [
@@ -199,7 +213,8 @@ def main():
                 _log(f"Opening Chrome app mode: {url}")
             elif browser_type == "firefox":
                 # Firefox app mode
-                profile_dir = Path(os.environ.get("LOCALAPPDATA", _ROOT)) / "FirstCut" / "FirefoxProfile"
+                from platform_compat import app_data_dir
+                profile_dir = app_data_dir() / "FirefoxProfile"
                 profile_dir.mkdir(parents=True, exist_ok=True)
 
                 cmd = [

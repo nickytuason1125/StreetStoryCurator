@@ -85,6 +85,8 @@ def free_ram_gb() -> float:
         import psutil
         return psutil.virtual_memory().available / (1 << 30)
     except Exception:
+        pass
+    if sys.platform == "win32":     # psutil-less Windows fallback
         try:
             import ctypes
             class _MEM(ctypes.Structure):
@@ -97,7 +99,8 @@ def free_ram_gb() -> float:
             ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m))
             return m.ullAvailPhys / (1 << 30)
         except Exception:
-            return 99.0
+            pass
+    return 99.0   # no reliable answer — let the encoder's own floor decide
 
 
 def person_rows() -> list[str]:

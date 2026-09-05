@@ -783,7 +783,7 @@ print(p if p else '', end='')
                     [_py, temp_script],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
-                    creationflags=subprocess.CREATE_NO_WINDOW,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
                     close_fds=True
                 )
                 stdout, _ = proc.communicate(timeout=120)

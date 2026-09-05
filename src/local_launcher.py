@@ -277,7 +277,7 @@ def _build_frontend_if_needed():
         cwd=str(_ROOT / "frontend"),
         shell=False,
         capture_output=True,
-        creationflags=subprocess.CREATE_NO_WINDOW,
+        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         text=True,
     )
     if build.returncode != 0:
@@ -332,7 +332,7 @@ def _start_frontend_watch():
             cwd=str(_ROOT / "frontend"),
             stdout=_log_fh,
             stderr=_log_fh,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
         _log(f"Frontend watch started (PID {proc.pid})")
     except Exception as exc:

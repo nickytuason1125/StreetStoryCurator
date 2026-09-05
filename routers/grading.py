@@ -268,9 +268,19 @@ async def grade_photos_v2_stream(req: GradeRequest):
                 _free_gb = _ps_gate.virtual_memory().available / 1e9
                 if _free_gb < 0.75:
                     import json as _sj
-                    yield f"data: {_json.dumps({'error': f'Refused: only {_free_gb:.1f} GB RAM free and a cull needs ~2.5 GB — running it would freeze this machine (measured). Close a few apps and retry.'})}\n\n"
+                    # Tiered refusal: the hard floor stays hard (measured 0.01 GB
+                    # free + 1.2 GB pagefile growth), but the refusal carries
+                    # structured alternatives so the UI can act, not just fail.
+                    yield f"data: {_json.dumps({'error': f'Refused: only {_free_gb:.1f} GB RAM free and a cull needs ~2.5 GB — running it would freeze this machine (measured). Close a few apps and retry.', 'alternatives': {'close_apps': True, 'smaller_selection': True}})}\n\n"
                     print(f"[server] Grade REFUSED pre-spawn: {_free_gb:.2f} GB free", flush=True)
                     return
+                if _free_gb < 2.0:
+                    import json as _sj
+                    # Tight-but-viable band: warn once, do not block. The cull
+                    # runs slower here; the checkpoint + Resume recover it if
+                    # the machine still runs out mid-way.
+                    yield f"data: {_json.dumps({'notice': f'Tight RAM: {_free_gb:.1f} GB free — the cull will run slower. Closing a few apps or grading a smaller selection keeps it fast.'})}\n\n"
+                    print(f"[server] Grade advisory: tight RAM {_free_gb:.2f} GB free — proceeding", flush=True)
             except Exception:
                 pass
 

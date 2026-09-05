@@ -326,7 +326,7 @@ export function AnalysisPanel({
                                 <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
                                   {fu.faces.map((f: any, i: number) => f.crop && (
                                     <button key={i}
-                                      title={`Face ${i + 1} of ${n} — click to find this person across the library`}
+                                      title={`Face ${i + 1} of ${n} — click to find similar-looking faces across the library`}
                                       onClick={() => onFindPerson([`${sel.path}|${i}`])}
                                       style={{ padding:0, cursor:'pointer', background:'none', border:`1px solid ${T.line}`, borderRadius:'var(--r-md)', display:'block' }}>
                                       <img src={f.crop} alt="" decoding="async"

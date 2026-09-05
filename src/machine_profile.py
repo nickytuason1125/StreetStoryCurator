@@ -107,7 +107,12 @@ def _gpu_via_wmi() -> tuple[str, float, str]:
 
 
 def _cache_path() -> Path:
-    base = os.environ.get("FIRSTCUT_DATA_DIR") or os.environ.get("APPDATA") or str(Path.home())
+    if os.environ.get("FIRSTCUT_DATA_DIR"):
+        base = os.environ["FIRSTCUT_DATA_DIR"]
+    elif sys.platform == "darwin":
+        base = str(Path.home() / "Library" / "Application Support")
+    else:
+        base = os.environ.get("APPDATA") or str(Path.home())
     return Path(base) / "FirstCut" / "machine.json"
 
 
