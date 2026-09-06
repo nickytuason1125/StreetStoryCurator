@@ -266,18 +266,19 @@ async def grade_photos_v2_stream(req: GradeRequest):
             try:
                 import psutil as _ps_gate
                 _free_gb = _ps_gate.virtual_memory().available / 1e9
-                # Measured thrash line: at 2.0 GB free the encode subprocess
-                # (~4 GB peak, HF fp16 loader) pagefiles the machine into
-                # "app unusable" — the user's own report, 2026-09. Below 2.2 GB
-                # a cull is refused with alternatives; 2.2–3.0 GB runs but
-                # warns. The old 0.75 GB floor was the point of machine death,
-                # not the point where the experience dies.
-                if _free_gb < 2.2:
+                # The floor follows the ACTIVE encoder: ~4.0 GB floor for the
+                # torch fp16 loader (peak ~4 GB) vs ~2.0 GB once the ONNX
+                # graphs are exported (measured peak ~1.2 GB). Measured thrash
+                # line: at 2.0 GB free on the torch path the machine
+                # page-thrashes and the app freezes (user report, 2026-09).
+                from siglip2_encoder import _default_ram_floor_gb as _floor_gb
+                _need = _floor_gb() + 0.2
+                if _free_gb < _need:
                     import json as _sj
-                    yield f"data: {_json.dumps({'error': f'Refused: only {_free_gb:.1f} GB RAM free and a cull needs ~2.5 GB — at this level the machine page-thrashes and the app freezes (measured). Close a few apps — a browser tab or two is usually enough — and retry.', 'alternatives': {'close_apps': True, 'smaller_selection': True}})}\n\n"
-                    print(f"[server] Grade REFUSED pre-spawn: {_free_gb:.2f} GB free", flush=True)
+                    yield f"data: {_json.dumps({'error': f'Refused: only {_free_gb:.1f} GB RAM free and a cull needs ~{_need:.1f} GB — at this level the machine page-thrashes and the app freezes (measured). Close a few apps — a browser tab or two is usually enough — and retry.', 'alternatives': {'close_apps': True, 'smaller_selection': True}})}\n\n"
+                    print(f"[server] Grade REFUSED pre-spawn: {_free_gb:.2f} GB free (need {_need:.1f})", flush=True)
                     return
-                if _free_gb < 3.0:
+                if _free_gb < _need + 0.8:
                     import json as _sj
                     # Tight-but-viable band: warn once, do not block. The cull
                     # runs slower here; the checkpoint + Resume recover it if

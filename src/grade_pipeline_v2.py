@@ -1588,6 +1588,7 @@ def run_v2(
                     print("[v2] Retrying SigLIP-2 on CPU…")
                 else:
                     print("[v2] SigLIP-2 unavailable after all attempts.")
+                    _siglip_last_err += "\n" + _tb.format_exc()   # full chain — the wrapper error alone hides the failing frame
                     print(_tb.format_exc())
 
         # SigLIP-2 of the active tier is required (dim = _ENC_DIM: high 1536 /

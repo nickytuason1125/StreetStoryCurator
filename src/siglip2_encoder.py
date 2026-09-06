@@ -305,10 +305,14 @@ class SigLIP2Encoder:
             _last_rc = None
             for _attempt in range(1, self._MAX_ATTEMPTS + 1):
                 print(f"[siglip2] encode_worker start: mode={mode} n={len(items)} attempt={_attempt}", flush=True)
+                import subprocess as _sp
                 with open(_crash_log, "a", encoding="utf-8", errors="replace") as _lf:
                     r = win_job.run(
                         [sys.executable, str(self._WORKER), mode, in_path, out_path],
                         env=env, cwd=str(Path(__file__).resolve().parent.parent),
+                        stdin=_sp.DEVNULL,   # explicit: a detached pythonw chain inherits a std handle that turns
+                                             # non-duplicable in the grandchild (WinError 6/50 at pipe creation —
+                                             # measured 2026-09-06). DEVNULL opens NUL fresh in THIS process.
                         stdout=_lf, stderr=_lf,
                         timeout=3600,
                     )

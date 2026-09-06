@@ -268,7 +268,12 @@ class RunProfile:
     @property
     def encoder_source(self) -> str:
         loader = "hf" if self.has_lean_checkpoint else "openclip"
-        return f"{loader}-{self.tier}-{self.model_tag}"
+        # ONNX must be part of the source: the graph is the same weights but
+        # fp16 kernels differ (embedding cosine ~0.9997 vs torch — measured),
+        # so switching loaders without changing the tag would compare probes
+        # against embeddings from a subtly different space.
+        onnx = "-onnx" if self.onnx_enabled() else ""
+        return f"{loader}{onnx}-{self.tier}-{self.model_tag}"
 
     # -- resource decisions -------------------------------------------------
     @property
