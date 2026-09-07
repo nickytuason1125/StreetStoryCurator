@@ -339,7 +339,12 @@ def _start_frontend_watch():
         _log(f"Frontend watch failed to start: {exc}")
 
 
-def _wait_for_server(url, retries=120, interval=0.25):
+def _wait_for_server(url, retries=480, interval=0.5):
+    # 480 × 0.5 s = 4 minutes: on a memory-pressured machine the backend's
+    # 78 MB catalog load + Lance preload page-thrash for minutes (measured
+    # 2026-09-07 — the old 30 s wait declared "did not become available"
+    # while the backend was still loading and bound seconds later).
+
     for i in range(retries):
         try:
             urllib.request.urlopen(url, timeout=1)
