@@ -566,7 +566,10 @@ export default function App() {
     document.addEventListener('keydown', onKey);
     return () => { document.removeEventListener('keydown', onKey); prevFocus?.focus?.(); };
   }, [preGradeModal]);
-  const [rescanAll,      setRescanAll]      = useState(true);
+  // Default scope: "New photos only". Re-grading everything is the rarer,
+  // heavier choice — an SD-card upload session must never silently re-grade
+  // the whole library just because the user clicked through the modal.
+  const [rescanAll,      setRescanAll]      = useState(false);
   const [heatmapB64,     setHeatmapB64]     = useState<string | null>(null);
   const [heatmapPath,    setHeatmapPath]    = useState<string | null>(null);
   const [showHeatmap,    setShowHeatmap]    = useState(false);
@@ -1441,7 +1444,14 @@ export default function App() {
     setGradeDesc("");
     setGradeStartMs(Date.now());
     setGradeEtaSecs(null);
-    const allFolderPaths = folders.length > 0 ? folders.map(sanitizePath) : [safePath];
+    // Scope honesty (2026-09-07 SD-card upload): the pre-grade modal shows THIS
+    // folder's photo count, so the grade must run on THIS folder. Sending every
+    // saved library folder made "Re-grade everything" silently re-grade the
+    // whole ~100k library while the modal advertised the 6k folder on screen —
+    // and the runner's all-folders accumulation turned that into the OOM.
+    // Multi-folder grading stays available by opening a folder and grading it;
+    // a folder-less start still falls back to the saved library list.
+    const allFolderPaths = safePath ? [safePath] : folders.map(sanitizePath);
     try {
       const resp = await fetch(`${API}/api/grade/v2/stream`, {
         method: 'POST',
@@ -2155,8 +2165,8 @@ export default function App() {
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ fontSize:'var(--text-sm)', color:T.ink }}>
                       {graderStatus?.qwen_download_pct != null
-                        ? `Downloading Vision Engine — ${graderStatus.qwen_download_pct}%`
-                        : 'Vision Engine: downloading in background…'}
+                        ? `Downloading deep-verification model — ${graderStatus.qwen_download_pct}%`
+                        : 'Deep verification model: optional, not downloaded'}
                     </div>
                     {graderStatus?.qwen_download_pct != null && (
                       <div style={{ height:3, background:T.raisedHover, borderRadius:'var(--r-sm)', overflow:'hidden', margin:'6px 0 4px' }}>
@@ -2165,7 +2175,17 @@ export default function App() {
                       </div>
                     )}
                     <div style={{ fontSize:'var(--text-xs)', color:T.ink3, lineHeight:'var(--leading-body)', marginTop:2 }}>
-                      ~6 GB one-time download, runs in the background. You can start grading now — it begins once complete.
+                      Grading works fully without it (fast pipeline). This optional ~6 GB model adds the deep verification pass.
+                      {graderStatus?.qwen_download_pct == null && (
+                        <button
+                          onClick={handleDownloadMissing}
+                          disabled={isDownloading}
+                          style={{ display:'block', marginTop:8, padding:'6px 14px', cursor: isDownloading ? 'default' : 'pointer',
+                            background:'transparent', color:T.ink, border:`1px solid ${T.lineStrong}`,
+                            borderRadius:'var(--r-sm)', fontSize:'var(--text-xs)' }}>
+                          {isDownloading ? 'Downloading…' : 'Download now (about 6 GB)'}
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -2265,7 +2285,7 @@ export default function App() {
                 />
                 <p className="text-xs text-ink-3" style={{ marginTop:6 }}>
                   {rescanAll
-                    ? 'Every photo runs through the full pipeline.'
+                    ? `Every photo in this folder${preGradeModal && preGradeModal.photoCount > 0 ? ` — ${preGradeModal.photoCount.toLocaleString()} photos` : ''} — re-runs the full pipeline.`
                     : 'Already-graded photos are skipped — only new additions are scored.'}
                 </p>
               </div>
