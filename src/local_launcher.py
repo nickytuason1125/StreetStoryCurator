@@ -423,12 +423,43 @@ def _icon_watcher(icon_path: str) -> None:
 
 
 def _server_healthy(url: str) -> bool:
-    """True if a backend is already serving on `url` (decoupled reuse check)."""
+    """True if a FIRSTCUT backend is serving on `url` — identity-verified.
+
+    /api/config answering 200 is not enough: the Sept-1 packaging experiment
+    left a Rust server (curator-api.exe) that also answered that port, and the
+    launcher happily 'reused' it — the UI was then served by the wrong program
+    (the 'it's like no changes ever happened' report). /api/whoami must return
+    the FirstCut marker.
+    """
     try:
-        urllib.request.urlopen(url + "/api/config", timeout=2)
-        return True
+        import json as _json_h
+        req = urllib.request.Request(url + "/api/whoami",
+                                     headers={"X-Requested-With": "FirstCut"})
+        with urllib.request.urlopen(req, timeout=3) as r:
+            return _json_h.loads(r.read().decode()).get("app") == "FirstCut"
     except Exception:
         return False
+
+
+def _kill_stray_backends() -> None:
+    """Kill leftover pythonw/python launcher-backend processes from failed
+    boot attempts. Only ours: their command lines reference this repo."""
+    try:
+        import psutil as _ps
+        me = os.getpid()
+        for p in _ps.process_iter(["pid", "name", "cmdline"]):
+            try:
+                n = (p.info["name"] or "").lower()
+                if "python" not in n or p.info["pid"] == me:
+                    continue
+                cl = " ".join(p.info["cmdline"] or [])
+                if str(ROOT) in cl and ("local_launcher" in cl or "server_impl" in cl
+                                        or "grade_runner" in cl or "grade_worker" in cl):
+                    p.kill()
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 def _spawn_detached_server(port: int) -> None:
@@ -625,12 +656,30 @@ def main():
 
         # Reuse a healthy already-running backend (it may still be finishing a cull
         # from a previous window that was closed); otherwise spawn a detached one.
+        # Boot RETRY: on a memory-pressured machine the backend can die mid-boot
+        # (MemoryError during imports / catalog load — measured 2026-09-07).
+        # A dead first attempt no longer FATALs the click: remnants are killed,
+        # the storm is given 15 s to pass, and the backend is spawned again
+        # (up to 3 attempts).
         if _server_healthy(url):
             _log("Reusing running decoupled backend server")
         else:
-            _spawn_detached_server(port)
-            if not _wait_for_server(url):
-                raise RuntimeError("Backend server did not become available in time.")
+            _booted = False
+            for _attempt in range(1, 4):
+                _kill_stray_backends()
+                time.sleep(2)
+                _spawn_detached_server(port)
+                if _wait_for_server(url):
+                    _booted = True
+                    break
+                _log(f"Backend boot attempt {_attempt}/3 failed — the machine may "
+                     f"have run out of memory mid-boot. Retrying after a pause…")
+                time.sleep(15)
+            if not _booted:
+                raise RuntimeError(
+                    "Backend failed to boot after 3 attempts. The machine was low on "
+                    "memory during every try — close other apps (editor windows, "
+                    "browser tabs) and relaunch FirstCut.")
 
         import webview
         webview.settings['REMOTE_DEBUGGING_PORT'] = 9222

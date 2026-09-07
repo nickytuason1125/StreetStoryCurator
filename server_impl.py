@@ -611,6 +611,17 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+# ── Identity marker ──────────────────────────────────────────────────────────
+# A leftover server from the Sept-1 packaging experiment (curator-api.exe)
+# once squatted on port 8000 and answered health checks — the launcher then
+# "reused" it and the UI was served by the wrong program. Every FirstCut
+# backend must answer /api/whoami with this marker; the launcher verifies it
+# before reusing or trusting whatever is on the port.
+
+@app.get("/api/whoami")
+async def whoami():
+    return {"app": "FirstCut", "pid": os.getpid()}
+
 # ── MemoryError defense ──────────────────────────────────────────────────────
 # A request that dies with MemoryError used to surface as "UNHANDLED …" and the
 # UI as an unusable page — during a memory storm the app looked broken beyond
