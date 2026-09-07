@@ -120,8 +120,22 @@ def test_failpoint_ignores_other_stages(monkeypatch):
 def test_checkpoint_below_hard_floor_raises_recoverable(monkeypatch):
     _stub_floor(monkeypatch, 1.2)
     monkeypatch.setattr(mp, "free_ram_gb", lambda: 0.5)
+    monkeypatch.setenv("FIRSTCUT_OOM_WAIT_S", "0")   # ride-out disabled: window expired immediately
     with pytest.raises(MemoryError, match="resume"):
         mp.memory_checkpoint("encode")
+
+
+def test_checkpoint_rides_out_a_transient_dip(monkeypatch):
+    # 2026-09-07: the machine's free RAM oscillates on ~10 s waves — a dip
+    # below the floor that RECOVERS inside the ride-out window must continue
+    # the run instead of aborting it (the real scan died exactly this way).
+    _stub_floor(monkeypatch, 1.2)
+    seq = [0.5, 0.5, 1.9, 1.9]
+    monkeypatch.setattr(mp, "free_ram_gb", lambda: seq.pop(0) if seq else 1.9)
+    monkeypatch.setenv("FIRSTCUT_OOM_WAIT_S", "30")
+    monkeypatch.delenv("SIGLIP_ENC_BATCH", raising=False)
+    mp.memory_checkpoint("encode")                     # must NOT raise
+    assert os.environ.get("SIGLIP_ENC_BATCH") == "2"   # tight band: batch shrunk
 
 
 def test_checkpoint_tight_band_shrinks_batch(monkeypatch):

@@ -13,8 +13,8 @@ set SIGLIP_TIER=low
 set FIRSTCUT_LITE=1
 
 echo [1/3] Clearing stale FirstCut processes...
-taskkill /F /IM pythonw.exe /T >nul 2>&1
-taskkill /F /IM python.exe /T >nul 2>&1
+rem Kill our python processes EXCEPT the watchdog (which must survive to keep auditing)
+powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='python.exe' OR Name='pythonw.exe'\" | Where-Object { $_.CommandLine -notmatch 'run_watchdog' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
 timeout /t 2 /nobreak >nul
 
 echo [2/3] Starting the FirstCut backend (Lite mode)...

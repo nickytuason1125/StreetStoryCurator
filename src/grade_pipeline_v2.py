@@ -1170,7 +1170,8 @@ def run_v2(
     if _enc_singleton is not None:
         _p(0.03, "Analyzing images…")
         try:
-            with _ProgressTicker(_p, 0.07, 0.46, f"Analyzing {len(paths)} photos…"):
+            with _mp.encode_memory_watch(_p), \
+                 _ProgressTicker(_p, 0.07, 0.46, f"Analyzing {len(paths)} photos…"):
                 embs = _enc_singleton.encode_images(paths, progress=_p)
             if _text_emb_cache:
                 _pos_text_embs  = _text_emb_cache["pos"]

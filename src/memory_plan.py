@@ -26,7 +26,10 @@ that stage ("admission", "encode", "judge", "save").
 """
 from __future__ import annotations
 
+import contextlib
 import os
+
+import threading as _threading
 
 # Measured constants — see run_profile._RAM_NEED_GB header and
 # reports/benchmark_report.md. Nothing here is invented.
@@ -34,6 +37,75 @@ SCAN_TREE_MEASURED_GB = 2.0   # scan process tree measured 1.01 GB peak; 2× hea
 TIGHT_BAND_GB = 0.8           # free between need and need+this → "tight but viable" advisory
 
 _STAGES = ("admission", "encode", "judge", "save")
+
+
+@contextlib.contextmanager
+def encode_memory_watch(progress=None):
+    """Watch memory DURING the encode stage (the old blind window).
+
+    The stage-boundary checkpoint fires once before encoding; a collapse
+    mid-encode had no witness. This watcher samples every 10 s and:
+      * tight band   → shrinks the encode batch (the encoder respawns per
+                       chunk, so the next chunk inherits the smaller batch),
+      * sustained collapse (below the hard floor for the whole ride-out
+                       window) → kills the encode subprocess, which the
+                       caller surfaces as a clean checkpointed stop instead
+                       of a mystery death.
+
+    Observation only on entry/exit — it never touches anything on the way in.
+    """
+    stop = _threading.Event()
+
+    def _watch():
+        hard = _hard_floor_gb()
+        window = _oom_wait_s()
+        below_since = None
+        killed = False
+        while not stop.is_set():
+            try:
+                free = free_ram_gb()
+            except Exception:
+                free = None
+            if free is not None:
+                if free < hard:
+                    if below_since is None:
+                        below_since = __import__("time").monotonic()
+                        print(f"[memory_plan] encode watch: below the floor "
+                              f"({free:.1f} GB free) — watching for recovery…", flush=True)
+                    if (not killed
+                            and __import__("time").monotonic() - below_since >= window):
+                        # Sustained collapse: stop the doomed encode subprocess.
+                        # Everything already encoded is persisted; the caller
+                        # surfaces the clean checkpoint/resume error.
+                        killed = True
+                        try:
+                            import psutil as _ps
+                            for p in _ps.process_iter(["pid", "name", "cmdline"]):
+                                cl = " ".join(p.info["cmdline"] or [])
+                                if "encode_worker" in cl:
+                                    p.kill()
+                            print("[memory_plan] sustained OOM — encode subprocess "
+                                  "stopped; progress is checkpointed", flush=True)
+                        except Exception as _e_kill:
+                            print(f"[memory_plan] encode kill failed: {_e_kill}", flush=True)
+                else:
+                    if below_since is not None:
+                        print(f"[memory_plan] encode watch: memory recovered "
+                              f"({free:.1f} GB free)", flush=True)
+                    below_since = None
+                    if (free < hard + TIGHT_BAND_GB
+                            and os.environ.get("SIGLIP_ENC_BATCH") != "2"):
+                        os.environ["SIGLIP_ENC_BATCH"] = "2"
+                        print("[memory_plan] encode watch: tight — batch shrunk to 2 "
+                              "for the next chunk", flush=True)
+            stop.wait(10)
+
+    t = _threading.Thread(target=_watch, daemon=True, name="encode-mem-watch")
+    t.start()
+    try:
+        yield
+    finally:
+        stop.set()
 
 
 def _global_memory_status():
@@ -121,6 +193,19 @@ def _hard_floor_gb() -> float:
         return 1.5
 
 
+def _oom_wait_s() -> float:
+    """How long a dip below the hard floor is ridden out before aborting.
+
+    Measured 2026-09-07: the machine's free RAM oscillates on ~10 s waves —
+    a collapse that outlasts this window is real, a shorter one is weather.
+    FIRSTCUT_OOM_WAIT_S overrides (0 = abort instantly; tests use that).
+    """
+    try:
+        return max(0.0, float(os.environ.get("FIRSTCUT_OOM_WAIT_S", "90")))
+    except Exception:
+        return 90.0
+
+
 def min_admission_gb() -> float:
     """The LAST rung's cost — below this, genuinely nothing fits."""
     return _hard_floor_gb() + 0.3
@@ -206,6 +291,44 @@ def memory_checkpoint(stage: str, progress=None) -> None:
         hard = _default_ram_floor_gb()
     except Exception:
         hard = 1.5
+
+    # ── Ride out the storm ───────────────────────────────────────────────────
+    # Free RAM below the hard floor does NOT abort immediately: the machine's
+    # free memory oscillates on ~10 s waves (measured in the run audit), and
+    # most dips are other apps breathing, not a permanent collapse. Poll until
+    # the window expires; recover → continue (the batch is already shrunk in
+    # the tight band). Still below when the window closes → the clean
+    # checkpointed abort below, as the last resort.
+    _wait_s = _oom_wait_s()
+    if free < hard and _wait_s > 0:
+        import time as _time
+        _deadline = _time.monotonic() + _wait_s
+        print(f"[memory_plan] Below the floor ({free:.1f} GB free, need ~{hard:.1f}) — "
+              f"riding it out for up to {_wait_s:.0f} s before checkpointing…", flush=True)
+        if progress is not None:
+            try:
+                progress(0.0, f"Low memory ({free:.1f} GB free) — waiting for it to clear…")
+            except Exception:
+                pass
+        while _time.monotonic() < _deadline:
+            _time.sleep(6)
+            free = free_ram_gb() or 0.0
+            if free >= hard:
+                print(f"[memory_plan] Memory recovered ({free:.1f} GB free) — continuing", flush=True)
+                if progress is not None:
+                    try:
+                        progress(0.0, "Memory recovered — continuing")
+                    except Exception:
+                        pass
+                break
+        else:
+            free = free_ram_gb() or free
+        if free < hard:
+            pass   # fall through to the clean checkpointed abort below
+        else:
+            if free < hard + TIGHT_BAND_GB and os.environ.get("SIGLIP_ENC_BATCH") != "2":
+                os.environ["SIGLIP_ENC_BATCH"] = "2"
+            return
 
     if free < hard:
         raise MemoryError(
