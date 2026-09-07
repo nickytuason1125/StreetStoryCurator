@@ -2478,6 +2478,19 @@ export default function App() {
           <Chip label="Judge" title="Vision judge is cold — the first grade includes a one-time warm-up. Later batches run at full speed." />
         )}
 
+        {/* Deep-verification model chip — the optional Qwen pass, surfaced in
+            the toolbar so its state is visible BEFORE grading, not just inside
+            the Before-you-start dialog. Downloading = warn; absent = neutral
+            (grading works fully without it — silence would hide an option). */}
+        {graderStatus && graderStatus.draft_available === false && graderStatus.qwen_download_pct != null && (
+          <Chip label={`Verify ${graderStatus.qwen_download_pct}%`} tone="warn"
+                title="Downloading the optional deep-verification model" />
+        )}
+        {graderStatus && graderStatus.draft_available === false && graderStatus.qwen_download_pct == null && !graderStatus.qwen_loading && (
+          <Chip label="Verify off" tone="neutral"
+                title="Optional deep-verification model not installed — grading works fully without it. Download it from the Before-you-start dialog when you begin a grade." />
+        )}
+
         {/* GPU / CPU compute chip */}
         {graderStatus && (() => {
           const dev = graderStatus.compute_device;
