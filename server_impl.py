@@ -567,14 +567,32 @@ async def lifespan(app: FastAPI):
     # pool executor avoids the DLL loader conflict.
     def _preopen_lancedb():
         try:
-            import shutil as _shutil_ldb
             import lance_store as _ls
             try:
                 _ls._open_table()
                 print("[server] LanceDB table pre-opened OK")
+            except MemoryError:
+                # A bare MemoryError here is the MACHINE out of memory (measured
+                # 2026-09-07: raised while allocating inside the lance import),
+                # NOT a corrupt database. The old code rmtree'd the whole DB on
+                # ANY exception — a memory storm destroyed every embedding and
+                # the People index. Defer instead: the next successful open
+                # finds the database untouched.
+                print("[server] LanceDB pre-open deferred — out of memory (database NOT touched)")
             except Exception as _e_open:
-                _shutil_ldb.rmtree(_ls._DB_DIR, ignore_errors=True)
-                print(f"[server] LanceDB corrupt ({_e_open}) — deleted for fresh start")
+                # Genuine suspected corruption: never rmtree. Move aside so a
+                # human can inspect it and so the rebuild starts from nothing
+                # without destroying the evidence.
+                import shutil as _shutil_ldb
+                _quarantine = _ls._DB_DIR + ".quarantine"
+                try:
+                    _shutil_ldb.rmtree(str(_quarantine), ignore_errors=True)
+                    os.rename(str(_ls._DB_DIR), str(_quarantine))
+                    print(f"[server] LanceDB open failed ({_e_open}) — database moved "
+                          f"to {_quarantine} for inspection; a fresh one will be created")
+                except Exception as _e_mv:
+                    print(f"[server] LanceDB open failed ({_e_open}); quarantine move "
+                          f"also failed ({_e_mv}) — leaving the database untouched")
         except Exception as _e_ldb:
             print(f"[server] LanceDB pre-load warning: {_e_ldb}")
 
