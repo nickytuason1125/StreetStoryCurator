@@ -420,6 +420,108 @@ def encode_text(kind, m, helper, texts):
     return e.cpu().float().numpy()
 
 
+def serve():
+    """Persistent warm-encoder loop (FIRSTCUT_WARM_ENCODER, default on).
+
+    The one-shot main() above re-imports torch+transformers+sklearn and
+    reloads the model on EVERY cull — ~500 MB of imports + a ~1.6 GB model
+    load placed at the most memory-hostile moment of the whole pipeline. On
+    the 2026-09-07 commit-starved machine that import itself OOM'd ("The
+    paging file is too small" / sklearn MemoryError at 0.47 GB RSS) and
+    killed grades repeatedly, surviving even 4 retry attempts.
+
+    serve() pays that cost ONCE, whenever this process starts (app boot is
+    the freshest the machine ever gets), then loops:
+
+        stdin : one JSON line per job — {"mode", "in", "out", "resp"}
+        stdout: "[encode_worker] ..." progress (inherited crash.log)
+        resp  : {"ok": true} | {"ok": false, "error": ...} written to the
+                path in job["resp"] (file-based, so the parent never needs
+                to read our stdout and no pipe can deadlock)
+
+    Exits on stdin EOF (parent died) or after FIRSTCUT_WARM_IDLE_S (default
+    600 s) idle, so RAM/VRAM free up between sessions. os._exit everywhere:
+    see main()'s CUDA-atexit note.
+    """
+    import json as _json
+    import queue as _queue
+    import threading as _threading
+    import traceback as _tb
+
+    idle_s = float(os.environ.get("FIRSTCUT_WARM_IDLE_S", "600") or 600)
+    lines: "_queue.Queue" = _queue.Queue()
+
+    def _reader():
+        for raw in sys.stdin:
+            lines.put(raw)
+        lines.put(None)          # EOF — parent closed the pipe
+
+    _threading.Thread(target=_reader, daemon=True, name="stdin-reader").start()
+
+    state = {"kind": None, "m": None, "helper": None, "onnx_sess": None}
+
+    def _ensure_loaded():
+        if state["m"] is None:
+            state["kind"], state["m"], state["helper"] = _load()
+            print("[encode_worker] warm load complete", flush=True)
+
+    def _run_job(job) -> None:
+        resp_path = job.get("resp") or ""
+
+        def _respond(ok, error=""):
+            if resp_path:
+                try:
+                    with open(resp_path, "w", encoding="utf-8") as f:
+                        _json.dump({"ok": bool(ok), "error": error[-800:]}, f)
+                except Exception:
+                    pass
+
+        try:
+            mode = job["mode"]
+            in_json, out_npy = job["in"], job["out"]
+            items = _json.load(open(in_json, encoding="utf-8"))
+            if mode == "images" and _onnx_enabled():
+                if state["onnx_sess"] is None:
+                    state["onnx_sess"] = _onnx_session()
+                embs = encode_images_onnx(state["onnx_sess"], items,
+                                          batch=max(1, int(os.environ.get(
+                                              "SIGLIP_ENC_BATCH", str(_default_batch())))))
+            else:
+                _ensure_loaded()
+                _batch = max(1, int(os.environ.get("SIGLIP_ENC_BATCH",
+                                                   str(_default_batch()))))
+                if mode == "images":
+                    embs = encode_images(state["kind"], state["m"],
+                                         state["helper"], items, batch=_batch)
+                else:
+                    embs = encode_text(state["kind"], state["m"],
+                                       state["helper"], items)
+            np.save(out_npy, embs.astype(np.float32))
+            print(f"[encode_worker] serve {mode}: {embs.shape} -> {out_npy}", flush=True)
+            _respond(True)
+        except Exception:
+            print(f"[encode_worker] serve job failed:\n{_tb.format_exc()}", flush=True)
+            _respond(False, _tb.format_exc())
+
+    print("[encode_worker] serve ready", flush=True)
+    while True:
+        try:
+            line = lines.get(timeout=idle_s)
+        except _queue.Empty:
+            print(f"[encode_worker] serve idle {idle_s:.0f}s — exiting to free RAM", flush=True)
+            os._exit(0)
+        if line is None:
+            os._exit(0)          # parent closed stdin — job object/terminate
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            job = _json.loads(line)
+        except Exception:
+            continue
+        _run_job(job)
+
+
 def main():
     # CRITICAL: ALL exit paths use os._exit (not normal Python shutdown).
     # PyTorch's atexit handler calls cuCtxDestroy/cudaDeviceReset on exit, which
@@ -431,6 +533,9 @@ def main():
     # disk (.npy / crash.log) is preserved because os._exit does not affect the
     # filesystem — it only skips Python-level finalizers and atexit functions.
     import traceback as _tb
+    if len(sys.argv) > 1 and sys.argv[1] == "serve":
+        serve()                      # never returns — the loop os._exits
+        return
     try:
         mode, in_json, out_npy = sys.argv[1], sys.argv[2], sys.argv[3]
         items = json.load(open(in_json, encoding="utf-8"))

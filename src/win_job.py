@@ -26,6 +26,7 @@ losing the safety net is far preferable to a hard failure on every grade.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 from typing import Optional
 
@@ -43,6 +44,29 @@ _job_handle = None  # type: ignore
 _job_init_attempted = False
 
 
+def _worker_ceiling_bytes() -> int:
+    """Per-process memory ceiling for every process assigned to the job.
+
+    The orphan incident this module was born from (2026-07-21: a killed grade
+    left iqa_worker running "indefinitely, silently holding ~9 GB") was
+    actually two failures: no lifetime tie (KILL_ON_JOB_CLOSE, below) AND no
+    growth cap. The ceiling closes the second hole: a worker whose RSS
+    balloons past the limit gets allocation failures from the kernel — which
+    Python surfaces as MemoryError, which grade_worker's loop and the
+    pipeline's checkpoints catch and report — instead of eating the machine
+    into a pagefile death spiral.
+
+    Default 3.5 GB: covers the measured worker peaks (encode 2.71 GB, IQA
+    ~2.5 GB) with margin, while still catching a genuine runaway well before
+    it threatens a 16 GB machine. FIRSTCUT_WORKER_RAM_CEILING_GB overrides.
+    """
+    try:
+        gb = float(os.environ.get("FIRSTCUT_WORKER_RAM_CEILING_GB", "3.5") or 3.5)
+    except ValueError:
+        gb = 3.5
+    return max(int(gb * 1024 * 1024), 512 * 1024 * 1024)   # floor at 512 MB
+
+
 def _get_or_create_job():
     """One job object per parent process, created lazily on first use."""
     global _job_handle, _job_init_attempted
@@ -55,6 +79,11 @@ def _get_or_create_job():
         job = win32job.CreateJobObject(None, "")
         info = win32job.QueryInformationJobObject(job, win32job.JobObjectExtendedLimitInformation)
         info["BasicLimitInformation"]["LimitFlags"] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        # Memory ceiling — see _worker_ceiling_bytes. PROCESS_MEMORY limits are
+        # per-process, so each worker is capped individually; the parent grade
+        # runner (small by design) is unaffected in practice.
+        info["BasicLimitInformation"]["LimitFlags"] |= win32job.JOB_OBJECT_LIMIT_PROCESS_MEMORY
+        info["ProcessMemoryLimit"] = _worker_ceiling_bytes()
         win32job.SetInformationJobObject(job, win32job.JobObjectExtendedLimitInformation, info)
         _job_handle = job
     except Exception as e:

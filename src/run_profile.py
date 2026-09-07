@@ -287,8 +287,14 @@ class RunProfile:
 
     @property
     def ram_soft_gb(self) -> float:
-        override = (setting("SIGLIP_MIN_FREE_RAM_GB")
-                    or setting("FIRSTCUT_MIN_RAM_GB"))
+        # SIGLIP_MIN_FREE_RAM_GB ONLY. FIRSTCUT_MIN_RAM_GB used to be aliased
+        # here as well, which meant one env var silently controlled two
+        # different things: the cull-admission gate AND the encoder's
+        # batch-reduction floor. Setting it to escape the gate on a tight
+        # machine also disabled the encoder's own degradation — a documented
+        # hazard that is now split: the gate reads FIRSTCUT_MIN_RAM_GB
+        # (required_ram_gb), the encoder reads SIGLIP_MIN_FREE_RAM_GB.
+        override = setting("SIGLIP_MIN_FREE_RAM_GB")
         if override:
             return override
         if not self.has_lean_checkpoint:
@@ -460,11 +466,10 @@ def required_ram_gb(n_photos: int = 0, scan_mode: bool = False) -> float:
     1.01 GB peak RSS (reports/benchmark_report.md). 2.0 GB is that measurement
     with ~2× headroom — not an invented constant.
 
-    Warning: the FIRSTCUT_MIN_RAM_GB override read here also aliases
-    RunProfile.ram_soft_gb's "legacy alias of the soft floor" (see SETTINGS and
-    ram_soft_gb above, ~line 278) — setting it to escape this cull gate on a
-    tight machine silently disables the encoder's own batch-reduction
-    degradation too, since both read the same env var.
+    FIRSTCUT_MIN_RAM_GB overrides THIS gate only. It deliberately does NOT
+    touch the encoder's batch-reduction floor (SIGLIP_MIN_FREE_RAM_GB) — the
+    two used to be aliased, which meant escaping the gate on a tight machine
+    silently disabled the encoder's own degradation too.
     """
     small, large = _RAM_NEED_GB[draft_decode_enabled()]
     need = small if n_photos <= 300 else large

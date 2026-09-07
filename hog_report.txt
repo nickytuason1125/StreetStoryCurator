@@ -1,0 +1,13 @@
+10 processes over 150 MB:
+   2300 MB  Code.exe (pid 81760)  C:\Users\Nicky Tuason\AppData\Local\Programs\Microsoft VS Code\Code.ex
+    474 MB  Code.exe (pid 26404)  C:\Users\Nicky Tuason\AppData\Local\Programs\Microsoft VS Code\Code.ex
+    447 MB  Code.exe (pid 26756)  C:\Users\Nicky Tuason\AppData\Local\Programs\Microsoft VS Code\Code.ex
+    303 MB  MsMpEng.exe (pid 58788)  
+    282 MB  Code.exe (pid 3920)  C:\Users\Nicky Tuason\AppData\Local\Programs\Microsoft VS Code\Code.ex
+    222 MB  Code.exe (pid 24732)  C:\Users\Nicky Tuason\AppData\Local\Programs\Microsoft VS Code\Code.ex
+    184 MB  chrome.exe (pid 79856)  C:\Program Files\Google\Chrome\Application\chrome.exe --type=renderer 
+    174 MB  Code.exe (pid 71364)  C:\Users\Nicky Tuason\AppData\Local\Programs\Microsoft VS Code\Code.ex
+    171 MB  chrome.exe (pid 51328)  C:\Program Files\Google\Chrome\Application\chrome.exe
+    157 MB  Taskmgr.exe (pid 82040)  C:\WINDOWS\system32\taskmgr.exe /7
+
+physical free: 4.20 GB

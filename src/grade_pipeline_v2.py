@@ -987,27 +987,21 @@ def run_v2(
         _ram_probe = None
         _p = progress or (lambda f, d: None)
 
-    # ── Whole-cull memory check ──────────────────────────────────────────────
-    # The encoder's own floor only guards the encode subprocess (~1.2 GB). A full
-    # cull peaks around 2.5 GB across the parent plus whichever subprocess is
-    # live, so a machine with less than that will PAGE — measured: a run starting
-    # with 2.07 GB free drove free RAM to 0.01 GB, grew the pagefile 1.22 GB and
-    # took 394s, against 192s for the same run with a little more headroom.
-    # Paging is what the old "it freezes" reports actually were, so say it
-    # plainly instead of silently going disk-bound.
-    _CULL_PEAK_GB = 2.5
+    # ── Whole-cull memory checkpoint (single source: src/memory_plan.py) ────
+    # History: this used to be a warn-only check ("it will finish, just
+    # slower") while the router refused outright — two gates, different
+    # answers, and the user got the worse one. Admission/degradation now
+    # lives in memory_plan; this boundary checkpoint keeps the failpoint hook
+    # for tests, raises a CLEAN recoverable MemoryError below the encoder's
+    # hard floor (Lance checkpoints + Resume mean a re-run continues instead
+    # of restarting), and shrinks the encode batch in the tight band.
     try:
-        import psutil as _ps_cull
-        _free_gb = _ps_cull.virtual_memory().available / 1e9
-        if _free_gb < _CULL_PEAK_GB:
-            _msg = (f"Low memory: {_free_gb:.1f} GB free, a cull needs about "
-                    f"{_CULL_PEAK_GB:.1f} GB. This will still finish, but it will "
-                    f"be slower while Windows swaps to disk — closing a browser "
-                    f"or editor window roughly halves the time.")
-            print(f"[v2] {_msg}", flush=True)
-            _p(0.005, f"Low memory ({_free_gb:.1f} GB free) — this cull will be slower")
-    except Exception:
-        pass
+        import memory_plan as _mp
+        _mp.memory_checkpoint("admission", _p)
+    except MemoryError:
+        raise
+    except Exception as _mp_exc:
+        print(f"[v2] memory checkpoint failed (non-fatal): {_mp_exc}", flush=True)
 
     # ── Step 1: Discover images ───────────────────────────────────────────────
     _p(0.01, "Scanning folder…")
@@ -1059,6 +1053,15 @@ def run_v2(
     n     = len(paths)
     print(f"[v2] Images     total={len(all_paths)}  cached(skipped)={len(cached_rows)}  to_grade={n}")
 
+    # Slim-by-construction (2026-09-07): gallery dicts carry NO embedding in
+    # cull mode (mogco_target<=0). The embedding is the single fattest field —
+    # a 1536-element Python-float list, ~49 KB per photo — and Lance is its
+    # real home: grade_worker strips it per folder, the catalog write strips it
+    # again, and the frontend never reads it. Only Story mode (mogco_target>0,
+    # which runs the NSGA-III sequencer over gallery dicts at Step 9) needs
+    # them attached, so the key is simply never built otherwise.
+    keep_embeddings = bool(mogco_target and mogco_target > 0)
+
     def _cached_to_gallery(row: dict) -> dict:
         bd = row.get("breakdown", {})
         if isinstance(bd, str):
@@ -1074,7 +1077,7 @@ def run_v2(
             "rating":        _cs,
             "human_perception": round(float(row.get("personal_score", 0.5)), 3),
             "personal_score":   round(float(row.get("personal_score", 0.5)), 3),
-            "embedding": row.get("embedding", []),
+            **({"embedding": row.get("embedding", [])} if keep_embeddings else {}),
             "breakdown": bd,
             "critique": "",
             "reasoning_log": "",
@@ -1156,6 +1159,14 @@ def run_v2(
         _qwen_singleton = None
         _vram_clear()
 
+    try:
+        import memory_plan as _mp
+        _mp.memory_checkpoint("encode", _p)
+    except MemoryError:
+        raise
+    except Exception as _mp_exc:
+        print(f"[v2] memory checkpoint failed (non-fatal): {_mp_exc}", flush=True)
+
     if _enc_singleton is not None:
         _p(0.03, "Analyzing images…")
         try:
@@ -1199,6 +1210,7 @@ def run_v2(
     if not _enc_reused:
         import traceback as _tb
         _siglip_last_err: str = ""
+        _siglip_last_exc: BaseException | None = None
         for _attempt, _kwargs in enumerate([
             # GPU FP16 (~3.5 GB, fits the 6 GB card alone). INT8 quantize=True is
             # DISABLED: torchao INT8 weight-only on SigLIP-2 ViT-g emits all-NaN
@@ -1298,20 +1310,33 @@ def run_v2(
                     # the final upsert). If the long scoring/IQA tail then crashes,
                     # the expensive SigLIP encode is NOT redone — query_embeddings_
                     # by_paths finds these next run. Skip zero-rows (unreadable RAW).
+                    #
+                    # CHUNKED like the Step-7 write: building one record list for
+                    # ALL paths boxes every 1536-float embedding into a Python
+                    # list (~49 KB each) at once — a 100k-photo cull spiked
+                    # ~5 GB of boxed floats at the exact moment the encoder had
+                    # just handed back its GPU memory. Same merge_insert
+                    # semantics; N chunked calls commit what one call did.
                     try:
                         import lance_store as _ls_emb
-                        _emb_records = [
-                            {"path": _pp, "embedding": _ee.tolist(),
-                             "score": 0.0, "grade": "Pending"}
-                            for _pp, _ee in _new_emb_map.items()
-                            if float(np.linalg.norm(_ee)) >= 1e-6
-                        ]
+                        _LANCE_CHUNK_EMB = int(os.environ.get("FIRSTCUT_LANCE_CHUNK", "500"))
+                        _emb_items = list(_new_emb_map.items())
+                        _emb_written = 0
                         _te0 = _t_enc.monotonic()
-                        if _emb_records:
-                            _ls_emb.upsert_batch(_emb_records)
-                            print(f"[v2] Persisted {len(_emb_records)} fresh embeddings "
-                                  f"to LanceDB (resumable)")
+                        for _ec0 in range(0, len(_emb_items), _LANCE_CHUNK_EMB):
+                            _emb_records = [
+                                {"path": _pp, "embedding": _ee.tolist(),
+                                 "score": 0.0, "grade": "Pending"}
+                                for _pp, _ee in _emb_items[_ec0:_ec0 + _LANCE_CHUNK_EMB]
+                                if float(np.linalg.norm(_ee)) >= 1e-6
+                            ]
+                            if _emb_records:
+                                _ls_emb.upsert_batch(_emb_records)
+                                _emb_written += len(_emb_records)
+                            del _emb_records
                         _te_persist = _t_enc.monotonic() - _te0
+                        print(f"[v2] Persisted {_emb_written} fresh embeddings "
+                              f"to LanceDB (resumable)")
                         print(f"[v2] STAGE TIME  encoder-init {_te_init:5.1f}s  "
                               f"encode {_te_encode:6.1f}s  map {_te_map:5.1f}s  "
                               f"lancedb-persist {_te_persist:6.1f}s", flush=True)
@@ -1583,6 +1608,7 @@ def run_v2(
                 break
             except Exception as e_siglip2:
                 _siglip_last_err = str(e_siglip2)
+                _siglip_last_exc = e_siglip2
                 print(f"[v2] SigLIP-2 attempt {_attempt+1} failed: {e_siglip2}")
                 if _attempt == 0:
                     print("[v2] Retrying SigLIP-2 on CPU…")
@@ -1594,6 +1620,13 @@ def run_v2(
         # SigLIP-2 of the active tier is required (dim = _ENC_DIM: high 1536 /
         # mid 1024 / low 768). A mismatch means the encoder failed to load.
         if embed_dim != _ENC_DIM:
+            # An OOM from the encode path (commit/RAM exhaustion — see
+            # siglip2_encoder._run) is re-raised AS a MemoryError: the worker
+            # and SSE layers treat OOM as a recoverable checkpoint, and the
+            # resume guidance in the message reaches the user verbatim
+            # instead of being flattened into a generic "failed to load".
+            if isinstance(_siglip_last_exc, MemoryError):
+                raise MemoryError(str(_siglip_last_exc))
             raise RuntimeError(
                 f"SigLIP-2 failed to load on both GPU and CPU.\n"
                 f"Reason: {_siglip_last_err}"
@@ -1847,6 +1880,14 @@ def run_v2(
     #           decoupled-server layers. RAG concept phrases are injected here.
     # scan_mode: always SpecVLM CLIP and also skips IQA (ultra-fast niche pass).
     # TOPIQ IQA runs for BOTH default and Deep Grade (only scan_mode skips it).
+    try:
+        import memory_plan as _mp
+        _mp.memory_checkpoint("judge", _p)
+    except MemoryError:
+        raise
+    except Exception as _mp_exc:
+        print(f"[v2] memory checkpoint failed (non-fatal): {_mp_exc}", flush=True)
+
     _p(0.51, "Judging each photo…")
     print(f"[v2] Grading engine: "
           f"{'Qwen VLM (Deep Grade)' if (deep_grade and not scan_mode) else 'SigLIP zero-shot (default)'}"
@@ -3189,6 +3230,14 @@ def run_v2(
     from pipeline_stages import read_exif_timestamps as _read_exif_timestamps
     timestamps = _read_exif_timestamps(paths)
 
+    try:
+        import memory_plan as _mp
+        _mp.memory_checkpoint("save", _p)
+    except MemoryError:
+        raise
+    except Exception as _mp_exc:
+        print(f"[v2] memory checkpoint failed (non-fatal): {_mp_exc}", flush=True)
+
     _p(0.92, "Saving results…")
     lance_ok = False
     try:
@@ -3285,7 +3334,7 @@ def run_v2(
             "rating":          _fscore,
             "human_perception":round(float(pers[i]),         3),
             "personal_score":  round(float(pers[i]),         3),
-            "embedding":       embs[i].tolist(),
+            **({"embedding": embs[i].tolist()} if keep_embeddings else {}),
             "breakdown":       breakdown,
             "critique":        "",
             "reasoning_log":   "",

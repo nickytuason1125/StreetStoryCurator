@@ -611,6 +611,21 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+# ── MemoryError defense ──────────────────────────────────────────────────────
+# A request that dies with MemoryError used to surface as "UNHANDLED …" and the
+# UI as an unusable page — during a memory storm the app looked broken beyond
+# repair. A clean 503 with the remedy keeps the failure honest AND recoverable
+# (measured: the 2026-09-07 memory storm turned every GET / into a crash).
+from fastapi.responses import JSONResponse as _JSONResp
+
+@app.exception_handler(MemoryError)
+async def _memory_error_handler(request, exc: MemoryError):
+    print(f"[server] MemoryError serving {request.url.path} — returning clean 503", flush=True)
+    return _JSONResp(
+        status_code=503,
+        content={"error": "Out of memory. Close some apps (browser tabs are the usual cause) and try again — if this persists, restart FirstCut."},
+    )
+
 class _LazyAnalyzer:
     """Proxy that forwards attribute access to the real analyzer once loaded."""
     def __getattr__(self, name):

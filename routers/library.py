@@ -36,10 +36,47 @@ THUMB_PX = 448
 
 
 def _thumb_cache_name(src) -> str:
-    """Cache filename for a source path. The target size is part of a
-    thumbnail's identity, so it belongs in the key: without it, raising the
-    size left every already-cached image serving its old smaller file for
-    ever, and the fix appeared not to work."""
+    """Cache filename for a source path, SHARDED into 256 two-hex-character
+    subdirectories (`ea/eaa16746c2_448.webp`).
+
+    Two properties are deliberate here:
+
+    - The target size is part of a thumbnail's identity, so it belongs in the
+      key: without it, raising the size left every already-cached image
+      serving its old smaller file for ever, and the fix appeared not to work.
+    - The shard prefix is the fix for the 2026-09-06 preview stall: THUMB_DIR
+      had ~400k entries in ONE flat NTFS directory (a 380k-photo folder
+      prewarmed everything), and every `exists()` stat in it became slow
+      enough to be user-visible. The hash is already the key, so spending its
+      first two characters on the directory costs nothing and keeps every
+      shard in the low hundreds of files.
+    """
+    import hashlib as _h
+    key = _h.md5(str(src).encode()).hexdigest()[:10]
+    return f"{key[:2]}/{key}_{THUMB_PX}.webp"
+
+
+def _is_slow_volume(path) -> bool:
+    """True for removable volumes (camera card / card reader / USB stick).
+
+    Background prewarm does sequential 40+ MB RAW reads; on a card reader that
+    I/O serialises with the on-demand reads feeding the visible grid and slows
+    BOTH down. Fixed drives answer DRIVE_FIXED (3) and prewarm normally.
+    """
+    try:
+        import ctypes as _ct
+        drive = os.path.splitdrive(str(Path(path)))[0]
+        if not drive:
+            return False
+        return _ct.windll.kernel32.GetDriveTypeW(drive + "\\") == 2   # DRIVE_REMOVABLE
+    except Exception:
+        return False
+
+
+def _legacy_thumb_name(src) -> str:
+    """Pre-sharding flat cache name — looked up (and migrated) on shard miss,
+    so thumbnails written before the sharding change heal themselves instead
+    of forcing a full regeneration of a large library."""
     import hashlib as _h
     return f"{_h.md5(str(src).encode()).hexdigest()[:10]}_{THUMB_PX}.webp"
 
@@ -66,6 +103,17 @@ async def serve_thumb(path: str = Query(...)):
     src = Path(p).resolve()
     safe_name = _thumb_cache_name(src)
     thumb_path = THUMB_DIR / safe_name
+    if not thumb_path.exists():
+        # First miss after the sharding change: the flat-era file may still be
+        # sitting in THUMB_DIR. Move it into its shard so the lookup heals and
+        # the flat directory empties out over time.
+        legacy = THUMB_DIR / _legacy_thumb_name(src)
+        if legacy.exists():
+            try:
+                thumb_path.parent.mkdir(parents=True, exist_ok=True)
+                legacy.replace(thumb_path)
+            except Exception:
+                thumb_path = legacy   # serve the flat file this time
     if thumb_path.exists():
         # Explicit type: Windows' registry-backed mimetypes can mislabel .webp
         # as text/plain, and strict MIME clients would then refuse the image.
@@ -88,6 +136,23 @@ async def serve_thumb(path: str = Query(...)):
         if preview:
             return FileResponse(str(preview), media_type="image/jpeg")
     raise HTTPException(404, "Thumbnail could not be created")
+
+
+@router.post("/api/encoder/warm")
+async def warm_encoder():
+    """Pre-load the vision encoder in the persistent warm worker.
+
+    Called by the launcher right after the window opens: imports (torch/
+    transformers/sklearn — the exact thing that OOM'd mid-session on
+    2026-09-07) and the model load happen while the machine is at its
+    freshest, and every cull afterwards reuses the loaded worker. Safe to
+    call any time; no-op when FIRSTCUT_WARM_ENCODER=0.
+    """
+    try:
+        from siglip2_encoder import warm_start
+        return {"warmed": bool(warm_start())}
+    except Exception as exc:
+        return {"warmed": False, "error": str(exc)}
 
 
 @router.get("/api/photo-faces")
@@ -178,8 +243,18 @@ def _gen_loupe_preview(src_str: str, max_px: int):
     try:
         import hashlib
         src = Path(src_str).resolve()
-        safe = f"{hashlib.md5(str(src).encode()).hexdigest()[:10]}_L{max_px}.jpg"
-        cache = THUMB_DIR / safe
+        key = hashlib.md5(str(src).encode()).hexdigest()[:10]
+        cache = THUMB_DIR / key[:2] / f"{key}_L{max_px}.jpg"
+        if not cache.exists():
+            # Flat-era loupe previews: migrate on first miss, same scheme as
+            # the grid thumbnails.
+            legacy = THUMB_DIR / f"{key}_L{max_px}.jpg"
+            if legacy.exists():
+                try:
+                    cache.parent.mkdir(parents=True, exist_ok=True)
+                    legacy.replace(cache)
+                except Exception:
+                    cache = legacy
         if cache.exists():
             return cache
         # Source pixels: for RAW/HEIC reuse the decoded full preview; for
@@ -195,7 +270,7 @@ def _gen_loupe_preview(src_str: str, max_px: int):
         im = _I.open(src_img_path)
         im = im.convert("RGB") if im.mode not in ("RGB", "L") else im
         im.thumbnail((max_px, max_px), _I.LANCZOS)
-        THUMB_DIR.mkdir(parents=True, exist_ok=True)
+        cache.parent.mkdir(parents=True, exist_ok=True)
         im.save(cache, "JPEG", quality=90)
         return cache
     except Exception:
@@ -309,7 +384,60 @@ def _read_exif(path: str) -> dict:
 
 _RAW_EXTS = {".arw", ".cr2", ".cr3", ".nef", ".orf", ".rw2", ".raf", ".dng", ".pef", ".srw"}
 
+# In-flight generation registry — ONE decode per file, no matter which pool asks.
+#
+# The 2026-09-07 card session: opening F:\DCIM\100MSDCF (2756 Sony .ARW frames,
+# ~43 MB each, on a USB card reader) queued the first 600 files on BOTH pools at
+# once — the prewarm walks the list head-to-tail while the browser requests
+# exactly those same visible tiles on demand. Two concurrent 43 MB reads of the
+# same file from a card reader (which serialises I/O badly) made the first
+# screens — the ones the user is actually looking at — the slowest to fill.
+# Keying a threading.Event per resolved path means a duplicate caller waits for
+# the decode already in progress instead of doubling the I/O.
+_thumb_inflight: dict = {}
+_thumb_inflight_lock = threading.Lock()
+
+
 def _gen_one_thumb(path: str, low_priority: bool = False) -> None:
+    """Deduplicating entry point — see _thumb_inflight above.
+
+    Waiters NEVER hold the lock while waiting: the owner needs the same lock
+    to unregister before it sets its done event — waiting under the lock is a
+    guaranteed ABBA deadlock (2026-09-07, caught by the dedup self-check).
+    """
+    try:
+        key = str(Path(path).resolve())
+    except Exception:
+        key = str(path)
+    with _thumb_inflight_lock:
+        owner = _thumb_inflight.get(key)
+    if owner is not None:
+        # Another pool is already decoding this exact file. Wait for it
+        # (bounded: if the owner hangs, fall through and decode locally).
+        owner.wait(timeout=120)
+        if low_priority:
+            return   # duplicate prewarm job — the owner produced it
+        # On-demand caller: the owner may have been a prewarm job that the RAM
+        # gate dropped, or a decode that failed. Fall through — the decode
+        # below re-checks the cache first, so this costs one stat() when the
+        # owner succeeded and a real regeneration when it did not. The user's
+        # request is always served. (The owner has already unregistered by the
+        # time wait() returns.)
+    done = threading.Event()
+    with _thumb_inflight_lock:
+        _thumb_inflight[key] = done
+    try:
+        _gen_one_thumb_decode(path, low_priority)
+    finally:
+        # Conditional pop: a waiter that fell through may have re-registered
+        # the key while our finally was pending — never evict their entry.
+        with _thumb_inflight_lock:
+            if _thumb_inflight.get(key) is done:
+                _thumb_inflight.pop(key, None)
+        done.set()
+
+
+def _gen_one_thumb_decode(path: str, low_priority: bool = False) -> None:
     """Generate a single thumbnail into the cache directory (thread-safe). Optimized for speed.
 
     Shared by the background prewarm AND the on-demand /api/thumb handler, which
@@ -317,11 +445,27 @@ def _gen_one_thumb(path: str, low_priority: bool = False) -> None:
     are atomically os.replace()'d into place, preventing a half-written WEBP from
     being served or two concurrent writers corrupting the same file.
 
+    Callers go through _gen_one_thumb, which collapses duplicate decodes across
+    the prewarm and on-demand pools.
+
     low_priority=True marks background prewarm jobs; these are skipped while a
     grade is running so their RAW decodes don't spike RAM next to the grader.
     """
     if low_priority and _grading_active.is_set():
         return
+    if low_priority:
+        # RAM-aware prewarm: the grade-time pause above is not enough on a
+        # starved machine — a background RAW decode that spikes RAM next to
+        # everything else is exactly what made "previews take forever" worse
+        # on 2026-09-06. On-demand thumbs (below) are exempt: the user asked
+        # for that pixel. 1.5 GB free is the encoder floor's neighbourhood —
+        # below it, only user-facing work should touch memory.
+        try:
+            import psutil as _ps_prewarm
+            if _ps_prewarm.virtual_memory().available / 1e9 < 1.5:
+                return
+        except Exception:
+            pass
     try:
         from PIL import Image as _PILImg
         import hashlib as _hl
@@ -337,8 +481,19 @@ def _gen_one_thumb(path: str, low_priority: bool = False) -> None:
         # old files simply fall out of use.
         safe = _thumb_cache_name(src)
         dest = THUMB_DIR / safe
+        if not dest.exists():
+            # Flat-era file? Move it into its shard so generations stay in the
+            # sharded layout and the flat directory keeps shrinking.
+            legacy = THUMB_DIR / _legacy_thumb_name(src)
+            if legacy.exists():
+                try:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    legacy.replace(dest)
+                except Exception:
+                    dest = legacy
         if dest.exists():
             return
+        dest.parent.mkdir(parents=True, exist_ok=True)
 
         # Sized for the LARGEST place a thumbnail is shown, not the smallest.
         #
@@ -438,10 +593,30 @@ async def list_folder(body: dict):
     loop = asyncio.get_running_loop()
     paths = await loop.run_in_executor(None, _scan)
 
-    # Pre-warm ALL thumbnails in the background — no cap.
+    # Pre-warm thumbnails in the background — BOUNDED.
     # The low-priority executor (2 workers) processes them without blocking
     # on-demand requests from the browser.
-    for p in paths:
+    #
+    # The cap is the fix for the 2026-09-06 stall: this loop used to submit
+    # EVERY path ("no cap" was the old comment), so opening a 380k-photo
+    # folder queued 380k decode jobs on a machine sitting at <1 GB free RAM
+    # and the prewarm workers chewed on it for hours. The grid only renders a
+    # few screens at a time, so pre-warming the first screens is what makes
+    # it feel instant; everything past the cap is generated on demand by
+    # /api/thumb when the user actually scrolls there, and cached like any
+    # other thumbnail.
+    _prewarm_cap = int(os.environ.get("FIRSTCUT_PREWARM_CAP", "600") or 600)
+    # Removable volumes (camera card / card reader): the prewarm's sequential
+    # 43 MB RAW reads fight the on-demand reads serving the tiles the user is
+    # actually looking at — USB readers serialise I/O, so running both makes
+    # EVERYTHING slower (2026-09-07: first screens of F:\DCIM\100MSDCF took
+    # seconds-to-minutes per tile). On such a volume the grid is fed purely on
+    # demand — the in-flight dedup in _gen_one_thumb prevents any duplicate
+    # work — and thumbs still cache to the fixed drive, so re-opening the same
+    # card is instant. FIRSTCUT_PREWARM_REMOVABLE=1 forces prewarm back on.
+    if _is_slow_volume(folder) and os.environ.get("FIRSTCUT_PREWARM_REMOVABLE", "") != "1":
+        _prewarm_cap = 0
+    for p in paths[:max(_prewarm_cap, 0)]:
         _THUMB_PREWARM.submit(_gen_one_thumb, p, True)   # low_priority — paused during grades
 
     # Return empty EXIF — frontend loads it lazily via /api/exif when needed.

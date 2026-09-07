@@ -153,50 +153,73 @@ async def grade_photos_v2_stream(req: GradeRequest):
         else:
             raise HTTPException(400, "No valid folder path provided")
 
-    # ── System RAM gate ─────────────────────────────────────────────────────
+    # ── System RAM admission (single decision — see src/memory_plan.py) ─────
     # Deliberately AFTER folder resolution: what a cull costs depends on the
-    # decode path and on how big the job is, so the gate needs the job in front
-    # of it. This used to be one constant checked before anything was known —
-    # 1.8 GB, which was Balanced's ENCODER floor rather than a whole-cull
-    # budget, so it admitted runs that then drove the machine to 0.10 GB free
-    # and into the pagefile (111 s versus 25 s for the same folder with room).
+    # decode path and on how big the job is, so admission needs the job in
+    # front of it. This used to be one constant checked before anything was
+    # known — 1.8 GB, which was Balanced's ENCODER floor rather than a
+    # whole-cull budget, so it admitted runs that then drove the machine to
+    # 0.10 GB free and into the pagefile (111 s versus 25 s for the same
+    # folder with room). It then refused outright when RAM was tight, even
+    # though the codebase contained every ingredient of a graceful downgrade.
     #
-    # Counting is a listdir, not a decode. scan_mode passes 0 — but that only
-    # avoids the >300-photo bump to the "large" figure (4.2 GB); it does NOT
-    # remove the IQA charge, because required_ram_gb(0) still returns the
-    # IQA-inclusive 3.8 GB figure. Scan mode genuinely skips IQA (the expensive
-    # part) and so is charged more than it needs — a real over-estimate, left
-    # in place because correcting it needs a measured encoder-only number that
-    # does not exist yet, and this repo does not invent numbers (see the
-    # _RAM_NEED_GB header in run_profile.py). Consequence: a low-RAM machine
-    # can be refused a scan it could actually run.
+    # Admission now picks the RICHEST plan that fits: full quality if it
+    # fits, otherwise an AUTOMATIC downgrade to Scan (measured ~2.0 GB tree
+    # vs 3.8–4.2 GB for full) — refusal only when even Scan cannot fit. The
+    # chosen plan is reported to the UI via an SSE `notice` at stream start.
+    _plan = None
+    _plan_note = None
+    _eff_scan = bool(req.scan_mode)
+    _n_photos = 0
+    _scope_note = None
     try:
-        import psutil as _psutil
-        import run_profile as _rp_ram
-        _free_gb = _psutil.virtual_memory().available / 1e9
-        # Literal, not a shared constant: this only needs to be roughly right —
-        # it sizes a RAM budget, it does not decide what gets graded. Anything
-        # missed here just makes the estimate slightly conservative.
+        from src import memory_plan as _mp
+        # Counting is a listdir, not a decode.
         _exts = (".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff",
                  ".rw2", ".raf", ".arw", ".cr2", ".cr3", ".nef", ".dng", ".orf")
-        _n_photos = 0
         for _fp in all_folders:
             try:
                 _n_photos += sum(1 for _f in os.listdir(_fp)
                                  if _f.lower().endswith(_exts))
             except OSError:
                 pass
-        _need_gb = _rp_ram.required_ram_gb(0 if req.scan_mode else _n_photos,
-                                           scan_mode=req.scan_mode)
-        if _free_gb < _need_gb:
+        _plan = _mp.plan_for(_n_photos, requested_scan=req.scan_mode)
+        # Scope honesty (2026-09-07 SD-upload): a force_rescan run over a huge
+        # library must never start silently. The user pressed "Re-grade
+        # everything" on a 6k SD folder and the run tried to redo ~100k photos —
+        # say exactly what is about to happen, and how to avoid it.
+        if req.force_rescan and _n_photos > 20000:
+            _scope_note = (f"This re-grade covers every photo in the selected folder — about "
+                           f"{_n_photos:,} photos, which can take hours. If you only added new "
+                           f"photos, cancel and use 'New photos only' to grade just those.")
+        if _plan is None:
+            _free_gb = _mp.free_ram_gb()
+            _free_txt = f"only {_free_gb:.1f} GB free" if _free_gb is not None else "free RAM could not be measured"
+            _pagefile_hint = ""
+            try:
+                _commit = _mp.commit_headroom_gb()
+                if _commit is not None and _free_gb is not None and _commit < _free_gb - 0.5:
+                    _pagefile_hint = (" Your pagefile is the bottleneck, not RAM (commit headroom "
+                                      f"{_commit:.1f} GB vs {_free_gb:.1f} GB physical) — set a fixed "
+                                      "pagefile (initial 24576 MB / max 32768 MB) in System → Advanced → "
+                                      "Virtual Memory, then reboot.")
+            except Exception:
+                pass
             return JSONResponse(
                 status_code=503,
-                content={"error": f"Not enough RAM to grade safely — only {_free_gb:.1f} GB "
-                         f"free, and this cull needs about {_need_gb:.1f} GB. "
-                         "Close a couple of apps and retry."},
+                content={"error": f"Not enough RAM to grade safely — {_free_txt}, and even a "
+                         f"reduced-batch Scan (the lightest pass, ~{_mp.min_admission_gb():.1f} GB) does not "
+                         f"fit. Close a couple of apps and retry.{_pagefile_hint}",
+                         "alternatives": {"close_apps": True, "smaller_selection": True}},
             )
-    except Exception:
-        pass
+        _eff_scan = bool(req.scan_mode or _plan["scan_mode"])
+        _plan_note = _plan.get("note") or None
+    except Exception as _gate_exc:
+        # Fail-OPEN (availability first — the encoder's own floors still
+        # protect the machine) but LOUD: the old `except Exception: pass`
+        # let a dead gate vanish silently.
+        _plan_note = f"RAM admission check failed ({_gate_exc}) — relying on the encoder's own floors."
+        print(f"[server] RAM admission check FAILED (fail-open): {_gate_exc}", flush=True)
 
     async def _stream_with_lock():
         # Hold gpu_lock for the full grading run so the annotation daemon
@@ -214,6 +237,17 @@ async def grade_photos_v2_stream(req: GradeRequest):
             if _gl is not None:
                 await _gl.acquire()
                 _acquired = True
+            if _plan_note:
+                # The admission decision's message (downgrade explanation,
+                # fail-open warning) reaches the UI before any heavy work.
+                import json as _sj
+                yield f"data: {_json.dumps({'notice': _plan_note})}\n\n"
+                print(f"[server] Plan note: {_plan_note}", flush=True)
+            if _scope_note:
+                # Full-library re-grade warning — emitted before any heavy work
+                # so the user can cancel while it is still cheap to do so.
+                yield f"data: {_json.dumps({'notice': _scope_note})}\n\n"
+                print(f"[server] Scope note: {_scope_note}", flush=True)
             # Free RAM held by background work before the grade's heavy model loads:
             #   - the niche detector's CLIP (~0.7 GB), reloads on the next folder-select
             #   - pause the background thumbnail prewarm (RAW decodes spike RAM)
@@ -242,8 +276,8 @@ async def grade_photos_v2_stream(req: GradeRequest):
                     "folders":      all_folders,
                     "preset":       req.preset,
                     "force_rescan": req.force_rescan,
-                    "scan_mode":    req.scan_mode,
-                    "deep_grade":   req.deep_grade,
+                    "scan_mode":    _eff_scan,                 # honour a memory-plan downgrade
+                    "deep_grade":   req.deep_grade and not _eff_scan,
                     "catalog_path": str(_CATALOG_PATH),
                     "data_dir":     str(_DATA_DIR),
                     "mogco_target": 0,   # cull only; Story sequencing is its own endpoint
@@ -257,36 +291,48 @@ async def grade_photos_v2_stream(req: GradeRequest):
             _crash_path = os.path.join(_UNIT_ROOT, "crash.log")
             _trim_crash_log(_crash_path)
             _rlog = open(_crash_path, "a", encoding="utf-8", errors="replace")
-            # ── Hard RAM gate: fail fast BEFORE spawning into certain paging death.
-            # The pipeline warns at 2.5 GB; below ~0.75 GB free a cull measurably
-            # drove the machine to 0.01 GB free + 1.2 GB pagefile growth (see
-            # grade_pipeline_v2 notes). At that point refusing is the honest,
-            # crash-proof behaviour — the UI already advertises "the cull may
-            # be refused" below its floor, and Resume recovers nothing lost.
+            # ── Spawn-time RAM re-check: the admission reading can be minutes
+            # old by now. SAME decision module as admission (src/memory_plan.py)
+            # so the two gates cannot disagree: refuse if even Scan no longer
+            # fits, honour a downgrade that only became necessary now (rewrite
+            # the request file — the runner has not been spawned yet), and warn
+            # in the tight-but-viable band.
             try:
-                import psutil as _ps_gate
-                _free_gb = _ps_gate.virtual_memory().available / 1e9
-                # The floor follows the ACTIVE encoder: ~4.0 GB floor for the
-                # torch fp16 loader (peak ~4 GB) vs ~2.0 GB once the ONNX
-                # graphs are exported (measured peak ~1.2 GB). Measured thrash
-                # line: at 2.0 GB free on the torch path the machine
-                # page-thrashes and the app freezes (user report, 2026-09).
-                from siglip2_encoder import _default_ram_floor_gb as _floor_gb
-                _need = _floor_gb() + 0.2
-                if _free_gb < _need:
+                from src import memory_plan as _mp_spawn
+                _spawn_plan = _mp_spawn.plan_for(_n_photos, requested_scan=req.scan_mode)
+                if _spawn_plan is None:
+                    _free_gb = _mp_spawn.free_ram_gb()
+                    _free_txt = f"{_free_gb:.1f} GB" if _free_gb is not None else "unmeasurable"
                     import json as _sj
-                    yield f"data: {_json.dumps({'error': f'Refused: only {_free_gb:.1f} GB RAM free and a cull needs ~{_need:.1f} GB — at this level the machine page-thrashes and the app freezes (measured). Close a few apps — a browser tab or two is usually enough — and retry.', 'alternatives': {'close_apps': True, 'smaller_selection': True}})}\n\n"
-                    print(f"[server] Grade REFUSED pre-spawn: {_free_gb:.2f} GB free (need {_need:.1f})", flush=True)
+                    yield f"data: {_json.dumps({'error': f'Refused: {_free_txt} RAM free and even a Scan (the lightest pass) does not fit any more — at this level the machine page-thrashes and the app freezes (measured). Close a few apps — a browser tab or two is usually enough — and retry.', 'alternatives': {'close_apps': True, 'smaller_selection': True}})}\n\n"
+                    print(f"[server] Grade REFUSED pre-spawn: RAM shrank below the Scan floor", flush=True)
                     return
-                if _free_gb < _need + 0.8:
+                if _spawn_plan["degraded"] and not _eff_scan:
+                    with open(_req_path, "w", encoding="utf-8") as _rf2:
+                        _json.dump({
+                            "folders":      all_folders,
+                            "preset":       req.preset,
+                            "force_rescan": req.force_rescan,
+                            "scan_mode":    True,
+                            "deep_grade":   False,
+                            "catalog_path": str(_CATALOG_PATH),
+                            "data_dir":     str(_DATA_DIR),
+                            "mogco_target": 0,
+                        }, _rf2)
+                    import json as _sj
+                    yield f"data: {_json.dumps({'notice': _spawn_plan['note']})}\n\n"
+                    print(f"[server] Late downgrade to Scan at spawn: {_spawn_plan['free_gb']:.2f} GB free", flush=True)
+                _need = _spawn_plan["need_gb"]
+                _free_now = _spawn_plan["free_gb"]
+                if _need is not None and _free_now is not None and _free_now < _need + _mp_spawn.TIGHT_BAND_GB:
                     import json as _sj
                     # Tight-but-viable band: warn once, do not block. The cull
                     # runs slower here; the checkpoint + Resume recover it if
                     # the machine still runs out mid-way.
-                    yield f"data: {_json.dumps({'notice': f'Tight RAM: {_free_gb:.1f} GB free — the cull will run slower. Closing a few apps keeps it fast.'})}\n\n"
-                    print(f"[server] Grade advisory: tight RAM {_free_gb:.2f} GB free — proceeding", flush=True)
-            except Exception:
-                pass
+                    yield f"data: {_json.dumps({'notice': f'Tight RAM: {_free_now:.1f} GB free — the cull will run slower. Closing a few apps keeps it fast.'})}\n\n"
+                    print(f"[server] Grade advisory: tight RAM {_free_now:.2f} GB free — proceeding", flush=True)
+            except Exception as _spawn_gate_exc:
+                print(f"[server] pre-spawn RAM re-check failed (fail-open): {_spawn_gate_exc}", flush=True)
 
             # ── Hard DISK gate: a full drive fails persistence SILENTLY. ─────
             # Observed 2026-08-30 with 0 bytes free: the grade itself ran and
@@ -318,7 +364,6 @@ async def grade_photos_v2_stream(req: GradeRequest):
             _loop = asyncio.get_running_loop()
             _pos = 0
             _done = False
-
             def _read_new():
                 # Binary read from the last byte offset; only consume up to the last
                 # complete newline so a half-written progress line is never mis-parsed.
@@ -377,7 +422,16 @@ async def grade_photos_v2_stream(req: GradeRequest):
                                 _recovered = len(_json.loads(_CATALOG_PATH.read_text(encoding="utf-8")).get("photos", []))
                         except Exception:
                             pass
-                        yield f"data: {_json.dumps({'error': f'Grade process exited unexpectedly (code {_proc.returncode}) — {_recovered} grades were checkpointed and can be recovered. Check crash.log', 'recovered': _recovered})}\n\n"
+                        _cause = ""
+                        try:
+                            import psutil as _ps_death
+                            _free_death = _ps_death.virtual_memory().available / 1e9
+                            if _free_death < 2.0:
+                                _cause = (f" The machine was low on memory when it died ({_free_death:.1f} GB free now) — "
+                                          "close a few apps before resuming. ")
+                        except Exception:
+                            pass
+                        yield f"data: {_json.dumps({'error': f'Grade process exited unexpectedly (code {_proc.returncode}) — nothing was lost: {_recovered} grades are checkpointed and Resume continues exactly where it stopped. {_cause}Check crash.log for the technical detail', 'recovered': _recovered})}\n\n"
                     break
                 yield ": heartbeat\n\n"
                 await asyncio.sleep(0.4)

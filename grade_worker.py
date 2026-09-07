@@ -142,7 +142,21 @@ def grade_worker_main(
                 sample_limit = sample_limit,
                 deep_grade   = deep_grade,
             )
-            combined_gallery.extend(result.get("gallery", []))
+            # Slim PER FOLDER (2026-09-07 SD-upload OOM). Each entry's
+            # "embedding" is a 1536-element Python-float list (~49 KB); slimming
+            # only AFTER the loop kept every folder's embeddings resident
+            # simultaneously — a full-library re-grade held several GB of float
+            # lists at peak while the next folder's pipeline was also live.
+            # Peak memory is now ONE folder's gallery, not the whole library's.
+            _folder_gallery = result.get("gallery", [])
+            if mogco_target <= 0:
+                for _photo in _folder_gallery:
+                    _photo.pop("embedding", None)
+                del result
+                import gc as _gc_folder
+                _gc_folder.collect()
+            combined_gallery.extend(_folder_gallery)
+            del _folder_gallery
 
         gallery_slim = [
             {k: v for k, v in photo.items() if k != "embedding"}

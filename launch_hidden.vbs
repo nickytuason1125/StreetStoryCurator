@@ -5,6 +5,13 @@ appDir = Left(WScript.ScriptFullName, InStrRev(WScript.ScriptFullName, "\"))
 
 shell.CurrentDirectory = Left(appDir, Len(appDir) - 1)
 
+' Lite-by-default on this machine (16 GB RAM, measured: the full pipeline
+' needs 3.8-4.2 GB free and this box rarely has it). Pin the small encoder
+' and lite defaults for EVERY launch — see LITE_MODE.md. The vars are set on
+' this host process and inherited by the pythonw child below.
+shell.Environment("PROCESS")("SIGLIP_TIER") = "low"
+shell.Environment("PROCESS")("FIRSTCUT_LITE") = "1"
+
 Dim pythonwPath, scriptPath, crashLog, stampFile
 pythonwPath = appDir & "venv\Scripts\pythonw.exe"
 scriptPath  = appDir & "src\local_launcher.py"

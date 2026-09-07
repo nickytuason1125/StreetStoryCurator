@@ -244,6 +244,136 @@ def _download_siglip2_if_needed() -> bool:
         return False
 
 
+# ── Persistent warm encoder (FIRSTCUT_WARM_ENCODER, default on) ─────────────
+# One encode_worker in serve mode stays loaded across culls: imports + model
+# load happen once (at boot freshness), and every later cull skips both. See
+# encode_worker.serve for the file-based job protocol — responses go through a
+# per-job .resp.json file so the parent never reads worker stdout (no pipe
+# deadlock, stdout keeps flowing to crash.log for diagnostics).
+_WORKER_PATH = Path(__file__).resolve().parent / "encode_worker.py"
+_WARM: dict | None = None
+
+
+def _warm_enabled() -> bool:
+    return os.environ.get("FIRSTCUT_WARM_ENCODER", "1").strip() != "0"
+
+
+def _warm_shutdown() -> None:
+    global _WARM
+    if _WARM is not None:
+        try:
+            _WARM["proc"].terminate()
+        except Exception:
+            pass
+        _WARM = None
+
+
+def _warm_ensure(worker_path: Path) -> bool:
+    """A live warm worker, spawning one if needed. False = could not spawn."""
+    global _WARM
+    import sys
+    import win_job
+    if _WARM is not None and _WARM["proc"].poll() is None:
+        return True
+    _warm_shutdown()
+    import subprocess as _sp
+    env = dict(os.environ)
+    env["SIGLIP_TIER"] = _TIER
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    _crash_log = Path(__file__).resolve().parent.parent / "crash.log"
+    try:
+        _lf = open(_crash_log, "a", encoding="utf-8", errors="replace")
+        proc = win_job.popen(
+            [sys.executable, str(worker_path), "serve"],
+            stdin=_sp.PIPE, stdout=_lf, stderr=_lf,
+            cwd=str(Path(__file__).resolve().parent.parent), env=env,
+        )
+    except Exception as exc:
+        print(f"[siglip2] warm encoder spawn failed (non-fatal): {exc}", flush=True)
+        return False
+    _WARM = {"proc": proc, "stdin": proc.stdin}
+    print(f"[siglip2] warm encoder spawned pid={proc.pid}", flush=True)
+    return proc.poll() is None
+
+
+def _warm_run(enc, mode: str, in_path: str, out_path: str) -> bool:
+    """One job through the warm worker (one respawn retry). True = produced."""
+    global _WARM
+    import json as _json
+    import time as _time
+    resp_path = in_path + ".resp.json"
+    try:
+        os.unlink(resp_path)
+    except Exception:
+        pass
+    for _try in (1, 2):
+        if not _warm_ensure(enc._WORKER):
+            return False
+        req = _json.dumps({"mode": mode, "in": in_path,
+                           "out": out_path, "resp": resp_path})
+        try:
+            _WARM["stdin"].write((req + "\n").encode("utf-8"))
+            _WARM["stdin"].flush()
+        except Exception:
+            print("[siglip2] warm encoder pipe dead — respawning", flush=True)
+            _warm_shutdown()
+            continue
+        deadline = _time.time() + 3600
+        while _time.time() < deadline:
+            if os.path.exists(resp_path):
+                try:
+                    res = _json.load(open(resp_path, encoding="utf-8"))
+                except Exception:
+                    res = {}
+                if res.get("ok") and os.path.exists(out_path):
+                    return True
+                print(f"[siglip2] warm encoder job failed: "
+                      f"{str(res.get('error', ''))[-300:]}", flush=True)
+                return False
+            if _WARM["proc"].poll() is not None:
+                print("[siglip2] warm encoder died mid-job — respawning", flush=True)
+                _warm_shutdown()
+                break
+            _time.sleep(0.25)
+    return False
+
+
+def warm_start() -> bool:
+    """Spawn the warm worker and pre-load the model, without blocking.
+
+    Called after the UI window opens (machine at its freshest) so the heavy
+    imports + model load never land mid-session. Returns False when the warm
+    path is disabled or the spawn failed (one-shot still works).
+    """
+    if not _warm_enabled():
+        return False
+    import threading as _threading
+
+    def _prewarm():
+        try:
+            if not _warm_ensure(_WORKER_PATH):
+                return
+            import json as _json
+            import tempfile as _tf
+            fd, tin = _tf.mkstemp(suffix=".warm.json"); os.close(fd)
+            tout = tin + ".npy"
+            with open(tin, "w", encoding="utf-8") as f:
+                _json.dump(["warmup"], f)
+            resp = tin + ".resp.json"
+            global _WARM
+            req = _json.dumps({"mode": "text", "in": tin, "out": tout, "resp": resp})
+            _WARM["stdin"].write((req + "\n").encode("utf-8"))
+            _WARM["stdin"].flush()
+            print("[siglip2] warm pre-load submitted", flush=True)
+            # The tiny job's output is never read: its whole purpose is to
+            # trigger _load() inside the worker. The idle timeout cleans up.
+        except Exception as exc:
+            print(f"[siglip2] warm pre-load failed (non-fatal): {exc}", flush=True)
+
+    _threading.Thread(target=_prewarm, daemon=True, name="encoder-prewarm").start()
+    return True
+
+
 class SigLIP2Encoder:
     """SigLIP-2 image+text encoder — runs the model in an ISOLATED SUBPROCESS.
 
@@ -276,8 +406,25 @@ class SigLIP2Encoder:
     # unavailable" (WDDM-level contention with another GPU subprocess), and the
     # very next attempt with identical inputs succeeding. One retry after a short
     # backoff turns that into a self-healing blip instead of a failed grade.
-    _MAX_ATTEMPTS = 2
-    _RETRY_DELAY_S = 1.5
+    #
+    # 2026-09-07 escalation: on a commit-starved machine the worker now dies
+    # during IMPORTS (sklearn/scipy MemoryError at 0.47 GB RSS, "The paging
+    # file is too small") — a machine-state dip, not a code bug. Two attempts
+    # 1.5 s apart cannot win that: the dip lasts seconds. The loop now runs
+    # 4 attempts with escalating backoff (2s / 8s / 32s) and a gc.collect()
+    # between them, because free RAM is volatile in exactly the window where
+    # the retry lands. Attempt 1 failing twice in a row is the dip; attempt 4
+    # lands on a rebalanced machine.
+    #
+    # But the retry loop is the SECOND line of defence. The first is the
+    # persistent warm encoder (serve mode + _warm_* below): imports and the
+    # model load happen ONCE at app-boot freshness, and every cull afterwards
+    # reuses the loaded model — the import-time OOM class disappears and each
+    # cull starts 30–60 s faster. The one-shot loop below remains the
+    # fallback (warm worker dead AND respawn failed → exactly today's
+    # behaviour, never worse).
+    _MAX_ATTEMPTS = 4
+    _RETRY_DELAY_S = 2.0
 
     def _run(self, mode: str, items: list) -> np.ndarray:
         import sys, json, tempfile, subprocess, time
@@ -302,6 +449,17 @@ class SigLIP2Encoder:
             env.setdefault("PYTHONIOENCODING", "utf-8")
             if mode == "images":
                 env.setdefault("SIGLIP_ENC_BATCH", str(_auto_enc_batch()))
+            # ── Preferred path: the persistent warm worker ──────────────────
+            # No imports, no model load — the serve-mode worker is already
+            # loaded. On any warm-path failure we fall through to the
+            # one-shot loop below (today's behaviour, never worse).
+            if _warm_enabled():
+                try:
+                    if _warm_run(self, mode, in_path, out_path):
+                        return np.load(out_path)
+                    print("[siglip2] warm encoder unavailable — falling back to a one-shot spawn", flush=True)
+                except Exception as _warm_exc:
+                    print(f"[siglip2] warm encoder error ({_warm_exc}) — falling back to a one-shot spawn", flush=True)
             _last_rc = None
             for _attempt in range(1, self._MAX_ATTEMPTS + 1):
                 print(f"[siglip2] encode_worker start: mode={mode} n={len(items)} attempt={_attempt}", flush=True)
@@ -321,10 +479,41 @@ class SigLIP2Encoder:
                     return np.load(out_path)
                 _last_rc = r.returncode
                 if _attempt < self._MAX_ATTEMPTS:
-                    print(f"[siglip2] encode_worker attempt {_attempt} failed (rc={r.returncode}) — retrying", flush=True)
-                    time.sleep(self._RETRY_DELAY_S)
-            raise RuntimeError(
-                f"Vision encoder subprocess failed after {self._MAX_ATTEMPTS} attempts (exit {_last_rc}) — see crash.log"
+                    # The failure is usually a transient commit/RAM dip, not
+                    # code (see the constants' comment). Collect our own
+                    # garbage, then back off long enough for the machine to
+                    # rebalance — standby lists refill and other processes
+                    # free pages on a timescale of seconds, so a 1.5 s retry
+                    # only ever won when the dip had already passed.
+                    import gc as _gc
+                    import memory_plan as _mp_run
+                    _free = _mp_run.free_ram_gb()
+                    _delay = self._RETRY_DELAY_S * (4 ** (_attempt - 1))   # 2s, 8s, 32s
+                    _free_txt = "unmeasurable" if _free is None else f"{_free:.2f} GB free"
+                    print(f"[siglip2] encode_worker attempt {_attempt} failed "
+                          f"(rc={r.returncode}, {_free_txt}) — gc + retry in {_delay:.0f}s",
+                          flush=True)
+                    _gc.collect()
+                    time.sleep(_delay)
+                    # Wait-for-recovery: a fixed sleep loses to a dip that
+                    # outlasts it. Hold the retry until the machine actually
+                    # has room for a reduced-batch encode (floor + margin, up
+                    # to 90 s per attempt) — riding out a transient VS Code/
+                    # antivirus surge instead of burning all attempts while
+                    # the machine sits at bottom.
+                    _floor = _mp_run.min_admission_gb()
+                    _recovery_deadline = time.time() + 90
+                    while time.time() < _recovery_deadline:
+                        _free = _mp_run.free_ram_gb()
+                        if _free is None or _free >= _floor:
+                            break
+                        time.sleep(2)
+            raise MemoryError(
+                f"The vision encoder could not start after {self._MAX_ATTEMPTS} attempts "
+                f"(last exit {_last_rc}) — the machine ran out of memory while loading it. "
+                f"Everything graded so far is saved: close a few apps (or reboot if the "
+                f"RAM chip has been red a while) and press Resume — the cull continues "
+                f"from its checkpoint instead of starting over."
             )
         finally:
             for _f in (in_path, out_path):
