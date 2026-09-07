@@ -443,7 +443,10 @@ def _server_healthy(url: str) -> bool:
 
 def _kill_stray_backends() -> None:
     """Kill leftover pythonw/python launcher-backend processes from failed
-    boot attempts. Only ours: their command lines reference this repo."""
+    boot attempts. Matches by SCRIPT NAME in the cmdline, NOT by absolute
+    path — several zombies were started with relative paths and survived a
+    path-based kill (measured 2026-09-07: they held port 8000 hostage).
+    The watchdog is explicitly exempt."""
     try:
         import psutil as _ps
         me = os.getpid()
@@ -453,8 +456,10 @@ def _kill_stray_backends() -> None:
                 if "python" not in n or p.info["pid"] == me:
                     continue
                 cl = " ".join(p.info["cmdline"] or [])
-                if str(ROOT) in cl and ("local_launcher" in cl or "server_impl" in cl
-                                        or "grade_runner" in cl or "grade_worker" in cl):
+                if "run_watchdog" in cl:
+                    continue   # the watchdog observes; never kill it
+                if any(s in cl for s in ("local_launcher", "server_impl",
+                                         "grade_runner", "grade_worker")):
                     p.kill()
             except Exception:
                 pass

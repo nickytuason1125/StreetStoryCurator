@@ -1,2 +1,4 @@
-port 8000 owner: None
-FAILED: URLError: <urlopen error [WinError 10061] No connection could be made because the target machine actively refused it>
+port 8000 owner: pid 69800 = python.exe: C:\Users\Nicky Tuason\AppData\Local\Programs\Python\Python312\python.exe -m uvicorn server_impl:app --host 127
+config keys: ['force_frontier', 'version']
+catalog photos: 0
+VERDICT: suspicious responder

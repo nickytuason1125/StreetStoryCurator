@@ -1,0 +1,4 @@
+whoami: {"app":"FirstCut","pid":69800}
+catalog: 0 photos (fresh baseline = 0 until you scan)
+models: {"draft_available": false, "warmup_done": true}
+RAM: 1.75 GB free
