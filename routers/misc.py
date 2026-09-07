@@ -177,13 +177,26 @@ async def get_catalog(full: bool = False):
             # /api/photo-detail when a photo is selected, and survive saves via
             # the merge in /api/catalog/save. ?full=1 keeps the old behaviour
             # for consumers that genuinely need every field (XMP export).
+            #
+            # 'face' gets the same treatment (4.5 MB across 64k rows): the
+            # gallery only needs the 4 filter scalars — per-face details
+            # (boxes, crops, confidences) are fetched live via /api/photo-faces
+            # when a photo is selected, and /api/catalog/save keeps the stored
+            # details when the slim face comes back (see the save merge).
+            _FACE_WIRE_KEYS = ("faces_detected", "subject_in_focus",
+                               "focus_ratio", "largest_face_frac")
+
+            def _slim_photo(p: dict) -> dict:
+                q = {k: v for k, v in p.items()
+                     if k not in ("breakdown", "reasoning_log", "face")}
+                f = p.get("face")
+                if isinstance(f, dict):
+                    q["face"] = {k: f[k] for k in _FACE_WIRE_KEYS if k in f}
+                return q
+
             slim = {
                 **data,
-                "photos": [
-                    {k: v for k, v in p.items()
-                     if k not in ("breakdown", "reasoning_log")}
-                    for p in data.get("photos", [])
-                ],
+                "photos": [_slim_photo(p) for p in data.get("photos", [])],
             }
             body = json.dumps({"exists": True, "fallback": False, **slim},
                               ensure_ascii=False).encode("utf-8")
@@ -247,6 +260,18 @@ async def save_catalog(payload: dict):
                     if p.get("path")}
     except Exception:
         existing = {}
+    # Face-slim guard: the wire payload carries only the 4 filter scalars of
+    # 'face' (full per-face details live in /api/photo-faces). When a slim face
+    # comes back from the frontend, fold it INTO the stored full face instead
+    # of letting it overwrite the details — scalars update, boxes/crops stay.
+    for p in photos:
+        prev = existing.get(p.get("path"))
+        if (isinstance(p.get("face"), dict) and "faces" not in p["face"]
+                and isinstance(prev, dict) and isinstance(prev.get("face"), dict)
+                and "faces" in prev["face"]):
+            f = dict(prev["face"])
+            f.update(p["face"])
+            p["face"] = f
     merged = []
     for p in photos:
         prev = existing.get(p.get("path"))
