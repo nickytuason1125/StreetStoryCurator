@@ -438,13 +438,22 @@ def _spawn_detached_server(port: int) -> None:
     aborts a cull. DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP breaks the child off
     this process so it is not torn down when the window exits."""
     import subprocess as _sp
+    import win_job as _wj_spawn
     _flags = 0
     if sys.platform == "win32":
         _flags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
     # DEVNULL for all stdio: the detached server redirects its own fd 1/2 to
     # crash.log at module load, so it must not inherit this window process's
     # handles (which vanish when the window exits).
-    _sp.Popen(
+    #
+    # win_job.popen, NOT plain Popen (2026-09-07): an unprotected detached
+    # backend survives its parent's death as an orphan holding port 8000 —
+    # and every subsequent launch then fails to bind and dies silently,
+    # leaving the ORPHAN (possibly a pre-update process) serving the app.
+    # That is the "it shouldn't be the old code" report: the app WAS old,
+    # because the new backend could never take the port. Job-object tie =>
+    # orphan dies with its parent and the next launch actually starts.
+    _wj_spawn.popen(
         [sys.executable, str(Path(__file__).resolve()), "--server-only"],
         cwd=str(_ROOT), creationflags=_flags, close_fds=True,
         stdin=_sp.DEVNULL, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
@@ -456,6 +465,20 @@ def _run_server_only(port: int) -> None:
     """Entry for the detached backend process: build the frontend, then run
     uvicorn in the FOREGROUND of this (server) process forever."""
     _log(f"--- Backend server process (--server-only) on port {port} ---")
+    # Torch gate: a backend running under an interpreter WITHOUT torch can
+    # serve the UI but every grade dies at `import torch` — and while it
+    # lives it HOLDS PORT 8000, locking the real (venv) backend out. Seen
+    # 2026-09-07: a system-Python backend won the port race against a venv
+    # one; the app then looked like "old code" because grades instantly
+    # died. Fail fast instead: exit without binding, so the torch-capable
+    # backend can take the port.
+    try:
+        import torch  # noqa: F401
+    except Exception as exc:
+        _log(f"Backend REFUSED to start: torch is unavailable in this "
+             f"interpreter ({type(exc).__name__}). A torch-capable (venv) "
+             f"backend must hold port {port}. Exiting so it can bind.")
+        return
     _build_frontend_if_needed()
     _start_frontend_watch()
     _run_server(port)   # blocks in uvicorn.run for the life of the server
@@ -478,16 +501,33 @@ def _reexec_in_venv_if_needed() -> None:
     """
     if getattr(sys, "frozen", False):
         return
+    _venv_pyw = (_ROOT / "venv" / "Scripts" / "pythonw.exe").resolve()
+    _venv_py = (_ROOT / "venv" / "Scripts" / "python.exe").resolve()
     try:
         import torch  # noqa: F401
         return                      # whatever we are on can grade; leave it
     except Exception:
-        pass
+        # torch failed to import. Two very different causes with opposite
+        # correct responses:
+        #   a) this is the SYSTEM interpreter (no torch installed) → re-exec
+        #      into the venv is exactly right;
+        #   b) this IS a venv interpreter but the import died on commit/RAM
+        #      exhaustion (MemoryError at ~1 GB free, 2026-09-07) → re-exec
+        #      spawns another failing tree — the interpreter ping-pong that
+        #      produced alternating venv/system process pairs and the "it
+        #      shouldn't be the old code" confusion. Stay put and let the
+        #      RAM admission gates refuse with the real numbers instead.
+        _here = Path(sys.executable).resolve()
+        if _here == _venv_pyw or _here == _venv_py:
+            _log("torch import failed INSIDE the venv interpreter — memory "
+                 "pressure, not a wrong interpreter. Staying put; RAM "
+                 "admission will refuse with exact numbers until the "
+                 "machine has room.")
+            return
+        _log(f"torch unavailable in {sys.executable} — re-executing with the venv interpreter")
 
-    venv_py = _ROOT / "venv" / "Scripts" / ("pythonw.exe" if sys.platform == "win32" else "python")
+    venv_py = _venv_pyw if _venv_pyw.exists() else _venv_py
     if not venv_py.exists():
-        venv_py = _ROOT / "venv" / "Scripts" / "python.exe"
-    if not venv_py.exists() or Path(sys.executable).resolve() == venv_py.resolve():
         _log("WARNING: torch is unavailable and no venv interpreter was found. "
              "Grading will fail. Run scripts/setup_wizard.py or launch.bat.")
         return
@@ -532,6 +572,34 @@ def main():
         except OSError:
             _log("Second launch detected (lock held); exiting")
             return
+
+    # ── Boot RAM gate ────────────────────────────────────────────────────────
+    # The backend needs ~3 GB free to load a 64k catalog cleanly. MEASURED
+    # 2026-09-07: boots succeed at 3.3+ GB, fail at 1.5–2.7 GB (MemoryError in
+    # lance preload / catalog parse → the window dies with "did not become
+    # available"). So boot hard-refuses below 2.5 GB — an advisory is not
+    # enough here: a refused BOOT is recoverable (close apps, retry), a
+    # poisoned one just wastes the user's evening.
+    if not _is_backend:
+        try:
+            import psutil as _ps_boot
+            _free_boot = _ps_boot.virtual_memory().available / (1 << 30)
+            if _free_boot < 2.5:
+                _msg = (f"FirstCut cannot start: only {_free_boot:.1f} GB of memory is free, "
+                        f"and the photo library needs ~3 GB to load cleanly (measured: boots "
+                        f"fail below 2.5 GB).\n\nClose some apps (browser tabs and editor "
+                        f"windows are the usual cause) and try again.")
+                print(f"[launcher] BOOT REFUSED: {_free_boot:.2f} GB free (< 2.5)", flush=True)
+                try:
+                    import ctypes
+                    ctypes.windll.user32.MessageBoxW(None, _msg, "FirstCut — not enough memory", 0x10)
+                except Exception:
+                    pass
+                return
+            if _free_boot < 3.2:
+                print(f"[launcher] boot advisory: {_free_boot:.2f} GB free — the library load may be slow or fail", flush=True)
+        except Exception:
+            pass  # never let the gate itself block a launch
 
     port = 8000
     url = f"http://127.0.0.1:{port}"
@@ -592,6 +660,43 @@ def main():
                                            # the app's tone, not a white "blank"
         )
 
+        def _start_presentation_watchdog():
+            """Software-composited WebView2 (see _patch_webview_gpu) sometimes
+            stops re-presenting frames after the window is occluded — e.g. a
+            maximized VS Code on top — and then exposed again. The DOM stays
+            alive (CDP + PrintWindow show a perfect UI) but the screen holds a
+            black frame: the 2026-09-06 "it shows black" report. Any resize
+            forces the swap chain to re-present, so nudge the window by 1 px
+            and back on every occluded→foreground transition. 1 px is
+            invisible to the user, and the nudge only fires on the
+            transition, never while the window is in normal use."""
+            import ctypes
+            import ctypes.wintypes as _wt
+            user32 = ctypes.windll.user32
+            SWP_NOMOVE = 0x0002
+            SWP_NOZORDER = 0x0004
+
+            def _loop():
+                was_fg = False
+                while True:
+                    time.sleep(0.5)
+                    try:
+                        hwnd = user32.FindWindowW(None, "FirstCut")
+                        if not hwnd:
+                            continue
+                        is_fg = user32.GetForegroundWindow() == hwnd
+                        if is_fg and not was_fg:
+                            r = _wt.RECT()
+                            if user32.GetWindowRect(hwnd, ctypes.byref(r)):
+                                w, h = r.right - r.left, r.bottom - r.top
+                                user32.SetWindowPos(hwnd, None, 0, 0, w + 1, h, SWP_NOMOVE | SWP_NOZORDER)
+                                user32.SetWindowPos(hwnd, None, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER)
+                        was_fg = is_fg
+                    except Exception:
+                        pass
+
+            threading.Thread(target=_loop, daemon=True, name="presentation-watchdog").start()
+
         def _post_start():
             """Called by webview.start() in its own thread after the webview loop starts."""
             _log("[diag] _post_start called")
@@ -621,6 +726,42 @@ def main():
                 return
             _log("[diag] loaded.wait returned True")
             _stamp_icon(_icon)
+            # A window opened while the machine is under load — or after a
+            # restart storm — can sit minimized, or worse, visible-but-black:
+            # the WebView2 controller stays IsVisible=false so nothing paints,
+            # even though the DOM is fully loaded (CDP shows the UI, the user
+            # sees a black frame). Push the window through pywebview's own
+            # restore/show so the controller state syncs with the Win32 state
+            # instead of trusting whichever state the OS window landed in.
+            for _fn in (getattr(win, "restore", None), getattr(win, "show", None)):
+                if callable(_fn):
+                    try:
+                        _fn()
+                    except Exception as exc:
+                        _log(f"[diag] post-load {getattr(_fn, '__name__', 'window nudge')} skipped: {exc}")
+            # And keep it presenting: occlusion (a maximized editor on top)
+            # can freeze the software-composited frame even after this — see
+            # the watchdog docstring for the full failure mode.
+            if sys.platform == "win32":
+                _start_presentation_watchdog()
+            # Warm the vision encoder NOW, while the machine is at its
+            # freshest: the persistent encode worker imports torch/
+            # transformers/sklearn and loads the model once, so a cull never
+            # pays that ~2 GB cost mid-session (the "grading stopped early"
+            # fix). Fire-and-forget; a cull before it finishes still works
+            # (the encode path falls back to a one-shot spawn).
+            def _warm_encoder():
+                time.sleep(3)
+                try:
+                    import urllib.request as _ur
+                    _req = _ur.Request("http://127.0.0.1:8000/api/encoder/warm",
+                                       method="POST",
+                                       headers={"Sec-Fetch-Site": "same-origin"})
+                    _ur.urlopen(_req, timeout=10).read()
+                    _log("[diag] encoder warm request sent")
+                except Exception as exc:
+                    _log(f"[diag] encoder warm request failed (non-fatal): {exc}")
+            threading.Thread(target=_warm_encoder, daemon=True).start()
 
             def _diag():
                 time.sleep(0.1)
