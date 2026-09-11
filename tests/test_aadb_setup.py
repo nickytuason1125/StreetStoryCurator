@@ -112,6 +112,38 @@ def test_fit_head_recovers_linear_signal():
     assert result["n_holdout"] == 40
 
 
+def test_save_head_writes_encoder_fingerprint_and_metrics_to_models(tmp_path, monkeypatch):
+    """models/aadb_head.npz must carry the encoder fingerprint (same-dim-
+    different-space guard), and the durable metrics file must live in
+    models/ — not cache/, which is this project's ephemeral convention and
+    gets cleared routinely — so promote_master_judge's AADB gate can't be
+    fooled by a cache wipe into reporting 'no trained head found'."""
+    import numpy as np
+    import aadb_setup
+
+    head_out = tmp_path / "models" / "aadb_head.npz"
+    metrics_out = tmp_path / "models" / "aadb_head_metrics.json"
+    monkeypatch.setattr(aadb_setup, "_HEAD_OUT", head_out)
+    monkeypatch.setattr(aadb_setup, "_METRICS_OUT", metrics_out)
+
+    result = {
+        "coef": np.array([0.5, -0.25]), "intercept": 0.1,
+        "mean": np.array([0.0, 0.0]), "std": np.array([1.0, 1.0]),
+        "rho_holdout": 0.42, "n_train": 80, "n_holdout": 20,
+    }
+    aadb_setup._save_head(result)
+
+    assert head_out.exists()
+    assert metrics_out.exists()
+    assert metrics_out.parent.name == "models"
+
+    with np.load(head_out, allow_pickle=False) as d:
+        assert "encoder_source" in d.files
+        assert "embed_dim" in d.files
+        assert str(d["encoder_source"])  # non-empty
+        assert int(d["embed_dim"]) > 0
+
+
 def test_fit_head_refuses_degenerate_holdout():
     import numpy as np
     import aadb_setup

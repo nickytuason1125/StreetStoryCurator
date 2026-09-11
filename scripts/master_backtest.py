@@ -36,7 +36,11 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT / "src"))
 
-_AADB_METRICS_PATH = _ROOT / "cache" / "aadb_head_metrics.json"
+# models/, not cache/: cache/ is ephemeral/derived and gets cleared
+# routinely; the durable head lives in models/aadb_head.npz, and this file
+# must live next to it or a cache wipe makes promote_master_judge's AADB
+# gate falsely report "no trained head found" (see aadb_setup.py).
+_AADB_METRICS_PATH = _ROOT / "models" / "aadb_head_metrics.json"
 
 
 def read_aadb_metrics() -> "dict | None":

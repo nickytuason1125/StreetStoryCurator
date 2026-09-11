@@ -22,7 +22,12 @@ _ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(_ROOT / "src"))
 
 _HEAD_OUT = _ROOT / "models" / "aadb_head.npz"
-_METRICS_OUT = _ROOT / "cache" / "aadb_head_metrics.json"
+# NOT cache/: cache/ is this project's ephemeral/derived-data convention and
+# gets cleared routinely. scripts/promote_master_judge.py's check_aadb_gate()
+# reads this file to decide whether a durable, already-trained head exists —
+# putting the metrics in cache/ made that gate falsely report "no trained
+# AADB head found" even with the real head sitting in models/ right next to it.
+_METRICS_OUT = _ROOT / "models" / "aadb_head_metrics.json"
 _SPLIT_SEED = 20260911
 
 
@@ -98,11 +103,26 @@ def fit_head(X_train, y_train, X_holdout, y_holdout, lam: float = 1.0) -> dict:
     }
 
 
+def _encoder_fingerprint() -> tuple:
+    """(encoder_source, embed_dim) of the SigLIP-2 encoder this head is being
+    trained against — the same cheap, already-established identity string
+    grade_pipeline_v2 uses for its encoder-source migration guard (see
+    siglip2_encoder.ENCODER_SOURCE). Same-dimension-different-space is a real,
+    silent-corruption risk this project has hit before (see
+    specvlm_pipeline.probe_fingerprint's docstring); storing this lets
+    aadb_scorer.score() refuse a head trained against a different encoder
+    even when the dimensionality happens to match."""
+    from siglip2_encoder import ENCODER_SOURCE, EMBED_DIM
+    return ENCODER_SOURCE, EMBED_DIM
+
+
 def _save_head(result: dict) -> None:
     import json
     _HEAD_OUT.parent.mkdir(parents=True, exist_ok=True)
+    encoder_source, embed_dim = _encoder_fingerprint()
     np.savez(_HEAD_OUT, coef=result["coef"], intercept=result["intercept"],
-              mean=result["mean"], std=result["std"])
+              mean=result["mean"], std=result["std"],
+              encoder_source=encoder_source, embed_dim=embed_dim)
     _METRICS_OUT.parent.mkdir(parents=True, exist_ok=True)
     _METRICS_OUT.write_text(json.dumps({
         "rho_holdout": None if np.isnan(result["rho_holdout"]) else round(float(result["rho_holdout"]), 4),
