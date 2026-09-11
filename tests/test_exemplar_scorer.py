@@ -59,3 +59,72 @@ def test_score_returns_none_on_embedding_dim_mismatch(tmp_path, monkeypatch):
     result = exemplar_scorer.score(embs)
 
     assert result is None
+
+
+def test_score_returns_none_on_encoder_source_mismatch(tmp_path, monkeypatch):
+    """Same dimensionality can still be a different embedding space — the
+    bank must refuse to score against an encoder it wasn't built with."""
+    import exemplar_scorer
+
+    bank = np.array([[1.0, 0.0], [0.9, 0.1]], dtype=np.float32)
+    bank_path = tmp_path / "exemplar_bank.npz"
+    np.savez(bank_path, embeddings=bank,
+             encoder_source="openclip-high-ViT-gopt-16-SigLIP2-384", embed_dim=2)
+    monkeypatch.setattr(exemplar_scorer, "_BANK_PATH", bank_path)
+    monkeypatch.setattr("siglip2_encoder.ENCODER_SOURCE", "hf-onnx-mid-ViT-L-16-SigLIP2-384")
+
+    embs = np.array([[1.0, 0.0]], dtype=np.float32)
+    result = exemplar_scorer.score(embs)
+
+    assert result is None
+
+
+def test_score_still_works_when_encoder_source_matches(tmp_path, monkeypatch):
+    import exemplar_scorer
+
+    bank = np.array([[1.0, 0.0], [0.9, 0.1]], dtype=np.float32)
+    bank_path = tmp_path / "exemplar_bank.npz"
+    np.savez(bank_path, embeddings=bank,
+             encoder_source="openclip-high-ViT-gopt-16-SigLIP2-384", embed_dim=2)
+    monkeypatch.setattr(exemplar_scorer, "_BANK_PATH", bank_path)
+    monkeypatch.setattr("siglip2_encoder.ENCODER_SOURCE", "openclip-high-ViT-gopt-16-SigLIP2-384")
+
+    embs = np.array([[1.0, 0.0]], dtype=np.float32)
+    result = exemplar_scorer.score(embs, k=2)
+
+    assert result is not None
+
+
+def test_score_not_nan_when_bank_has_zero_norm_row(tmp_path, monkeypatch):
+    """A zero-vector row in the bank (a plausible degenerate embedding from
+    an unreadable/corrupt source image) must not poison every query row's
+    score with NaN — np.sort places NaN last, so without an epsilon guard a
+    NaN column always survives into the top-k slice."""
+    import exemplar_scorer
+
+    bank = np.array([[1.0, 0.0], [0.9, 0.1], [0.0, 0.0]], dtype=np.float32)
+    bank_path = tmp_path / "exemplar_bank.npz"
+    np.savez(bank_path, embeddings=bank)
+    monkeypatch.setattr(exemplar_scorer, "_BANK_PATH", bank_path)
+
+    normal_query = np.array([[1.0, 0.0]], dtype=np.float32)
+    result = exemplar_scorer.score(normal_query, k=3)
+
+    assert result is not None
+    assert np.isfinite(result).all()
+
+
+def test_score_returns_none_on_empty_bank(tmp_path, monkeypatch):
+    """An empty bank (shape (0, d)) must return None cleanly instead of
+    hitting Python's -0 == 0 slicing pitfall in np.sort(...)[:, -k_eff:]."""
+    import exemplar_scorer
+
+    bank = np.empty((0, 4), dtype=np.float32)
+    bank_path = tmp_path / "exemplar_bank.npz"
+    np.savez(bank_path, embeddings=bank)
+    monkeypatch.setattr(exemplar_scorer, "_BANK_PATH", bank_path)
+
+    embs = np.array([[1.0, 2.0, 3.0, 4.0]], dtype=np.float32)
+    result = exemplar_scorer.score(embs)
+
+    assert result is None
