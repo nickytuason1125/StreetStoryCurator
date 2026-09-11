@@ -29,13 +29,20 @@ import master_judge as mj  # noqa: E402
 
 def _bd(tech: float, comp: float, light: float, narr: float, hc: float,
         arch: "dict | None" = None) -> dict:
-    """A complete grade-time breakdown — the five aspects plus the archetype
-    weights the hand formula uses (there is no 'Aesthetic' key at grade
-    time)."""
-    return {"Technical": tech, "Composition": comp, "Lighting": light,
-            "Narrative": narr, "Human/Culture": hc,
-            "_arch_w": arch or {"geo": 0.2, "night": 0.2, "layer": 0.2,
-                                "messy": 0.2, "maxdoc": 0.2}}
+    """A complete grade-time breakdown — every aspect mj.FEATURES currently
+    lists, plus the archetype weights the hand formula uses (there is no
+    'Aesthetic' key at grade time).
+
+    The five named parameters are the original aspects and their meaning is
+    fixed; any name later appended to mj.FEATURES (e.g. "AADB", "Exemplar")
+    is filled in with a neutral default here so this fixture never goes
+    stale again as FEATURES grows."""
+    named = {"Technical": tech, "Composition": comp, "Lighting": light,
+             "Narrative": narr, "Human/Culture": hc}
+    bd = {name: named.get(name, 0.5) for name in mj.FEATURES}
+    bd["_arch_w"] = arch or {"geo": 0.2, "night": 0.2, "layer": 0.2,
+                              "messy": 0.2, "maxdoc": 0.2}
+    return bd
 
 
 def _synthetic_rows(n: int = 320, seed: int = 7) -> list:
@@ -84,7 +91,11 @@ def test_spearman_is_nan_without_signal():
 
 def test_feature_vector_preserves_canonical_order_and_flags_missing():
     v = mj.feature_vector(_bd(0.1, 0.2, 0.3, 0.4, 0.5))
-    assert list(v[:len(mj.FEATURES)]) == [0.1, 0.2, 0.3, 0.4, 0.5]
+    # only the first 5 (the original, explicitly-passed aspects) are pinned —
+    # any later FEATURES growth (e.g. "AADB", "Exemplar") fills in beyond
+    # that with _bd's neutral default, which this test doesn't pin a value
+    # for.
+    assert list(v[:5]) == [0.1, 0.2, 0.3, 0.4, 0.5]
     assert np.isfinite(v).all()            # archetype weights came along
     assert len(v) == len(mj.DESIGN) - 1    # minus the machine-score column
     partial = mj.feature_vector({"Technical": 0.1})
