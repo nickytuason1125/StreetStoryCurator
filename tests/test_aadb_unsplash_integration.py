@@ -54,3 +54,16 @@ def test_both_models_present_populate_both_features(monkeypatch):
     vec = mj.feature_vector(breakdowns[0])
     assert vec[mj.FEATURES.index("AADB")] == 0.77
     assert vec[mj.FEATURES.index("Exemplar")] == 0.33
+
+
+def test_aadb_and_exemplar_are_excluded_from_fusion_roles():
+    """Regression guard: 'AADB' and 'Exemplar' must not match a live
+    score-fusion role keyword (niche_registry._ROLE_KEYWORDS) by substring
+    accident. Neither feature is a per-aspect axis — they're whole-photo
+    MasterJudge inputs — so a future rename that happened to contain, say,
+    'human' or 'moment' as a substring would silently route it into a live
+    fusion slot instead of leaving it out ('')."""
+    import niche_registry as nr
+
+    assert nr.aspect_role("AADB") == ""
+    assert nr.aspect_role("Exemplar") == ""
