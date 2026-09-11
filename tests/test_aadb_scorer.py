@@ -27,3 +27,24 @@ def test_score_matches_manual_ridge_predict(tmp_path, monkeypatch):
 
     expected = (embs - mean) / std @ coef + intercept
     np.testing.assert_allclose(result, expected)
+
+
+def test_score_returns_none_on_embedding_dim_mismatch(tmp_path, monkeypatch):
+    """Head trained on 8-d embeddings, called with 4-d embeddings (tier mismatch)."""
+    import aadb_scorer
+
+    # Head trained on 8-dimensional embeddings
+    coef = np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8], dtype=np.float64)
+    intercept = 0.05
+    mean = np.zeros(8)
+    std = np.ones(8)
+    head_path = tmp_path / "aadb_head.npz"
+    np.savez(head_path, coef=coef, intercept=intercept, mean=mean, std=std)
+    monkeypatch.setattr(aadb_scorer, "_HEAD_PATH", head_path)
+
+    # Called with 4-dimensional embeddings (different tier)
+    embs = np.array([[1.0, 2.0, 3.0, 4.0]], dtype=np.float64)
+    result = aadb_scorer.score(embs)
+
+    # Should return None, not raise ValueError
+    assert result is None
