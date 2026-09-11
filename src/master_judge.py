@@ -137,6 +137,19 @@ def feature_vector(bd: dict) -> np.ndarray:
                      for v in vals], dtype=np.float64)
 
 
+def _bd_value(bd: dict, name: str) -> float:
+    """Look up one named feature/arch value from a breakdown dict by NAME
+    (not by position in the global FEATURES/DESIGN order) — NaN if missing
+    or non-numeric, the same convention feature_vector() uses. Lets
+    predict_many() score using a judge's own stored `features` list instead
+    of always assuming the current live design."""
+    if name.startswith("arch:"):
+        v = (bd.get("_arch_w") or {}).get(name[len("arch:"):])
+    else:
+        v = bd.get(name)
+    return float(v) if isinstance(v, (int, float)) else float("nan")
+
+
 # ── Dataset collection ────────────────────────────────────────────────────────
 
 def collect_rows() -> list:
@@ -423,8 +436,15 @@ def predict_many(breakdowns: list, base_scores=None,
         base = np.asarray(base_scores, dtype=np.float64)
         if base.shape[0] != len(breakdowns):
             raise ValueError("base_scores must align with breakdowns")
-    X_asp = np.stack([feature_vector(bd or {}) for bd in breakdowns])
-    X = np.column_stack([base, X_asp])
+    judge_features = w["features"]  # the judge's OWN stored list, not DESIGN
+    cols = []
+    for name in judge_features:
+        if name == "(machine score)":
+            cols.append(base)
+        else:
+            cols.append(np.array([_bd_value(bd or {}, name) for bd in breakdowns],
+                                 dtype=np.float64))
+    X = np.column_stack(cols)
     coef = np.asarray(w["coef"], dtype=np.float64)
     mean = np.asarray(w["mean"], dtype=np.float64)
     std = np.where(np.asarray(w["std"], dtype=np.float64) < 1e-9, 1.0,
@@ -510,6 +530,24 @@ def _valid_judge_dict(d: dict) -> bool:
             and all(k in d for k in required))
 
 
+def _applicable_judge_dict(d: dict) -> bool:
+    """A judge record is safe to APPLY at grade time (not necessarily
+    freshly-fit) when it won its exam and carries complete, internally
+    consistent weights. Unlike _valid_judge_dict, this does NOT require the
+    feature design to match the CURRENT live FEATURES: predict_many() scores
+    using the judge's own stored `features` list, so a judge trained on a
+    strict subset of today's features keeps producing its original, correct
+    prediction — today's newly-added features it never saw are simply not
+    part of its input, not scored as zero or dropped as incomplete."""
+    required = ("coef", "intercept", "mean", "std",
+                "rho_holdout", "rho_baseline", "features")
+    return (isinstance(d, dict)
+            and d.get("promoted") is True
+            and all(k in d for k in required)
+            and isinstance(d.get("features"), list)
+            and len(d["features"]) == len(d.get("coef") or []))
+
+
 def _weight_from(d: dict) -> float:
     rho_j, rho_b = d.get("rho_holdout"), d.get("rho_baseline")
     if rho_j is None or rho_b is None:
@@ -529,7 +567,7 @@ def _load_shipped() -> "dict | None":
         if not _SHIPPED_PATH.exists():
             return None
         d = json.loads(_SHIPPED_PATH.read_text(encoding="utf-8"))
-        if not _valid_judge_dict(d):
+        if not _applicable_judge_dict(d):
             print("[master_judge] shipped master judge is invalid/stale "
                   "for the current feature design — ignoring")
             return None

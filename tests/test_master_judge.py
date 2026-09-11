@@ -271,7 +271,94 @@ def test_maybe_autofit_gates_on_new_rating_delta(tmp_path, monkeypatch):
     assert called.get("ran") is True
 
 
+# ── 6b. _applicable_judge_dict vs _valid_judge_dict ───────────────────────────
+
+def test_applicable_judge_dict_accepts_feature_subset_valid_rejects_it():
+    """A judge whose stored `features` list is a strict subset of the
+    CURRENT live FEATURES (e.g. it predates AADB/Exemplar) is APPLICABLE —
+    predict_many() scores by name from its own list, so it doesn't need
+    every current feature to be present — even though _valid_judge_dict's
+    exact-match gate (unchanged, still used by promote_to_shipped) rejects
+    it as stale."""
+    old_features = ["(machine score)", "Technical", "Composition", "Lighting",
+                    "Narrative", "Human/Culture",
+                    "arch:geo", "arch:night", "arch:layer", "arch:messy", "arch:maxdoc"]
+    d = {"promoted": True, "features": old_features,
+         "coef": [0.1] * len(old_features), "intercept": 0.0,
+         "mean": [0.5] * len(old_features), "std": [0.2] * len(old_features),
+         "rho_holdout": 0.5, "rho_baseline": 0.3,
+         "feature_fingerprint": "not-the-current-design"}
+    assert mj._applicable_judge_dict(d) is True
+    assert mj._valid_judge_dict(d) is False
+
+
+def test_applicable_judge_dict_rejects_length_mismatch_and_unpromoted():
+    old_features = ["(machine score)", "Technical", "Composition"]
+    base = {"promoted": True, "features": old_features,
+            "coef": [0.1, 0.2, 0.3], "intercept": 0.0,
+            "mean": [0.5] * 3, "std": [0.2] * 3,
+            "rho_holdout": 0.5, "rho_baseline": 0.3}
+    assert mj._applicable_judge_dict(base) is True
+    mismatched = dict(base, coef=[0.1, 0.2])   # features/coef length mismatch
+    assert mj._applicable_judge_dict(mismatched) is False
+    unpromoted = dict(base, promoted=False)
+    assert mj._applicable_judge_dict(unpromoted) is False
+    missing_key = dict(base)
+    del missing_key["rho_baseline"]
+    assert mj._applicable_judge_dict(missing_key) is False
+
+
+# ── 6c. predict_many scores by the judge's OWN stored feature list ───────────
+
+def test_predict_many_scores_by_name_ignoring_features_the_judge_never_saw():
+    """A judge fit before AADB/Exemplar existed (an old 11-entry `features`
+    list) must produce the IDENTICAL prediction whether or not the
+    breakdown dict additionally carries AADB/Exemplar keys — predict_many()
+    only ever looks up the names the judge was trained on, by name, not by
+    position in the current live DESIGN."""
+    old_features = ["(machine score)", "Technical", "Composition", "Lighting",
+                    "Narrative", "Human/Culture",
+                    "arch:geo", "arch:night", "arch:layer", "arch:messy", "arch:maxdoc"]
+    rng = np.random.default_rng(0)
+    w = {"promoted": True, "features": old_features,
+         "coef": [float(c) for c in rng.normal(0, 0.05, len(old_features))],
+         "intercept": 0.5,
+         "mean": [0.5] * len(old_features),
+         "std": [0.2] * len(old_features),
+         "rho_holdout": 0.5, "rho_baseline": 0.3}
+
+    bd_with_extra = _bd(0.6, 0.7, 0.4, 0.5, 0.55)
+    bd_with_extra["AADB"] = 0.93
+    bd_with_extra["Exemplar"] = 0.07
+    bd_without_extra = {k: v for k, v in bd_with_extra.items()
+                        if k not in ("AADB", "Exemplar")}
+
+    p1 = mj.predict_many([bd_with_extra], [0.6], weights=w)
+    p2 = mj.predict_many([bd_without_extra], [0.6], weights=w)
+    assert np.isfinite(p1[0]) and np.isfinite(p2[0])
+    assert p1[0] == p2[0]
+
+
 # ── 7. the two-phase master-algo contract ─────────────────────────────────────
+
+def test_promote_to_shipped_still_refuses_stale_fingerprint_cache(tmp_path):
+    """promote_to_shipped()'s validation logic is UNCHANGED — it must still
+    require an EXACT fingerprint match against the current live design
+    (this is the build-time gate: refuse to bake a design-mismatched cache
+    record into the shipped defaults, forcing a fresh fit first). This is
+    a different concern from _load_shipped()'s new backward-compatible
+    RUN-time behavior, and must not have been weakened by this fix."""
+    rows = _synthetic_rows()
+    wp = tmp_path / "w.json"
+    out = mj.fit_from_rows(rows, weights_path=wp)
+    assert out["promoted"] is True
+    d = json.loads(wp.read_text(encoding="utf-8"))
+    d["feature_fingerprint"] = "deadbeefdeadbeef"
+    wp.write_text(json.dumps(d), encoding="utf-8")
+    res = mj.promote_to_shipped(cache_path=wp, shipped_path=tmp_path / "s.json")
+    assert res["shipped"] is False
+    assert not (tmp_path / "s.json").exists()
+
 
 def test_promotion_refuses_a_loser(tmp_path):
     """A challenger that lost its exam can never become the master."""
@@ -338,7 +425,16 @@ def test_cache_opt_in_beats_shipped_fresher_locally(tmp_path, monkeypatch):
     assert judge["_source"] == "cache"
 
 
-def test_stale_shipped_judge_is_ignored(tmp_path, monkeypatch):
+def test_stale_fingerprint_shipped_judge_still_applies(tmp_path, monkeypatch):
+    """Regression test for the shipped-judge bug: a shipped judge whose
+    feature_fingerprint no longer matches the CURRENT live design (e.g.
+    FEATURES grew from 5 to 7 aspects after it shipped) must still load and
+    grade — predict_many() scores from the judge's own stored `features`
+    list, not the global DESIGN, so a stale fingerprint alone no longer
+    means an inapplicable judge. Before this fix, _load_shipped() used the
+    exact-match _valid_judge_dict() gate and silently returned None here,
+    disabling the Master Judge blend for every install whenever FEATURES
+    grew."""
     wp = tmp_path / "w.json"
     mj.fit_from_rows(_synthetic_rows(), weights_path=wp)
     shipped = tmp_path / "master_judge_defaults.json"
@@ -351,7 +447,68 @@ def test_stale_shipped_judge_is_ignored(tmp_path, monkeypatch):
     monkeypatch.delenv("FIRSTCUT_MASTER_JUDGE", raising=False)
     monkeypatch.delenv("FIRSTCUT_MASTER_JUDGE_OFF", raising=False)
     judge, w = mj.active()
+    assert judge is not None and w > 0.0
+    assert judge["_source"] == "shipped"
+
+
+def test_malformed_shipped_judge_is_still_ignored(tmp_path, monkeypatch):
+    """A shipped judge that is genuinely broken (its own `features` list no
+    longer matches its own `coef` length — internally inconsistent, not
+    merely behind the current live design) must still be rejected."""
+    wp = tmp_path / "w.json"
+    mj.fit_from_rows(_synthetic_rows(), weights_path=wp)
+    shipped = tmp_path / "master_judge_defaults.json"
+    mj.promote_to_shipped(cache_path=wp, shipped_path=shipped)
+    d = json.loads(shipped.read_text(encoding="utf-8"))
+    d["features"] = d["features"][:-1]   # drop one entry: len mismatch vs coef
+    shipped.write_text(json.dumps(d), encoding="utf-8")
+    monkeypatch.setattr(mj, "_WEIGHTS_PATH", tmp_path / "absent.json")
+    monkeypatch.setattr(mj, "_SHIPPED_PATH", shipped)
+    monkeypatch.delenv("FIRSTCUT_MASTER_JUDGE", raising=False)
+    monkeypatch.delenv("FIRSTCUT_MASTER_JUDGE_OFF", raising=False)
+    judge, w = mj.active()
     assert judge is None and w == 0.0
+
+
+def test_load_shipped_fixture_shaped_like_real_file_survives_features_growth(tmp_path, monkeypatch):
+    """Direct regression test for the shipped bug, shaped like the real
+    data/master_judge_defaults.json: an old 11-entry `features` list (base
+    score + the 5 ORIGINAL aspects + 5 archetypes — no AADB/Exemplar), a
+    matching 11-entry coef, and promoted=True. Even though mj.FEATURES has
+    since grown to 7 entries (13-entry DESIGN), _load_shipped()/active()
+    must still return this judge with a non-zero blend weight."""
+    old_features = ["(machine score)", "Technical", "Composition", "Lighting",
+                    "Narrative", "Human/Culture",
+                    "arch:geo", "arch:night", "arch:layer", "arch:messy", "arch:maxdoc"]
+    fixture = {
+        "n": 791, "n_holdout": 198, "n_train": 593,
+        "rho_holdout": 0.8738, "rho_baseline": 0.8665,
+        "promoted": True,
+        "features": old_features,
+        "coef": [0.104886, 0.004575, 0.007387, 0.004811, 0.016153, -0.001254,
+                 -0.006042, -0.008347, 0.016556, -0.01747, 0.011713],
+        "intercept": 0.572007,
+        "mean": [0.449882, 0.426958, 0.470339, 0.495921, 0.392678, 0.502008,
+                 0.129749, 0.228526, 0.223868, 0.272423, 0.14542],
+        "std": [0.123744, 0.195045, 0.184464, 0.162517, 0.154309, 0.180244,
+                0.031025, 0.040638, 0.035202, 0.084101, 0.055833],
+        "feature_fingerprint": "c731a9103a6505e0",  # sha1 of the OLD DESIGN
+    }
+    shipped = tmp_path / "master_judge_defaults.json"
+    shipped.write_text(json.dumps(fixture), encoding="utf-8")
+    monkeypatch.setattr(mj, "_WEIGHTS_PATH", tmp_path / "absent.json")
+    monkeypatch.setattr(mj, "_SHIPPED_PATH", shipped)
+    monkeypatch.delenv("FIRSTCUT_MASTER_JUDGE", raising=False)
+    monkeypatch.delenv("FIRSTCUT_MASTER_JUDGE_OFF", raising=False)
+    # sanity: FEATURES really has grown past this fixture's list, confirming
+    # this fixture reproduces the exact stale-relative-to-live-design shape
+    assert len(mj.FEATURES) > 5
+    judge, w = mj.active()
+    assert judge is not None
+    assert judge["_source"] == "shipped"
+    assert w > 0.0
+    preds = mj.predict_many([_bd(0.9, 0.9, 0.5, 0.5, 0.5)], [0.6], weights=judge)
+    assert np.isfinite(preds[0])
 
 
 def test_kill_switch_beats_everything(tmp_path, monkeypatch):
