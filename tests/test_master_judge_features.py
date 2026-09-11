@@ -25,3 +25,17 @@ def test_feature_vector_is_nan_when_aadb_missing():
     vec = mj.feature_vector(bd)
     idx = mj.FEATURES.index("AADB")
     assert np.isnan(vec[idx])
+
+
+def test_exemplar_is_a_feature():
+    import master_judge as mj
+    assert "Exemplar" in mj.FEATURES
+
+
+def test_feature_order_is_aadb_then_exemplar():
+    """DESIGN order is part of the saved-weights fingerprint
+    (master_judge.py:53-55) — pin the order explicitly so a future edit
+    that silently reorders FEATURES is caught here, not by a confusing
+    fingerprint mismatch somewhere else."""
+    import master_judge as mj
+    assert mj.FEATURES.index("AADB") < mj.FEATURES.index("Exemplar")

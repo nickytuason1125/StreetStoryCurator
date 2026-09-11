@@ -54,7 +54,7 @@ import numpy as np
 # saved fingerprint: reordering the list invalidates saved weights rather
 # than silently permuting the regression.
 FEATURES = ["Technical", "Composition", "Lighting",
-            "Narrative", "Human/Culture", "AADB"]
+            "Narrative", "Human/Culture", "AADB", "Exemplar"]
 
 # Per-photo archetype weights (the `_arch_w` blob the hand formula uses to
 # modulate the aspect blend). Without these the student sees strictly LESS
