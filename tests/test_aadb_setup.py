@@ -90,3 +90,37 @@ def test_split_is_deterministic_and_proportional():
     assert [p for p, _ in train_a] == [p for p, _ in train_b]
     assert [p for p, _ in holdout_a] == [p for p, _ in holdout_b]
     assert set(p for p, _ in train_a).isdisjoint(set(p for p, _ in holdout_a))
+
+
+def test_fit_head_recovers_linear_signal():
+    import numpy as np
+    import aadb_setup
+
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(200, 8))
+    true_w = rng.normal(size=8)
+    y = X @ true_w
+    y = (y - y.min()) / (y.max() - y.min())  # normalise to [0,1] like AADB scores
+
+    X_train, X_hold = X[:160], X[160:]
+    y_train, y_hold = y[:160], y[160:]
+
+    result = aadb_setup.fit_head(X_train, y_train, X_hold, y_hold, lam=0.1)
+
+    assert result["rho_holdout"] > 0.9   # near-perfect linear signal should be recovered
+    assert result["n_train"] == 160
+    assert result["n_holdout"] == 40
+
+
+def test_fit_head_refuses_degenerate_holdout():
+    import numpy as np
+    import aadb_setup
+
+    X_train = np.random.default_rng(1).normal(size=(50, 4))
+    y_train = np.random.default_rng(1).normal(size=50)
+    X_hold = np.random.default_rng(1).normal(size=(2, 4))  # too few for a real rho
+    y_hold = np.array([0.5, 0.5])
+
+    import math
+    result = aadb_setup.fit_head(X_train, y_train, X_hold, y_hold, lam=1.0)
+    assert math.isnan(result["rho_holdout"])
