@@ -1,0 +1,2 @@
+encoder pid=33468 CPU=0% RAM=4MB
+encoder pid=40344 CPU=0% RAM=19MB

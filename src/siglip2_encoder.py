@@ -24,6 +24,43 @@ from typing import Optional, List
 # held for the whole run. See the same note in specvlm_pipeline.py.
 import numpy as np
 
+def _encode_ckpt_path(paths: List[str]) -> Path:
+    """Checkpoint file for this encode job: one per tier + exact path set.
+
+    Rows inside are keyed by path, so a resume restores them regardless of
+    order. Lives in cache/encode_ckpts/ next to the catalog.
+    """
+    import hashlib as _hl
+    _ckpt_dir = Path(__file__).resolve().parent.parent / "cache" / "encode_ckpts"
+    try:
+        _ckpt_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    return _ckpt_dir / (
+        f"enc_{os.environ.get('SIGLIP_TIER', 'x')}_"
+        f"{_hl.md5('\\n'.join(sorted(paths)).encode()).hexdigest()[:16]}.npz")
+
+
+def _stale_ckpt_sweep(ckpt_dir: Path, max_age_s: float = 48 * 3600) -> None:
+    """Best-effort cleanup of abandoned encode checkpoints.
+
+    A checkpoint only lives for the duration of one encode job (deleted on
+    success), so anything older than ~2 days is debris from a crashed run
+    whose job never came back. Old files are unlinked; failures never block
+    the encode.
+    """
+    try:
+        import time as _t
+        now = _t.time()
+        for f in ckpt_dir.glob("*.npz"):
+            if now - f.stat().st_mtime > max_age_s:
+                f.unlink()
+    except Exception:
+        pass
+
+
+class _Tier:
+    """Deprecated holder kept so old pickled/keyword references do not break."""
 _PRETRAINED = "webli"
 
 # ── Tiered model selection (Phase 1) ─────────────────────────────────────────
@@ -268,6 +305,61 @@ def _warm_shutdown() -> None:
         _WARM = None
 
 
+def _sweep_orphan_workers() -> int:
+    """Kill ghost `encode_worker serve` processes. Returns how many were killed.
+
+    A warm worker outlives its parent whenever the parent dies without
+    running _warm_shutdown — a window closed mid-prewarm, a server
+    hard-killed at boot (local_launcher taskkills the port holder), or a
+    grade_runner terminated by a stream close. The orphan then sits on
+    ~430 MB until its 600 s idle timeout, and if the machine is busy the
+    idle exit can be preempted — so duplicates accumulate ("2.0 GB free
+    with nothing open", 2026-09-10: two warm workers found alive).
+
+    Matched by SCRIPT NAME in the cmdline (never by bare image name), the
+    same rule local_launcher uses for backend remnants. An ORPHAN (parent
+    no longer alive) is provably unreferenced and is killed. A worker whose
+    parent is alive is left alone — we cannot know which owner is about to
+    use it, and this sweep must never turn into a warm-vs-warm war.
+    """
+    import re as _re
+    killed = 0
+    try:
+        import psutil as _psutil
+    except Exception:
+        return 0
+    try:
+        _marker = _re.compile(r"encode_worker\.py[\"']?\s+serve")
+        for _p in _psutil.process_iter(["pid", "name", "cmdline", "ppid"]):
+            try:
+                _cmd = " ".join(_p.info.get("cmdline") or [])
+                if not _marker.search(_cmd):
+                    continue
+                _ppid = _p.info.get("ppid")
+                if _ppid_alive(_psutil, _p.info.get("ppid")):
+                    continue   # parent alive — owned, leave it
+                _p.kill()
+                killed += 1
+                print(f"[siglip2] swept orphan encode_worker pid={_p.info.get('pid')}", flush=True)
+            except (_psutil.NoSuchProcess, _psutil.AccessDenied):
+                continue
+            except Exception:
+                pass
+    except Exception:
+        pass   # hygiene, not correctness — never block a spawn on the sweep
+    return killed
+
+
+def _ppid_alive(psutil_mod, ppid) -> bool:
+    try:
+        if ppid is None or ppid <= 0:
+            return False
+        psutil_mod.Process(int(ppid))
+        return True
+    except Exception:
+        return False
+
+
 def _warm_ensure(worker_path: Path) -> bool:
     """A live warm worker, spawning one if needed. False = could not spawn."""
     global _WARM
@@ -276,6 +368,7 @@ def _warm_ensure(worker_path: Path) -> bool:
     if _WARM is not None and _WARM["proc"].poll() is None:
         return True
     _warm_shutdown()
+    _sweep_orphan_workers()   # ghost workers outlive dead parents — sweep on (re)spawn
     import subprocess as _sp
     env = dict(os.environ)
     env["SIGLIP_TIER"] = _TIER
@@ -296,8 +389,31 @@ def _warm_ensure(worker_path: Path) -> bool:
     return proc.poll() is None
 
 
-def _warm_run(enc, mode: str, in_path: str, out_path: str) -> bool:
-    """One job through the warm worker (one respawn retry). True = produced."""
+def _warm_no_cpu_s(n_items: int) -> float:
+    """How long a warm worker may show no CPU progress before it is declared
+    lost (respawn race) and killed in favour of a one-shot spawn.
+
+    90 s was calibrated for small jobs. The 2026-09-11 real run lost a
+    350-photo chunk job to it: a big image encode on a tight machine waits
+    on the GPU and a slow SD card, and can legitimately sit at near-zero
+    CPU for minutes — the watchdog killed a HEALTHY worker and cost a full
+    model reload. The window now scales with job size (90 s small jobs,
+    up to ~7 min for 350+), and FIRSTCUT_WARM_NO_CPU_S overrides."""
+    override = os.environ.get("FIRSTCUT_WARM_NO_CPU_S", "").strip()
+    if override:
+        try:
+            return max(30.0, float(override))
+        except ValueError:
+            pass
+    return 90.0 if n_items <= 64 else min(600.0, 90.0 + float(n_items))
+
+
+def _warm_run(enc, mode: str, in_path: str, out_path: str,
+              n_items: int = 0) -> "str | None":
+    """One job through the warm worker (one respawn retry). None = produced;
+    a str return is the worker's error text (so the caller can classify a
+    deterministic per-file decode failure and fail fast instead of walking
+    the whole one-shot ladder — see _run's unreadable-file breaker)."""
     global _WARM
     import json as _json
     import time as _time
@@ -308,7 +424,7 @@ def _warm_run(enc, mode: str, in_path: str, out_path: str) -> bool:
         pass
     for _try in (1, 2):
         if not _warm_ensure(enc._WORKER):
-            return False
+            return "warm encoder could not be spawned"
         req = _json.dumps({"mode": mode, "in": in_path,
                            "out": out_path, "resp": resp_path})
         try:
@@ -319,6 +435,48 @@ def _warm_run(enc, mode: str, in_path: str, out_path: str) -> bool:
             _warm_shutdown()
             continue
         deadline = _time.time() + 3600
+        # ── Liveness watchdog ─────────────────────────────────────────────────
+        # A warm job that never starts (respawn race eats the request) leaves
+        # the worker at serve-ready with the model loaded and the parent
+        # polling for a resp file that will never be written — the eternal
+        # "frozen at the same %" freeze, 3600 s per attempt. Distinguish a
+        # HEALTHY long job (worker burns CPU) from a LOST one (worker at 0%
+        # CPU): track the worker's total CPU time; if it hasn't moved for 90 s
+        # while no resp has arrived, the job was lost — kill the worker and
+        # fall through to the one-shot spawn ladder (retry ladder +
+        # crash-loop breaker + checkpointed abort). A genuinely working CPU
+        # encode never sits at 0 CPU for 90 s.
+        _liveliness_floor = _time.time() + 60   # grace period: model warm-up
+        # No-CPU window: scaled to the job (see _warm_no_cpu_s), and doubled
+        # when the machine is memory-starved — a swapped-out worker is not
+        # lost, it is SLOW, and killing it forces a one-shot respawn into the
+        # same starvation (the memory watcher owns that regime, not this).
+        _no_cpu_s = _warm_no_cpu_s(n_items)
+        try:
+            import memory_plan as _mp_warm
+            _warm_free = _mp_warm.free_ram_gb()
+            if _warm_free is not None and _warm_free < 2.0:
+                _no_cpu_s = max(_no_cpu_s, 600.0)
+        except Exception:
+            pass
+        # TWO-PHASE liveness (2026-09-11, refined after the real run):
+        #   Phase 1 (fast): a RECEIVED job shows model-load/encode CPU within
+        #     seconds of submission. Zero CPU for 45 s means the respawn race
+        #     ate the request — kill fast; the one-shot spawn is already the
+        #     faster path in that state.
+        #   Phase 2 (patient): once the job is known-started (CPU > 1 s), use
+        #     the scaled _no_cpu_s window — a working worker may legitimately
+        #     stall on the GPU and a slow SD card.
+        _received = False
+        _fast_deadline = _time.time() + 45
+        _last_cpu = 0.0
+        _last_cpu_change = _time.time()
+        try:
+            import psutil as _psutil
+            _warm_ps = _psutil.Process(_WARM["proc"].pid)
+            _last_cpu = sum(_warm_ps.cpu_times())
+        except Exception:
+            _warm_ps = None
         while _time.time() < deadline:
             if os.path.exists(resp_path):
                 try:
@@ -326,16 +484,39 @@ def _warm_run(enc, mode: str, in_path: str, out_path: str) -> bool:
                 except Exception:
                     res = {}
                 if res.get("ok") and os.path.exists(out_path):
-                    return True
+                    return None
                 print(f"[siglip2] warm encoder job failed: "
                       f"{str(res.get('error', ''))[-300:]}", flush=True)
-                return False
+                return str(res.get("error", "")) or "warm encoder job failed"
             if _WARM["proc"].poll() is not None:
                 print("[siglip2] warm encoder died mid-job — respawning", flush=True)
                 _warm_shutdown()
                 break
+            if _warm_ps is not None and _time.time() > _liveliness_floor:
+                try:
+                    cpu_now = sum(_warm_ps.cpu_times())
+                    if cpu_now > 1.0:
+                        _received = True
+                    if cpu_now != _last_cpu:
+                        _last_cpu = cpu_now
+                        _last_cpu_change = _time.time()
+                    if not _received and _time.time() > _fast_deadline:
+                        print("[siglip2] warm worker showed no CPU 45s after "
+                              "submission — job lost in respawn race; killing "
+                              "worker, falling back to one-shot spawn", flush=True)
+                        _warm_shutdown()
+                        break
+                    if (_received and cpu_now == _last_cpu
+                            and _time.time() - _last_cpu_change > _no_cpu_s):
+                        print(f"[siglip2] warm encoder idle {_no_cpu_s:.0f}s with no resp — "
+                              "job lost in respawn race; killing worker, "
+                              "falling back to one-shot spawn", flush=True)
+                        _warm_shutdown()
+                        break
+                except Exception:
+                    pass   # worker gone — poll() check handles it
             _time.sleep(0.25)
-    return False
+    return "warm encoder lost the job twice (died mid-job / idle no-resp)"
 
 
 def warm_start() -> bool:
@@ -372,6 +553,18 @@ def warm_start() -> bool:
 
     _threading.Thread(target=_prewarm, daemon=True, name="encoder-prewarm").start()
     return True
+
+
+def _unreadable_user_msg(err: str, n: int) -> str:
+    """User-facing message for a deterministic all-files-unreadable encode.
+    Carries the failed file list extracted from the worker's error when the
+    warm path supplied one."""
+    import re as _re
+    _m = _re.search(r"\[failed: (.+?)\]", err or "")
+    _files = f" Affected file(s): {_m.group(1)}" if _m else ""
+    return (f"{n} photo(s) could not be read — the file(s) are corrupt or "
+            f"truncated, or the card/reader dropped out mid-copy. "
+            f"Remove or re-copy them, then grade again.{_files}")
 
 
 class SigLIP2Encoder:
@@ -453,13 +646,18 @@ class SigLIP2Encoder:
             # No imports, no model load — the serve-mode worker is already
             # loaded. On any warm-path failure we fall through to the
             # one-shot loop below (today's behaviour, never worse).
-            if _warm_enabled():
+            _warm_err = ""
+            if _warm_enabled() and os.environ.get("FIRSTCUT_NO_WARM", "") != "1":
                 try:
-                    if _warm_run(self, mode, in_path, out_path):
+                    _warm_err = _warm_run(self, mode, in_path, out_path, n_items=len(items))
+                    if _warm_err is None:
                         return np.load(out_path)
-                    print("[siglip2] warm encoder unavailable — falling back to a one-shot spawn", flush=True)
+                    print(f"[siglip2] warm encoder unavailable ({str(_warm_err)[-160:]}) — "
+                          f"falling back to a one-shot spawn", flush=True)
                 except Exception as _warm_exc:
+                    _warm_err = str(_warm_exc)
                     print(f"[siglip2] warm encoder error ({_warm_exc}) — falling back to a one-shot spawn", flush=True)
+            _saw_unreadable = "files unreadable" in (_warm_err or "")
             _last_rc = None
             for _attempt in range(1, self._MAX_ATTEMPTS + 1):
                 print(f"[siglip2] encode_worker start: mode={mode} n={len(items)} attempt={_attempt}", flush=True)
@@ -478,7 +676,40 @@ class SigLIP2Encoder:
                 if r.returncode == 0 and os.path.exists(out_path):
                     return np.load(out_path)
                 _last_rc = r.returncode
+                # ── Deterministic unreadable-files breaker (2026-09-10) ──────
+                # Exit 3 = every file failed to DECODE. Decoding is a pure
+                # function of the file's bytes — a fresh process, a fresh
+                # model load, and a CPU tier all read the same bytes, so the
+                # ladder cannot help. Two consecutive deterministic failures
+                # (the warm attempt + one one-shot confirmation) end the run
+                # with a message that names the files, instead of the 8-model-
+                # reload crawl that wedged a 2-photo grade for 12+ minutes.
+                if r.returncode == 3:
+                    if _saw_unreadable:
+                        raise RuntimeError(_unreadable_user_msg(_warm_err, len(items)))
+                    _saw_unreadable = True
+                    print("[siglip2] encode_worker unreadable-files failure — "
+                          "one confirmation retry, then fail fast", flush=True)
+                    time.sleep(2.0)
+                    continue
                 if _attempt < self._MAX_ATTEMPTS:
+                    # ── Crash-loop breaker ───────────────────────────────────
+                    # The spawned worker already ran _enforce_ram_floor and
+                    # died anyway — respawning into the same conditions just
+                    # burns the 2s/8s/32s ladder and produces the classic
+                    # "frozen at the same % forever" zombie. Check the floor
+                    # HERE, in the parent, before deciding to respawn: below
+                    # the hard floor the failure is a machine-state refusal,
+                    # not a transient dip, so fail the attempt loop now and
+                    # let the checkpointed-abort message reach the user.
+                    try:
+                        _enforce_ram_floor()
+                    except MemoryError:
+                        print(f"[siglip2] encode_worker attempt {_attempt} failed "
+                              f"(rc={r.returncode}) and free RAM is below the hard "
+                              f"floor — breaking the respawn loop (checkpoint saved, "
+                              f"resume available)", flush=True)
+                        raise
                     # The failure is usually a transient commit/RAM dip, not
                     # code (see the constants' comment). Collect our own
                     # garbage, then back off long enough for the machine to
@@ -530,30 +761,131 @@ class SigLIP2Encoder:
         therefore RELOADED the whole ~3.5 GB model at every chunk boundary. On a
         16 GB machine each reload spike (landing on an already-tight system with
         the app + frontend running) drove free RAM to near-zero and killed the
-        grade worker with a C-level 0xC0000005 access violation. One load = one
-        transient, taken when RAM is freshest; sustained peak is just model +
-        one batch. SIGLIP_ENC_CHUNK can still force chunking if ever needed."""
+        grade worker with a C-level 0xC0000005 access violation.
+
+        RAM-AWARE CHUNKING (2026-09-11): the unlimited single run has its own
+        failure — a 2,754-photo encode bled the MACHINE's free RAM from 2 GB
+        to 0.6 GB over minutes until the sustained-collapse watcher killed the
+        worker and the UI showed a silent grader. Large jobs are now split
+        into chunks sized by memory_plan.plan_encode_chunks() (200–900 photos
+        by free RAM). Each chunk keeps the full single-load protection ladder;
+        between chunks the subprocess exits (freeing its RAM), the machine gets
+        a recovery window, and PARTIAL EMBEDDINGS ARE CHECKPOINTED so a resume
+        never re-encodes finished chunks. SIGLIP_ENC_CHUNK still overrides."""
         _enforce_ram_floor()   # per-encode guard (covers the reused-singleton path)
         n = len(paths)
-        # Default: no chunking (one subprocess, one model load). A very large
-        # cap keeps the override available without splitting realistic folders.
-        _CHUNK = int(os.environ.get("SIGLIP_ENC_CHUNK", "100000"))
-        if n <= _CHUNK:
-            embs = self._run("images", list(paths))
-        else:
-            parts = []
-            for k in range(0, n, _CHUNK):
-                chunk = paths[k:k + _CHUNK]
-                if progress:
-                    progress(
-                        0.20 + 0.25 * k / n,
-                        f"Analyzing photos {k + 1}–{min(k + _CHUNK, n)} of {n}…",
-                    )
-                parts.append(self._run("images", chunk))
-            embs = np.concatenate(parts, axis=0)
+        import memory_plan as _mp
+        _CHUNK = _mp.plan_encode_chunks(n)
+        if n > _CHUNK:
+            print(f"[siglip2] encode chunking: {n} photos -> {_CHUNK}-photo chunks "
+                  f"(free RAM {4 if _mp.free_ram_gb() is None else round(_mp.free_ram_gb(), 1)} GB)",
+                  flush=True)
+
+        # ── Partial-run checkpoint: a killed cull resumes at chunk granularity ──
+        # Rows are keyed by path, so a resume fills them back regardless of order.
+        _ckpt_path = _encode_ckpt_path(paths)
+
+        _EMB_DIM = EMBED_DIM
+        out    = np.zeros((n, _EMB_DIM), dtype=np.float32)
+        filled = np.zeros(n, dtype=bool)
+        if _ckpt_path.exists():
+            try:
+                # Context manager: the open handle would otherwise block the
+                # atomic replace in _commit() for the rest of the job (Windows).
+                with np.load(_ckpt_path, allow_pickle=False) as _z:
+                    _saved = {str(p): i for i, p in enumerate(_z["paths"])}
+                    _embs_ref = _z["embs"]
+                    _hit = 0
+                    for i, p in enumerate(paths):
+                        j = _saved.get(p)
+                        if j is not None and np.isfinite(_embs_ref[j]).all():
+                            out[i], filled[i] = _embs_ref[j], True
+                            _hit += 1
+                if _hit:
+                    print(f"[siglip2] encode checkpoint: resuming with {_hit}/{n} "
+                          f"already encoded", flush=True)
+            except Exception as _exc:
+                print(f"[siglip2] encode checkpoint unreadable ({_exc}) — "
+                      f"starting fresh", flush=True)
+                out.fill(0); filled.fill(False)
+
+        def _commit():
+            """Persist every filled row so a kill never costs finished chunks."""
+            try:
+                rows = np.nonzero(filled)[0]
+                if not len(rows):
+                    return
+                _tmp = _ckpt_path.with_suffix(".tmp.npz")
+                np.savez(_tmp,
+                         paths=np.array([paths[i] for i in rows], dtype=np.str_),
+                         embs=out[rows])
+                _tmp.replace(_ckpt_path)
+            except Exception as _exc:
+                print(f"[siglip2] chunk checkpoint skipped ({_exc})", flush=True)
+
+        # Chunked jobs skip the warm worker entirely (FIRSTCUT_NO_WARM): the
+        # respawn race ate warm jobs repeatedly in real runs (the worker sits
+        # at serve-ready having never received the request), and each race
+        # costs a 45-60 s fast-fail plus a fallback model reload anyway. With
+        # chunks of only a few hundred photos, one straight one-shot load per
+        # chunk is cheaper AND deterministic. Small jobs keep the warm path.
+        _chunked = n > _CHUNK
+        if _chunked:
+            os.environ["FIRSTCUT_NO_WARM"] = "1"
+
+        _stale_ckpt_sweep(_ckpt_path.parent)
+
+        # Chunk size is RE-PLANNED at every boundary (smart: tracks the live
+        # machine, not a snapshot from job start) and the batch is retuned
+        # (fast: bigger when comfortable, 2 when tight). ETA rides in the
+        # progress text once there is a measured rate.
+        _todo = [i for i in range(n) if not filled[i]]
+        _pos   = 0
+        import time as _time
+        _t0    = _time.time()
+        _rate  = 0.0            # photos/sec, measured across finished chunks
+        _chunk_size = max(1, _mp.plan_encode_chunks(n))   # grows via bump_chunk_size
+        while _pos < len(_todo):
+            _plan = _mp.plan_encode_chunks(n)
+            try:
+                _chunk_size = _mp.bump_chunk_size(max(_plan, _chunk_size), _mp.free_ram_gb())
+            except Exception:
+                _chunk_size = _plan
+            _CHUNK = max(1, _chunk_size)
+            _idx   = _todo[_pos:_pos + _CHUNK]
+            _chunk = [paths[i] for i in _idx]
+            if progress and n:
+                _eta = (f" · ~{int(((len(_todo) - _pos) / _rate) // 60)} min left"
+                        if _rate > 0 else "")
+                progress(0.07 + 0.39 * (_pos) / max(len(_todo), 1),
+                         f"Analyzing photos {_todo[_pos] + 1}–{_todo[-1] + 1} "
+                         f"of {n}{_eta}")
+            # Boundary guard: before the next model load, give the machine one
+            # honest chance to recover if RAM sagged during the previous chunk.
+            if _pos:
+                try:
+                    _mp.retune_encode_batch()
+                    _free = _mp.free_ram_gb()
+                    _floor = _mp.min_admission_gb()
+                    _deadline = _time.time() + 180
+                    while _free is not None and _free < _floor and _time.time() < _deadline:
+                        _time.sleep(3)
+                        _free = _mp.free_ram_gb()
+                except Exception:
+                    pass
+            out[_idx] = np.asarray(self._run("images", _chunk), dtype=np.float32)
+            filled[_idx] = True
+            _commit()
+            _pos += len(_idx)
+            _elapsed = _time.time() - _t0
+            if _elapsed > 5 and _pos:
+                _rate = _pos / _elapsed
+
         if progress and n:
             progress(0.47, f"Analyzed {n}/{n} photos")
-        return embs
+        try: _ckpt_path.unlink(missing_ok=True)
+        except Exception: pass
+        return out
 
     def encode_text(self, queries: List[str]) -> np.ndarray:
         """Return normalised (N, EMBED_DIM) float32 embeddings for text queries."""

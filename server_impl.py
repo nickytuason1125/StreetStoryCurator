@@ -1,5 +1,21 @@
 import suppress_console  # patches subprocess/multiprocessing/asyncio/BLAS before anything else imports them
 import os
+# Personal taste blend ON (2026-09-10): the user's 795 star ratings ARE the
+# accuracy standard, but the blend defaulted to opt-in OFF so grading ignored
+# them. Set in the SERVER process (and inherited by every grade_runner child)
+# so PersonalHead scores actually blend into the final grades. The launcher
+# sets this too; doubled here so ANY entry point (uvicorn direct, tests)
+# agrees. Remove both to restore ratings-never-grade.
+os.environ.setdefault("FIRSTCUT_PERSONAL_TASTE", "1")
+# Boundary-band Deep Grade (2026-09-10): when Deep Grade runs, spend the VLM's
+# seconds only on the ambiguous Mid/Strong boundary — unambiguous frames keep
+# their instant CLIP verdicts. Full-folder VLM = 60–90 min; band = ~20 min.
+os.environ.setdefault("FIRSTCUT_DEEP_BAND", "1")
+# Vision engine A/B (2026-09-10): QWEN_VLM_DIR picks the grader weights. The
+# HF stubs for Qwen3-VL-4B exist locally; set the var (or uncomment below) to
+# promote the 2026-era judge once its weights are downloaded:
+#   venv\Scripts\huggingface-cli download Qwen/Qwen3-VL-4B-Instruct --local-dir models\qwen3_vl
+# os.environ.setdefault("QWEN_VLM_DIR", "models/qwen3_vl")
 import re
 import sys
 # Prevent any joblib/loky worker process from spawning (flashes a cmd window on Windows).
@@ -525,6 +541,65 @@ async def lifespan(app: FastAPI):
         if _cat.exists():
             print("[server] Startup: catalog.json present — Resume available")
     except OSError:
+        pass
+
+    # Startup hygiene (2026-09-07): a hard-killed grade leaves cache/grading.lock
+    # behind. Remove it iff provably dead (dead PID / PID reused by a non-Python
+    # process) — BEFORE anything can read it — so the first grade or catalog
+    # clear of this session starts from ground truth instead of a ghost marker.
+    try:
+        from src.grade_lock import sweep_stale
+        if sweep_stale(_DATA_DIR):
+            print("[server] startup: cleared stale grading.lock from a dead grade")
+    except Exception:
+        pass  # hygiene, not correctness — the 409 gates re-derive truth on use
+
+    # Startup hygiene (2026-09-10): ghost warm encoders. A worker outlives its
+    # parent when the parent dies without _warm_shutdown (window closed
+    # mid-prewarm, hard-killed server, terminated runner). Each orphan sits on
+    # ~430 MB until its 600 s idle timeout — and duplicates were observed
+    # ALIVE together ("2.0 GB free with nothing open"). Sweep provably-orphan
+    # encode_worker serve processes now; the machine-wide singleton gate in
+    # encode_worker.serve() keeps the count at one from here on.
+    try:
+        from siglip2_encoder import _sweep_orphan_workers
+        _n_swept = _sweep_orphan_workers()
+        if _n_swept:
+            print(f"[server] startup: swept {_n_swept} orphan encode_worker(s)")
+    except Exception:
+        pass  # hygiene, not correctness
+
+    # Boot banner (2026-09-07): the incident ran a FULL-tier session on a
+    # 16 GB machine for hours because a restart outside launch_hidden.vbs
+    # silently lost the SIGLIP_TIER=low / FIRSTCUT_LITE=1 pins. One line,
+    # first thing in every session — a tier mismatch is now visible instead
+    # of discoverable by archaeology.
+    #
+    # VRAM is measured via nvidia-smi, NOT torch.cuda — this module's own
+    # history (see the model-prefetch note below) proves initialising CUDA in
+    # the server process wedges/kills it at C level before the grading path
+    # ever runs. Every post-fix boot wedged exactly after a torch.cuda
+    # banner query; nvidia-smi measures without touching the driver context.
+    try:
+        import psutil as _ps_boot_banner
+        _ram_free = _ps_boot_banner.virtual_memory().available / (1 << 30)
+        _vram_txt = ""
+        try:
+            import subprocess as _sp_banner
+            _out = _sp_banner.check_output(
+                ["nvidia-smi", "--query-gpu=memory.free,memory.total",
+                 "--format=csv,noheader,nounits"],
+                creationflags=0x08000000 if os.name == "nt" else 0,
+                text=True, timeout=5,
+            )
+            _free_mi, _total_mi = (float(v) for v in _out.strip().splitlines()[0].split(","))
+            _vram_txt = (f", VRAM {_free_mi / 1024:.1f}/{_total_mi / 1024:.1f} GB free")
+        except Exception:
+            pass
+        print(f"[server] BOOT: tier={os.environ.get('SIGLIP_TIER', '(auto)')} "
+              f"LITE={os.environ.get('FIRSTCUT_LITE', '0')} "
+              f"RAM {_ram_free:.1f} GB free{_vram_txt}", flush=True)
+    except Exception:
         pass
     # Storage housekeeping — runs once on startup, non-blocking.
     threading.Thread(target=_evict_preview_cache, daemon=True, name="preview-evict").start()

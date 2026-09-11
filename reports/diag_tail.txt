@@ -1,0 +1,20 @@
+--- tail @ 10:53:05 ---
+[ram] 0.029 rss=0.14 peak=0.14 free=1.61  Checking image files? 2520/2756
+[ram] 0.029 rss=0.14 peak=0.14 free=1.46  Checking image files? 2540/2756
+[ram] 0.029 rss=0.14 peak=0.14 free=1.32  Checking image files? 2560/2756
+[ram] 0.029 rss=0.14 peak=0.14 free=1.29  Checking image files? 2580/2756
+[ram] 0.029 rss=0.14 peak=0.14 free=1.30  Checking image files? 2600/2756
+[ram] 0.029 rss=0.14 peak=0.14 free=1.37  Checking image files? 2620/2756
+[ram] 0.029 rss=0.14 peak=0.14 free=1.63  Checking image files? 2640/2756
+[ram] 0.029 rss=0.14 peak=0.14 free=1.63  Checking image files? 2660/2756
+[ram] 0.030 rss=0.14 peak=0.14 free=1.61  Checking image files? 2680/2756
+[ram] 0.030 rss=0.14 peak=0.14 free=1.60  Checking image files? 2700/2756
+[ram] 0.030 rss=0.14 peak=0.14 free=1.61  Checking image files? 2720/2756
+[ram] 0.030 rss=0.14 peak=0.14 free=1.55  Checking image files? 2740/2756
+[ram] 0.030 rss=0.14 peak=0.14 free=1.49  Checking image files? 2756/2756
+[memory_plan] Below the floor (1.5 GB free, need ~2.4) — riding it out for up to 90 s before checkpointing…
+[ram] 0.000 rss=0.14 peak=0.14 free=1.50  Low memory (1.5 GB free) ? waiting for it to cle
+progress: {"error": "Out of memory at the 'encode' stage: 1.5 GB free, need ~2.4 GB to keep going. Everything graded so far is saved \u2014 close a few apps and re-run; the cull resumes from its checkpoint instead of starting over.", "traceback": "Traceback (most recent call last):\n  File \"C:\\Users\\Nicky Tuason\\Desktop\\StreetPhotoEditor\\street-story-curator\\grade_worker.py\", line 135, in grade_worker_main\n    result = run_v2(\n             ^^^^^^^\n  File \"C:\\Users\\Nicky Tuason\\Desktop\\StreetPhotoEditor\\street-story-curator\\src\\grade_pipeline_v2.py\", line 1180, in run_v2\n    _mp.memory_checkpoint(\"encode\", _p)\n  File \"C:\\Users\\Nicky Tuason\\Desktop\\StreetPhotoEditor\\street-story-curator\\src\\memory_plan.py\", line 334, in memory_checkpoint\n    raise MemoryError(\nMemoryError: Out of memory at the 'encode' stage: 1.5 GB free, need ~2.4 GB to keep going. Everything graded so far is saved \u2014 close a few apps and re-run; the cull resumes from its checkpoint instead of starting over.\n"}
+pf mtime: 14:20:18
+runners alive: 0
+free RAM: 5.63 GB

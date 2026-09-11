@@ -1,0 +1,6 @@
+runner 13140 :: \StreetPhotoEditor\street-story-curator\reports\proc_map.txt','w',encoding='utf-8').write(chr(10).join(out))
+print('ok')
+encoder 32040 :: .exe C:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator\src\encode_worker.py serve
+encoder 33844 :: .exe C:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator\src\encode_worker.py serve
+runner 45256 :: \StreetPhotoEditor\street-story-curator\reports\proc_map.txt','w',encoding='utf-8').write(chr(10).join(out))
+print('ok')

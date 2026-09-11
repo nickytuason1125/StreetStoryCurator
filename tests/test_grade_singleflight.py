@@ -58,6 +58,25 @@ def _flag_clear():
     server_impl._grading_active.clear()
 
 
+@pytest.fixture(autouse=True)
+def _lock_isolated(tmp_path, monkeypatch):
+    """The cross-process 409 arm reads the REAL cache/grading.lock — a live
+    cull on this machine (e.g. the 2026-09-07 22:48 run) would correctly 409
+    every grade/clear these tests attempt. Unit tests must not depend on
+    whether the developer happens to be grading, so point the lock path at a
+    per-test directory: no lock file → grade_in_progress() is False, and no
+    live system state can leak into the assertions.
+
+    Patch BOTH import identities: routers do `from src.grade_lock import ...`
+    while this module imported the bare `grade_lock` (both sys.path entries
+    exist), and they are distinct module objects."""
+    import grade_lock as top_level_lock
+    from src import grade_lock as src_level_lock
+    _fake = lambda data_dir=None: Path(tmp_path) / "grading.lock"  # noqa: E731
+    monkeypatch.setattr(top_level_lock, "lock_path", _fake)
+    monkeypatch.setattr(src_level_lock, "lock_path", _fake)
+
+
 def _patch_gate_to_pass(monkeypatch):
     """Make the RAM gate deterministic: it measures live free memory, which
     differs per machine (and this repo's dev box runs at 85-97% usage).
@@ -168,6 +187,13 @@ def test_ram_gate_refusal_leaves_flag_clear(monkeypatch, tmp_path):
         run_profile, "required_ram_gb",
         lambda n_photos=0, scan_mode=False: 999.0,   # refused on any machine
     )
+    # The gate measures the SCARCER of physical free RAM and commit headroom
+    # through GlobalMemoryStatusEx (memory_plan._global_memory_status) — since
+    # that refactor, patching psutil.virtual_memory alone has no effect, and
+    # the plan's LAST rung prices off the encoder hard floor, not
+    # required_ram_gb. Starve both: no measurement value and a huge need →
+    # even "scan+reduced-batch" cannot fit → the handler must 503.
+    monkeypatch.setattr("src.memory_plan._global_memory_status", lambda: (0.5, 0.5))
     monkeypatch.setattr(
         psutil, "virtual_memory",
         lambda: types.SimpleNamespace(available=500_000_000),   # 0.5 GB free

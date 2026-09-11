@@ -182,6 +182,64 @@ def write_catalog(gallery: list) -> None:
         traceback.print_exc()
 
 
+def cluster_similar(embs, sim_thresh: float = 0.96) -> list:
+    """Cluster embeddings into near-duplicate groups; returns per-item cluster ids.
+
+    Same union-find, same strict threshold (0.96 = true burst duplicates,
+    same frame ±ms) and same row-blocked memory shape as the live grade path
+    in grade_pipeline_v2 Step 3 — factored out so the ALL-CACHED fast path
+    (which skips every GPU stage) can still mark duplicates. Without this,
+    a re-run of an already-encoded folder returned zero clusters and an
+    empty Duplicates tab even when bursts existed (2026-09-10: the 2,754-photo
+    re-run wrote a catalog with no duplicate groups at all).
+
+    Returns a fresh list of ints (−1 for photos not in a cluster of 2+).
+    Degrades to all-−1 on failure: advisory UI data, never worth the grade.
+    """
+    import numpy as np
+    n = len(embs) if embs is not None else 0
+    cluster_ids = [-1] * n
+    if embs is None or n < 2:
+        return cluster_ids
+    try:
+        norms = np.linalg.norm(embs, axis=1, keepdims=True)
+        normed = (embs / (norms + 1e-9)).astype(np.float32)
+        parent = list(range(n))
+
+        def _find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        _chunk = 512
+        for r0 in range(0, n, _chunk):
+            r1 = min(r0 + _chunk, n)
+            block_sims = normed[r0:r1] @ normed.T
+            for _li in range(r1 - r0):
+                block_sims[_li, : r0 + _li + 1] = -1.0
+            dup_i, dup_j = np.where(block_sims > sim_thresh)
+            del block_sims
+            for li, j in zip(dup_i.tolist(), dup_j.tolist()):
+                ri, rj = _find(r0 + li), _find(j)
+                if ri != rj:
+                    parent[ri] = rj
+
+        from collections import defaultdict as _dd
+        groups_d: dict = _dd(list)
+        for i in range(n):
+            groups_d[_find(i)].append(i)
+        for root, members in groups_d.items():
+            if len(members) >= 2:
+                for i in members:
+                    cluster_ids[i] = root
+    except Exception as err:
+        import traceback
+        print(f"[stages] cluster_similar failed: {err}")
+        traceback.print_exc()
+    return cluster_ids
+
+
 def mark_duplicate_groups(cluster_ids: list, final_scores, paths: list) -> list:
     """Step 5b — label each near-duplicate cluster with a winner and its losers.
 

@@ -1,0 +1,19 @@
+5
+[23:29:09] running p=0.413
+[23:29:34] running p=0.107
+[23:30:00] running p=0.31
+[23:30:25] running p=0.393
+[23:30:50] cycle 63 died (error entry) at p= - trimming + relaunch
+[23:31:19] cycle 64 died (no procs) at p=0.089 - trimming + relaunch
+[23:31:48] running p=0.199
+[23:32:13] running p=0.349
+[23:32:38] running p=0.411
+[23:33:03] running p=0.225
+[23:33:28] running p=0.355
+[23:33:53] running p=0.415
+[23:34:19] cycle 71 died (error entry) at p= - trimming + relaunch
+[23:34:47] running p=0.199
+[23:35:12] running p=0.349
+[23:35:38] running p=0.411
+[23:36:03] running p=0.157
+

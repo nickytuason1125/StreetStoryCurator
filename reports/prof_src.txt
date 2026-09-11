@@ -1,0 +1,19 @@
+C:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator\src\run_profile.py:340: if text and not os.path.exists(os.path.join(self.hf_dir, "tokenizer.json")):
+C:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator\src\run_profile.py:341: return False
+C:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator\src\run_profile.py:342: if sel == "onnx":
+C:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator\src\run_profile.py:343: return True
+C:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator\src\run_profile.py:344: # Auto: only the 'high' tier has an exported graph, and only with a GPU
+C:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator\src\run_profile.py:345: # (on CPU it needs 6.5-7.6 GB and 11-14 s/image).
+C:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator\src\run_profile.py:346: return self.tier == "high" and self.gpu
+C:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator\src\run_profile.py:347: 
+C:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator\src\run_profile.py:348: @property
+C:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator\src\run_profile.py:349: def ort_providers(self) -> list:
+C:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator\src\run_profile.py:350: pref = str(setting("FIRSTCUT_ORT_PROVIDERS"))
+C:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator\src\run_profile.py:351: if pref:
+C:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator\src\run_profile.py:352: return [p.strip() for p in pref.split(",") if p.strip()]
+C:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator\src\run_profile.py:353: return ["CUDAExecutionProvider", "DmlExecutionProvider",
+C:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator\src\run_profile.py:354: "CoreMLExecutionProvider", "ROCMExecutionProvider",
+C:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator\src\run_profile.py:355: "CPUExecutionProvider"]
+C:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator\src\run_profile.py:356: 
+C:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator\src\run_profile.py:357: def describe(self) -> str:
+C:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator\src\run_profile.py:358: return (f"tier={self.tier} ({self.label}) dim={self.embed_dim} "

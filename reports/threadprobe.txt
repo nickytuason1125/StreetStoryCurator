@@ -1,0 +1,5 @@
+RC 0
+torch+ort imported
+thread decode: (1616, 1080)
+_decode_with_timeout: (1616, 1080)
+last err: None

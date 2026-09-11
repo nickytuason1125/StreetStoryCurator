@@ -209,6 +209,144 @@ def _oom_wait_s() -> float:
 def min_admission_gb() -> float:
     """The LAST rung's cost — below this, genuinely nothing fits."""
     return _hard_floor_gb() + 0.3
+def retune_encode_batch() -> int:
+    """Chunk-boundary batch retune — called between encode chunks.
+
+    FAST (2026-09-11): the batch only ever SHRANK before (tight band → 2);
+    a comfortable machine kept an underutilised GPU forever. This now also
+    RAISES the batch when there is headroom, so a cull speeds up when the
+    machine allows it and slows down when it doesn't.
+
+    DETERMINISM GUARD (encode_worker._default_batch): torch kernel selection
+    depends on batch shape — memory-keyed torch batches once made two
+    identical culls disagree on 47/514 photos. Therefore the batch is only
+    RAISED on the ONNX path (deterministic graph, already the default for
+    images); torch keeps its profile-fixed batch, and only ever shrinks to 2
+    in the tight band (an accepted emergency, as before).
+
+    Returns the active batch. The encode worker respawns per chunk, so it
+    reads the new SIGLIP_ENC_BATCH next chunk — no mid-chunk surprise.
+    """
+    free = free_ram_gb()
+    hard = _hard_floor_gb()
+    try:
+        cur = int(os.environ.get("SIGLIP_ENC_BATCH", "0") or 0)
+    except ValueError:
+        cur = 0
+    if free is None:
+        return cur
+    if free < hard + TIGHT_BAND_GB:
+        if cur != 2:
+            print(f"[memory_plan] batch retune: {free:.1f} GB free — "
+                  f"batch -> 2 for the next chunk", flush=True)
+            os.environ["SIGLIP_ENC_BATCH"] = "2"
+        return 2
+    # Comfortable band: raise — ONNX path only (see determinism guard above).
+    if free < hard + TIGHT_BAND_GB + 1.5:
+        return cur
+    try:
+        import run_profile as _rp
+        prof = _rp.current()
+        if not prof.onnx_enabled():
+            return cur
+        _default = int(getattr(prof, "encode_batch", 8))
+    except Exception:
+        return cur
+    target = min(32, max(2 * max(cur, _default), 16))
+    if target > max(cur, _default):
+        os.environ["SIGLIP_ENC_BATCH"] = str(target)
+        print(f"[memory_plan] batch retune: {free:.1f} GB free, ONNX path — "
+              f"batch {_default if not cur else cur} -> {target}", flush=True)
+        return target
+    return cur
+
+
+def bump_chunk_size(planned: int, free_gb: "float | None") -> int:
+    """Grow the encode chunk when the machine keeps proving comfortable.
+
+    plan_encode_chunks sizes from a snapshot; this bumps ONE step up (×1.4,
+    cap 900) when free RAM is comfortably above the floor, so a cull that
+    started conservative (machine busy at start) speeds up as the machine
+    frees up. Never shrinks — shrinking is plan_encode_chunks's job at the
+    next boundary. Tests: bands pinned in test_encode_chunking.py.
+    """
+    if planned >= 900 or free_gb is None:
+        return planned
+    try:
+        floor = _hard_floor_gb()
+    except Exception:
+        floor = 1.5
+    if free_gb >= floor + 3.0:
+        return min(900, max(planned + 1, int(planned * 1.4 + 0.5)))
+    return planned
+
+
+def plan_encode_chunks(n_photos: int) -> int:
+    """Encode-stage chunk size, chosen from the machine's CURRENT free RAM.
+
+    History that motivates this: the pre-2026-07 design respawned the encode
+    worker every 150 images (model reload spike → 0xC0000005 deaths), so the
+    chunk cap was raised to 100,000 — one model load, no boundaries. But a
+    2,754-photo encode then ran for many minutes while the whole MACHINE's
+    free RAM bled from 2 GB to 0.6 GB (2026-09-11 crash.log), the sustained-
+    collapse watcher killed the worker, and the UI showed a silent grader.
+    Both extremes fail on a 16 GB machine.
+
+    The middle path: chunk the encode by RAM budget. Each chunk runs through
+    the existing single-subprocess encode with its full protection ladder
+    (retry backoff, wait-for-recovery, hard-floor refusal), and the worker's
+    memory growth resets at every boundary. Chunk size scales DOWN when RAM
+    is scarce and up when the machine is comfortable — a big folder on a
+    busy machine simply does more, smaller chunks instead of dying.
+
+    SIGLIP_ENC_CHUNK, when set, still overrides — it remains the escape
+    hatch for experiments and tests.
+    """
+    override = os.environ.get("SIGLIP_ENC_CHUNK", "").strip()
+    if override:
+        try:
+            return max(1, int(override))
+        except ValueError:
+            pass
+    free = free_ram_gb()
+    if free is None:
+        return 400          # cannot measure — assume a busy machine
+    if free >= 6.0:
+        return 900
+    if free >= 4.5:
+        return 600
+    if free >= 3.0:
+        return 350
+    return 200
+
+
+def min_admission_gb() -> float:
+    """The LAST rung's cost — below this, genuinely nothing fits."""
+    return _hard_floor_gb() + 0.3
+
+
+def top_ram_hogs(n: int = 3) -> str:
+    """Names the biggest private-RAM consumers right now, for refusal messages.
+
+    "Close a couple of apps" advice used to be blind — the user had to guess
+    WHICH apps. This names them (over 300 MB RSS, newest-sort), so the refusal
+    says 'Creative Cloud (1.4 GB), chrome (0.9 GB)' instead of nothing.
+    Best effort: any psutil failure returns an empty string.
+    """
+    try:
+        import psutil as _ps
+        _hogs = []
+        for _p in _ps.process_iter(["name", "memory_info"]):
+            try:
+                _mi = _p.info["memory_info"]
+                if _mi is not None and _mi.rss > 300 * 1024 * 1024:
+                    _hogs.append((_p.info["name"] or "?", _mi.rss / 1e9))
+            except Exception:
+                continue
+        _hogs.sort(key=lambda _t: -_t[1])
+        return ", ".join(f"{_name} ({_gb:.1f} GB)" for _name, _gb in _hogs[:n])
+    except Exception:
+        return ""
 
 
 def plan_for(n_photos: int, requested_scan: bool) -> dict | None:

@@ -38,6 +38,37 @@ from routers.library import GradeRequest
 router = APIRouter()
 
 
+def _prewarm_folder_paths(folders: list) -> None:
+    """Queue thumbnail generation for a graded folder's first screens.
+
+    Runs in a daemon thread AFTER a grade's stream ends. Reuses library's
+    prewarm pool and generator (same cache names as on-demand), honouring
+    its RAM gate and in-flight dedup. A failure here is invisible by design —
+    it is a warmth optimisation, never a correctness path.
+    """
+    try:
+        from routers.library import _THUMB_PREWARM, _gen_one_thumb, _is_slow_volume
+        cap = int(os.environ.get("FIRSTCUT_POSTGRADE_PREWARM", "300") or 300)
+        for folder in folders:
+            try:
+                fdir = Path(folder)
+                if not fdir.is_dir():
+                    continue
+                paths = sorted(str(p) for p in fdir.iterdir()
+                               if p.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp",
+                                                        ".arw", ".cr2", ".cr3", ".nef",
+                                                        ".raf", ".dng", ".heic", ".heif"))
+            except Exception:
+                continue
+            for p in paths[:max(cap, 0)]:
+                try:
+                    _THUMB_PREWARM.submit(_gen_one_thumb, p, True)
+                except Exception:
+                    break
+    except Exception:
+        pass
+
+
 def _precull_ram_sweep() -> None:
     """Free every parent-process cache that a cull does not need BEFORE it starts.
 
@@ -111,6 +142,14 @@ async def ollama_status():
     return JSONResponse(result)
 
 
+@router.get("/api/grading/status")
+async def grading_status():
+    """Is a grade runner alive right now? The UI polls this after a dropped
+    stream: the runner is durable (detaches and finishes in the background),
+    so 'stream ended' must not read as 'grade died'."""
+    return {"grading": _grading_active.is_set()}
+
+
 @router.post("/api/grade/v2/stream")
 async def grade_photos_v2_stream(req: GradeRequest):
     """
@@ -137,6 +176,27 @@ async def grade_photos_v2_stream(req: GradeRequest):
             "A grade is already running. Wait for it to finish before starting another.",
         )
 
+    # ── Cross-process arm of the same guard ─────────────────────────────────
+    # grade_worker marks cache/grading.lock for the life of a grade. The
+    # in-process flag above cannot see a runner started by a DIFFERENT server
+    # stack — the 2026-09-07 duplicate-stack incident had two grade_runners on
+    # the same request file, each server's flag clear because the runner
+    # belonged to the other process. A lock naming a dead process is removed
+    # on read (see grade_lock.grade_in_progress), so a crashed grade cannot
+    # wedge this gate; any other failure fails open and never blocks a grade.
+    try:
+        from src.grade_lock import grade_in_progress
+        if grade_in_progress(_DATA_DIR):
+            raise HTTPException(
+                409,
+                "A grade is already running (active grading.lock from another "
+                "process). Wait for it to finish before starting another.",
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        pass  # the lock is a marker, not a source of truth — never block on it
+
     # NOTE: there was an Ollama health gate here that 503'd every non-scan grade
     # when http://localhost:11434 did not answer. Nothing installed Ollama — not
     # Setup.ps1, not requirements.txt — and no user-facing doc mentioned it, while
@@ -145,10 +205,20 @@ async def grade_photos_v2_stream(req: GradeRequest):
     # path is SigLIP zero-shot plus TOPIQ, and the modules that did call Ollama now
     # run the same models locally through llama_cpp. Removed, not made optional.
 
-    # Resolve all valid folders — folder_paths (multi) takes priority over folder_path
-    all_folders = [str(Path(fp).resolve()) for fp in req.folder_paths if os.path.isdir(fp)]
+    # Resolve all valid folders — folder_paths (multi) takes priority over folder_path.
+    # Same wake-up retry as GradeRequest.validate_folder_path: removable readers
+    # behind USB selective suspend vanish for a second exactly at submit time.
+    import time as _fp_retry_time
+    def _dir_ok(fp: str) -> bool:
+        for _probe in range(3):
+            if os.path.isdir(fp):
+                return True
+            if _probe < 2:
+                _fp_retry_time.sleep(2.0)
+        return False
+    all_folders = [str(Path(fp).resolve()) for fp in req.folder_paths if _dir_ok(fp)]
     if not all_folders:
-        if req.folder_path and os.path.isdir(req.folder_path):
+        if req.folder_path and _dir_ok(req.folder_path):
             all_folders = [str(Path(req.folder_path).resolve())]
         else:
             raise HTTPException(400, "No valid folder path provided")
@@ -195,6 +265,8 @@ async def grade_photos_v2_stream(req: GradeRequest):
         if _plan is None:
             _free_gb = _mp.free_ram_gb()
             _free_txt = f"only {_free_gb:.1f} GB free" if _free_gb is not None else "free RAM could not be measured"
+            _hogs_txt = _mp.top_ram_hogs()
+            _hogs_note = f" Biggest right now: {_hogs_txt} — closing one of those is usually enough." if _hogs_txt else ""
             _pagefile_hint = ""
             try:
                 _commit = _mp.commit_headroom_gb()
@@ -209,7 +281,7 @@ async def grade_photos_v2_stream(req: GradeRequest):
                 status_code=503,
                 content={"error": f"Not enough RAM to grade safely — {_free_txt}, and even a "
                          f"reduced-batch Scan (the lightest pass, ~{_mp.min_admission_gb():.1f} GB) does not "
-                         f"fit. Close a couple of apps and retry.{_pagefile_hint}",
+                         f"fit. Close a couple of apps and retry.{_hogs_note}{_pagefile_hint}",
                          "alternatives": {"close_apps": True, "smaller_selection": True}},
             )
         _eff_scan = bool(req.scan_mode or _plan["scan_mode"])
@@ -364,6 +436,11 @@ async def grade_photos_v2_stream(req: GradeRequest):
             _loop = asyncio.get_running_loop()
             _pos = 0
             _done = False
+            # AUTO-RESUME budget: a crashed runner is re-spawned in place up to
+            # 2 extra times (3 attempts total). Each respawn continues from the
+            # encode checkpoint + incremental Lance cache, so no work is lost.
+            _auto_resume_total = 2
+            _auto_resume_left = _auto_resume_total
             def _read_new():
                 # Binary read from the last byte offset; only consume up to the last
                 # complete newline so a half-written progress line is never mis-parsed.
@@ -408,12 +485,60 @@ async def grade_photos_v2_stream(req: GradeRequest):
                     break
                 if _proc.poll() is not None:
                     # Runner exited — drain any final lines, then if we never saw a
-                    # done/error result it crashed: surface the recoverable checkpoint.
+                    # done/error result it crashed. AUTO-RESUME (2026-09-11): the
+                    # encode stage now checkpoints every chunk and the LanceDB
+                    # incremental cache skips already-graded photos, so a re-spawn
+                    # of the SAME request continues where the crash left off.
+                    # Re-spawn up to 2 times automatically (RAM-gated), and only
+                    # surface the recoverable-checkpoint error after the last try.
                     _tailchunk = await _loop.run_in_executor(None, _read_new)
                     for _ln in _tailchunk.splitlines():
                         _out = _emit(_ln)
                         if _out is not None:
                             yield f"data: {_out}\n\n"
+                    if not _done and _auto_resume_left > 0:
+                        _auto_resume_left -= 1
+                        _cause = ""
+                        # Wait for RAM recovery before re-spawning — respawning
+                        # into the same low-memory state just burns the attempt.
+                        _waited = 0
+                        try:
+                            from src import memory_plan as _mp_resume
+                            _floor = _mp_resume.min_admission_gb()
+                            while _waited < 120:
+                                _free_r = _mp_resume.free_ram_gb()
+                                if _free_r is None or _free_r >= _floor:
+                                    break
+                                await asyncio.sleep(5)
+                                _waited += 5
+                            _free_r = _mp_resume.free_ram_gb()
+                            if _free_r is not None and _free_r < 2.0:
+                                _cause = (f" The machine is still low on memory "
+                                          f"({_free_r:.1f} GB free) — closing a few apps "
+                                          "will make the restart stick. ")
+                        except Exception:
+                            pass
+                        _attempt_no = 3 - _auto_resume_left
+                        print(f"[server] Grade runner crashed (code={_proc.returncode}) — "
+                              f"auto-restarting from checkpoint (attempt {_attempt_no}/3)",
+                              flush=True)
+                        yield f"data: {_json.dumps({'notice': f'The grade crashed but auto-restarts from its checkpoint (restart {_attempt_no} of 3).{_cause}'})}\n\n"
+                        try:
+                            _rlog = open(_crash_path, "a", encoding="utf-8", errors="replace")
+                            _proc = _wj.popen(
+                                [sys.executable, _runner, _req_path, _prog_path],
+                                cwd=_UNIT_ROOT,
+                                creationflags=_flags, close_fds=True,
+                                stdin=_sp.DEVNULL, stdout=_rlog, stderr=_rlog, env=_renv,
+                            )
+                            try: _rlog.close()
+                            except Exception: pass
+                            print(f"[server] Grade runner RESPAWNED pid={_proc.pid} "
+                                  f"(attempt {_attempt_no}/3)", flush=True)
+                            continue   # keep streaming the new runner's progress
+                        except Exception as _e_respawn:
+                            print(f"[server] auto-resume spawn failed: {_e_respawn}",
+                                  flush=True)
                     if not _done:
                         print(f"[server] Grade runner exited without result: code={_proc.returncode}", flush=True)
                         _recovered = 0
@@ -431,38 +556,131 @@ async def grade_photos_v2_stream(req: GradeRequest):
                                           "close a few apps before resuming. ")
                         except Exception:
                             pass
-                        yield f"data: {_json.dumps({'error': f'Grade process exited unexpectedly (code {_proc.returncode}) — nothing was lost: {_recovered} grades are checkpointed and Resume continues exactly where it stopped. {_cause}Check crash.log for the technical detail', 'recovered': _recovered})}\n\n"
+                        yield f"data: {_json.dumps({'error': f'Grade process exited unexpectedly (code {_proc.returncode}) after {_auto_resume_total} auto-restart attempt(s). What IS kept: every committed chunk — the encode stage checkpoints partial embeddings, and a re-run skips both encoded chunks and already-graded photos. {_cause}Check crash.log for the technical detail', 'recovered': _recovered})}\n\n"
                     break
                 yield ": heartbeat\n\n"
                 await asyncio.sleep(0.4)
 
         finally:
+            # Disconnect semantics (2026-09-10) — the runner is DURABLE.
             # This finally runs on normal completion AND on client disconnect
-            # (GeneratorExit at a yield). Previously the subprocess kept running
-            # after a disconnect while gpu_lock was released here — so a second
-            # grade could start concurrently and bust the VRAM ceiling. Terminate
-            # the runner if it's still alive, and always clean the temp files.
-            try:
-                if _proc.poll() is None:
-                    _proc.terminate()
+            # (GeneratorExit at a yield). It used to TERMINATE the runner on
+            # disconnect: every window close / reload / UI reconnect killed an
+            # in-flight grade mid-run ("Grade runner pid=… terminated on stream
+            # close", three culls lost on 2026-09-10 alone) — contradicting the
+            # app's own decoupled-backend architecture ("closing the window
+            # must never abort an in-flight grade"). The runner is now left
+            # ALIVE on disconnect: it holds the machine-wide grading.lock for
+            # its whole life (so the 409 gates still refuse a second grade),
+            # writes its durable checkpoints and the end-of-run catalog commit
+            # itself, and cleans its own lock up in ITS finally. A monitor
+            # thread owns the cleanup that used to live here: temp files,
+            # the pre-spawn lock claim, _grading_active, gpu_lock, and the
+            # post-grade prewarm — all after the runner actually exits.
+            if _proc is not None and _proc.poll() is None:
+                _proc_pid = _proc.pid
+                print(f"[server] Grade runner pid={_proc_pid} DETACHED — client "
+                      f"stream closed; the grade continues in the background "
+                      f"and the catalog commits when it finishes", flush=True)
+
+                def _reap_detached(proc=_proc, req=_req_path, prog=_prog_path,
+                                   claim=_claim_path, loop=asyncio.get_running_loop()):
                     try:
-                        _proc.wait(timeout=5)
+                        proc.wait()
+                        print(f"[server] Detached grade runner pid={_proc_pid} "
+                              f"finished (code={proc.returncode})", flush=True)
                     except Exception:
-                        _proc.kill()
-                    print(f"[server] Grade runner pid={_proc.pid} terminated on stream close", flush=True)
-            except Exception:
-                pass
-            for _tmp in (_req_path, _prog_path):
-                try: os.unlink(_tmp)
-                except Exception: pass
-            _grading_active.clear()   # resume background thumbnail prewarm
-            if _gl is not None and _acquired:
-                _gl.release()
+                        pass
+                    for _t in (req, prog):
+                        try: os.unlink(_t)
+                        except Exception: pass
+                    try:
+                        if claim is not None and \
+                                claim.read_text(encoding="utf-8").strip() == str(os.getpid()):
+                            claim.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    _grading_active.clear()
+                    try:
+                        if _gl is not None and _acquired and loop.is_running():
+                            loop.call_soon_threadsafe(_gl.release)
+                    except Exception:
+                        pass
+                    try:
+                        if all_folders:
+                            threading.Thread(
+                                target=_prewarm_folder_paths,
+                                args=(list(all_folders),),
+                                daemon=True, name="post-grade-prewarm",
+                            ).start()
+                    except Exception:
+                        pass
+
+                threading.Thread(target=_reap_detached, daemon=True,
+                                 name="detached-grade-reaper").start()
+            else:
+                # Normal completion or a prelude failure (no runner was ever
+                # spawned — _proc/_req_path/_claim_path are all None then).
+                for _tmp in (_req_path, _prog_path):
+                    if _tmp:
+                        try: os.unlink(_tmp)
+                        except Exception: pass
+                # Release OUR pre-spawn claim on cache/grading.lock — but only if
+                # the runner never took ownership (it overwrites the file with its
+                # own pid, and its own finally removes that). Never destroy a lock
+                # whose contents we cannot prove are ours.
+                try:
+                    if _claim_path is not None and \
+                            _claim_path.read_text(encoding="utf-8").strip() == str(os.getpid()):
+                        _claim_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                _grading_active.clear()   # resume background thumbnail prewarm
+                if _gl is not None and _acquired:
+                    _gl.release()
+
+                # Post-grade prewarm (2026-09-10): the cull was the reason the
+                # grid's thumbnails were refused; when it ends the first browse of
+                # the folder pays full decode latency for every tile. Kick the
+                # prewarm over the just-graded folders NOW — fire-and-forget, in
+                # the existing low-priority pool, so it never competes with the
+                # user's first on-demand requests (in-flight dedup collapses any
+                # overlap).
+                try:
+                    if all_folders:
+                        threading.Thread(
+                            target=_prewarm_folder_paths,
+                            args=(list(all_folders),),
+                            daemon=True, name="post-grade-prewarm",
+                        ).start()
+                except Exception:
+                    pass
 
     # SET here, not inside the generator — see the single-flight comment above.
     # Every early-return above (400, 503) has already been passed, so the flag
     # cannot outlive a refused request.
     _grading_active.set()
+
+    # ── Cross-process claim BEFORE the runner exists ─────────────────────────
+    # The grade_runner subprocess only writes grading.lock once its Python is
+    # up (well after Popen returns). That gap is a TOCTOU window in the
+    # cross-process 409 gate: a second server stack clicking grade inside it
+    # saw no lock and spawned a second runner on the same request (the
+    # 2026-09-07 duplicate-runner incident). Claiming the lock HERE — with
+    # this server's pid — closes it: another stack sees a live foreign python
+    # pid and 409s; this stack matches pid == os.getpid() in
+    # grade_lock.grade_in_progress, same as its own _grading_active. The
+    # runner then overwrites the file with its own pid (ownership transfer);
+    # the generator's finally removes the claim only if it still names us.
+    _claim_path = None
+    try:
+        from src.grade_lock import lock_path as _claim_lock_path
+        _claim_path = _claim_lock_path(_DATA_DIR)
+        _claim_path.parent.mkdir(parents=True, exist_ok=True)
+        _claim_path.write_text(str(os.getpid()), encoding="utf-8")
+    except Exception:
+        _claim_path = None   # marker, not truth — never block a grade on it
+
     return StreamingResponse(_stream_with_lock(), media_type="text/event-stream")
 
 

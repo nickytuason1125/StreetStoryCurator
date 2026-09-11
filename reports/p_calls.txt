@@ -1,0 +1,3 @@
+1205: _p(0.49, "Reading your creative brief…")
+1496: _p(0.48, "Preparing the style reference…")
+1595: _p(0.49, "Reading your creative brief…")

@@ -1,0 +1,25 @@
+501: resp  : {"ok": true} | {"ok": false, "error": ...} written to the
+502: path in job["resp"] (file-based, so the parent never needs
+505: Exits on stdin EOF (parent died) or after FIRSTCUT_WARM_IDLE_S (default
+518: for raw in sys.stdin:
+522: _threading.Thread(target=_reader, daemon=True, name="stdin-reader").start()
+531: def _run_job(job) -> None:
+532: resp_path = job.get("resp") or ""
+534: def _respond(ok, error=""):
+535: if resp_path:
+537: with open(resp_path, "w", encoding="utf-8") as f:
+538: _json.dump({"ok": bool(ok), "error": error[-800:]}, f)
+539: except Exception:
+563: print(f"[encode_worker] serve {mode}: {embs.shape} -> {out_npy}", flush=True)
+564: _respond(True)
+565: except Exception:
+566: print(f"[encode_worker] serve job failed:\n{_tb.format_exc()}", flush=True)
+567: _respond(False, _tb.format_exc())
+569: print("[encode_worker] serve ready", flush=True)
+573: except _queue.Empty:
+574: print(f"[encode_worker] serve idle {idle_s:.0f}s — exiting to free RAM", flush=True)
+577: os._exit(0)          # parent closed stdin — job object/terminate
+583: except Exception:
+596: # disk (.npy / crash.log) is preserved because os._exit does not affect the
+599: if len(sys.argv) > 1 and sys.argv[1] == "serve":
+600: serve()                      # never returns — the loop os._exits

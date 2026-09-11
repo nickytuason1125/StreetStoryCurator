@@ -18,6 +18,7 @@
 | **Primary grader** | **Qwen2.5-VL-3B-Instruct INT4** | vision scoring | **~2.2 GB** | **runs when cached** |
 | Fallback grader | SpecVLMPipeline (CLIP cosine sim) | instant | 0 GB extra | when Qwen absent |
 | IQA heads | TOPIQ NR + MANIQA | technical quality | ~0.5 GB | always runs |
+| Aesthetic upgrade | NIMA (MobileNetV2, AVA) ONNX | aesthetic axis only | 0 GB (CPU) | when `models/onnx/nima.onnx` present |
 | Sequencing | NSGA-III (pymoo) | CPU | 0 GB | always runs |
 | Preference | PersonalHead MLP 1536→256→64→1 | CPU | 0 GB | when weights present |
 | Annotations / Critique | Qwen2.5-VL-2B GGUF | UI overlays only | ~1.5 GB | when GGUF present |
@@ -117,10 +118,35 @@ Weights persist to `models/personal_head.pt` via `PersonalHead.save()`.
 
 ## Deprecated Graders
 
-Legacy models (Q-Align, NIMA ONNX, MobileViT, DINOv2-small) live in
-`src/deprecated/`. Import from there raises `DeprecationWarning`.
-Production code must NOT import from `qalign_grader`, `onealign_scorer`,
-or `lightweight_analyzer` directly — use `grade_pipeline_v2.run_v2()`.
+Legacy models (Q-Align, MobileViT, DINOv2-small) live in `src/deprecated/`.
+Import from there raises `DeprecationWarning`. Production code must NOT
+import from `qalign_grader`, `onealign_scorer`, or `lightweight_analyzer`
+directly — use `grade_pipeline_v2.run_v2()`.
+
+**NIMA is no longer on this list (un-deprecated 2026-09-11).** It does NOT
+replace `run_v2()` or act as a standalone grader — it's a narrow aesthetic
+sub-component (`src/nima_scorer.py`, wired at Step 4a-NIMA) that upgrades
+the *aesthetic axis only*. Rationale: the CLIP-probe aesthetic squashes
+everything into a 0.4–0.6 band (a real cull measured 59% of photos there);
+NIMA is MobileNetV2 trained on ~250k AVA human ratings and carries genuine
+per-photo spread at ~40 ms/image on CPU. Degrades to the CLIP aesthetic
+whenever `models/onnx/nima.onnx` is absent or fails to load — the cull
+never depends on it being present.
+
+`models/onnx/nima.onnx` is built by `nima_setup.py` (repo root) from
+`models/onnx/nima_ava_weights.hdf5` (idealo's public AVA-trained Keras
+weights) via `tf.keras` → `tf2onnx`. **Run it with the project venv's
+Python** (`venv\Scripts\python.exe nima_setup.py`), not system Python —
+a system-Python run silently produced an invalid ONNX graph that
+onnxruntime refused to load (`InitializeStateFromModelFileGraphProto:
+invalid model`); the venv's exact tensorflow/tf2onnx/onnx versions export
+correctly. The export toolchain (`tensorflow-cpu`, `tf2onnx`, `h5py`) is
+export-time only — the app runtime needs `onnxruntime` alone.
+
+The `QAlign/NIMA/V1` reference in the `--force-frontier` enforcement note
+below is a separate, still-accurate concern: it blocks falling back to the
+*legacy V1 pipeline's* NIMA-as-primary-grader, not this V2 aesthetic
+sub-component.
 
 ## Frontend Reasoning Display
 

@@ -97,6 +97,15 @@ _POS_PROMPTS: List[str] = [
     "award-winning documentary photography with authentic emotion and visual impact",
     "compelling candid photography with strong story and human connection",
     "masterful street photography with dynamic layering and visual hierarchy",
+    # Boundary-band discriminators (2026-09-10): frames a photo editor would
+    # pull for print — the exact band where Mid and Strong blur.
+    "photojournalism award winner — perfect timing, gesture, and frame discipline",
+    "gallery print photograph — composition holds up at poster size",
+    "masterful use of foreground-midground-background depth layers",
+    "photograph with expressive gesture and meaningful human moment",
+    "striking silhouette against luminous background with clean geometry",
+    "sublime reflection shot — mirror stillness, precise symmetry",
+    "quiet masterstroke — ordinary scene elevated by perfect light and timing",
     # Architecture / geometric / structural
     "fine art architectural photography with bold geometry, strong lines and spatial depth",
     "graphic urban photography with precise geometric abstraction and tonal balance",
@@ -118,21 +127,42 @@ _NEG_PROMPTS: List[str] = [
     "cluttered confusing image with no focal point and distracting background",
     "low quality photo with blown exposure and flat uninteresting scene",
     "boring snapshot with no visual interest, no intention and no reason to look twice",
+    # Boundary-band negatives (2026-09-10): the mundane fails that sneak above
+    # the old vocabulary — these separate "the photographer likes it" from
+    # "a photo editor would pull it".
+    "casual tourist snapshot pointed at an attraction without framing or moment",
+    "middling photo that is merely in focus and correctly exposed",
+    "accidental frame with subject cut off and dead space dominating",
+    "repetitive unremarkable scene indistinguishable from thousands of others",
 ]
 
 # Aspect-specific prompts for the verify pass (richer per-dimension breakdown)
 _ASPECT_PROMPTS: Dict[str, List[str]] = {
     # Short, concrete noun-phrase prompts work best with SigLIP-2's image-caption training.
+    # 2026-09-10: ensembles expanded with contrast pairs — probes are free at
+    # runtime (one matmul per probe against cached embeddings), so richness is
+    # the cheapest accuracy in the stack.
 
     # Technical: intentional softness, grain, and vintage lens rendering are valid fine-art
     # choices — the negative only targets genuine equipment/shooting failures.
     "Technical":     ["photograph with purposeful visual execution — whether crisp and clean "
                       "or rendered through vintage glass with organic grain and intentional softness",
                       "technically ruined photo — severe chromatic aberration, dead pixels, "
-                      "extreme accidental camera shake destroying all detail"],
+                      "extreme accidental camera shake destroying all detail",
+                      "razor-sharp critical focus on the subject with clean micro-contrast",
+                      "clean highlight rolloff with rich tonal gradation",
+                      "low noise exposure with deep clean shadows",
+                      "front-focused miss, subject mushy and out of focus",
+                      "heavy motion smear ruining the subject entirely",
+                      "crushed noisy shadows with banding artifacts"],
 
     "Composition":   ["well composed, leading lines, strong framing, clear subject",
-                      "cluttered frame, no clear subject, bad cropping, random composition"],
+                      "cluttered frame, no clear subject, bad cropping, random composition",
+                      "layered frame with foreground midground and background depth",
+                      "clean geometry with strong negative space balance",
+                      "decisive framing — subject placed with intent and tension",
+                      "photo with distracting cut-off limbs and tangent lines",
+                      "tilted horizon with accidental dead space dominating the frame"],
 
     # Lighting: moody low-key and available light are positive — 'underlit' removed from
     # negative because it matches intentional low-light fine-art photography incorrectly.
@@ -140,15 +170,28 @@ _ASPECT_PROMPTS: Dict[str, List[str]] = {
                       "dramatic shadows, cinematic darkness, golden hour warmth, or intentional "
                       "shadow play that adds dimension and mood",
                       "flat uninspired light with no mood, harshly overexposed blown highlights, "
-                      "or fluorescent flatness that strips all atmosphere and tonal dimension"],
+                      "or fluorescent flatness that strips all atmosphere and tonal dimension",
+                      "beautiful rim light outlining the subject against darkness",
+                      "soft open shade with gentle even illumination",
+                      "dramatic light pools cutting through shadow",
+                      "harsh direct flash flattening everything like a mugshot",
+                      "murky grey overcast light draining all colour and contrast"],
 
     "Narrative":     ["decisive moment, emotion, storytelling, atmosphere, solitude, tension, mood, quiet drama",
-                      "accidental snapshot, no intent, boring frame, nothing to look at"],
+                      "accidental snapshot, no intent, boring frame, nothing to look at",
+                      "caught mid-gesture — expressive human moment full of tension",
+                      "authentic interaction between people — energy and connection",
+                      "captured story unfolding — a beginning, middle and end in one frame",
+                      "static posed stance, dead expression, nothing happening",
+                      "empty frame with no event, no gesture and no tension"],
 
     # Human/Culture: short concrete phrase so SigLIP-2 can match visual content.
     # Low score is expected for architectural/liminal; Step 4c weights penalise this ~0×.
     "Human/Culture": ["people, human figures, faces, crowd, street life",
-                      "empty scene, no people, deserted, nobody present"],
+                      "empty scene, no people, deserted, nobody present",
+                      "authentic cultural moment — local life, tradition, street rhythm",
+                      "engaged subject aware of the camera yet natural and unposed",
+                      "tourist posing stiffly at a landmark postcard angle"],
 }
 
 

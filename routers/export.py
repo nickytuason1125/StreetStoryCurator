@@ -440,7 +440,18 @@ async def recommend_niche(req: GradeRequest):
     small, size-adaptive sample of the folder — no GPU, no grading pipeline, and
     no gpu_lock, so it can never stall previews or crash a grade, and returns in
     well under 3 s. Returns a registry slug the dropdown can select directly;
-    falls back to classic_street so the picker is never blocked."""
+    falls back to classic_street so the picker is never blocked.
+
+    RAM pathline v2, Phase 1: "no GPU" is not "no memory" — the first call
+    loads CLIP ViT-B/32 (~350 MB of weights, 23.5 s measured warm-up). That
+    load is what pushed the 2026-09-08 cull's encode worker past its commit
+    ceiling at the 46% wall. A running grade owns the machine's memory floor:
+    defer, and the picker falls back to classic_street until it finishes.
+    """
+    from server_impl import _grading_active
+    if _grading_active.is_set():
+        return {"preset": "classic_street", "confidence": 0, "detected": False,
+                "reason": "Deferred — a grade is running; niche detection would tax its RAM floor."}
     all_folders = [str(Path(fp).resolve()) for fp in req.folder_paths if os.path.isdir(fp)]
     if not all_folders and req.folder_path and os.path.isdir(req.folder_path):
         all_folders = [str(Path(req.folder_path).resolve())]

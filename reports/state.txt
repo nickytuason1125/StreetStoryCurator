@@ -1,0 +1,12 @@
+now: 23:36:25
+runners: 2
+runner 28076 started 23:34:22
+runner 43172 started 23:34:22
+ps 7784 started 23:03:54
+ps 16960 started 23:04:20
+ps 33776 started 23:36:25
+ps 41456 started 23:32:08
+ps 46800 started 23:30:29
+ps 50192 started 23:04:43
+lock: True
+{"progress": 0.319, "desc": "Analyzing 2756 photos\u2026"} @ 23:36:25

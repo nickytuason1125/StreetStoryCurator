@@ -1465,6 +1465,7 @@ export default function App() {
       const reader = resp.body!.getReader();
       const decoder = new TextDecoder();
       let buf = '';
+      let sawDone = false;
       const _readWithTimeout = (): Promise<ReadableStreamReadResult<Uint8Array>> =>
         // The losing timer used to keep running after a successful read,
         // accumulating one dead 45 s timer per chunk on long grades.
@@ -1498,6 +1499,7 @@ export default function App() {
           if (msg.quality) setGradeQuality(String(msg.quality));
           if (msg.error) throw new Error(msg.error);
           if (msg.done) {
+            sawDone = true;
             const ps = msg.data.map((p: any) => ({ ...p, id: photoId(p.path) }));
             setPhotos(ps);
             setRedacted(new Set<string>(
@@ -1542,6 +1544,38 @@ export default function App() {
               .catch(() => {});
             break outer;
           }
+        }
+      }
+      // ── Stream ended WITHOUT a done event ─────────────────────────────────
+      // The runner is durable: on a dropped connection it detaches and
+      // finishes in the background, then commits the catalog. Silence here
+      // read as "grading stopped early" (2026-09-11: a finished 2,754-photo
+      // cull looked like a failure because the stream dropped at some point).
+      // Say what is happening and WATCH for the finish — poll the runner
+      // status, then load the committed gallery automatically.
+      if (!sawDone) {
+        notify('Connection dropped — the cull keeps running in the background. Loading your results when it finishes…', 'info');
+        setGradeDesc('Finishing in the background…');
+        for (let poll = 0; poll < 720; poll++) {   // up to 60 min
+          await new Promise(r => setTimeout(r, 5000));
+          let active = true;
+          try { active = (await axios.get(`${API}/api/grading/status`)).data.grading; }
+          catch { continue; }   // server hiccup — keep waiting, runner is durable
+          if (active) continue;
+          try {
+            const r = await axios.get(`${API}/api/catalog?t=${Date.now()}`);
+            const n = applyCatalog(r.data);
+            if (n > 0) {
+              setMainTab('gallery');
+              setLoupeMode('grid');
+              notify(`Cull finished — ${n} graded photos loaded.`, 'success');
+            } else {
+              notify('The grader finished but wrote no results — check the server log.', 'error');
+            }
+          } catch {
+            notify('The cull finished, but loading its results failed — reopen the gallery.', 'error');
+          }
+          break;
         }
       }
     } catch (err: any) {

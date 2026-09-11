@@ -1,0 +1,25 @@
+[encode_worker] peak_wset=0.47 GB
+[encode_worker] resource failure (CUDA/RAM exhausted): MemoryError — caller falls back
+[encode_worker] peak_wset=0.47 GB
+[grade_worker] Idle timeout (30 min) — exiting
+[encode_worker] resource failure (CUDA/RAM exhausted): MemoryError — caller falls back
+[encode_worker] peak_wset=0.47 GB
+[encode_worker] serve ready
+[encode_worker] serve ready
+[encode_worker] FATAL: ImportError: DLL load failed while importing _reordering: The paging file is too small for this operation to complete.
+[encode_worker] peak_wset=0.47 GB
+[encode_worker] resource failure (CUDA/RAM exhausted): MemoryError — caller falls back
+[encode_worker] peak_wset=0.47 GB
+[encode_worker] resource failure (CUDA/RAM exhausted): MemoryError — caller falls back
+[encode_worker] peak_wset=0.47 GB
+[encode_worker] resource failure (CUDA/RAM exhausted): MemoryError — caller falls back
+[encode_worker] peak_wset=0.47 GB
+============================================================
+2026-09-10T12:11:42.641164 grade_worker crash:
+Traceback (most recent call last):
+  File "C:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator\grade_worker.py", line 135, in grade_worker_main
+    result = run_v2(
+             ^^^^^^^
+  File "C:\Users\Nicky Tuason\Desktop\StreetPhotoEditor\street-story-curator\src\grade_pipeline_v2.py", line 1655, in run_v2
+    raise MemoryError(str(_siglip_last_exc))
+MemoryError: The vision encoder could not start after 4 attempts (last exit 1) — the machine ran out of memory while loading it. Everything graded so far is saved: close a few apps (or reboot if the RAM chip has been red a while) and press Resume — the cull continues from its checkpoint instead of starting over.

@@ -1,0 +1,17 @@
+KEY LINES:
+[siglip2] warm encoder idle 90s with no resp — job lost in respawn race; killing worker, falling back to one-shot spawn
+[siglip2] warm encoder idle 90s with no resp — job lost in respawn race; killing worker, falling back to one-shot spawn
+[siglip2] encode_worker start: mode=images n=2756 attempt=1
+[siglip2] encode_worker attempt 1 failed (rc=1, 3.97 GB free) — gc + retry in 2s
+[siglip2] encode_worker start: mode=images n=2756 attempt=2
+[siglip2] encode_worker attempt 2 failed (rc=1, 3.49 GB free) — gc + retry in 8s
+[siglip2] encode_worker start: mode=images n=2756 attempt=3
+[siglip2] encode_worker attempt 3 failed (rc=1, 4.08 GB free) — gc + retry in 32s
+[siglip2] encode_worker start: mode=images n=2756 attempt=4
+[v2] SigLIP-2 attempt 1 failed: The vision encoder could not start after 4 attempts (last exit 1) — the machine ran out of memory while loading it. Everything graded so far is saved: close a few apps (or reboot if the RAM chip has been red a while) and press Resume — the cull continues from its checkpoint instead of starting over.
+--- last 5 ---
+[ram] 0.247 rss=0.14 peak=0.14 free=4.24  Analyzing 2756 photos?
+[ram] 0.257 rss=0.14 peak=0.14 free=4.15  Analyzing 2756 photos?
+[ram] 0.267 rss=0.14 peak=0.14 free=4.12  Analyzing 2756 photos?
+[ram] 0.277 rss=0.14 peak=0.14 free=4.08  Analyzing 2756 photos?
+[ram] 0.286 rss=0.14 peak=0.14 free=4.17  Analyzing 2756 photos?

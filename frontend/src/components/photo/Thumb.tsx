@@ -15,8 +15,13 @@ import { cn } from '../../lib/cn';
  *   waiting → shimmer persists while auto-retry backs off (1s/2s/4s) — this
  *             is the 204-during-grading case: tiles self-heal once the grade
  *             finishes, with no reload and no user action
- *   error   → parked quietly with a retry affordance (a failed decode will
- *             not fix itself; the user should know and can force one more)
+ *   error   → parked with a retry affordance AND a slow (30s) auto-retry
+ *             heartbeat. A genuinely failed decode (404) stays visibly broken
+ *             but keeps trying quietly; a 204-during-grading tile — which
+ *             exhausts the fast ladder within seconds of a 45-minute cull
+ *             starting — heals itself the moment the grade releases the thumb
+ *             pool. Parking silently forever was the "filmstrip busted" report
+ *             of 2026-09-08: every tile gave up 7s into an hour-long cull.
  *
  * Renders a FRAGMENT meant to sit inside the call site's existing
  * `relative overflow-hidden bg-well` wrapper — the skeleton and error
@@ -26,6 +31,13 @@ import { cn } from '../../lib/cn';
  */
 
 const BACKOFF_MS = [1000, 2000, 4000];
+
+// Parked-tile heartbeat. Once the fast ladder is exhausted the tile shows the
+// retry affordance but is NOT dead: it re-enters the ladder on this slow
+// cadence, so a 204-during-grading tile heals itself when the cull finishes —
+// no reload, no clicking across a 45-minute grade. Cheap: a parked tile costs
+// one failed request per cycle (the 3 fast retries, then stillness).
+const PARKED_RETRY_MS = 30000;
 
 export interface ThumbProps {
   /** Absolute photo path — sent as the ?path= query to /api/thumb. */
@@ -44,25 +56,38 @@ export function Thumb({ path, className, eager, onLoad, style }: ThumbProps) {
   const [phase, setPhase] = useState<'loading' | 'loaded' | 'error'>('loading');
   const [attempt, setAttempt] = useState(0);
   const timer = useRef<number | undefined>(undefined);
+  // Monotonic cache-buster: attempt resets to 0 on every parked-cycle retry,
+  // but a retry must never re-request a URL the browser may have
+  // negative-cached — so the buster only ever counts up.
+  const bust = useRef(0);
 
   // A new path is a new image — reset the whole retry story.
   useEffect(() => {
     setPhase('loading');
     setAttempt(0);
+    bust.current = 0;
     return () => window.clearTimeout(timer.current);
   }, [path]);
 
   // Cache-buster on retries: the 204/404 response itself is not cached, but
   // the browser may negative-cache the URL; a fresh query forces a real fetch.
-  const src = attempt === 0 ? thumbUrl(path) : `${thumbUrl(path)}&_r=${attempt}`;
+  const src = bust.current === 0 ? thumbUrl(path) : `${thumbUrl(path)}&_r=${bust.current}`;
 
   const handleError = () => {
+    bust.current += 1;
     if (attempt < BACKOFF_MS.length) {
       // Still trying — keep the shimmer up; the tile heals itself if this was
       // a 204 (grading active) and fills in when the grade releases the pool.
       timer.current = window.setTimeout(() => setAttempt(a => a + 1), BACKOFF_MS[attempt]);
     } else {
       setPhase('error');
+      // Parked, not abandoned: schedule the slow heartbeat so the tile retries
+      // on its own when grading ends (timer.current is cleared by the [path]
+      // effect on path change / unmount).
+      timer.current = window.setTimeout(() => {
+        setAttempt(0);
+        setPhase('loading');
+      }, PARKED_RETRY_MS);
     }
   };
 

@@ -315,6 +315,25 @@ async def clear_catalog():
             409,
             "A grade is running — wait for it to finish before clearing the catalog.",
         )
+    # Cross-process arm (same incident as the grade gate): a clear landing on
+    # an IDLE server stack sails past the in-process flag while the OTHER
+    # stack's grade_runner is mid-merge — the last-writer-wins wipe that
+    # likely took catalog.json on 2026-09-07. Refuse while any live process
+    # holds grading.lock; stale locks are cleared on read, never wedge this.
+    from server_impl import _DATA_DIR
+    try:
+        from src.grade_lock import grade_in_progress
+        if grade_in_progress(_DATA_DIR):
+            raise HTTPException(
+                409,
+                "A grade is running in another process (grading.lock) — clearing "
+                "the catalog now would race its results into the backup. Wait "
+                "for it to finish.",
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        pass  # marker, not source of truth — never block the clear on it
     _DATA_DIR, _atomic_write_text, analyzer = _impl()
     try:
         import catalog_store

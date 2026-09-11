@@ -101,25 +101,19 @@ export function AnalysisPanel({
                       the loupe. Only there."). */}
                   {isGraded && sel && typeof sel.score === 'number' && (
                     <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${T.line}` }}>
-                      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
-                        <span className="t-num t-display" style={{ fontSize: 'var(--text-xl)', color: T.ink }}>
-                          {formatScore(sel.score)}
-                        </span>
-                        <span style={{
-                          fontSize: 'var(--text-xs)', fontWeight: 600, letterSpacing: 'var(--track-label)',
-                          textTransform: 'uppercase', padding: '2px 7px', borderRadius: 'var(--r-sm)',
-                          color: gc(sel.grade), border: `1px solid ${gc(sel.grade)}`, marginBottom: 3,
-                        }}>
-                          {gradeLabel(sel.grade)}
-                        </span>
-                      </div>
-                      {/* The taste meter is gone from here on purpose.
-                          "124 ratings learned" and "70% your call" describe how
-                          the MACHINE weighted itself. That is engine telemetry,
-                          not a fact about this photograph, and it sat directly
-                          under the score where the reader is deciding about the
-                          picture. PersonalHead still does the same work; it just
-                          no longer narrates it in the middle of the verdict. */}
+                      {/* The verdict is the word, not the number. The raw score
+                          used to sit next to the grade here (`.72 STRONG`,
+                          `.072 STRONG` on a low frame) — a machine measurement
+                          asking to be read while the reader is deciding about
+                          the picture. The exact figure lives in Breakdown. */}
+                      <span style={{
+                        display: 'inline-block',
+                        fontSize: 'var(--text-sm)', fontWeight: 700, letterSpacing: 'var(--track-label)',
+                        textTransform: 'uppercase', padding: '4px 10px', borderRadius: 'var(--r-sm)',
+                        color: gc(sel.grade), border: `1px solid ${gc(sel.grade)}`,
+                      }}>
+                        {gradeLabel(sel.grade)}
+                      </span>
                     </div>
                   )}
                   <StarRating stars={sel.stars ?? 0} size={22} onSet={n => handleSetStars(sel.id, n)}/>

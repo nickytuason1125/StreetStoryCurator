@@ -1,0 +1,4 @@
+encode_worker.py:195: sess = ort.InferenceSession(_g, so, providers=prov)
+model_loader.py:299: sessions["aesthetic"] = ort.InferenceSession(
+model_loader.py:302: sessions["composition"] = ort.InferenceSession(
+model_loader.py:306: sessions["nima"] = ort.InferenceSession(

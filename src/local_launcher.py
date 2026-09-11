@@ -108,6 +108,13 @@ except PermissionError:
 sys.stdout = _log_fh
 sys.stderr = _log_fh
 
+# Personal taste blend ON (2026-09-10): the user's star ratings ARE the
+# accuracy standard — 795 banked ratings and a trained PersonalHead, but the
+# blend defaulted to opt-in OFF so grading ignored them entirely. This is set
+# in the SERVER process before uvicorn imports the pipeline, so grade_runner
+# children inherit it. Remove this line to restore ratings-never-grade.
+os.environ.setdefault("FIRSTCUT_PERSONAL_TASTE", "1")
+
 
 def _log(msg):
     try:
@@ -446,25 +453,38 @@ def _kill_stray_backends() -> None:
     boot attempts. Matches by SCRIPT NAME in the cmdline, NOT by absolute
     path — several zombies were started with relative paths and survived a
     path-based kill (measured 2026-09-07: they held port 8000 hostage).
-    The watchdog is explicitly exempt."""
+    The watchdog is explicitly exempt.
+
+    ROOT CAUSE, proven 2026-09-07 ~23:50 by differential experiment: this
+    function must NEVER kill our own venv redirector SHIM (venv\\Scripts\\
+    python(w).exe spawns the base interpreter as a child — the shim is our
+    PARENT and its cmdline matches 'local_launcher'). Killing the shim takes
+    the real launcher down with it: every boot with no healthy server to
+    reuse died silently right here (21:54, 21:58, 23:39), while the one boot
+    where this loop errored out early came up perfectly. Exempt the parent
+    process explicitly; stray zombies from OTHER stacks never are it."""
     try:
         import psutil as _ps
         me = os.getpid()
+        _my_ppid = _ps.Process(me).ppid()
         for p in _ps.process_iter(["pid", "name", "cmdline"]):
             try:
                 n = (p.info["name"] or "").lower()
                 if "python" not in n or p.info["pid"] == me:
                     continue
+                if p.info["pid"] == _my_ppid:
+                    continue  # our own venv shim — killing it kills US (see docstring)
                 cl = " ".join(p.info["cmdline"] or [])
                 if "run_watchdog" in cl:
                     continue   # the watchdog observes; never kill it
                 if any(s in cl for s in ("local_launcher", "server_impl",
                                          "grade_runner", "grade_worker")):
+                    _log(f"[kill_stray] killing pid={p.info['pid']} name={n} cl={cl[:120]}")
                     p.kill()
             except Exception:
                 pass
-    except Exception:
-        pass
+    except Exception as exc:
+        _log(f"[kill_stray] error (non-fatal): {exc}")
 
 
 def _spawn_detached_server(port: int) -> None:
@@ -477,29 +497,39 @@ def _spawn_detached_server(port: int) -> None:
     with it. Running the server as its own detached process means a window death —
     for ANY reason, including the OS killing WebView2 under memory pressure — never
     aborts a cull. DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP breaks the child off
-    this process so it is not torn down when the window exits."""
+    this process so it is not torn down when the window exits.
+
+    NO JOB OBJECT (2026-09-07, proven ~01:00 by elimination): the backend was
+    spawned via win_job.popen — KILL_ON_JOB_CLOSE + a PROCESS_MEMORY cap
+    sized for encode/IQA workers. Both are wrong for the backend:
+
+      1. The tie defeats the DECOUPLING above: the job handle lives in THIS
+         launcher, so the launcher exiting (window closed — the designed
+         flow, "relaunch to reattach") closed the job and KILLED the
+         "detached" backend mid-cull.
+      2. The 3.5 GB worker cap MemoryError-stormed the backend during the
+         64k-catalog load (commit > cap → every allocation fails → the
+         accept loop dies → server binds but never answers). A backend
+         spawned with NO job (the cmd probe) served the same catalog all
+         evening.
+
+    The orphan-backend problem the job tie tried to solve is already owned
+    by the --server-only early port-clear (module top) plus
+    _kill_stray_backends() in the boot loop. Plain Popen it is.
+    _kill_stray_backends' parent-exemption keeps our own tree safe."""
     import subprocess as _sp
-    import win_job as _wj_spawn
     _flags = 0
     if sys.platform == "win32":
         _flags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
     # DEVNULL for all stdio: the detached server redirects its own fd 1/2 to
     # crash.log at module load, so it must not inherit this window process's
     # handles (which vanish when the window exits).
-    #
-    # win_job.popen, NOT plain Popen (2026-09-07): an unprotected detached
-    # backend survives its parent's death as an orphan holding port 8000 —
-    # and every subsequent launch then fails to bind and dies silently,
-    # leaving the ORPHAN (possibly a pre-update process) serving the app.
-    # That is the "it shouldn't be the old code" report: the app WAS old,
-    # because the new backend could never take the port. Job-object tie =>
-    # orphan dies with its parent and the next launch actually starts.
-    _wj_spawn.popen(
+    _sp.Popen(
         [sys.executable, str(Path(__file__).resolve()), "--server-only"],
         cwd=str(_ROOT), creationflags=_flags, close_fds=True,
         stdin=_sp.DEVNULL, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
     )
-    _log("Spawned DETACHED backend server (survives window death)")
+    _log("Spawned DETACHED backend server (survives window death, no job tie)")
 
 
 def _run_server_only(port: int) -> None:
@@ -577,6 +607,36 @@ def _reexec_in_venv_if_needed() -> None:
     os.execv(str(venv_py), [str(venv_py), str(Path(__file__).resolve()), *sys.argv[1:]])
 
 
+def _another_window_launcher() -> bool:
+    """True if another WINDOW-mode local_launcher process is alive.
+
+    The mutex below already focuses an existing window, but it cannot see a
+    launcher that is still mid-boot (window not yet created) — two launches in
+    that gap BOTH fall through to _spawn_detached_server, and each --server-only
+    backend then port-clears the other in a respawn loop (the 2026-09-07
+    incident: launcher=6-10, two grade_runners on one request, catalog wiped).
+    Excluding --server-only keeps legitimate reattach (decoupled backend, no
+    window) working unchanged.
+    """
+    try:
+        import psutil
+        me = os.getpid()
+        for p in psutil.process_iter(["pid", "name", "cmdline"]):
+            try:
+                if p.info["pid"] == me:
+                    continue
+                if "python" not in (p.info["name"] or "").lower():
+                    continue
+                cl = " ".join(p.info["cmdline"] or [])
+                if "local_launcher" in cl and "--server-only" not in cl:
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        pass  # cannot verify — behave as before rather than block a launch
+    return False
+
+
 def main():
     _reexec_in_venv_if_needed()
 
@@ -601,6 +661,13 @@ def main():
                 ctypes.windll.user32.ShowWindow(hwnd, 9)          # SW_RESTORE
                 ctypes.windll.user32.SetForegroundWindow(hwnd)
                 _log("Second launch: existing FirstCut window focused; exiting")
+                return
+            # No window YET — but another window-mode launcher being alive means
+            # it is mid-boot. Spawning our own backend here starts the port-war
+            # respawn loop documented in _another_window_launcher. Exit instead;
+            # the user's second click lands on the first launcher's window.
+            if _another_window_launcher():
+                _log("Second launch: another launcher process is starting — exiting")
                 return
             _log("Second launch: backend running with no window — opening a window to reattach")
     elif sys.platform == "darwin" and not _is_backend:

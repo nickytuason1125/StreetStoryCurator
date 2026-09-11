@@ -56,6 +56,33 @@ def load(path: Optional[Path] = None) -> dict:
     return {"photos": [], "folders": []}
 
 
+def _rotate_backups(p: Path, keep: int = 3) -> None:
+    """Keep the last `keep` good catalogs as catalog.json.bak.N (N=1 newest).
+
+    The 2026-09-07 wipe was only recoverable because a MANUAL state_backup
+    folder happened to exist. merge_write() is the path every grade checkpoint
+    flows through, so rotating here guarantees a one-checkpoint rollback for a
+    corrupt or truncated write. COPY, not rename: the live catalog stays in
+    place even if this process dies between rotation and the atomic replace
+    below. Best effort — a failed rotation must never block the grade.
+    """
+    import shutil
+    try:
+        if not p.exists() or p.stat().st_size == 0:
+            return
+        oldest = p.with_name(p.name + f".bak.{keep}")
+        if oldest.exists():
+            oldest.unlink()
+        for i in range(keep - 1, 0, -1):
+            src = p.with_name(p.name + f".bak.{i}")
+            if src.exists():
+                src.rename(p.with_name(p.name + f".bak.{i + 1}"))
+        shutil.copy2(p, p.with_name(p.name + ".bak.1"))
+        print(f"[catalog] rotated backup -> {p.name}.bak.1")
+    except Exception as exc:
+        print(f"[catalog] backup rotation skipped ({exc})")
+
+
 def merge_write(photos: Iterable[dict], path: Optional[Path] = None,
                 tag: str = "") -> int:
     """Merge `photos` into the catalog by path and write atomically.
@@ -85,6 +112,7 @@ def merge_write(photos: Iterable[dict], path: Optional[Path] = None,
                           "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S")},
                          ensure_ascii=False, default=_np2py)
     p.parent.mkdir(parents=True, exist_ok=True)
+    _rotate_backups(p)
     tmp = p.with_suffix(".json.tmp")
     tmp.write_text(payload, encoding="utf-8")
     tmp.replace(p)
@@ -244,12 +272,21 @@ def rebuild_from_lance(path: Optional[Path] = None,
             try: bd = json.loads(bd)
             except Exception: bd = {}
         score = round(float(r.get("score", 0.0)), 3)
+        # Taste fields: 0.5 is the pipeline's neutral PLACEHOLDER when the
+        # opt-in taste blend was off — do not resurrect it as data. Surface
+        # only when taste is enabled this session (mirrors the gallery and
+        # cached-row handling in grade_pipeline_v2).
+        _taste_on = os.environ.get("FIRSTCUT_PERSONAL_TASTE", "").strip() == "1"
+        _ps_raw   = r.get("personal_score")
+        _ps_out   = round(float(_ps_raw), 3) if (_taste_on and _ps_raw is not None) else None
+        if not _taste_on and isinstance(bd, dict):
+            bd.pop("Personal", None)
         photos.append({
             "id": rp, "path": rp, "filename": Path(rp).name,
             "grade": r.get("grade", ""), "score": score,
             "overall_score": score, "rating": score,
-            "personal_score": round(float(r.get("personal_score", 0.5)), 3),
-            "human_perception": round(float(r.get("personal_score", 0.5)), 3),
+            "personal_score": _ps_out,
+            "human_perception": _ps_out,
             "breakdown": bd, "critique": "", "reasoning_log": "",
             "is_verified": False, "exif_ts": float(r.get("exif_ts", 0.0) or 0.0),
             "stars": 0, "reject": False, "sim_flag": "", "cluster_id": -1,

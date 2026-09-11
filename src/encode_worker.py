@@ -138,6 +138,23 @@ def _onnx_enabled() -> bool:
     return _PROFILE.onnx_enabled()
 
 
+def _free_vram_gb():
+    """Gigabytes of free VRAM on device 0, or None when it cannot be measured
+    (no nvidia-smi, no NVIDIA GPU, timeout). Measured, not assumed — the
+    2026-09-07 warm-up died on 'CUDA failure 2: out of memory' during a
+    transient VRAM squeeze even though the card was idle minutes later."""
+    try:
+        import subprocess as _sp
+        _flags = 0x08000000 if os.name == "nt" else 0   # CREATE_NO_WINDOW
+        _out = _sp.check_output(
+            ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+            creationflags=_flags, text=True, timeout=5,
+        )
+        return float(_out.strip().splitlines()[0]) / 1024.0
+    except Exception:
+        return None
+
+
 def _onnx_session(graph: str = ""):
     """Create the CUDA session. torch ships the CUDA 12 DLLs onnxruntime needs
     but does not put them on the search path, so add them explicitly."""
@@ -164,8 +181,44 @@ def _onnx_session(graph: str = ""):
     _order = _PROFILE.ort_providers
     _have = ort.get_available_providers()
     prov = [p for p in _order if p in _have] or ["CPUExecutionProvider"]
+    # ── Hard CPU kill-switch (read via os.environ directly) ──────────────────
+    # FIRSTCUT_ORT_PROVIDERS goes through setting()/profile, which spawned
+    # workers may not see; this one is read straight from the process env so a
+    # wedged GPU driver (cudaSetDevice failing with 0 MiB used — observed)
+    # can be bypassed with certainty. Set FIRSTCUT_FORCE_CPU=1 in the runner's
+    # environment to force pure-CPU ONNX regardless of provider order.
+    if os.environ.get("FIRSTCUT_FORCE_CPU", "").strip() == "1":
+        prov = ["CPUExecutionProvider"]
+        print("[encode_worker] FIRSTCUT_FORCE_CPU=1 — CPU provider forced", flush=True)
+    # VRAM gate (2026-09-07): a CUDA session created during a transient VRAM
+    # squeeze dies with "CUDA failure 2: out of memory / bad allocation" — four
+    # FATALs + respawn churn for one warm attempt. If free VRAM cannot hold the
+    # session, skip CUDA DELIBERATELY and use the next provider (DML/CPU).
+    if any("CUDA" in p for p in prov):
+        _vram = _free_vram_gb()
+        if _vram is not None and _vram < 1.5:
+            _fb = next((p for p in prov if "CUDA" not in p), "CPUExecutionProvider")
+            print(f"[encode_worker] CUDA skipped — only {_vram:.2f} GB VRAM free; using {_fb}", flush=True)
+            prov = [p for p in prov if "CUDA" not in p] or ["CPUExecutionProvider"]
     _g = graph or _ONNX_VISION
-    sess = ort.InferenceSession(_g, so, providers=prov)
+    # ── VRAM arena cap ────────────────────────────────────────────────────────
+    # ORT's CUDA arena defaults to grow-as-needed with big extend steps; on a
+    # 6 GB card shared with the desktop, WebView2, and the backend's warm CLIP,
+    # the arena's reservation overcommits and session init dies with
+    # "bad allocation" even when free VRAM nominally covers the weights.
+    # kSameAsRequested grows in exact increments, and gpu_mem_limit bounds the
+    # arena so an over-reservation is impossible; overflow falls to the next
+    # provider instead of killing the worker. (Passed via the InferenceSession
+    # provider_options= kwarg — SessionOptions has no provider_options attr.)
+    _prov_opts = [
+        {"device_id": 0,
+         "arena_extend_strategy": "kSameAsRequested",
+         "gpu_mem_limit": int(4.5 * 1024 * 1024 * 1024),
+         "cudnn_conv_algo_search": "HEURISTIC"}
+        if "CUDA" in p else {}
+        for p in prov
+    ]
+    sess = ort.InferenceSession(_g, so, providers=prov, provider_options=_prov_opts)
     print(f"[encode_worker] ONNX {os.path.basename(_g)} ({sess.get_providers()[0]})", flush=True)
     return sess
 
@@ -299,6 +352,101 @@ def _canonicalize(text: str) -> str:
     return " ".join(text.split()).strip()
 
 
+_DECODE_LAST_ERR = None   # last decode exception message (see _decode_last_err)
+
+
+def _decode_with_timeout(p, timeout_s=30):
+    """Decode one image with a hang guard. Corrupt RAWs can spin forever in
+    native preview-extraction code — a try/except never fires because the
+    thread never returns. Run the decode in a helper thread and abandon it on
+    timeout. Returns the image or None (None → existing failed/zero-row path).
+    The abandoned daemon thread dies with the worker process; one leaked spin
+    per poison file is acceptable vs. freezing the whole cull."""
+    import threading
+    global _DECODE_LAST_ERR
+    # RAW_EXTS / extract_embedded_preview live only as function-locals in the
+    # encode paths — resolve them here or _work NameErrors on EVERY file and
+    # the whole encode comes back "unreadable" (all 2756 once, silently).
+    from raw_support import RAW_EXTS as _RAW_EXTS, extract_embedded_preview as _extract_preview
+    from PIL import Image as _Image
+    result = {}
+
+    def _work():
+        try:
+            if os.path.splitext(p)[1].lower() in _RAW_EXTS:
+                result["img"] = _extract_preview(p, "RGB")
+            else:
+                im = _Image.open(p)
+                try: im.draft("RGB", (512, 512))
+                except Exception: pass
+                result["img"] = im.convert("RGB")
+        except Exception as exc:
+            result["img"] = None
+            # Keep the reason — swallowed errors here produced the silent
+            # "2756/2756 unreadable" all-zero encode with no diagnosis.
+            result["err"] = f"{type(exc).__name__}: {exc}"
+
+    t = threading.Thread(target=_work, daemon=True)
+    t.start()
+    t.join(timeout_s)
+    if t.is_alive():
+        print(f"[encode_worker] DECODE TIMEOUT after {timeout_s}s (poison file, skipped): {p}", flush=True)
+        return None
+    if result.get("img") is None and result.get("err"):
+        global _DECODE_LAST_ERR
+        _DECODE_LAST_ERR = result["err"]
+    return result.get("img")
+
+
+def _decode_last_err() -> "str | None":
+    """Reason from the most recent failed _decode_with_timeout call (the
+    per-file exception is otherwise swallowed and every file just "fails"
+    with no diagnosis — happened as a real all-2756-unreadable encode)."""
+    return _DECODE_LAST_ERR
+
+
+def _iter_decoded_batches(paths, batch):
+    """Yield (start_index, chunk_paths, pil_images, failed_local, first_err).
+
+    PREFETCH PIPELINE (2026-09-11): the GPU used to sit idle while the NEXT
+    batch's JPEGs decoded on the CPU — decode and encode ran strictly
+    sequentially. A bounded producer thread decodes one batch AHEAD while the
+    consumer feeds the current one to the model. Bounded at 2 queued batches
+    (~64 draft-downscaled 512px images, ≈130 MB worst case), so prefetch
+    adds speed without adding meaningful RAM — important on the 16 GB
+    machines this pipeline targets. Reused by BOTH the torch and ONNX encode
+    loops so their bookkeeping (failed-index sentinels, first-error capture)
+    stays identical.
+    """
+    from PIL import Image
+    import queue as _q
+    q: "_q.Queue" = _q.Queue(maxsize=2)
+    _SENT = object()
+
+    def _producer():
+        for i in range(0, len(paths), batch):
+            chunk = paths[i:i + batch]
+            pil, failed_local, first_err = [], [], None
+            for j, p in enumerate(chunk):
+                img = _decode_with_timeout(p)
+                if img is None:
+                    failed_local.append(j)
+                    if first_err is None:
+                        first_err = _decode_last_err()
+                    img = Image.new("RGB", (64, 64), (0, 0, 0))
+                pil.append(img)
+            q.put((i, chunk, pil, failed_local, first_err))
+        q.put(_SENT)
+
+    import threading as _th
+    _th.Thread(target=_producer, daemon=True, name="decode-prefetch").start()
+    while True:
+        item = q.get()
+        if item is _SENT:
+            break
+        yield item
+
+
 def encode_images(kind, m, helper, paths, batch=8):
     from PIL import Image
     from raw_support import RAW_EXTS, extract_embedded_preview
@@ -311,31 +459,18 @@ def encode_images(kind, m, helper, paths, batch=8):
     embs: "np.ndarray | None" = None
     written = 0
     failed = []   # global indices whose pixels could not be read
-    for i in range(0, len(paths), batch):
-        chunk = paths[i:i + batch]
-        pil = []
-        for j, p in enumerate(chunk):
-            img = None
-            try:
-                if os.path.splitext(p)[1].lower() in RAW_EXTS:
-                    # RAW: embedded JPEG preview only — never demosaic (memory-safe).
-                    img = extract_embedded_preview(p, "RGB")
-                else:
-                    im = Image.open(p)
-                    try: im.draft("RGB", (512, 512))
-                    except Exception: pass
-                    img = im.convert("RGB")
-            except Exception:
-                img = None
-            if img is None:
-                # Unreadable / no embedded preview → mark for drop. A tiny black
-                # filler keeps the batch shape; its row is zeroed after encoding so
-                # the pipeline removes the file entirely (no gray-placeholder poison).
-                failed.append(i + j)
-                print(f"[encode_worker] read error, skipping: {p}", flush=True)
-                pil.append(Image.new("RGB", (64, 64), (0, 0, 0)))
-            else:
-                pil.append(img)
+    first_err = None   # first decode exception message, for diagnosis
+    for i, chunk, pil, failed_local, batch_first_err in _iter_decoded_batches(paths, batch):
+        for j in failed_local:
+            # Unreadable / no embedded preview / decode hang → mark for drop.
+            # A tiny black filler keeps the batch shape; its row is zeroed
+            # after encoding so the pipeline removes the file entirely.
+            failed.append(i + j)
+            if first_err is None:
+                first_err = batch_first_err
+                print(f"[encode_worker] read error ({first_err or 'unknown'}), skipping: {chunk[j]}", flush=True)
+            elif (i + j) % 500 == 0:
+                print(f"[encode_worker] read error #{i+j+1}: {chunk[j]}", flush=True)
         with torch.no_grad():
             if kind == "hf":
                 pv = helper(images=pil, return_tensors="pt")["pixel_values"].to(dev, dt)
@@ -356,6 +491,20 @@ def encode_images(kind, m, helper, paths, batch=8):
         embs[idx] = 0.0   # zero-vector sentinel → grade_pipeline_v2 drops these rows
     if failed:
         print(f"[encode_worker] {len(failed)}/{len(paths)} unreadable → zero-row sentinel", flush=True)
+    if len(failed) == len(paths) and paths:
+        # EVERY file failed to decode — that is never a normal cull outcome, it
+        # means the card dropped out / a DLL failed under commit pressure /
+        # the wrong mount. Returning "success" with all-zero rows silently
+        # grades nothing and the pipeline reports an empty cull. Exit non-zero
+        # so the parent's retry ladder (gc + backoff + fresh process) runs.
+        # The failed paths ride in the message so the parent can tell a
+        # DETERMINISTIC per-file failure (corrupt/truncated bytes — respawning
+        # can never fix those) from a transient machine state, and name the
+        # files to the user. main() exits 3 for this class.
+        _fail_list = ", ".join(paths[:8]) + ("…" if len(paths) > 8 else "")
+        raise RuntimeError(
+            f"all {len(paths)} files unreadable (first reason: {first_err or 'unknown'}) "
+            f"— failing this attempt so the caller retries [failed: {_fail_list}]")
     return embs
 
 
@@ -367,25 +516,17 @@ def encode_images_onnx(sess, paths, batch=8):
     out = None
     written = 0
     failed = []
-    for i in range(0, len(paths), batch):
-        chunk = paths[i:i + batch]
+    first_err = None
+    for i, chunk, pil, failed_local, batch_first_err in _iter_decoded_batches(paths, batch):
+        for j in failed_local:
+            failed.append(i + j)
+            if first_err is None:
+                first_err = batch_first_err
+                print(f"[encode_worker] read error ({first_err or 'unknown'}), skipping: {chunk[j]}", flush=True)
+            elif (i + j) % 500 == 0:
+                print(f"[encode_worker] read error #{i+j+1}: {chunk[j]}", flush=True)
         arrs = []
-        for j, p in enumerate(chunk):
-            img = None
-            try:
-                if os.path.splitext(p)[1].lower() in RAW_EXTS:
-                    img = extract_embedded_preview(p, "RGB")
-                else:
-                    im = Image.open(p)
-                    try: im.draft("RGB", (512, 512))
-                    except Exception: pass
-                    img = im.convert("RGB")
-            except Exception:
-                img = None
-            if img is None:
-                failed.append(i + j)
-                print(f"[encode_worker] read error, skipping: {p}", flush=True)
-                img = Image.new("RGB", (64, 64), (0, 0, 0))
+        for img in pil:
             arrs.append(_onnx_preprocess(img))
         x = np.stack(arrs).astype(np.float16)
         e = sess.run(None, {"pixel_values": x})[0].astype(np.float32)
@@ -400,6 +541,13 @@ def encode_images_onnx(sess, paths, batch=8):
         out[idx] = 0.0
     if failed:
         print(f"[encode_worker] {len(failed)}/{len(paths)} unreadable -> zero-row sentinel", flush=True)
+    if len(failed) == len(paths) and paths:
+        # See encode_images: 100% unreadable is a machine/card state, not a
+        # cull outcome — fail the attempt so the parent's ladder retries.
+        _fail_list = ", ".join(paths[:8]) + ("…" if len(paths) > 8 else "")
+        raise RuntimeError(
+            f"all {len(paths)} files unreadable (first reason: {first_err or 'unknown'}) "
+            f"— failing this attempt so the caller retries [failed: {_fail_list}]")
     return out
 
 
@@ -418,6 +566,93 @@ def encode_text(kind, m, helper, texts):
             _, tok = helper
             e = _norm(m.encode_text(tok(list(texts)).to(dev)))
     return e.cpu().float().numpy()
+
+
+def _serve_singleton_gate(idle_s: float) -> None:
+    """Machine-wide single-instance gate for serve mode (2026-09-10).
+
+    Why: multiple owners can prewarm an encoder — the backend server
+    (/api/encoder/warm), the grade_runner subprocess, and (observed live)
+    a window process whose warm request landed in its own stack. Each
+    spawned its own `encode_worker serve`, and two live workers sat on
+    ~870 MB while the user saw "2.0 GB free with nothing open". The
+    per-process _WARM global cannot see another process's worker.
+
+    Contract: cache/encoder_warm.lock holds {pid, heartbeat_epoch}. A
+    serve() instance that finds a holder whose pid is ALIVE and whose
+    heartbeat is FRESH exits immediately — one warm worker machine-wide,
+    whatever races at startup. A dead pid, or a heartbeat older than 5
+    minutes (a live worker heartbeats every 30 s even mid-encode, so a
+    stale beat means the process is hung or already dying), is a takeover:
+    the old holder is killed if reachable, and this instance takes the
+    lock. Never fatal: any gate error just means "proceed" — the idle
+    timeout still caps the damage of a duplicate.
+    """
+    import json as _json
+    import threading as _threading
+    import time as _time
+
+    try:
+        from pathlib import Path as _Path
+        _lock = _Path(os.environ.get("FIRSTCUT_DATA_DIR", "")) if os.environ.get("FIRSTCUT_DATA_DIR") else None
+        if _lock is None:
+            _lock = _Path(__file__).resolve().parent.parent / "cache"
+        _lock.mkdir(parents=True, exist_ok=True)
+        _lock = _lock / "encoder_warm.lock"
+        _stale_after = 300.0
+        _now = _time.time()
+
+        def _read_lock():
+            try:
+                _d = _json.loads(_lock.read_text(encoding="utf-8"))
+                return int(_d.get("pid", 0)), float(_d.get("heartbeat", 0))
+            except Exception:
+                return 0, 0.0
+
+        _pid, _beat = _read_lock()
+        if _pid and _pid != os.getpid():
+            _alive = False
+            try:
+                import psutil as _ps
+                _name = (_ps.Process(_pid).name() or "").lower()
+                _alive = "python" in _name
+            except Exception:
+                _alive = False
+            if _alive and (_now - _heartbeat_of(_lock)) < _stale_after:
+                # A healthy warm worker already serves the machine.
+                print(f"[encode_worker] warm encoder already active pid={_pid} — exiting", flush=True)
+                os._exit(0)
+            if _alive:
+                # Stale heartbeat: hung or wedged holder — take over.
+                try:
+                    import psutil as _ps
+                    _ps.Process(_pid).kill()
+                    print(f"[encode_worker] took over stale warm encoder pid={_pid}", flush=True)
+                except Exception:
+                    pass
+
+        def _heartbeat_loop():
+            while True:
+                try:
+                    _lock.write_text(_json.dumps(
+                        {"pid": os.getpid(), "heartbeat": _time.time()}), encoding="utf-8")
+                except Exception:
+                    pass
+                _time.sleep(30.0)
+
+        _lock.write_text(_json.dumps(
+            {"pid": os.getpid(), "heartbeat": _time.time()}), encoding="utf-8")
+        _threading.Thread(target=_heartbeat_loop, daemon=True, name="warm-lock-heartbeat").start()
+    except Exception:
+        pass   # the gate is a guard, not a dependency — never block serve()
+
+
+def _heartbeat_of(_lock) -> float:
+    import json as _json
+    try:
+        return float(_json.loads(_lock.read_text(encoding="utf-8")).get("heartbeat", 0))
+    except Exception:
+        return 0.0
 
 
 def serve():
@@ -442,6 +677,11 @@ def serve():
     Exits on stdin EOF (parent died) or after FIRSTCUT_WARM_IDLE_S (default
     600 s) idle, so RAM/VRAM free up between sessions. os._exit everywhere:
     see main()'s CUDA-atexit note.
+
+    A machine-wide singleton gate runs BEFORE anything loads: if another
+    healthy warm worker is already serving, this instance exits immediately
+    (see _serve_singleton_gate) — one warm worker per machine, no matter how
+    many owners race a prewarm.
     """
     import json as _json
     import queue as _queue
@@ -449,6 +689,7 @@ def serve():
     import traceback as _tb
 
     idle_s = float(os.environ.get("FIRSTCUT_WARM_IDLE_S", "600") or 600)
+    _serve_singleton_gate(idle_s)
     lines: "_queue.Queue" = _queue.Queue()
 
     def _reader():
@@ -569,8 +810,39 @@ def main():
         print(f"[encode_worker] {mode}: {embs.shape} -> {out_npy}", flush=True)
         _print_peak()
         os._exit(0)
-    except Exception:
-        print(f"[encode_worker] FATAL:\n{_tb.format_exc()}", flush=True)
+    except Exception as _exc:  # noqa: BLE001 — top-level boundary of a child process
+        # Classify resource exhaustion (2026-09-07: a transient VRAM squeeze
+        # made four warm attempts die with full FATAL tracebacks each — noise
+        # that buried the one line that mattered). Known resource failures get
+        # ONE classified line; everything else keeps the full traceback. The
+        # exit code stays 1 either way: callers fall back on it, not on text.
+        _msg = str(_exc)
+        # A bare MemoryError() carries an EMPTY message (CPython raises it with
+        # no args under commit exhaustion — observed 2026-09-08 at the cull
+        # wall). splitlines() on "" is [], and [0] here crashed the error path
+        # itself with IndexError, masking the one classified line that matters.
+        _first_line = _msg.splitlines()[0] if _msg.splitlines() else type(_exc).__name__
+        if ("out of memory" in _msg or "bad allocation" in _msg
+                or isinstance(_exc, MemoryError)
+                or "CUDA" in _msg and "out of memory" in _msg.lower()):
+            print(f"[encode_worker] resource failure (CUDA/RAM exhausted): "
+                  f"{_first_line[:160]} — caller falls back", flush=True)
+        elif "files unreadable" in _msg:
+            # Deterministic per-file decode failure (corrupt/truncated bytes,
+            # wrong mount): a fresh process with a fresh model load will read
+            # exactly the same bytes and fail exactly the same way. Exit 3 so
+            # the parent's ladder can fail fast instead of burning 8 model
+            # reloads on bytes that will never decode (2026-09-10: two 128 KB
+            # truncated ARWs wedged a grade for 12+ minutes this way).
+            print(f"[encode_worker] deterministic unreadable failure: "
+                  f"{_first_line[:300]}", flush=True)
+            _print_peak()
+            os._exit(3)
+        elif os.environ.get("FIRSTCUT_ENCODE_TRACEBACK", "") in ("1", "true", "yes"):
+            print(f"[encode_worker] FATAL:\n{_tb.format_exc()}", flush=True)
+        else:
+            print(f"[encode_worker] FATAL: {type(_exc).__name__}: "
+                  f"{_first_line[:200]}", flush=True)
         _print_peak()
         os._exit(1)
 

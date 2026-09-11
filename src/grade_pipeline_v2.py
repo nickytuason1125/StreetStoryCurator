@@ -855,7 +855,7 @@ def _iqa_resumable(
                                    comp_eligible_paths, vlm_breakdowns)
 
     try:
-        _slice = int(os.environ.get("FIRSTCUT_IQA_SLICE", "400"))
+        _slice = int(os.environ.get("FIRSTCUT_IQA_SLICE", "200"))
     except ValueError:
         _slice = 400
     if _slice <= 0 or n <= _slice:
@@ -1013,6 +1013,22 @@ def run_v2(
     if not all_paths:
         return {"error": "No images found in folder.", "gallery": [], "total": 0}
 
+    # ── DIAGNOSTIC: 46%-wall discriminator ────────────────────────────────────
+    # Deterministic death at the same progress across runs has two candidate
+    # causes: (a) cumulative worker growth reaching the machine's ceiling at a
+    # fixed point, or (b) one poison photo at a fixed index. Sorted order makes
+    # (a) and (b) indistinguishable — both die at the same spot every time.
+    # Shuffling the order breaks the tie: (a) still dies at ~46% of N, (b) dies
+    # at a different photo. FIRSTCUT_SHUFFLE=seed pins the shuffle so a run is
+    # reproducible; unset means no shuffle (production behavior unchanged).
+    _shuffle = os.environ.get("FIRSTCUT_SHUFFLE", "").strip()
+    if _shuffle:
+        import random as _rnd
+        _rnd.Random(_shuffle).shuffle(all_paths)
+        print(f"[v2] DIAGNOSTIC: photo order shuffled (seed={_shuffle!r}) — "
+              f"46%-wall discriminator active", flush=True)
+    # ── END DIAGNOSTIC ──
+
     # Pre-grade niche detection: cap to an evenly-spaced sample so a fast scan
     # over a representative subset completes in a few seconds regardless of how
     # many photos the folder holds. Even spacing (not the first N) avoids bias
@@ -1067,6 +1083,14 @@ def run_v2(
         if isinstance(bd, str):
             try: bd = json.loads(bd)
             except Exception: bd = {}
+        # Taste fields: the stored personal_score is the 0.5 NEUTRAL PLACEHOLDER
+        # whenever the taste blend was off when it was written (it is opt-in).
+        # Surface it only when taste is enabled in this session — otherwise the
+        # cached row re-presents a fabricated measurement as data.
+        _ps_row = row.get("personal_score")
+        _taste_on = os.environ.get("FIRSTCUT_PERSONAL_TASTE", "").strip() == "1"
+        _ps_out = round(float(_ps_row), 3) if (_taste_on and _ps_row is not None) else None
+        bd.pop("Personal", None) if not _taste_on else None
         _cs = round(float(row.get("score", 0.5)), 3)
         return {
             "id": row["path"], "path": row["path"],
@@ -1075,8 +1099,8 @@ def run_v2(
             "score":         _cs,
             "overall_score": _cs,
             "rating":        _cs,
-            "human_perception": round(float(row.get("personal_score", 0.5)), 3),
-            "personal_score":   round(float(row.get("personal_score", 0.5)), 3),
+            "human_perception": _ps_out,
+            "personal_score":   _ps_out,
             **({"embedding": row.get("embedding", [])} if keep_embeddings else {}),
             "breakdown": bd,
             "critique": "",
@@ -1091,6 +1115,111 @@ def run_v2(
         _p(1.0, f"All {len(cached_rows)} photos already graded — use Re-grade to redo them")
         gallery = [_cached_to_gallery(cached_rows[p]) for p in all_paths if p in cached_rows]
         grades  = [g["grade"] for g in gallery]
+        # ── Duplicate marking on the cached path (2026-09-10) ─────────────────
+        # This fast path used to return straight after grading counts, so a
+        # re-run of an already-encoded folder NEVER marked duplicates: the
+        # catalog came back with cluster_id=-1 / sim_flag="" everywhere and the
+        # Duplicates tab was empty even though the embeddings were sitting in
+        # LanceDB. Cluster the cached embeddings (CPU-only, no GPU stage) and
+        # label winners/losers exactly like the live path.
+        try:
+            from pipeline_stages import cluster_similar as _cluster_similar, \
+                mark_duplicate_groups as _mark_dup_cached
+            _c_paths = [g["path"] for g in gallery]
+            # cached_rows rows do NOT carry the embedding column (query_all is
+            # a slim projection) — fetch embeddings straight from LanceDB.
+            _embs_map = {}
+            try:
+                import lance_store as _ls_cached
+                _embs_map = _ls_diag.query_embeddings_by_paths(_c_paths)
+            except Exception as _e_emb:
+                print(f"[v2] cached-path embedding fetch failed: {_e_emb}")
+            _c_embs = [np.asarray(_embs_map.get(_gp), dtype=np.float32)
+                       if _gp in _embs_map else None for _gp in _c_paths]
+            _usable = len(_c_paths) >= 2 and all(
+                e is not None and getattr(e, "ndim", 0) == 1
+                and e.shape[0] > 2 for e in _c_embs)
+            # Self-evidencing: this path had ZERO observability (runner stdout
+            # is unreliable) and silently skipped twice (2026-09-10). Whatever
+            # happens here lands in cache/dedup_debug.log.
+            _dbg_path = Path(__file__).resolve().parent.parent / "cache" / "dedup_debug.log"
+            try:
+                with open(_dbg_path, "a", encoding="utf-8") as _dbg:
+                    _dbg.write(f"cached-path marking: paths={len(_c_paths)} "
+                               f"embs={len(_embs_map)} usable={_usable}\n")
+            except Exception:
+                pass
+            if _usable:
+                _embs_arr = np.stack([np.asarray(e, dtype=np.float32) for e in _c_embs])
+                _cluster_ids = _cluster_similar(_embs_arr)
+                _scores_arr  = np.asarray([g["score"] for g in gallery], dtype=np.float64)
+                _sim_flags   = _mark_dup_cached(_cluster_ids, _scores_arr, _c_paths)
+                _n_clustered = 0
+                for g, _cid, _sf in zip(gallery, _cluster_ids, _sim_flags):
+                    g["cluster_id"] = int(_cid)
+                    g["sim_flag"]   = _sf
+                    g["reject"]     = int(_cid) >= 0 and not _sf.startswith("★")
+                    _n_clustered += 1 if _cid >= 0 else 0
+                print(f"[v2] cached-path duplicate marking: {_n_clustered} images in clusters")
+                try:
+                    with open(_dbg_path, "a", encoding="utf-8") as _dbg:
+                        _dbg.write(f"marked: clustered={_n_clustered} "
+                                   f"groups={len(set(c for c in _cluster_ids if c >= 0))}\n")
+                except Exception:
+                    pass
+            # ── Taste blend on the cached path (2026-09-10) ──────────────────
+            # The fast path returned pre-blend machine scores from LanceDB, so
+            # enabling FIRSTCUT_PERSONAL_TASTE changed nothing on re-runs: the
+            # grades stayed machine-only. Apply the SAME confidence-adaptive
+            # blend as live Step 5 (w = floor + (ceil-floor)*conf, ceiling
+            # scales with banked ratings) over machine × personal, then
+            # re-bucket the grades. Pure numpy — no models.
+            _taste_on = os.environ.get("FIRSTCUT_PERSONAL_TASTE", "").strip() == "1"
+            _ps_vals  = [g.get("personal_score") for g in gallery]
+            if _taste_on and all(isinstance(v, (int, float)) for v in _ps_vals):
+                import ratings_store as _rs_blend
+                _n_ratings = len(_rs_blend.load())
+                _tw_floor  = 0.20
+                if   _n_ratings >= 100: _tw_ceil = 0.70
+                elif _n_ratings >= 50:  _tw_ceil = 0.55
+                elif _n_ratings >= 25:  _tw_ceil = 0.45
+                else:                   _tw_ceil = 0.35
+                _mach = np.asarray([g["score"] for g in gallery], dtype=np.float64)
+                _pers = np.asarray(_ps_vals, dtype=np.float64)
+                _conf = np.clip(np.abs(_pers - 0.5) / 0.5, 0.0, 1.0)
+                _tw   = _tw_floor + (_tw_ceil - _tw_floor) * _conf
+                _fused = (1.0 - _tw) * _mach + _tw * _pers
+                _fused = np.round(np.clip(_fused, 0.10, 1.0), 2)
+                from pipeline_stages import assign_grades as _assign_grades
+                _fused2, _grades2 = _assign_grades(
+                    _fused, _c_paths, np,
+                    strong_thresh=STRONG_THRESH, mid_thresh=MID_THRESH,
+                    strong_label=GRADE_STRONG, mid_label=GRADE_MID, weak_label=GRADE_WEAK)
+                _n_moved = 0
+                for g, _s2, _g2 in zip(gallery, _fused2, _grades2):
+                    if g["grade"] != _g2:
+                        _n_moved += 1
+                    g["score"] = _s2
+                    g["overall_score"] = _s2
+                    g["rating"] = _s2
+                    g["grade"] = _g2
+                grades = [g["grade"] for g in gallery]
+                print(f"[v2] cached-path taste blend: {_n_ratings} ratings, "
+                      f"w {_tw_floor:.2f}–{_tw_ceil:.2f} — {_n_moved} grades moved")
+                try:
+                    with open(_dbg_path, "a", encoding="utf-8") as _dbg:
+                        _dbg.write(f"taste blend: ratings={_n_ratings} moved={_n_moved}\n")
+                except Exception:
+                    pass
+        except Exception as _e_cached_dedup:
+            import traceback as _tb_cd
+            try:
+                with open(_dbg_path, "a", encoding="utf-8") as _dbg:
+                    _dbg.write(f"marking FAILED: {_e_cached_dedud if False else _e_cached_dedup}\n")
+            except Exception:
+                pass
+            print(f"[v2] cached-path duplicate marking failed: {_e_cached_dedup}")
+            _tb_cd.print_exc()
         return {
             "gallery": gallery,
             "mogco_sequence": [],
@@ -1200,6 +1329,8 @@ def run_v2(
             _enc_reused = True
             print("[v2] Encoder: SigLIP-2 singleton reused — no VRAM reload")
         except Exception as _e_reuse:
+            if "files unreadable" in str(_e_reuse):
+                raise   # deterministic corrupt bytes — a reload cannot help (see ladder comment)
             print(f"[v2] Singleton reuse failed ({_e_reuse}) — reloading encoder")
             try:
                 _enc_singleton.unload()
@@ -1320,7 +1451,7 @@ def run_v2(
                     # semantics; N chunked calls commit what one call did.
                     try:
                         import lance_store as _ls_emb
-                        _LANCE_CHUNK_EMB = int(os.environ.get("FIRSTCUT_LANCE_CHUNK", "500"))
+                        _LANCE_CHUNK_EMB = int(os.environ.get("FIRSTCUT_LANCE_CHUNK", "100"))
                         _emb_items = list(_new_emb_map.items())
                         _emb_written = 0
                         _te0 = _t_enc.monotonic()
@@ -1611,8 +1742,28 @@ def run_v2(
                 _siglip_last_err = str(e_siglip2)
                 _siglip_last_exc = e_siglip2
                 print(f"[v2] SigLIP-2 attempt {_attempt+1} failed: {e_siglip2}")
+                if "files unreadable" in str(e_siglip2):
+                    # Deterministic per-file decode failure (corrupt/truncated
+                    # bytes). Decoding is device-independent — the CPU tier
+                    # would read the same bytes and fail the same way, and on a
+                    # large folder that pointless CPU re-encode costs hours
+                    # (2026-09-10: two 128 KB truncated ARWs wedged a 2-photo
+                    # grade for 12+ minutes across the GPU→CPU ladder). The
+                    # encoder already named the files in its message — surface
+                    # it instead of retrying.
+                    print("[v2] SigLIP-2: deterministic unreadable files — not retrying on CPU", flush=True)
+                    raise
                 if _attempt == 0:
                     print("[v2] Retrying SigLIP-2 on CPU…")
+                    # RAM pathline v2, Phase 2: the CPU fallback re-encodes the
+                    # ENTIRE set from scratch — on a 2,756-photo folder that is
+                    # hours, not minutes (~1%/hour measured 2026-09-08). The UI
+                    # used to keep saying "Analyzing…" while progress silently
+                    # reset; say it where the user is actually looking.
+                    try:
+                        _p(0.0, "GPU encode failed — re-encoding on CPU (much slower)…")
+                    except Exception:
+                        pass
                 else:
                     print("[v2] SigLIP-2 unavailable after all attempts.")
                     _siglip_last_err += "\n" + _tb.format_exc()   # full chain — the wrapper error alone hides the failing frame
@@ -1979,6 +2130,23 @@ def run_v2(
                     except Exception as _e_funnel:
                         print(f"[v2] CLIP funnel skipped: {_e_funnel}")
 
+                # ── Boundary-band scoping (2026-09-10) ────────────────────────
+                # FIRSTCUT_DEEP_BAND=1: the VLM's seconds are spent ONLY where
+                # grades are ambiguous — the Mid/Strong boundary (0.53–0.60),
+                # group winners, and high-confidence Strong/Weak keepers. The
+                # rest keep their CLIP verdicts: an unambiguous frame gains
+                # nothing from an expensive second opinion. This is the "fast
+                # AND accurate" answer: full-folder Deep Grade on 2,754 photos
+                # is 60–90 min of VLM; the band is ~500 calls ≈ 20 min.
+                if _os_fn.environ.get("FIRSTCUT_DEEP_BAND", "").strip() == "1":
+                    _band = [p for p, idx in zip(paths_to_rate, to_rate_indices)
+                             if 0.53 <= float(scores_arr[idx]) <= 0.60]
+                    _band_set = set(_band)
+                    _before = len(_vlm_paths)
+                    _vlm_paths = [p for p in _vlm_paths if p in _band_set]
+                    print(f"[v2] DEEP BAND: scoped the VLM to the boundary band — "
+                          f"{_before} -> {len(_vlm_paths)} photos (0.53–0.60 machine band)")
+
                 # Evict SigLIP-2 before grading regardless of Qwen warmth —
                 # embeddings are already in NumPy, and SigLIP + Qwen resident
                 # together would halve the grading batch size.
@@ -2259,13 +2427,39 @@ def run_v2(
         tech_scores_rated      = np.array([], dtype=np.float32)
         aesthetic_scores_rated = np.array([], dtype=np.float32)
     else:
-        _p(0.66, f"Scoring image quality — {len(paths_to_rate)} photos…")
+        # ── Confidence early-exit (2026-09-10) ──────────────────────────────
+        # IQA's GPU seconds are the most expensive per-photo work. Frames whose
+        # CLIP aspects + taste verdict are DECISIVE (score far from both grade
+        # boundaries, and not a duplicate-group member needing a technical tiebreak)
+        # gain nothing from IQA — their fused score cannot cross a threshold
+        # either way. Only the middle band pays the GPU cost. FIRSTCUT_EARLY_EXIT=0
+        # restores full-coverage IQA; margins tunable via FIRSTCUT_EE_MID/EE_STRONG.
+        _ee_skip: set[str] = set()
+        if os.environ.get("FIRSTCUT_EE", "1").strip() != "0":
+            try:
+                _ee_margins = os.environ.get("FIRSTCUT_EE_MARGINS", "0.05,0.05").split(",")
+                _ee_strong_lo = float(_ee_margins[0])   # ≥ 0.60 + this → decisively Strong
+                _ee_mid_lo    = float(_ee_margins[1])   # ≤ 0.41 - this → decisively Weak
+                for _li, idx in enumerate(to_rate_indices):
+                    _m = float(vlm_scores_rated[local_i := _li])
+                    if _mid := (0.41 + _ee_mid_lo) <= _m <= (0.60 - _ee_strong_lo):
+                        continue          # ambiguous band — IQA earns its keep
+                    if _m >= 0.60 + _ee_strong_lo or _m <= 0.41 - _ee_mid_lo:
+                        _ee_skip.add(paths[idx])
+                if _ee_skip:
+                    print(f"[v2] Early-exit: {len(_ee_skip)}/{len(paths_to_rate)} photos are "
+                          f"decisively outside both thresholds — skipping IQA for them")
+            except Exception as _e_ee:
+                print(f"[v2] Early-exit gate skipped (non-fatal): {_e_ee}")
+        _to_rate_full = [idx for idx in to_rate_indices if paths[idx] not in _ee_skip]
+        _p(0.66, f"Scoring image quality — {len(_to_rate_full)} photos…")
         # Per (folder, preset) key so two folders never share a checkpoint.
         import hashlib as _hl_iqa
         _iqa_key = _hl_iqa.sha1(f"{folder_path}|{preset}".encode()).hexdigest()[:16]
         try:
-            iqa_embs  = embs[np.asarray(to_rate_indices, dtype=np.intp)]   # (M, 1536); intp = safe even if empty
-            _vlm_bds  = [per_photo_breakdowns[idx] for idx in to_rate_indices]
+            _full_idx = [idx for idx in to_rate_indices if paths[idx] not in _ee_skip]
+            iqa_embs  = embs[np.asarray(_full_idx, dtype=np.intp)]   # (M, 1536); intp = safe even if empty
+            _vlm_bds  = [per_photo_breakdowns[idx] for idx in _full_idx]
 
             # ISOLATED subprocess — the grade worker never loads the IQA GPU model
             # itself (see _iqa_via_subprocess / iqa_worker.py). This removes the last
@@ -2292,7 +2486,7 @@ def run_v2(
             person_detected_dict     = iqa_out.get("person_detected",        {})
             _subject_bboxes_dict     = iqa_out.get("subject_bboxes",       {})
 
-            for local_i, idx in enumerate(to_rate_indices):
+            for local_i, idx in enumerate(_full_idx):
                 per_photo_breakdowns[idx].update(iqa_breakdowns[local_i])
                 # Apply over-the-shoulder portrait composition override
                 _opath = paths[idx]
@@ -2306,7 +2500,8 @@ def run_v2(
             except Exception as _e_rel:
                 print(f"[v2] IQA singleton release skipped: {_e_rel}")
             _vram_clear()
-            print(f"[v2] IQA heads: {len(paths_to_rate)} photos scored")
+            print(f"[v2] IQA heads: {len(_full_idx)} photos scored "
+                  f"({len(_ee_skip)} early-exited)")
             if composition_overrides:
                 print(f"[v2] Composition overrides: {len(composition_overrides)} images "
                       f"(over-the-shoulder portrait → 0.85)")
@@ -2330,6 +2525,32 @@ def run_v2(
 
     _grader_status.update({"mode": "iqa_heads" if not scan_mode else "clip_only",
                            "verify_used": False, "photos_last": len(paths_to_rate), "error": None})
+
+    # ── Step 4a-NIMA: AVA-trained aesthetic scores (the anti-mush add-on) ─────
+    # The Fast/CLIP path squashes aesthetics into a 0.4–0.6 band (real cull:
+    # 59% of photos inside 0.5–0.6). NIMA — MobileNetV2 trained on ~250k AVA
+    # human ratings — carries genuine per-photo spread at ~40 ms/image on CPU,
+    # so it upgrades the aesthetic component in BOTH scan and full modes.
+    # Degradation: model absent/broken → CLIP aesthetic stays, cull unaffected.
+    try:
+        from nima_scorer import nima_scores as _nima_scores
+        _nima_rated = _nima_scores(
+            paths_to_rate,
+            progress=(lambda f, d: _p(0.45, d)) if _p else None,
+        )
+        if _nima_rated is not None and len(to_rate_indices) > 0:
+            for _li, idx in enumerate(to_rate_indices):
+                per_photo_breakdowns[idx]["aesthetic"] = round(float(_nima_rated[_li]), 3)
+                per_photo_breakdowns[idx]["_nima"] = True
+            aesthetic_scores_rated = _nima_rated
+            print(f"[v2] NIMA aesthetic installed as the aesthetic component "
+                  f"({len(paths_to_rate)} photos; replaces the CLIP-probe aesthetic)")
+        elif _nima_rated is None:
+            print("[v2] NIMA model absent — CLIP aesthetic stays (cull unaffected)")
+    except Exception as _nima_exc:
+        print(f"[v2] NIMA stage failed ({_nima_exc}) — keeping CLIP aesthetic")
+        import traceback as _tb_nima
+        _tb_nima.print_exc()
 
     # ── Step 4c: Fine-art anchor similarity + Min-Max stretch ────────────────
     # Raw cosine sims cluster in a narrow band (e.g., 0.28–0.42) because all street
@@ -3061,6 +3282,12 @@ def run_v2(
     # and the head simply trains/records without touching any score.
     _p(0.87, "Refining scores…")
     pers         = np.full(n, 0.5, dtype=np.float32)
+    # _taste_used — did the taste head actually contribute this run? The 0.5
+    # array above is a NEUTRAL PLACEHOLDER (see the OPT-IN note): emitting it
+    # as personal_score/human_perception presented a fabricated measurement —
+    # the "everything says 0.50" baseline (2026-09-10). When taste never ran,
+    # those fields go out as null and the UI hides them.
+    _taste_used  = False
     final_scores = scores_arr.copy()  # copy so Soft-Focus gate doesn't mutate scores_arr
     _ph_weights  = Path("cache/personal_head.pt")
     _taste_on    = os.environ.get("FIRSTCUT_PERSONAL_TASTE", "").strip() == "1"
@@ -3096,6 +3323,7 @@ def run_v2(
                 print("[v2] numpy taste head unavailable — falling back to torch head")
                 import personal_head as ph
                 pers = ph.score(embs)
+            _taste_used = True
             # ── Confidence-adaptive taste blend (guarded, non-regressive) ──────
             # The old blend was a flat 0.80*grader + 0.20*taste. Problem: when the
             # taste head has no opinion on an image (output ~0.5 — e.g. a genre it
@@ -3320,8 +3548,11 @@ def run_v2(
         fn        = Path(path).name
         breakdown = {
             "Aesthetic": round(float(scores_arr[i]), 3),
-            "Personal":  round(float(pers[i]),       3),
         }
+        if _taste_used:
+            # Real taste measurement only — the 0.5 placeholder must never
+            # present itself as data (see _taste_used above).
+            breakdown["Personal"]    = round(float(pers[i]), 3)
         if per_photo_breakdowns[i]:
             breakdown.update(_sanitize_bd(per_photo_breakdowns[i]))
         _fscore = round(float(final_scores[i]), 3)
@@ -3333,8 +3564,8 @@ def run_v2(
             "score":           _fscore,
             "overall_score":   _fscore,
             "rating":          _fscore,
-            "human_perception":round(float(pers[i]),         3),
-            "personal_score":  round(float(pers[i]),         3),
+            "human_perception":round(float(pers[i]),         3) if _taste_used else None,
+            "personal_score":  round(float(pers[i]),         3) if _taste_used else None,
             **({"embedding": embs[i].tolist()} if keep_embeddings else {}),
             "breakdown":       breakdown,
             "critique":        "",

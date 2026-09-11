@@ -118,12 +118,24 @@ async def serve_thumb(path: str = Query(...)):
         # Explicit type: Windows' registry-backed mimetypes can mislabel .webp
         # as text/plain, and strict MIME clients would then refuse the image.
         return FileResponse(str(thumb_path), media_type="image/webp")
-    # RAM guard: while a cull is running, do NOT decode a fresh thumbnail on demand.
-    # Fresh RAW decodes (rawpy) + the full-preview fallback below spike RAM and
-    # compete with the grade's SigLIP encode (~3.5 GB) on a memory-tight machine.
-    # Cached thumbs still serve instantly (above); uncached ones return 204 so the
-    # grid shows a placeholder and they fill in once grading finishes.
-    if _grading_active.is_set():
+    # RAM gate, not a grade gate (2026-09-10). This used to 204 EVERY uncached
+    # thumbnail while a cull ran — on the F: card, where prewarm is disabled
+    # outright (see list_folder), that meant the entire grid sat as shimmer
+    # placeholders for the whole grade: no prewarm AND no on-demand, by design.
+    # What actually needs protecting is MEMORY, not the principle of decoding
+    # during a grade: a rawpy decode is ~150-300 MB transient. The floor below
+    # is set just above that cost, NOT at the cull's admission floor — 2.5 GB
+    # measured too high on the 16 GB machine whose steady state (server 2.3 GB
+    # + warm encoder + UI window + other apps) sits near 1.8 GB free, which
+    # 204'd the whole grid again (2026-09-10). 1.2 GB: the user asked for this
+    # pixel; below it, 204 and the tile self-heals on the retry ladder.
+    _thumb_free_gb = None
+    try:
+        import psutil as _ps_thumb
+        _thumb_free_gb = _ps_thumb.virtual_memory().available / 1e9
+    except Exception:
+        pass
+    if _thumb_free_gb is not None and _thumb_free_gb < 1.2:
         return Response(status_code=204)
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(_THUMB_ONDEMAND, _gen_one_thumb, str(src))
@@ -147,7 +159,18 @@ async def warm_encoder():
     2026-09-07) and the model load happen while the machine is at its
     freshest, and every cull afterwards reuses the loaded worker. Safe to
     call any time; no-op when FIRSTCUT_WARM_ENCODER=0.
+
+    RAM pathline v2, Phase 1: the warm path imports torch/transformers and
+    loads model weights — hundreds of MB of commit charge. During a grade
+    those bytes are exactly the difference between the encode worker's
+    per-chunk model load succeeding and dying with MemoryError / "The
+    paging file is too small" (crash.log, 2026-09-08 ~02:00 — the 46% wall).
+    _grading_active is the machine-wide arbiter, not a thumbnail-only
+    detail: defer the warm, and the next boot (or the grade's own release)
+    warms instead.
     """
+    if _grading_active.is_set():
+        return {"warmed": False, "deferred": "grade in progress — warm deferred"}
     try:
         from siglip2_encoder import warm_start
         return {"warmed": bool(warm_start())}
@@ -610,12 +633,15 @@ async def list_folder(body: dict):
     # 43 MB RAW reads fight the on-demand reads serving the tiles the user is
     # actually looking at — USB readers serialise I/O, so running both makes
     # EVERYTHING slower (2026-09-07: first screens of F:\DCIM\100MSDCF took
-    # seconds-to-minutes per tile). On such a volume the grid is fed purely on
-    # demand — the in-flight dedup in _gen_one_thumb prevents any duplicate
-    # work — and thumbs still cache to the fixed drive, so re-opening the same
-    # card is instant. FIRSTCUT_PREWARM_REMOVABLE=1 forces prewarm back on.
+    # seconds-to-minutes per tile). Fully disabling prewarm on such volumes,
+    # however, left the first screens permanently cold AND (with the old
+    # blanket 204 in /api/thumb) with no path to warm at all. A SMALL bounded
+    # prewarm is the balance: the first screen-and-a-half lands warm, the
+    # in-flight dedup in _gen_one_thumb prevents duplicate work against
+    # on-demand requests, thumbs cache to the fixed drive so re-opening the
+    # card is instant. FIRSTCUT_PREWARM_REMOVABLE=1 restores the full cap.
     if _is_slow_volume(folder) and os.environ.get("FIRSTCUT_PREWARM_REMOVABLE", "") != "1":
-        _prewarm_cap = 0
+        _prewarm_cap = min(_prewarm_cap, int(os.environ.get("FIRSTCUT_PREWARM_REMOVABLE_CAP", "120") or 120))
     for p in paths[:max(_prewarm_cap, 0)]:
         _THUMB_PREWARM.submit(_gen_one_thumb, p, True)   # low_priority — paused during grades
 
@@ -658,8 +684,21 @@ class GradeRequest(BaseModel):
             p = Path(v).resolve(strict=False)
         except (ValueError, OSError):
             raise ValueError("Invalid path")
+        # ── Card wake-up retry ────────────────────────────────────────────────
+        # Removable readers behind USB selective suspend (and dirty-flagged
+        # exFAT volumes re-mounting) can vanish for a second exactly when a
+        # grade is submitted. Three probes over ~4 s absorbs the nap; a genuinely
+        # missing folder still refuses, with a message that names the likely fix.
+        import time as _retry_time
+        for _probe in range(3):
+            if p.is_dir():
+                break
+            if _probe < 2:
+                _retry_time.sleep(2.0)
         if not p.is_dir():
-            raise ValueError("Path is not a valid directory")
+            raise ValueError(
+                f"Folder not reachable: {v} — if this is an SD card or USB drive, "
+                "replug it (or re-insert the card) and try again.")
         return str(p)
 
 

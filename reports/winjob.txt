@@ -1,0 +1,13 @@
+11: indefinitely, silently holding ~9 GB RAM until the machine was nearly out of
+51: left iqa_worker running "indefinitely, silently holding ~9 GB") was
+53: growth cap. The ceiling closes the second hole: a worker whose RSS
+59: Default 3.5 GB: covers the measured worker peaks (encode 2.71 GB, IQA
+60: ~2.5 GB) with margin, while still catching a genuine runaway well before
+61: it threatens a 16 GB machine. FIRSTCUT_WORKER_RAM_CEILING_GB overrides.
+64: gb = float(os.environ.get("FIRSTCUT_WORKER_RAM_CEILING_GB", "3.5") or 3.5)
+66: gb = 3.5
+67: return max(int(gb * 1024 * 1024), 512 * 1024 * 1024)   # floor at 512 MB
+82: # Memory ceiling — see _worker_ceiling_bytes. PROCESS_MEMORY limits are
+83: # per-process, so each worker is capped individually; the parent grade
+85: info["BasicLimitInformation"]["LimitFlags"] |= win32job.JOB_OBJECT_LIMIT_PROCESS_MEMORY
+86: info["ProcessMemoryLimit"] = _worker_ceiling_bytes()

@@ -1,0 +1,4 @@
+367: for i in range(0, len(paths), batch):
+423: for i in range(0, len(paths), batch):
+521: def _run_job(job) -> None:
+578: def main():

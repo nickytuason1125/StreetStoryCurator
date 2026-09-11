@@ -1,0 +1,2 @@
+run_profile.py:349: def ort_providers(self) -> list:
+run_profile.py:353: return ["CUDAExecutionProvider", "DmlExecutionProvider",

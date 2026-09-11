@@ -56,15 +56,22 @@ def _worker_ceiling_bytes() -> int:
     pipeline's checkpoints catch and report — instead of eating the machine
     into a pagefile death spiral.
 
-    Default 3.5 GB: covers the measured worker peaks (encode 2.71 GB, IQA
-    ~2.5 GB) with margin, while still catching a genuine runaway well before
-    it threatens a 16 GB machine. FIRSTCUT_WORKER_RAM_CEILING_GB overrides.
+    Default 12.0 GB (raised 2026-09-10 from 3.5 via 6.0): the cap counts
+    COMMIT (virtual memory), not RSS — the worker's import phase (torch +
+    onnxruntime + sklearn/scipy + CUDA DLLs) commits 4-6 GB before any image
+    is touched, and model loads push commit higher. The old 3.5 GB cap
+    MemoryError'd every worker at import (peak RSS only 0.47 GB — the cap is
+    about commit, so freeing physical RAM never helped; that was the eternal
+    "frozen at the same %" failure). With the fixed 48 GB pagefile backing
+    commit, a 12 GB per-worker ceiling cannot starve a 16 GB machine's
+    physical RAM (RSS still counts against the 15.7 GB), while the 48 GB
+    commit limit absorbs the spikes. FIRSTCUT_WORKER_RAM_CEILING_GB overrides.
     """
     try:
-        gb = float(os.environ.get("FIRSTCUT_WORKER_RAM_CEILING_GB", "3.5") or 3.5)
+        gb = float(os.environ.get("FIRSTCUT_WORKER_RAM_CEILING_GB", "12.0") or 12.0)
     except ValueError:
-        gb = 3.5
-    return max(int(gb * 1024 * 1024), 512 * 1024 * 1024)   # floor at 512 MB
+        gb = 12.0
+    return max(int(gb * 1024 ** 3), 512 * 1024 * 1024)   # floor at 512 MB (gb → bytes: GiB)
 
 
 def _get_or_create_job():
