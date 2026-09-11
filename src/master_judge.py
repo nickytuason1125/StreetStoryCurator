@@ -559,8 +559,11 @@ def _weight_from(d: dict) -> float:
 
 def _load_shipped() -> "dict | None":
     """The shipped master judge — part of the algorithm, no opt-in needed.
-    A stale fingerprint (feature design changed since shipping) is treated
-    as absent, loudly."""
+    A stale fingerprint (feature design changed since shipping) is acceptable —
+    predict_many() scores using the judge's own stored feature list, so older
+    feature designs are safe by design. Only rejected when genuinely malformed
+    (not promoted, missing required weight keys, or coef/features length
+    mismatch)."""
     try:
         if os.environ.get("FIRSTCUT_MASTER_JUDGE_OFF", "").strip():
             return None
@@ -568,8 +571,8 @@ def _load_shipped() -> "dict | None":
             return None
         d = json.loads(_SHIPPED_PATH.read_text(encoding="utf-8"))
         if not _applicable_judge_dict(d):
-            print("[master_judge] shipped master judge is invalid/stale "
-                  "for the current feature design — ignoring")
+            print("[master_judge] shipped master judge is malformed/"
+                  "incomplete/unpromoted — ignoring")
             return None
         d["_source"] = "shipped"
         return d
