@@ -111,6 +111,17 @@ def build_exemplar_bank(strong_paths: list, weak_paths: list, out_npz: "Path | s
     }
 
 
+def _bank_is_valid(result: dict) -> bool:
+    """True iff Strong scores strictly higher than Weak against the Strong
+    bank. Written as `strong > weak` (not `not (strong <= weak)`) so that a
+    NaN on either side — e.g. an empty Weak pool, which split_by_engagement
+    can return for pathologically tiny collections — is never mistaken for
+    a pass: any comparison with NaN is False in IEEE 754, so `strong > weak`
+    is already False when either side is NaN, and this function correctly
+    reports "not valid" instead of silently treating undefined as valid."""
+    return result["strong_self_sim"] > result["weak_self_sim"]
+
+
 if __name__ == "__main__":
     key = os.environ.get("UNSPLASH_ACCESS_KEY")
     collection_ids = os.environ.get("UNSPLASH_COLLECTION_IDS", "")
@@ -132,7 +143,7 @@ if __name__ == "__main__":
     result = build_exemplar_bank(strong_paths, weak_paths, _BANK_OUT)
     print(f"[unsplash_setup] strong self-sim={result['strong_self_sim']:.4f} "
           f"weak self-sim={result['weak_self_sim']:.4f}")
-    if result["strong_self_sim"] <= result["weak_self_sim"]:
+    if not _bank_is_valid(result):
         print("[unsplash_setup] REFUSING to keep this bank — the Strong pool "
               "does not score higher than the Weak pool against its own "
               "bank, which means the engagement split isn't capturing a real "

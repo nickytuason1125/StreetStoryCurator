@@ -119,3 +119,44 @@ def test_build_exemplar_bank_saves_strong_embeddings_and_validates(tmp_path, mon
     saved = np.load(out_npz, allow_pickle=False)
     assert saved["embeddings"].shape == (2, 2)
     assert result["strong_self_sim"] > result["weak_self_sim"]
+
+
+def test_bank_is_valid_refuses_on_nan_self_sim():
+    import unsplash_setup
+
+    # Normal pass/fail cases still behave as a plain "strong > weak" check.
+    assert unsplash_setup._bank_is_valid({"strong_self_sim": 0.9, "weak_self_sim": 0.3}) is True
+    assert unsplash_setup._bank_is_valid({"strong_self_sim": 0.3, "weak_self_sim": 0.9}) is False
+    assert unsplash_setup._bank_is_valid({"strong_self_sim": 0.5, "weak_self_sim": 0.5}) is False
+
+    # A NaN on either side (e.g. an empty pool) must never be mistaken for a
+    # pass — this is the exact bug an unguarded `<=` check misses, since
+    # `nan <= x` and `x <= nan` are both False.
+    nan = float("nan")
+    assert unsplash_setup._bank_is_valid({"strong_self_sim": nan, "weak_self_sim": 0.5}) is False
+    assert unsplash_setup._bank_is_valid({"strong_self_sim": 0.5, "weak_self_sim": nan}) is False
+    assert unsplash_setup._bank_is_valid({"strong_self_sim": nan, "weak_self_sim": nan}) is False
+
+
+def test_build_exemplar_bank_with_empty_weak_pool_is_refused(tmp_path, monkeypatch):
+    import unsplash_setup
+
+    fake_embeddings = {
+        "s1.jpg": np.array([1.0, 0.05], dtype=np.float32),
+        "s2.jpg": np.array([0.95, 0.1], dtype=np.float32),
+    }
+
+    def _fake_encode_folder(paths, out_npz, progress=None):
+        return np.stack([fake_embeddings[p] for p in paths])
+
+    monkeypatch.setattr(unsplash_setup.dataset_embed, "encode_folder", _fake_encode_folder)
+
+    out_npz = tmp_path / "exemplar_bank.npz"
+    # split_by_engagement can return an empty weak_paths for pathologically
+    # tiny collections; build_exemplar_bank must not silently treat that as
+    # a passing sanity check — it should come back as something the
+    # __main__ refuse-logic (_bank_is_valid) correctly rejects.
+    result = unsplash_setup.build_exemplar_bank(
+        strong_paths=["s1.jpg", "s2.jpg"], weak_paths=[], out_npz=out_npz)
+
+    assert unsplash_setup._bank_is_valid(result) is False
