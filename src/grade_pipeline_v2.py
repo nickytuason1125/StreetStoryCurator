@@ -109,7 +109,12 @@ def _apply_aadb_step(embs, to_rate_indices, per_photo_breakdowns) -> None:
     if result is None:
         return
     for local_i, idx in enumerate(to_rate_indices):
-        per_photo_breakdowns[idx]["AADB"] = round(float(result[local_i]), 3)
+        v = float(result[local_i])
+        if not np.isfinite(v):
+            # Defense in depth: never write a NaN/Inf into the breakdown even
+            # if the scorer's own guards are ever bypassed.
+            continue
+        per_photo_breakdowns[idx]["AADB"] = round(v, 3)
 
 
 def _apply_exemplar_step(embs, to_rate_indices, per_photo_breakdowns) -> None:
@@ -125,7 +130,32 @@ def _apply_exemplar_step(embs, to_rate_indices, per_photo_breakdowns) -> None:
     if result is None:
         return
     for local_i, idx in enumerate(to_rate_indices):
-        per_photo_breakdowns[idx]["Exemplar"] = round(float(result[local_i]), 3)
+        v = float(result[local_i])
+        if not np.isfinite(v):
+            # Defense in depth: never write a NaN/Inf into the breakdown even
+            # if the scorer's own guards are ever bypassed.
+            continue
+        per_photo_breakdowns[idx]["Exemplar"] = round(v, 3)
+
+
+def _safe_apply_aadb_step(embs, to_rate_indices, per_photo_breakdowns) -> None:
+    """Call site wrapper: an unexpected exception from the AADB scorer must
+    degrade to "AADB stays unset", not abort the whole cull — mirrors the
+    NIMA block's try/except style just above this in run_v2()."""
+    try:
+        _apply_aadb_step(embs, to_rate_indices, per_photo_breakdowns)
+    except Exception as e:
+        print(f"[v2] AADB step failed ({e}) — AADB feature stays unset")
+
+
+def _safe_apply_exemplar_step(embs, to_rate_indices, per_photo_breakdowns) -> None:
+    """Call site wrapper: an unexpected exception from the Exemplar scorer must
+    degrade to "Exemplar stays unset", not abort the whole cull — mirrors the
+    NIMA block's try/except style just above this in run_v2()."""
+    try:
+        _apply_exemplar_step(embs, to_rate_indices, per_photo_breakdowns)
+    except Exception as e:
+        print(f"[v2] Exemplar step failed ({e}) — Exemplar feature stays unset")
 
 
 # ── Bounded crash diagnostics ────────────────────────────────────────────────
@@ -2585,8 +2615,8 @@ def run_v2(
         import traceback as _tb_nima
         _tb_nima.print_exc()
 
-    _apply_aadb_step(embs, to_rate_indices, per_photo_breakdowns)
-    _apply_exemplar_step(embs, to_rate_indices, per_photo_breakdowns)
+    _safe_apply_aadb_step(embs, to_rate_indices, per_photo_breakdowns)
+    _safe_apply_exemplar_step(embs, to_rate_indices, per_photo_breakdowns)
 
     # ── Step 4c: Fine-art anchor similarity + Min-Max stretch ────────────────
     # Raw cosine sims cluster in a narrow band (e.g., 0.28–0.42) because all street
