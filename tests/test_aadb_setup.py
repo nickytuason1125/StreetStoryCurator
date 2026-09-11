@@ -22,6 +22,61 @@ def test_load_labels_parses_csv(tmp_path):
     assert abs(labels[0][1] - 0.72) < 1e-9
 
 
+def test_load_labels_normalizes_unnormalized_scores(tmp_path):
+    """Test normalization of 1-10 range scores to [0, 1]."""
+    import aadb_setup
+
+    csv_path = tmp_path / "labels.csv"
+    csv_path.write_text(
+        "ImageFile,score\n"
+        "img001.jpg,5.5\n"
+        "img002.jpg,8.0\n"
+        "img003.jpg,2.1\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "img001.jpg").write_bytes(b"\xff\xd8\xff")
+    (tmp_path / "img002.jpg").write_bytes(b"\xff\xd8\xff")
+    (tmp_path / "img003.jpg").write_bytes(b"\xff\xd8\xff")
+
+    labels = aadb_setup.load_labels(tmp_path)
+
+    # max_score in CSV is 8.0, so scores should be divided by 8.0
+    assert len(labels) == 3
+    assert abs(labels[0][1] - 5.5 / 8.0) < 1e-9  # 0.6875
+    assert abs(labels[1][1] - 8.0 / 8.0) < 1e-9  # 1.0
+    assert abs(labels[2][1] - 2.1 / 8.0) < 1e-9  # 0.2625
+    # All scores should be in [0, 1]
+    for path, score in labels:
+        assert 0.0 <= score <= 1.0
+
+
+def test_load_labels_max_computed_before_filter(tmp_path):
+    """Test that max_score is computed from all CSV rows before filtering by file existence.
+
+    This ensures consistent normalization even if some images are missing locally."""
+    import aadb_setup
+
+    csv_path = tmp_path / "labels.csv"
+    csv_path.write_text(
+        "ImageFile,score\n"
+        "img001.jpg,5.0\n"
+        "img_missing.jpg,9.0\n"
+        "img003.jpg,3.0\n",
+        encoding="utf-8",
+    )
+    # Only create two of three images; img_missing.jpg is not present
+    (tmp_path / "img001.jpg").write_bytes(b"\xff\xd8\xff")
+    (tmp_path / "img003.jpg").write_bytes(b"\xff\xd8\xff")
+
+    labels = aadb_setup.load_labels(tmp_path)
+
+    # max_score from ALL CSV rows should be 9.0, not 5.0
+    # So scores are normalized by 9.0, not 5.0
+    assert len(labels) == 2  # only img001 and img003 exist
+    assert abs(labels[0][1] - 5.0 / 9.0) < 1e-9  # 0.555...
+    assert abs(labels[1][1] - 3.0 / 9.0) < 1e-9  # 0.333...
+
+
 def test_split_is_deterministic_and_proportional():
     import aadb_setup
 

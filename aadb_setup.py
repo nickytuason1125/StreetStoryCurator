@@ -30,22 +30,28 @@ def load_labels(archive_dir: "Path | str") -> list:
     """Parse the AADB score CSV into [(absolute_image_path, score_0_1), ...].
     Expects a CSV with an image-filename column and a score column; AADB's
     published labels are typically in [1, 10] or already normalised — this
-    function normalises to [0, 1] if it detects a >1 max."""
+    function normalises to [0, 1] if it detects a >1 max.
+
+    Note: max_score is computed from ALL CSV rows before filtering by file
+    existence, ensuring consistent normalization across different local archives."""
     archive_dir = Path(archive_dir)
     csv_path = next(archive_dir.glob("*.csv"))
-    rows = []
+    all_scores = []  # scores from all CSV rows (for normalization)
+    rows = []  # only rows whose image files exist
     with open(csv_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         fname_key = next(k for k in reader.fieldnames if "file" in k.lower() or "image" in k.lower())
         score_key = next(k for k in reader.fieldnames if "score" in k.lower())
         for row in reader:
+            score = float(row[score_key])
+            all_scores.append(score)
             img_path = archive_dir / row[fname_key]
             if not img_path.exists():
                 continue
-            rows.append((str(img_path), float(row[score_key])))
+            rows.append((str(img_path), score))
     if not rows:
         raise RuntimeError(f"No labeled images found under {archive_dir} — check AADB_ARCHIVE_DIR")
-    max_score = max(s for _, s in rows)
+    max_score = max(all_scores)
     if max_score > 1.0:
         rows = [(p, s / max_score) for p, s in rows]
     return rows
