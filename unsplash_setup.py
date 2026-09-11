@@ -24,6 +24,8 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(_ROOT / "src"))
 
+import dataset_embed  # noqa: E402  (after sys.path insert above)
+
 _BANK_OUT = _ROOT / "models" / "exemplar_bank.npz"
 _SCRATCH_DIR = _ROOT / "cache" / "unsplash_scratch"
 
@@ -75,6 +77,40 @@ def split_by_engagement(photos: list, frac: float = 0.25) -> tuple:
     return strong, weak
 
 
+def build_exemplar_bank(strong_paths: list, weak_paths: list, out_npz: "Path | str") -> dict:
+    """Encode the Strong pool, save it as the exemplar bank, and validate
+    that Strong self-similarity beats Weak self-similarity against that
+    bank — the sanity check the spec requires before trusting this feature.
+    Does NOT save the Weak pool; it exists only for this validation."""
+    import numpy as np
+    out_npz = Path(out_npz)
+    out_npz.parent.mkdir(parents=True, exist_ok=True)
+
+    strong_embs = dataset_embed.encode_folder(strong_paths, out_npz)
+    weak_scratch = out_npz.with_name("unsplash_weak_scratch.npz")
+    if weak_paths:
+        weak_embs = dataset_embed.encode_folder(weak_paths, weak_scratch)
+    else:
+        weak_embs = np.empty((0, strong_embs.shape[1]), dtype=strong_embs.dtype)
+
+    # encode_folder's own write is an implementation detail of that helper;
+    # write the bank ourselves so this function's on-disk contract
+    # ("out_npz has an 'embeddings' key") doesn't depend on it.
+    np.savez(out_npz, embeddings=strong_embs)
+
+    def _mean_self_sim(query_embs, bank_embs):
+        if len(query_embs) == 0:
+            return float("nan")
+        bank_norm = bank_embs / np.linalg.norm(bank_embs, axis=1, keepdims=True)
+        q_norm = query_embs / np.linalg.norm(query_embs, axis=1, keepdims=True)
+        return float((q_norm @ bank_norm.T).mean())
+
+    return {
+        "strong_self_sim": _mean_self_sim(strong_embs, strong_embs),
+        "weak_self_sim": _mean_self_sim(weak_embs, strong_embs),
+    }
+
+
 if __name__ == "__main__":
     key = os.environ.get("UNSPLASH_ACCESS_KEY")
     collection_ids = os.environ.get("UNSPLASH_COLLECTION_IDS", "")
@@ -92,4 +128,15 @@ if __name__ == "__main__":
     strong_paths, weak_paths = split_by_engagement(all_photos)
     print(f"[unsplash_setup] {len(strong_paths)} strong / {len(weak_paths)} weak "
           f"(top/bottom quartile by engagement)")
-    # Task 9b continues this script's __main__ block with encode + save + validate.
+
+    result = build_exemplar_bank(strong_paths, weak_paths, _BANK_OUT)
+    print(f"[unsplash_setup] strong self-sim={result['strong_self_sim']:.4f} "
+          f"weak self-sim={result['weak_self_sim']:.4f}")
+    if result["strong_self_sim"] <= result["weak_self_sim"]:
+        print("[unsplash_setup] REFUSING to keep this bank — the Strong pool "
+              "does not score higher than the Weak pool against its own "
+              "bank, which means the engagement split isn't capturing a real "
+              "quality signal for this collection.")
+        _BANK_OUT.unlink(missing_ok=True)
+        sys.exit(1)
+    print(f"[unsplash_setup] saved {_BANK_OUT}")

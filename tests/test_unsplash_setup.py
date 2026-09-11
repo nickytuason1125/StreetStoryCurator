@@ -3,6 +3,8 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import numpy as np
+
 
 def test_split_by_engagement_top_and_bottom_quartile():
     import unsplash_setup
@@ -91,3 +93,29 @@ def test_fetch_collection_photos_paginates_and_downloads(tmp_path, monkeypatch):
     assert result[0]["likes"] == 0
     assert Path(result[0]["path"]).exists()
     assert len(downloaded) == 40
+
+
+def test_build_exemplar_bank_saves_strong_embeddings_and_validates(tmp_path, monkeypatch):
+    import unsplash_setup
+
+    # Two well-separated clusters: "strong" near [1,0], "weak" near [0,1].
+    fake_embeddings = {
+        "s1.jpg": np.array([1.0, 0.05], dtype=np.float32),
+        "s2.jpg": np.array([0.95, 0.1], dtype=np.float32),
+        "w1.jpg": np.array([0.05, 1.0], dtype=np.float32),
+        "w2.jpg": np.array([0.1, 0.95], dtype=np.float32),
+    }
+
+    def _fake_encode_folder(paths, out_npz, progress=None):
+        return np.stack([fake_embeddings[p] for p in paths])
+
+    monkeypatch.setattr(unsplash_setup.dataset_embed, "encode_folder", _fake_encode_folder)
+
+    out_npz = tmp_path / "exemplar_bank.npz"
+    result = unsplash_setup.build_exemplar_bank(
+        strong_paths=["s1.jpg", "s2.jpg"], weak_paths=["w1.jpg", "w2.jpg"], out_npz=out_npz)
+
+    assert out_npz.exists()
+    saved = np.load(out_npz, allow_pickle=False)
+    assert saved["embeddings"].shape == (2, 2)
+    assert result["strong_self_sim"] > result["weak_self_sim"]
