@@ -31,8 +31,33 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT / "src"))
+# scripts/ has no __init__.py — it works as a namespace package only when
+# the repo root is on sys.path. Running this file directly (its documented
+# usage) puts scripts/ itself on sys.path[0], not the repo root, so
+# `import scripts.master_backtest` inside check_aadb_gate() would otherwise
+# crash instead of gating. pytest already puts the repo root on sys.path,
+# so this is a no-op duplicate under test.
+sys.path.insert(0, str(_ROOT))
 
 import master_judge as mj  # noqa: E402
+
+
+def check_aadb_gate(min_rho: float = 0.149) -> tuple:
+    """(passes, reason). min_rho defaults to the chance-level rank agreement
+    already measured for this project's baseline grader
+    (project_grading_measurement_bounds: +0.149) — a head that can't beat
+    chance on its own labeled AADB data is noise, not signal, regardless of
+    what it does to the live baseline's rho_holdout."""
+    import scripts.master_backtest as mb
+    metrics = mb.read_aadb_metrics()
+    if metrics is None:
+        return False, "no trained AADB head found — run aadb_setup.py first"
+    rho = metrics.get("rho_holdout")
+    if rho is None or rho != rho:  # None or NaN
+        return False, f"AADB held-out rho is undefined ({rho})"
+    if rho < min_rho:
+        return False, f"AADB held-out rho {rho} is below the chance-level floor {min_rho}"
+    return True, f"AADB held-out rho {rho} clears the chance-level floor {min_rho}"
 
 
 def main() -> int:
@@ -59,6 +84,13 @@ def main() -> int:
     _dump("SHIPPED", mj._SHIPPED_PATH)
     if args.show:
         return 0
+
+    if "AADB" in mj.FEATURES:  # only gate on this once the feature exists
+        aadb_ok, aadb_reason = check_aadb_gate()
+        print(f"[promote] AADB gate: {aadb_reason}")
+        if not aadb_ok:
+            print("[promote] REFUSING promotion — AADB gate not satisfied.")
+            return 1
 
     print("\n[promote] attempting promotion…")
     res = mj.promote_to_shipped()
