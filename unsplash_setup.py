@@ -7,8 +7,8 @@ pull from via UNSPLASH_COLLECTION_IDS (comma-separated Unsplash collection
 IDs — find these by browsing unsplash.com/collections and reading the ID
 out of the collection's URL). Only derived embeddings are ever written to
 this repo (models/exemplar_bank.npz); raw images are downloaded to a scratch
-folder outside the repo and never committed, matching the same boundary
-already drawn for AADB and the RAG PDFs.
+folder (cache/unsplash_scratch/) that is gitignored and never committed,
+matching the same boundary already drawn for AADB and the RAG PDFs.
 
 Usage:
     set UNSPLASH_ACCESS_KEY=your_key_here
@@ -42,8 +42,11 @@ def fetch_collection_photos(collection_id: str, access_key: str,
     page = 1
     while len(photos) < max_photos:
         url = (f"https://api.unsplash.com/collections/{collection_id}/photos"
-               f"?page={page}&per_page=30&client_id={access_key}")
-        req = urllib.request.Request(url, headers={"Accept-Version": "v1"})
+               f"?page={page}&per_page=30")
+        req = urllib.request.Request(url, headers={
+            "Accept-Version": "v1",
+            "Authorization": f"Client-ID {access_key}",
+        })
         with urllib.request.urlopen(req, timeout=30) as resp:
             batch = json.loads(resp.read().decode("utf-8"))
         if not batch:
@@ -85,24 +88,39 @@ def build_exemplar_bank(strong_paths: list, weak_paths: list, out_npz: "Path | s
     import numpy as np
     out_npz = Path(out_npz)
     out_npz.parent.mkdir(parents=True, exist_ok=True)
+    _SCRATCH_DIR.mkdir(parents=True, exist_ok=True)
 
-    strong_embs = dataset_embed.encode_folder(strong_paths, out_npz)
-    weak_scratch = out_npz.with_name("unsplash_weak_scratch.npz")
+    # encode_folder always writes to the path it's given; that write is
+    # throwaway (an implementation detail of that helper), so point it at
+    # _SCRATCH_DIR — the directory already used for this exact purpose
+    # elsewhere in this file — rather than models/, and do the one real save
+    # (with path provenance preserved) ourselves below.
+    strong_scratch = _SCRATCH_DIR / "unsplash_strong_scratch.npz"
+    strong_embs = dataset_embed.encode_folder(strong_paths, strong_scratch)
+    weak_scratch = _SCRATCH_DIR / "unsplash_weak_scratch.npz"
     if weak_paths:
         weak_embs = dataset_embed.encode_folder(weak_paths, weak_scratch)
     else:
         weak_embs = np.empty((0, strong_embs.shape[1]), dtype=strong_embs.dtype)
 
-    # encode_folder's own write is an implementation detail of that helper;
-    # write the bank ourselves so this function's on-disk contract
-    # ("out_npz has an 'embeddings' key") doesn't depend on it.
-    np.savez(out_npz, embeddings=strong_embs)
+    # Embedding dimensionality alone doesn't guarantee two embeddings come
+    # from the same encoder/checkpoint (see specvlm_pipeline.probe_
+    # fingerprint's docstring) — stamp the bank with the same cheap encoder
+    # identity string grade_pipeline_v2's source-change guard already uses,
+    # so exemplar_scorer.score() can refuse a same-dimension-different-space
+    # bank instead of silently scoring against the wrong space.
+    from siglip2_encoder import ENCODER_SOURCE, EMBED_DIM
+    np.savez(out_npz, paths=np.array(strong_paths), embeddings=strong_embs,
+              encoder_source=ENCODER_SOURCE, embed_dim=EMBED_DIM)
 
     def _mean_self_sim(query_embs, bank_embs):
         if len(query_embs) == 0:
             return float("nan")
-        bank_norm = bank_embs / np.linalg.norm(bank_embs, axis=1, keepdims=True)
-        q_norm = query_embs / np.linalg.norm(query_embs, axis=1, keepdims=True)
+        # +1e-9 epsilon guards against a zero-norm row (e.g. a corrupt source
+        # image producing a degenerate embedding) — matches the convention
+        # used elsewhere in this codebase (see exemplar_scorer.py).
+        bank_norm = bank_embs / (np.linalg.norm(bank_embs, axis=1, keepdims=True) + 1e-9)
+        q_norm = query_embs / (np.linalg.norm(query_embs, axis=1, keepdims=True) + 1e-9)
         return float((q_norm @ bank_norm.T).mean())
 
     return {

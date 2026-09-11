@@ -70,9 +70,12 @@ def test_fetch_collection_photos_paginates_and_downloads(tmp_path, monkeypatch):
         def __exit__(self, *a):
             return False
 
+    seen_requests = []
+
     def _fake_urlopen(req, timeout=30):
         # req.full_url carries the page number as "...&page=N&..."
         import re
+        seen_requests.append(req)
         m = re.search(r"page=(\d+)", req.full_url)
         page = int(m.group(1))
         return _FakeResponse(pages.get(page, []))
@@ -94,6 +97,14 @@ def test_fetch_collection_photos_paginates_and_downloads(tmp_path, monkeypatch):
     assert Path(result[0]["path"]).exists()
     assert len(downloaded) == 40
 
+    # The access key must travel as an Authorization header, not as a URL
+    # query param — keeps it out of any URL that might land in a proxy or
+    # error log.
+    assert seen_requests, "urlopen was never called"
+    for req in seen_requests:
+        assert "client_id" not in req.full_url
+        assert req.get_header("Authorization") == "Client-ID fake_key"
+
 
 def test_build_exemplar_bank_saves_strong_embeddings_and_validates(tmp_path, monkeypatch):
     import unsplash_setup
@@ -106,12 +117,17 @@ def test_build_exemplar_bank_saves_strong_embeddings_and_validates(tmp_path, mon
         "w2.jpg": np.array([0.1, 0.95], dtype=np.float32),
     }
 
+    encode_calls = []
+
     def _fake_encode_folder(paths, out_npz, progress=None):
+        encode_calls.append(Path(out_npz))
         return np.stack([fake_embeddings[p] for p in paths])
 
     monkeypatch.setattr(unsplash_setup.dataset_embed, "encode_folder", _fake_encode_folder)
+    scratch_dir = tmp_path / "cache" / "unsplash_scratch"
+    monkeypatch.setattr(unsplash_setup, "_SCRATCH_DIR", scratch_dir)
 
-    out_npz = tmp_path / "exemplar_bank.npz"
+    out_npz = tmp_path / "models" / "exemplar_bank.npz"
     result = unsplash_setup.build_exemplar_bank(
         strong_paths=["s1.jpg", "s2.jpg"], weak_paths=["w1.jpg", "w2.jpg"], out_npz=out_npz)
 
@@ -119,6 +135,22 @@ def test_build_exemplar_bank_saves_strong_embeddings_and_validates(tmp_path, mon
     saved = np.load(out_npz, allow_pickle=False)
     assert saved["embeddings"].shape == (2, 2)
     assert result["strong_self_sim"] > result["weak_self_sim"]
+
+    # Same-dimension-different-space guard: the bank carries an encoder
+    # fingerprint exemplar_scorer.score() can compare against.
+    assert "encoder_source" in saved.files
+    assert "embed_dim" in saved.files
+    assert str(saved["encoder_source"])
+    assert int(saved["embed_dim"]) > 0
+
+    # encode_folder's own (throwaway) writes must land in the gitignored
+    # scratch dir already used for this exact purpose — not next to the
+    # real, shipped bank in models/.
+    assert len(encode_calls) == 2
+    for p in encode_calls:
+        assert p.parent == scratch_dir
+    assert not (out_npz.parent / "unsplash_weak_scratch.npz").exists()
+    assert not (out_npz.parent / "unsplash_strong_scratch.npz").exists()
 
 
 def test_bank_is_valid_refuses_on_nan_self_sim():
