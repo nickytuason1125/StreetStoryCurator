@@ -36,6 +36,20 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT / "src"))
 
+_AADB_METRICS_PATH = _ROOT / "cache" / "aadb_head_metrics.json"
+
+
+def read_aadb_metrics() -> "dict | None":
+    """The AADB-only held-out rho written by aadb_setup.py, or None if the
+    head has never been trained."""
+    import json
+    if not _AADB_METRICS_PATH.exists():
+        return None
+    try:
+        return json.loads(_AADB_METRICS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -85,6 +99,14 @@ def main() -> int:
             tag = "nan" if np.isnan(rg) else f"{rg:+.3f}"
             print(f"     grader={g:<8} rho={tag}  (n={len(rs)})")
     print()
+
+    aadb = read_aadb_metrics()
+    if aadb is not None:
+        print(f"\nAADB (external human judgment):")
+        print(f"  held-out rho = {aadb['rho_holdout']} "
+              f"(n_train={aadb['n_train']}, n_holdout={aadb['n_holdout']})")
+    else:
+        print("\nAADB: no trained head found (run aadb_setup.py to add this check)")
 
     print(f"3. ASPECT SIGNAL (each stored aspect vs your stars)")
     fmat = np.stack([mj.feature_vector(r["breakdown"] or {}) for r in rows])
