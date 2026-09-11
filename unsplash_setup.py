@@ -62,11 +62,16 @@ def split_by_engagement(photos: list, frac: float = 0.25) -> tuple:
     """photos: [{"path": str, "likes": int}, ...] all drawn from the SAME
     curated street/documentary collections (never mix in an unrelated pool —
     a weak exemplar must still be on-topic, just worse, see the spec).
-    Returns (strong_paths, weak_paths): top/bottom frac by "likes"."""
+    Returns (strong_paths, weak_paths): top/bottom frac by "likes". Strong and
+    Weak are always disjoint, regardless of pool size or frac — n is clamped
+    to at most len(ordered) // 2 so the top-n and bottom-n slices can never
+    share an index. On a pool too small to split at all (0 or 1 photos) both
+    sides come back empty rather than overlapping."""
     ordered = sorted(photos, key=lambda p: p["likes"], reverse=True)
-    n = max(1, int(round(len(ordered) * frac)))
+    half = len(ordered) // 2
+    n = max(1, min(int(round(len(ordered) * frac)), half)) if half > 0 else 0
     strong = [p["path"] for p in ordered[:n]]
-    weak = [p["path"] for p in ordered[-n:]]
+    weak = [p["path"] for p in ordered[-n:]] if n > 0 else []
     return strong, weak
 
 

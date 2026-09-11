@@ -28,6 +28,27 @@ def test_split_by_engagement_requires_same_collection_context():
     assert weak == ["b.jpg"]
 
 
+def test_split_by_engagement_disjoint_on_small_pools():
+    import unsplash_setup
+
+    # A single-photo pool can't yield non-overlapping non-empty Strong and
+    # Weak lists — disjointness must win over forcing both sides non-empty.
+    photos_1 = [{"path": "only.jpg", "likes": 5}]
+    strong, weak = unsplash_setup.split_by_engagement(photos_1, frac=0.5)
+    assert set(strong).isdisjoint(set(weak))
+
+    # A 2-photo pool at frac=1.0 ("take everything" on each side) must still
+    # not overlap.
+    photos_2 = [{"path": "a.jpg", "likes": 2}, {"path": "b.jpg", "likes": 1}]
+    strong, weak = unsplash_setup.split_by_engagement(photos_2, frac=1.0)
+    assert set(strong).isdisjoint(set(weak))
+
+    # Odd-sized pool with a frac that would round past half if unclamped.
+    photos_5 = [{"path": f"p{i}.jpg", "likes": i} for i in range(5)]
+    strong, weak = unsplash_setup.split_by_engagement(photos_5, frac=0.9)
+    assert set(strong).isdisjoint(set(weak))
+
+
 def test_fetch_collection_photos_paginates_and_downloads(tmp_path, monkeypatch):
     import unsplash_setup
 
