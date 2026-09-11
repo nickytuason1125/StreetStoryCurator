@@ -41,7 +41,12 @@ Three concrete gaps:
 3. **`cache/master_anchors.json` (the `FIRSTCUT_MASTER_ANCHORS` human-anchored
    calibration ruler) has never been populated.** Absolute Strong/Mid/Weak
    boundaries currently run on generic per-batch percentile stretch, not on
-   curated human-judged reference photos.
+   curated human-judged reference photos. Out of scope here — that file is
+   specifically the photographer's own rating distribution
+   (`scripts/derive_master_anchors.py`, requires ≥30 of the user's own
+   `tpe_master`-tagged ratings) and can't be filled from a third-party
+   dataset without corrupting its contract. Noted for completeness, not
+   fixed by this design.
 
 ## Goal
 
@@ -149,6 +154,16 @@ vectors) are ever stored or shipped — raw Unsplash images are never
 committed or redistributed, same boundary already drawn for the RAG PDFs
 (`project_rag_pdfs`) and for AADB above.
 
+**Correction found during planning (2026-09-11):** the original idea of also
+populating `cache/master_anchors.json` from Unsplash is dropped.
+`scripts/derive_master_anchors.py` shows that file is specifically the
+*photographer's own* star-rating discriminant distribution — fingerprint-
+locked to the live probe set, requires ≥30 of the user's own `tpe_master`-
+tagged ratings (`derive_master_anchors.py:47-51`). It is not a generic
+external-anchor slot; feeding it Unsplash pseudo-ratings would corrupt what
+the file means. Sub-project 2 is scoped to the exemplar-bank feature only,
+which has no such collision.
+
 **Setup script — `unsplash_setup.py`.**
 1. Pull a curated Strong/Weak split from Street Photography / Documentary
    collections: Strong = staff-picked / top-quartile-by-engagement photos
@@ -157,17 +172,15 @@ committed or redistributed, same boundary already drawn for the RAG PDFs
    exemplar has to still be a street/documentary photo, just a worse one,
    or the contrast is trivial and teaches nothing about this project's
    actual grading boundary).
-2. Encode through the same SigLIP-2 encoder.
-3. **Anchors:** populate `cache/master_anchors.json` via
-   `master_judge.human_anchor_lo_hi()` (`master_judge.py:442`), which already
-   defines the lo/hi-span contract this file needs to satisfy — this is
-   filling an existing, currently-empty feature, not building new anchor
-   machinery.
-4. **Exemplar bank:** save the Strong-pool embeddings as a reference set in
+2. Encode through the same SigLIP-2 encoder (shared helper with
+   sub-project 1 — see Task 1 of the implementation plan).
+3. **Exemplar bank:** save the Strong-pool embeddings as a reference set in
    a new small module, `src/exemplar_scorer.py` — computes per-photo cosine
    similarity to the k nearest Strong exemplars at grade time, written to
    `per_photo_breakdowns[idx]["Exemplar"]`, added to `FEATURES` the same way
-   as `"AADB"` above.
+   as `"AADB"` above. The Weak pool is kept only as a validation check
+   (Strong exemplars should score higher self-similarity than Weak ones do
+   against the Strong bank) — it does not feed grading directly.
 
 **Evaluation gate.** Identical mechanism to sub-project 1: `"Exemplar"`
 becomes a new `FEATURES` entry, `master_backtest.py --fit` re-fits and
@@ -186,11 +199,10 @@ existing rating baseline.
   else changes (degrade path). `master_backtest.py --fit` run against a
   synthetic/small baseline confirms the promotion gate correctly refuses a
   challenger whose AADB ρ is below the chance-level floor.
-- **Sub-project 2:** `unsplash_setup.py` populates `cache/master_anchors.json`
-  in the exact shape `human_anchor_lo_hi()` expects (existing
-  fingerprint-freshness + monotonicity checks already validate this — reuse
-  them, don't reimplement). `exemplar_scorer.py` gets a unit test on a small
-  fixed embedding set with known nearest-neighbor answers.
+- **Sub-project 2:** `exemplar_scorer.py` gets a unit test on a small fixed
+  embedding set with known nearest-neighbor answers, plus the Strong-vs-Weak
+  self-similarity sanity check described above (Strong pool must score
+  higher against its own bank than the Weak pool does).
 - **Shared:** neither sub-project may change a single live grade unless its
   respective `promote_master_judge.py` run reports a win. This is the
   existing BUILD/SHIP contract; the test is simply "run the exam, confirm it
