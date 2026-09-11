@@ -112,6 +112,22 @@ def _apply_aadb_step(embs, to_rate_indices, per_photo_breakdowns) -> None:
         per_photo_breakdowns[idx]["AADB"] = round(float(result[local_i]), 3)
 
 
+def _apply_exemplar_step(embs, to_rate_indices, per_photo_breakdowns) -> None:
+    """New step: score already-computed SigLIP-2 embeddings against the
+    Unsplash-derived Strong-exemplar bank. No-op whenever the bank is
+    absent — see exemplar_scorer's degrade-gracefully contract."""
+    import numpy as np
+    import exemplar_scorer
+    if not to_rate_indices:
+        return
+    idx_arr = np.asarray(to_rate_indices, dtype=np.intp)
+    result = exemplar_scorer.score(embs[idx_arr])
+    if result is None:
+        return
+    for local_i, idx in enumerate(to_rate_indices):
+        per_photo_breakdowns[idx]["Exemplar"] = round(float(result[local_i]), 3)
+
+
 # ── Bounded crash diagnostics ────────────────────────────────────────────────
 # The old handlers did `for k, v in locals().items(): print(f"{k}: {v}")`.
 # At the points where they fire, locals() holds `gallery` / `lance_records` /
@@ -2570,6 +2586,7 @@ def run_v2(
         _tb_nima.print_exc()
 
     _apply_aadb_step(embs, to_rate_indices, per_photo_breakdowns)
+    _apply_exemplar_step(embs, to_rate_indices, per_photo_breakdowns)
 
     # ── Step 4c: Fine-art anchor similarity + Min-Max stretch ────────────────
     # Raw cosine sims cluster in a narrow band (e.g., 0.28–0.42) because all street
