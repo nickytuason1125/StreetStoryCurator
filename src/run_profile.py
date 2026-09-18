@@ -366,11 +366,19 @@ _CURRENT_KEY: Optional[tuple] = None
 
 
 def _env_key() -> tuple:
-    """The inputs the profile is derived from."""
+    """The inputs the profile is derived from.
+
+    The persisted LIBRARY TIER is part of the key (2026-09-13): the file can
+    legitimately change between two calls (first grade persists an
+    auto-selection; the user changes the tier in the UI), and a cached profile
+    built before the change must not survive it.
+    """
+    import library_tier as _lt
     return (str(setting("SIGLIP_TIER")).lower(),
             str(setting("SIGLIP_HF_DIR")),
             str(setting("FIRSTCUT_ASSUME_GPU")),
-            bool(setting("SIGLIP_ENC_USE_OC")))
+            bool(setting("SIGLIP_ENC_USE_OC")),
+            _lt.get() or "")
 
 
 def current(*, refresh: bool = False) -> RunProfile:
@@ -390,7 +398,14 @@ def current(*, refresh: bool = False) -> RunProfile:
     key = _env_key()
     if _CURRENT is not None and not refresh and key == _CURRENT_KEY:
         return _CURRENT
-    tier = key[0] if key[0] in _SPECS else "high"
+    # ── Tier resolution (2026-09-13): env override, then LIBRARY TIER, then
+    # high. The library tier matters for the import-order landmine below: a
+    # module that imports run_profile BEFORE tier_select.apply() ran (lance_store
+    # pins _TBL_NAME at import from this profile) must see the library's tier,
+    # not a machine-RAM guess — otherwise the table name can disagree with the
+    # tier the grade actually runs at, and the incremental encode cache misses.
+    import library_tier as _lt
+    tier = key[0] if key[0] in _SPECS else (_lt.get() if _lt.get() in _SPECS else "high")
     gpu = _CURRENT.gpu if (_CURRENT is not None and not refresh
                            and key[2] == (_CURRENT_KEY or ("",) * 4)[2]) else _gpu_present()
     _CURRENT = RunProfile(spec=_SPECS[tier], gpu=gpu)

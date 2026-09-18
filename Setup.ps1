@@ -1,4 +1,4 @@
-Add-Type -AssemblyName System.Windows.Forms
+﻿Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 $ROOT = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -217,6 +217,23 @@ function Show-Welcome {
 
     Add-Sub "Disk space required: ~3 GB (libraries + models)" 292
     Add-Sub "Time for first launch: 5–10 minutes (downloads once)" 316
+
+    # Repair mode (2026-09-17): an existing install offers repair, not a blind
+    # reinstall — the wizard skips completed steps and verifies the rest.
+    if (Test-Path (Join-Path $ROOT "venv\.setup_ok")) {
+        $rep = New-Object System.Windows.Forms.CheckBox
+        $rep.Text      = "Existing install detected — repair mode (skip what works, re-verify the rest)"
+        $rep.Font      = MakeFont 8.5
+        $rep.ForeColor = $txt2
+        $rep.BackColor = $bg
+        $rep.Checked   = $false
+        $rep.AutoSize  = $true
+        $rep.Location  = New-Object System.Drawing.Point(18, 344)
+        $content.Controls.Add($rep)
+        $script:lastRepairBox = $rep
+    } else {
+        $script:repairMode = $false
+    }
 }
 
 # ══════════════════════════════════════════════════════════════════
@@ -243,6 +260,105 @@ function Check-Node {
         if ($v -match "v(\d+)") { return ([int]$Matches[1] -ge 16), $v }
     } catch {}
     return $false, ""
+}
+
+# ── Platform preflight (2026-09-17) ──────────────────────────────────────────
+# Mirrors src/machine_profile.detect()'s verdict so a doomed install STOPS at
+# the wizard instead of failing 40 minutes into pip downloads. ARM64 Windows
+# has no torch/llama wheels today (the app's own MachineProfile says "an ARM
+# build is planned"), and 32-bit/pre-Win10 never worked — say so kindly, now.
+function Check-Platform {
+    try {
+        $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
+        $arch = $cpu.Architecture   # 9 = x64, 12 = ARM64, 0/5/6 = x86 family
+        if ($arch -eq 12) {
+            return $false, "ARM64 Windows — FirstCut needs torch and llama wheels that don't exist for Windows-on-ARM yet. An ARM build is planned. (x64 emulation is not supported for the GPU engines this app needs.)"
+        }
+        if ($arch -ne 9) {
+            return $false, "32-bit Windows — FirstCut needs 64-bit Windows 10/11."
+        }
+        $osv = [System.Environment]::OSVersion.Version
+        if ($osv.Major -lt 10) {
+            return $false, "Windows 10 or newer is required."
+        }
+        return $true, "64-bit Windows $($osv.Major).$($osv.Minor) — supported"
+    } catch {
+        return $true, "platform check skipped ($_) — continuing"
+    }
+}
+
+# ── Python provisioning (2026-09-17) ─────────────────────────────────────────
+# PATH roulette was the #1 broken-install cause: the WindowsApps "python.exe"
+# store shim opens the Store and exits (venv silently fails), and wrong-arch or
+# too-old interpreters failed later with confusing pip errors. Resolution
+# order: the wizard's OWN project-local interpreter (installed by this wizard)
+# first, then PATH. Version >= 3.10, 64-bit only.
+$script:pythonExe = $null
+
+function Test-SuitablePython($exe) {
+    try {
+        $v = & $exe -c "import sys,platform;print('%d.%d %s'%(sys.version_info[0],sys.version_info[1],platform.machine().upper()))" 2>&1
+        if ($LASTEXITCODE -ne 0) { return $false }
+        if ($v -match "(\d+)\.(\d+) (AMD64|X86_64|X64)") {
+            $maj = [int]$Matches[1]; $min = [int]$Matches[2]
+            if ($maj -ne 3) { return $false, $v }
+            # Pinned-wheel window: torch 2.5.1 / llama 0.3.23 publish wheels for
+            # 3.10-3.12. A newer interpreter (3.13/3.14) "passes" the version
+            # check and then fails 40 minutes into pip with "no matching wheel"
+            # — reject it here so the auto-installer provisions 3.12 instead.
+            if ($min -lt 10 -or $min -gt 12) { return $false, $v }
+            return $true, $v
+        }
+        # matched version but wrong arch (ARM64 python, 32-bit)
+        return $false, $v
+    } catch { return $false, "" }
+}
+
+function Get-PythonInfo {
+    # 1) The wizard's project-local interpreter (installed by this wizard).
+    $local = Join-Path $ROOT "runtime\python\python.exe"
+    if (Test-Path $local) {
+        $ok, $v = Test-SuitablePython $local
+        if ($ok) { return $true, $v, $local }
+    }
+    # 2) PATH python — but reject the WindowsApps store shim.
+    try {
+        $shim = Get-Command python -ErrorAction SilentlyContinue
+        if ($shim -and $shim.Source -match '\\WindowsApps\\') {
+            # Store shim: fake python that opens the Store. Treat as missing.
+        } elseif ($shim) {
+            $ok, $v = Test-SuitablePython "python"
+            if ($ok) { return $true, $v, "python" }
+        }
+    } catch {}
+    return $false, "", $null
+}
+
+function Install-PythonLocal {
+    <# Download the official python.org x64 installer and install it into
+    $ROOT\runtime\python — project-local, no PATH changes, no admin. #>
+    Set-Progress 4 "Downloading Python (one-time, ~25 MB)..."
+    $url = "https://www.python.org/ftp/python/3.12.8/amd64/python-3.12.8-amd64.exe"
+    $dst = "$env:TEMP\python-3.12.8-amd64.exe"
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        (New-Object Net.WebClient).DownloadFile($url, $dst)
+    } catch {
+        Log "  ✗ Python download failed: $_"
+        return $false
+    }
+    Set-Progress 6 "Installing Python into this project (no admin needed)..."
+    $target = Join-Path $ROOT "runtime\python"
+    $p = Start-Process -FilePath $dst -Wait -PassThru -ArgumentList @(
+        "/quiet", "InstallAllUsers=0", "PrependPath=0",
+        "TargetDir=$target", "Include_launcher=0", "Include_test=0", "Shortcuts=0"
+    )
+    if ($p.ExitCode -ne 0 -or -not (Test-Path (Join-Path $target "python.exe"))) {
+        Log "  ✗ Silent Python install failed (exit $($p.ExitCode))."
+        return $false
+    }
+    Log "  ✓ Python installed to runtime\python"
+    return $true
 }
 
 function Make-ReqRow($label, $y, $ok, $version, $url) {
@@ -293,17 +409,71 @@ function Show-Requirements {
 
     Add-Title "Requirements"
     Add-Divider 68
-    Add-Sub "The following programs must be installed before continuing." 82
 
-    $pyResult   = Check-Python
+    # Platform gate FIRST — a doomed install must stop here, not in pip.
+    $platOk, $platMsg = Check-Platform
+    if (-not $platOk) {
+        $stop = New-Object System.Windows.Forms.Label
+        $stop.Text      = "✗  This machine can't run FirstCut"
+        $stop.Font      = MakeFont 11 $true
+        $stop.ForeColor = $red
+        $stop.AutoSize  = $true
+        $stop.Location  = New-Object System.Drawing.Point(18, 82)
+        $content.Controls.Add($stop)
+
+        $why = Add-Sub $platMsg 108
+        $why.ForeColor = $txt2
+
+        Add-Divider 200
+        Add-Sub "Nothing was installed. The wizard closes when you click Cancel." 216
+        Add-Sub "Check github.com/…/FirstCut for the ARM/macOS roadmap." 244
+
+        $btnNext.Enabled = $false
+        return
+    }
+    $platLbl = Add-Sub "✔  $platMsg" 82
+    $platLbl.ForeColor = $green
+
+    $pyResult   = Get-PythonInfo
     $nodeResult = Check-Node
     $script:pyOk   = $pyResult[0]
     $script:nodeOk = $nodeResult[0]
+    $script:pythonExe = $pyResult[2]
 
-    Make-ReqRow "Python 3.10 or newer" 118 $script:pyOk $pyResult[1] "https://www.python.org/downloads/"
+    Make-ReqRow "Python 3.10 or newer (64-bit)" 118 $script:pyOk $pyResult[1] "https://www.python.org/downloads/"
     Add-Divider 178
     Make-ReqRow "Node.js 16 or newer"  202 $script:nodeOk $nodeResult[1] "https://nodejs.org"
     Add-Divider 262
+
+    if ((-not $script:pyOk) -and $platOk) {
+        # Python is the #1 broken-install cause — offer to fix it HERE instead
+        # of sending the user to python.org and hoping they pick the right
+        # build. Installs project-local (runtime\python), no PATH changes.
+        $auto = New-Object System.Windows.Forms.Button
+        $auto.Text      = "Install Python for me (recommended)"
+        $auto.Size      = New-Object System.Drawing.Size(240, 30)
+        $auto.Location  = New-Object System.Drawing.Point(18, 276)
+        $auto.FlatStyle = "Flat"
+        $auto.BackColor = $accent
+        $auto.ForeColor = [System.Drawing.Color]::White
+        $auto.Font      = MakeFont 9.5 $true
+        $auto.Cursor    = "Hand"
+        $auto.FlatAppearance.BorderSize = 0
+        $auto.Add_Click({
+            $auto.Enabled = $false
+            $auto.Text    = "Installing Python…"
+            [System.Windows.Forms.Application]::DoEvents()
+            if (Install-PythonLocal) {
+                Show-Requirements          # re-run the whole page
+            } else {
+                $auto.Text    = "Install failed — install from python.org"
+                $auto.Enabled = $true
+            }
+        })
+        $content.Controls.Add($auto)
+        $btnNext.Enabled = $false
+        return
+    }
 
     if ($script:pyOk -and $script:nodeOk) {
         $ok = New-Object System.Windows.Forms.Label
@@ -408,11 +578,14 @@ function Show-Installing {
 
     [System.Windows.Forms.Application]::DoEvents()
 
-    $python  = "python"
+    $python  = if ($script:pythonExe) { $script:pythonExe } else { "python" }
     $pip     = Join-Path $ROOT "venv\Scripts\pip.exe"
     $pythonV = Join-Path $ROOT "venv\Scripts\python.exe"
     $npm     = "npm"
     $ok = $true
+    # Repair mode: re-running the wizard on an existing install skips what
+    # already exists instead of re-downloading everything.
+    $repair = $script:repairMode
 
     # Step 1 — venv
     Set-Progress 5 "Creating Python environment..."
@@ -506,11 +679,17 @@ function Show-Installing {
     # 20+ GB an unconditional prefetch would have pulled. Optional models
     # (critique, Story Mode) are left for the user to request from the UI.
     if ($ok) {
-        Set-Progress 74 "Downloading AI models for this machine..."
-        $fetchOk = Run-Cmd $pythonV "`"$(Join-Path $ROOT 'scripts\fetch_models.py')`"" "model download"
-        if (-not $fetchOk) {
-            Log "  ! Model download incomplete. The app will retry on first launch,"
-            Log "    or you can run: venv\Scripts\python.exe scripts\fetch_models.py"
+        $sentinel = Join-Path $ROOT "models\.models_ready"
+        if ($repair -and (Test-Path $sentinel)) {
+            Set-Progress 74 "Model weights already present — skipped"
+            Log "  ✓ Model weights already on disk"
+        } else {
+            Set-Progress 74 "Downloading AI models for this machine..."
+            $fetchOk = Run-Cmd $pythonV "`"$(Join-Path $ROOT 'scripts\fetch_models.py')`"" "model download"
+            if (-not $fetchOk) {
+                Log "  ! Model download incomplete. The app will retry on first launch,"
+                Log "    or you can run: venv\Scripts\python.exe scripts\fetch_models.py"
+            }
         }
     }
 
@@ -524,6 +703,86 @@ function Show-Installing {
             }
         } else { Log "  ✓ Interface already built" }
     }
+
+    # ── VERIFY (2026-09-17): prove the install works BEFORE declaring victory ──
+    # "Setup finished" used to mean "pip exited 0" — the first grade then
+    # exploded on a broken torch/CUDA pair, a missing wheel, or an empty
+    # models dir. These checks exercise the real stack and surface a one-line
+    # fix per row; results also render on the Complete page.
+    $script:verifyResults = @()
+    Set-Progress 88 "Verifying the installation..."
+    Log "`r`nVerifying:"
+
+    function Test-Verify($name, $scriptblock) {
+        $r = & $scriptblock
+        $mark = switch ($r[0]) { "ok" { "  ✓"; break } "warn" { "  !"; break } default { "  ✗" } }
+        $color = switch ($r[0]) { "ok" { $green; break } "warn" { $amber; break } default { $red } }
+        $script:verifyResults += @(@($r[0]), $name, $r[1])
+        Log "$mark $name — $($r[1])"
+        return ($r[0] -ne "fail")
+    }
+
+    $vOk = $true
+    # 1) torch + CUDA truth — nvidia-smi and torch MUST agree, or the encoder
+    #    silently drops to CPU (11-14 s/img with no error anywhere).
+    $vOk = (Test-Verify "PyTorch" {
+        $out = & $pythonV -c "import torch;print('torch',torch.__version__);print('cuda',torch.cuda.is_available())" 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) { return @("fail", "import failed: $($out.Trim())") }
+        $cuda = ($out -match "cuda True")
+        $hasNv = ($null -ne (Get-Command nvidia-smi -ErrorAction SilentlyContinue))
+        if ($hasNv -and -not $cuda) { return @("warn", "installed, but CUDA is not active — culls fall back to CPU (slow). Reinstall the cu121 torch wheel.") }
+        if (-not $hasNv -and $cuda) { return @("warn", "CUDA active but nvidia-smi is missing — check the NVIDIA driver.") }
+        return @("ok", $out.Trim())
+    }) -and $vOk
+
+    # 2) llama_cpp — critique/Story runtime; grading survives without it.
+    $vOk = (Test-Verify "Local model runtime (llama-cpp)" {
+        $out = & $pythonV -c "import llama_cpp;print('ok')" 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) { return @("warn", "not installed — Grading works; critique and Story Mode are disabled. Re-run the wizard to fix.") }
+        return @("ok", "importable")
+    }) -and $vOk
+
+    # 3) transformers stack.
+    $vOk = (Test-Verify "Transformers / model libraries" {
+        $out = & $pythonV -c "import transformers, accelerate;print('ok')" 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) { return @("fail", "missing — grading cannot run. Re-run the wizard.") }
+        return @("ok", "importable")
+    }) -and $vOk
+
+    # 4) Encoder weights actually on disk (the install used to end with none).
+    $vOk = (Test-Verify "Model weights" {
+        if (Test-Path (Join-Path $ROOT "models\.models_ready")) { return @("ok", "encoder weights present") }
+        return @("warn", "no weights on disk yet — the app retries on first launch, or run: venv\Scripts\python.exe scripts\fetch_models.py")
+    }) -and $vOk
+
+    # 5) Interface build.
+    $vOk = (Test-Verify "Interface (frontend build)" {
+        if (Test-Path (Join-Path $ROOT "frontend\dist\index.html")) { return @("ok", "built") }
+        return @("fail", "frontend\dist\index.html missing — re-run the wizard.")
+    }) -and $vOk
+
+    # 6) Server boot smoke — the moment of truth: the whole backend up + API
+    #    answering. 90 s budget (first import on AV-scanned machines is slow).
+    $vOk = (Test-Verify "Server boot (headless smoke test)" {
+        $smoke = Start-Process -FilePath $pythonV `
+            -ArgumentList "`"$(Join-Path $ROOT 'src\local_launcher.py')`" --server-only" `
+            -WorkingDirectory $ROOT -PassThru -WindowStyle Hidden
+        $up = $false
+        for ($i = 0; $i -lt 45; $i++) {
+            Start-Sleep -Seconds 2
+            try {
+                $resp = Invoke-WebRequest -Uri "http://127.0.0.1:8000/api/config" `
+                    -UseBasicParsing -TimeoutSec 3
+                if ($resp.StatusCode -eq 200) { $up = $true; break }
+            } catch {}
+            if ($smoke.HasExited) { break }
+        }
+        try { if (-not $smoke.HasExited) { Stop-Process -Id $smoke.Id -Force -ErrorAction SilentlyContinue } } catch {}
+        if ($up) { return @("ok", "backend booted and answered /api/config") }
+        return @("fail", "server did not answer within 90 s — see crash.log in the project root")
+    }) -and $vOk
+
+    if (-not $vOk) { Log "`r`nSome checks failed — see above. You can still Finish and re-run the wizard to repair." }
 
     # Step 7 — shortcut
     if ($ok) {
@@ -587,10 +846,32 @@ function Show-Complete {
     $($content.Controls | Where-Object { $_ -is [System.Windows.Forms.Label] -and $_.Text -eq "All done!" }).Location = New-Object System.Drawing.Point(70, 38)
 
     Add-Divider 86
-    Add-Sub "FirstCut is installed and ready." 102
-    Add-Sub "A shortcut has been placed on your Desktop.`nDouble-click it any time to launch the app." 132
-
-    Add-Divider 196
+    if ($script:verifyResults) {
+        Add-Sub "Verification results:" 102
+        $y = 126
+        foreach ($v in $script:verifyResults) {
+            $mark = switch ($v[0]) { "ok" { "✓"; break } "warn" { "!"; break } default { "✗" } }
+            $color = switch ($v[0]) { "ok" { $green; break } "warn" { $amber; break } default { $red } }
+            $row = New-Object System.Windows.Forms.Label
+            $row.Text      = "$mark  $($v[1])"
+            $row.Font      = New-Object System.Drawing.Font("Consolas", 8.5)
+            $row.ForeColor = $color
+            $row.AutoSize  = $true
+            $row.Location  = New-Object System.Drawing.Point(18, $y)
+            $row.MaximumSize = New-Object System.Drawing.Size(316, 60)
+            $content.Controls.Add($row)
+            $y += 22
+            if ($y -gt 300) { break }
+        }
+        Add-Divider ($y + 6)
+        Add-Sub "A shortcut has been placed on your Desktop.`nDouble-click it any time to launch the app." ($y + 20)
+        $chkY = $y + 74
+    } else {
+        Add-Sub "FirstCut is installed and ready." 102
+        Add-Sub "A shortcut has been placed on your Desktop.`nDouble-click it any time to launch the app." 132
+        Add-Divider 196
+        $chkY = 216
+    }
 
     $chk = New-Object System.Windows.Forms.CheckBox
     $chk.Text      = "Launch FirstCut now"
@@ -599,7 +880,7 @@ function Show-Complete {
     $chk.BackColor = $bg
     $chk.Checked   = $true
     $chk.AutoSize  = $true
-    $chk.Location  = New-Object System.Drawing.Point(18, 216)
+    $chk.Location  = New-Object System.Drawing.Point(18, $chkY)
     $content.Controls.Add($chk)
 
     $finish = New-Object System.Windows.Forms.Button
@@ -627,6 +908,8 @@ function Show-Complete {
 # ══════════════════════════════════════════════════════════════════
 
 $script:page = 0
+$script:repairMode = $false
+$script:verifyResults = @()
 
 function Go-Next {
     $script:page++
@@ -647,6 +930,14 @@ function Go-Back {
 
 $btnNext.Add_Click({ Go-Next })
 $btnBack.Add_Click({ Go-Back })
+# Repair flag is captured ONCE here — Welcome shows the checkbox but handlers
+# must not stack (Go-Back re-runs Show-Welcome, which would append duplicates).
+$btnNext.Add_Click({
+    try {
+        $repCtrl = $script:lastRepairBox
+        if ($repCtrl) { $script:repairMode = $repCtrl.Checked }
+    } catch {}
+})
 
 # ── Start ─────────────────────────────────────────────────────────
 Show-Welcome

@@ -4,9 +4,9 @@ import { Button } from '../ui/Button';
 import { Thumb } from '../photo/Thumb';
 import { StarRating } from '../ui/StarRating';
 import { ExifPanel } from '../ExifPanel';
-import { T, gradeLabel, formatScore, gradeRule } from '../../theme/tokens';
+import { T, gradeKey, gradeLabel, formatScore, gradeRule } from '../../theme/tokens';
 import { API, photoUrl } from '../../lib/api';
-import { gc } from '../../lib/grading';
+import { gc, calibratedAspects, aspectTier } from '../../lib/grading';
 import { cn } from '../../lib/cn';
 import { regionGuide, tierColor, tierIcon, tierHeat } from '../../lib/regions';
 import type { RegionTier } from '../../lib/regions';
@@ -113,17 +113,51 @@ export function AnalysisPanel({
                         color: gc(sel.grade), border: `1px solid ${gc(sel.grade)}`,
                       }}>
                         {gradeLabel(sel.grade)}
+                        {/* Borderline flag: the pipeline's verdict lines are
+                            fitted to the photographer's ratings and move, so a
+                            photo within 0.04 of a cut is honestly uncertain —
+                            say so instead of presenting a bucket as fact.
+                            Both flags drop the badge's 700 weight and label
+                            tracking: they are annotations, not headlines. */}
+                        {(sel as any).grade_margin != null &&
+                         (sel as any).grade_margin < 0.04 && (
+                          <span style={{ opacity: 0.75, textTransform: 'none',
+                                         letterSpacing: 'normal', fontWeight: 600,
+                                         marginLeft: 6 }}>
+                            · borderline
+                          </span>
+                        )}
+                        {/* Stage 2: the holdout-gated pairwise model placed this
+                            photo among the photographer's rated rejects even
+                            though the ruler says Mid/Strong — a suggestion to
+                            review, never an automatic downgrade. */}
+                        {(sel as any).pref_cull && (
+                          <span style={{ opacity: 0.9, textTransform: 'none',
+                                         letterSpacing: 'normal', fontWeight: 600,
+                                         marginLeft: 6, color: 'var(--alarm-warn)' }}>
+                            · cull?
+                          </span>
+                        )}
                       </span>
                     </div>
                   )}
-                  <StarRating stars={sel.stars ?? 0} size={22} onSet={n => handleSetStars(sel.id, n)}/>
+                  {/* The photographer's OWN stars — only where they actually
+                      rated. Machine verdicts stay in the badge above (they are
+                      the machine's opinion, not a rating); showing a derived
+                      star count here read as if the photographer had rated
+                      frames they never touched (2026-09-15 fix). */}
+                  <div style={{ marginTop: 8 }}>
+                    <StarRating stars={sel.stars ?? 0} size={22} onSet={n => handleSetStars(sel.id, n)}/>
+                  </div>
                   {/* Grade display — read-only */}
                   {isDone && (
                     <div style={{ display:'flex', gap:4, marginTop:8 }}>
                       {(['Strong','Mid','Weak'] as const).map(g => {
-                        const _sc = sel.score ?? 0;
-                        const derivedGrade = gradeLabel(_sc >= 0.60 ? 'Strong' : _sc >= 0.41 ? 'Mid' : 'Weak');
-                        const isActive = derivedGrade === g;
+                        // The active pill is the photo's ACTUAL stored grade —
+                        // the pipeline's thresholds are rating-anchored and move,
+                        // so re-deriving from hardcoded 0.60/0.41 here could
+                        // disagree with the verdict badge right above it.
+                        const isActive = gradeKey(g) === gradeKey(sel.grade ?? '');
                         const col = g.includes('Strong') ? T.gradeStrong : g.includes('Mid') ? T.ink2 : T.gradeWeak;
                         return (
                           <div key={g}
@@ -192,6 +226,16 @@ export function AnalysisPanel({
                 {infoTab === 'analysis' && (
                   sel && isGraded ? (() => {
                     const bd = sel.breakdown ?? {};
+                    // Raw head subscores remapped onto the photo's calibrated
+                    // score scale (see calibratedAspects) — every tier judgement
+                    // in this panel reads from this, not from the raw CLIP
+                    // values, so the rows can't contradict the grade badge.
+                    const calBd = calibratedAspects(
+                      Object.fromEntries(
+                        Object.entries(bd).filter(([, v]) => typeof v === 'number' && isFinite(v as number))
+                      ) as Record<string, number>,
+                      typeof sel.score === 'number' && isFinite(sel.score) ? sel.score : 0,
+                    );
                     // Verified photos: use stored 7B chain-of-thought (richer, model-generated).
                     // All others: always regenerate from aspect scores so moody-aware text
                     // is applied fresh — bypasses any old penalizing text stored in the DB.
@@ -266,31 +310,10 @@ export function AnalysisPanel({
                             <span style={{ fontSize:'var(--text-sm)', fontWeight:600, letterSpacing:'var(--track-label)', color:gradeCol }}>{tierWord.toUpperCase()}</span>
                           </div>
                         )}
-                        {/* Taste vote — engine telemetry, deliberately kept OUT of the
-                            score hero (see the comment there). It lives here, in the
-                            analysis tab, where the reader is already reading the
-                            machine's internals. Rendered only when this photo has a
-                            personal score; the weight formula mirrors
-                            grade_pipeline_v2 Step 5 (0.20 floor, 0.70 ceiling at
-                            100+ banked ratings) so the two can be checked against
-                            each other. */}
-                        {typeof sel.personal_score === 'number' && typeof sel.score === 'number' && (() => {
-                          const p = sel.personal_score as number;
-                          const conf = Math.min(Math.abs(p - 0.5) / 0.5, 1);
-                          const w = 0.20 + (0.70 - 0.20) * conf;
-                          const blended = (1 - w) * (sel.score as number) + w * p;
-                          return (
-                            <div title={`Your taste head (trained on your star ratings) scored this frame ${p.toFixed(2)} vs the machine's ${(sel.score as number).toFixed(2)}. The final score blended them at ${Math.round((1 - w) * 100)}% machine / ${Math.round(w * 100)}% taste — taste weight scales with the head's confidence, from a 20% floor to a 70% ceiling.`}
-                              style={{ display:'flex', alignItems:'center', gap:8, padding:'6px 10px',
-                                borderRadius:'var(--r-md)', background:T.raised, border:'1px solid ' + T.line }}>
-                              <div style={{ width:6, height:6, borderRadius:'var(--r-round)', background:T.gradeStrong, flexShrink:0 }}/>
-                              <span style={{ fontSize:'var(--text-xs)', fontWeight:700, letterSpacing:'var(--track-label)', color:T.ink3 }}>YOUR TASTE</span>
-                              <span className="t-num" style={{ fontSize:'var(--text-xs)', color:T.ink, fontWeight:600, marginLeft:'auto' }}>
-                                {p.toFixed(2)} · {Math.round(w * 100)}% → {blended.toFixed(2)}
-                              </span>
-                            </div>
-                          );
-                        })()}
+                        {/* Personal-taste telemetry removed (2026-09-14, user
+                            decision): the taste head's vote and blend math are
+                            gone from the UI. Grades are machine-only now. */}
+                        
                         {/* Close-Ups — face crops + honest verdicts. Computed on
                             demand by /api/photo-faces (one YuNet pass, cached
                             per path for the session) so rows graded before
@@ -351,7 +374,7 @@ export function AnalysisPanel({
                               const bdKey = label === 'Moment' ? 'Narrative'
                                           : label === 'Human'  ? 'Human/Culture'
                                           : label;
-                              const v    = typeof bd[bdKey] === 'number' ? bd[bdKey] as number : null;
+                              const v    = typeof bd[bdKey] === 'number' ? (calBd[bdKey] ?? bd[bdKey]) as number : null;
                               const vpct = v !== null ? Math.round(v * 100) : null;
                               const bc   = v === null ? T.ink3
                                          : v >= 0.6  ? T.gradeStrong
@@ -369,7 +392,7 @@ export function AnalysisPanel({
                                     )}
                                     {vpct !== null && (
                                       <span style={{ fontSize:'var(--text-xs)', fontWeight:600, letterSpacing:'var(--track-label)', textTransform:'uppercase',
-                                        color:bc }}>{vpct >= 60 ? 'Strong' : vpct >= 41 ? 'Mid' : 'Weak'}</span>
+                                        color:bc }}>{aspectTier(v ?? 0)}</span>
                                     )}
                                   </div>
                                   {v !== null && (
@@ -514,7 +537,7 @@ export function AnalysisPanel({
 
                       // ── Aspect bars ───────────────────────────────────────────
                       const ASPECT_KEYS = ['Technical','Composition','Lighting','Narrative','Human/Culture'] as const;
-                      const SKIP_KEYS   = new Set(['aesthetic','personal','nima','_grader','_arch_w','gemma_score','vlm_bboxes','vlm_status','_critique','_tech_audit',
+                      const SKIP_KEYS   = new Set(['aesthetic','personal','nima','aadb','exemplar','_grader','_arch_w','gemma_score','vlm_bboxes','vlm_status','_critique','_tech_audit',
                         // legacy flat technical-audit keys (pre-redaction breakdowns)
                         'blur_type','highlight_clip','highlight_spread','shadow_clip','has_horizon','horizon_tilt_deg']);
                       const aspectMap: Record<string,number> = {};
@@ -540,11 +563,22 @@ export function AnalysisPanel({
                       // maps them. Averages when several axes share a dimension; stays 0
                       // when the niche genuinely has none (row falls back to a context label).
                       const _dimAgg: Record<string,{ s:number; n:number }> = {};
+                      // Calibrated view of aspectMap — the checklist bands
+                      // (0.78/0.62/0.45…) are on the grade's scale, not the raw
+                      // CLIP head scale, so judge rows on the remapped values.
+                      const _calMap = calibratedAspects(
+                        aspectMap,
+                        typeof sel?.score === 'number' && isFinite(sel.score) ? sel.score : 0,
+                      );
+                      const _calV = (k: string) => {
+                        const raw = aspectMap[k] ?? 0;
+                        return raw > 0.05 ? (_calMap[k] ?? raw) : raw;   // raw 0 = "not scored", never shifted
+                      };
                       Object.entries(aspectMap).forEach(([k, v]) => {
                         const d = aspectDim(k);
                         if (d && (v as number) > 0.05) {
                           (_dimAgg[d] ??= { s:0, n:0 });
-                          _dimAgg[d].s += v as number; _dimAgg[d].n++;
+                          _dimAgg[d].s += _calV(k); _dimAgg[d].n++;
                         }
                       });
                       const _dimV   = (d: string) => _dimAgg[d]?.n ? _dimAgg[d].s / _dimAgg[d].n : 0;
@@ -570,8 +604,8 @@ export function AnalysisPanel({
                       const _gradeColor = gc(sel?.grade ?? '');
                       const _bestLabel  = aspectDim(best)    === 'human' ? 'Human presence' : (best ?? '');
                       const _weakLabel  = aspectDim(weakest) === 'human' ? 'Human presence' : (weakest ?? '');
-                      const _bestPct    = best    ? Math.round((aspectMap[best]    ?? 0) * 100) : 0;
-                      const _weakPct    = weakest ? Math.round((aspectMap[weakest] ?? 0) * 100) : 0;
+                      const _bestPct    = best    ? Math.round((_calMap[best]    ?? (aspectMap[best]    ?? 0)) * 100) : 0;
+                      const _weakPct    = weakest ? Math.round((_calMap[weakest] ?? (aspectMap[weakest] ?? 0)) * 100) : 0;
                       const _ql = (p: number) =>
                         p >= 80 ? 'exceptional' : p >= 65 ? 'strong' : p >= 50 ? 'solid' : p >= 35 ? 'weak' : 'failing';
                       // ── Technical audit fields from backend ───────────────────
@@ -950,14 +984,17 @@ export function AnalysisPanel({
                                       background: isLimit ? T.raisedHover
                                         : ci % 2 === 0 ? T.raised : T.ground,
                                       borderBottom: ci < _checks.length - 1 ? `1px solid ${T.line}` : 'none' }}>
-                                      <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                                    <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap', minWidth:0 }}>
                                         <div style={{ width:6, height:6, borderRadius:'var(--r-round)',
                                           background:col, flexShrink:0 }}/>
                                         <span style={{ fontSize:'var(--text-xs)', fontWeight:500, letterSpacing:'var(--track-label)',
-                                          color:T.ink3, minWidth:62, textTransform:'uppercase' }}>{label}</span>
-                                        <span style={{ fontSize:'var(--text-xs)', fontWeight:600, color:col }}>{value}</span>
+                                          color:T.ink3, minWidth:62, flexShrink:0, textTransform:'uppercase' }}>{label}</span>
+                                        {/* minWidth:0 + flex:1 lets a long value wrap inside the row
+                                            instead of shoving the FIX/FAILED tag into the label — that
+                                            overlap was the "misaligned right panel" bug in a 280px column. */}
+                                        <span style={{ fontSize:'var(--text-xs)', fontWeight:600, color:col, flex:'1 1 auto', minWidth:0 }}>{value}</span>
                                         {isLimit && (
-                                          <span style={{ marginLeft:'auto', fontSize:'var(--text-xs)', fontWeight:600,
+                                          <span style={{ flexShrink:0, fontSize:'var(--text-xs)', fontWeight:600,
                                             letterSpacing:'var(--track-label)', color: _tier === 'weak' ? T.gradeWeak : T.ink2,
                                             textTransform:'uppercase' }}>
                                             {_tier === 'weak' ? '↑ WHAT FAILED' : '↑ WHAT TO FIX'}

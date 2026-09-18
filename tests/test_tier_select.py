@@ -134,15 +134,49 @@ def test_explicit_env_wins(monkeypatch):
     assert tier == "low" and "explicitly" in reason
 
 
-def test_apply_publishes_env_for_later_imports(monkeypatch):
+def test_apply_publishes_env_for_later_imports(monkeypatch, tmp_path):
     monkeypatch.delenv("SIGLIP_TIER", raising=False)
+    # Isolate the LIBRARY TIER file: apply() persists the first auto-selection
+    # there, and a later test's subprocess must not inherit this run's choice.
+    monkeypatch.setenv("FIRSTCUT_LIB_TIER_FILE", str(tmp_path / "library_tier.json"))
     monkeypatch.setattr(tier_select, "available", lambda t: True)
     monkeypatch.setattr(tier_select, "_has_hf", lambda t: t == "high")
+    # Pin the ladder costs: with the mid tier's LEAN checkpoint now installed,
+    # ram_need_gb(mid) reads a measured figure that can legitimately fit in
+    # 1.2 GB — the tier this test expects must not depend on what weights
+    # happen to be on disk.
+    monkeypatch.setattr(tier_select, "ram_need_gb",
+                        lambda t: {"high": 3.0, "mid": 1.8, "low": 1.2}[t])
     monkeypatch.setattr(tier_select, "free_ram_gb", lambda: 1.2)
     import os
     tier, lbl, _ = tier_select.apply()
     assert tier == "low"
     assert os.environ["SIGLIP_TIER"] == "low", "downstream modules read this at import"
+
+
+def test_persisted_tier_falls_back_when_its_weights_are_missing(monkeypatch, tmp_path):
+    """A library graded elsewhere with 'high' persisted must not blindly publish
+    SIGLIP_TIER=high on a machine that never installed those weights — it
+    should re-select from what's actually on disk here, and re-persist that."""
+    monkeypatch.delenv("SIGLIP_TIER", raising=False)
+    lib_file = tmp_path / "library_tier.json"
+    monkeypatch.setenv("FIRSTCUT_LIB_TIER_FILE", str(lib_file))
+    import library_tier as _lt
+    _lt.set("high", "graded on a different machine")
+
+    # This machine only has 'low' weights installed.
+    monkeypatch.setattr(tier_select, "available", lambda t: t == "low")
+    monkeypatch.setattr(tier_select, "_has_hf", lambda t: False)
+    monkeypatch.setattr(tier_select, "ram_need_gb", lambda t: 1.0)
+    monkeypatch.setattr(tier_select, "free_ram_gb", lambda: 8.0)
+
+    tier, lbl, reason = tier_select.apply()
+    assert tier == "low", f"picked {tier!r} despite only 'low' being installed"
+    import os
+    assert os.environ["SIGLIP_TIER"] == "low"
+    # Self-heals: the stale 'high' record is replaced so the next call doesn't
+    # re-print the fallback warning or re-do the selection every time.
+    assert _lt.get() == "low"
 
 
 # ── 6. per-tier tables: a quality switch must not purge grades ───────────────
@@ -170,8 +204,13 @@ def test_high_tier_keeps_the_original_table_name():
     """Existing grades live in 'photos' — the default tier must not orphan them."""
     code = (
         "import os, sys; os.environ.pop('SIGLIP_TIER', None);"
+        # No library tier persisted either: with no env tier and no library
+        # state, run_profile falls back to 'high' (the historical default).
+        "os.environ['FIRSTCUT_LIB_TIER_FILE'] = r'%s';"
         "sys.path.insert(0, r'%s');"
-        "import lance_store as ls; print(ls._TBL_NAME)" % str(_ROOT / "src")
+        "import lance_store as ls; print(ls._TBL_NAME)" % (
+            str(_ROOT / "cache" / "definitely_missing_library_tier.json"),
+            str(_ROOT / "src"))
     )
     out = subprocess.run([sys.executable, "-c", code], capture_output=True,
                          text=True, cwd=str(_ROOT), timeout=300)

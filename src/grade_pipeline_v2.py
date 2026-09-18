@@ -1045,10 +1045,36 @@ def run_v2(
     try:
         import ram_probe as _ram_probe
         _ram_probe.reset()
-        _p = _ram_probe.wrap_progress(progress)
+        _p_raw = _ram_probe.wrap_progress(progress)
     except Exception:
         _ram_probe = None
-        _p = progress or (lambda f, d: None)
+        _p_raw = progress or (lambda f, d: None)
+
+    # ── Monotonic progress clamp (2026-09-16) ────────────────────────────────
+    # The stage map emits NON-monotonic milestones: NIMA pins 0.45 for its
+    # whole pass even though quality scoring already reached 0.84 (the bar
+    # "went back to 48"), and scan-mode variants sit below full-mode ones
+    # (0.55/0.66 after 0.65/0.84). The bar must never visibly move backwards
+    # within one runner process: each stage's milestone becomes the HIGHER of
+    # its own value and the floor already shown. Descriptions always pass
+    # through untouched — the text still says exactly what stage is running,
+    # so no information is lost, the bar just stops lying about direction.
+    # The ONE sanctioned reset is the GPU→CPU encoder fallback, which truly
+    # starts over and says so in its description.
+    _prog_floor = {"v": 0.0}
+    _RESET_MARKERS = ("re-encoding on CPU", "GPU encode failed")
+    def _p(frac: float, desc: str = "") -> None:
+        d = desc or ""
+        if any(m in d for m in _RESET_MARKERS):
+            _prog_floor["v"] = float(frac)          # honest, announced reset
+        elif frac > _prog_floor["v"]:
+            _prog_floor["v"] = float(frac)          # normal forward motion
+        else:
+            frac = _prog_floor["v"]                  # backwards → clamp to floor
+        try:
+            _p_raw(frac, d)
+        except Exception:
+            pass
 
     # ── Whole-cull memory checkpoint (single source: src/memory_plan.py) ────
     # History: this used to be a warn-only check ("it will finish, just
@@ -1194,7 +1220,7 @@ def run_v2(
             _embs_map = {}
             try:
                 import lance_store as _ls_cached
-                _embs_map = _ls_diag.query_embeddings_by_paths(_c_paths)
+                _embs_map = _ls_cached.query_embeddings_by_paths(_c_paths)
             except Exception as _e_emb:
                 print(f"[v2] cached-path embedding fetch failed: {_e_emb}")
             _c_embs = [np.asarray(_embs_map.get(_gp), dtype=np.float32)
@@ -1230,50 +1256,92 @@ def run_v2(
                                    f"groups={len(set(c for c in _cluster_ids if c >= 0))}\n")
                 except Exception:
                     pass
-            # ── Taste blend on the cached path (2026-09-10) ──────────────────
-            # The fast path returned pre-blend machine scores from LanceDB, so
-            # enabling FIRSTCUT_PERSONAL_TASTE changed nothing on re-runs: the
-            # grades stayed machine-only. Apply the SAME confidence-adaptive
-            # blend as live Step 5 (w = floor + (ceil-floor)*conf, ceiling
-            # scales with banked ratings) over machine × personal, then
-            # re-bucket the grades. Pure numpy — no models.
-            _taste_on = os.environ.get("FIRSTCUT_PERSONAL_TASTE", "").strip() == "1"
-            _ps_vals  = [g.get("personal_score") for g in gallery]
-            if _taste_on and all(isinstance(v, (int, float)) for v in _ps_vals):
-                import ratings_store as _rs_blend
-                _n_ratings = len(_rs_blend.load())
-                _tw_floor  = 0.20
-                if   _n_ratings >= 100: _tw_ceil = 0.70
-                elif _n_ratings >= 50:  _tw_ceil = 0.55
-                elif _n_ratings >= 25:  _tw_ceil = 0.45
-                else:                   _tw_ceil = 0.35
-                _mach = np.asarray([g["score"] for g in gallery], dtype=np.float64)
-                _pers = np.asarray(_ps_vals, dtype=np.float64)
-                _conf = np.clip(np.abs(_pers - 0.5) / 0.5, 0.0, 1.0)
-                _tw   = _tw_floor + (_tw_ceil - _tw_floor) * _conf
-                _fused = (1.0 - _tw) * _mach + _tw * _pers
-                _fused = np.round(np.clip(_fused, 0.10, 1.0), 2)
-                from pipeline_stages import assign_grades as _assign_grades
-                _fused2, _grades2 = _assign_grades(
-                    _fused, _c_paths, np,
-                    strong_thresh=STRONG_THRESH, mid_thresh=MID_THRESH,
-                    strong_label=GRADE_STRONG, mid_label=GRADE_MID, weak_label=GRADE_WEAK)
-                _n_moved = 0
-                for g, _s2, _g2 in zip(gallery, _fused2, _grades2):
-                    if g["grade"] != _g2:
-                        _n_moved += 1
-                    g["score"] = _s2
-                    g["overall_score"] = _s2
-                    g["rating"] = _s2
-                    g["grade"] = _g2
-                grades = [g["grade"] for g in gallery]
-                print(f"[v2] cached-path taste blend: {_n_ratings} ratings, "
-                      f"w {_tw_floor:.2f}–{_tw_ceil:.2f} — {_n_moved} grades moved")
+            # ── Rating-anchored re-bucket on the cached path (2026-09-14) ─────
+            # The cached path returns stored grades, which were bucketed with
+            # whatever thresholds were live when they were written. Re-fit the
+            # cut-points (global fit over all snapshotted ratings, live gallery
+            # scores taking precedence) and re-bucket, so a re-scan of an
+            # already-encoded folder honours the same "grades must not diverge
+            # from my ratings" rule as a full re-grade.
+            _c_strong_t, _c_mid_t = STRONG_THRESH, MID_THRESH
+            try:
+                import ratings_store as _rs_thr
+                from rating_calibration import thresholds_from_records as _tfr
+                from pipeline_stages import assign_grades as _assign_grades_c
+                _stars_map = _rs_thr.load()
+                if _stars_map:
+                    _ct_scores = np.asarray([g["score"] for g in gallery],
+                                            dtype=np.float64)
+                    _live_scores = {str(p): float(s) for p, s in zip(_c_paths, _ct_scores)
+                                    if np.isfinite(s)}
+                    _records = []
+                    for _rec in _rs_thr.load_records():
+                        _lp = _live_scores.get(_rec["path"])
+                        if _lp is not None:
+                            _rec["score"] = _lp     # live beats snapshot
+                        if isinstance(_rec.get("score"), (int, float)) and _rec["score"] > 0:
+                            _records.append(_rec)
+                    _c_strong_t, _c_mid_t, _ainfo = _tfr(_records)
+                    _s2c, _g2c = _assign_grades_c(
+                        _ct_scores, _c_paths, np,
+                        strong_thresh=_c_strong_t, mid_thresh=_c_mid_t,
+                        strong_label=GRADE_STRONG, mid_label=GRADE_MID,
+                        weak_label=GRADE_WEAK)
+                    _n_moved_c = 0
+                    for g, _s2, _g2 in zip(gallery, _s2c, _g2c):
+                        if g["grade"] != _g2:
+                            _n_moved_c += 1
+                        g["score"] = _s2
+                        g["overall_score"] = _s2
+                        g["rating"] = _s2
+                        g["grade"] = _g2
+                        g["grade_margin"] = round(min(abs(float(_s2) - _c_strong_t),
+                                                      abs(float(_s2) - _c_mid_t)), 3)
+                    grades = [g["grade"] for g in gallery]
+                    print(f"[v2] cached-path rating-anchored re-bucket: "
+                          f"strong ≥ {_c_strong_t:.2f} mid ≥ {_c_mid_t:.2f} — "
+                          f"{_n_moved_c} grades moved ({_ainfo})")
+            except Exception as _e_rb:
+                print(f"[v2] cached-path rating-anchored re-bucket skipped: {_e_rb}")
+            # ── Preference stage on the cached path (Stages 2 & 3) ────────────
+            # Uses the persisted gate (no retrain on a re-scan — the gate was
+            # decided by the last full grade) to attach pref_score / pref_cull.
+            try:
+                import preference_model as _pm_c
+                import ratings_store as _rs_pref_c
                 try:
-                    with open(_dbg_path, "a", encoding="utf-8") as _dbg:
-                        _dbg.write(f"taste blend: ratings={_n_ratings} moved={_n_moved}\n")
-                except Exception:
-                    pass
+                    from lance_store import current_encoder_tag as _cet_c
+                except ImportError:
+                    _cet_c = lambda: ""
+                _c_embs_by_path = {}
+                try:
+                    import lance_store as _ls_pref_c
+                    _c_want = sorted({g["path"] for g in gallery} |
+                                     {r["path"] for r in _rs_pref_c.load_records()})
+                    _c_embs_by_path = _ls_pref_c.query_embeddings_for_paths_bulk(
+                        _c_want)
+                except Exception as _e_pv:
+                    print(f"[v2] cached-path pref-vector fetch skipped: {_e_pv}")
+                if _c_embs_by_path:
+                    _c_pref_recs = _rs_pref_c.load_records()
+                    # Legacy ratings lack snapshotted scores — recover them
+                    # from the LanceDB rows so cross-folder anchors work.
+                    _c_need = [r["path"] for r in _c_pref_recs
+                               if not isinstance(r.get("score"), (int, float))
+                               or r["score"] <= 0]
+                    if _c_need:
+                        _c_sc = _ls_pref_c.query_scores_for_paths_bulk(_c_need)
+                        for _r in _c_pref_recs:
+                            if _r["path"] in _c_sc:
+                                _r["score"] = _c_sc[_r["path"]]
+                    _c_pref_info = _pm_c.apply_to_gallery(
+                        gallery, _c_pref_recs, _c_embs_by_path,
+                        encoder_tag=_cet_c(), train=False)
+                    print(f"[v2] cached-path preference stage: "
+                          f"active={_c_pref_info.get('active')} "
+                          f"({_c_pref_info.get('reason') or 'gated model applied'})")
+            except Exception as _e_pref_c:
+                print(f"[v2] cached-path preference stage skipped: {_e_pref_c}")
         except Exception as _e_cached_dedup:
             import traceback as _tb_cd
             try:
@@ -2511,16 +2579,26 @@ def run_v2(
                         _ee_skip.add(paths[idx])
                 if _ee_skip:
                     print(f"[v2] Early-exit: {len(_ee_skip)}/{len(paths_to_rate)} photos are "
-                          f"decisively outside both thresholds — skipping IQA for them")
+                          f"decisively outside both thresholds, but the gate isn't wired to "
+                          f"skip IQA for them (see 2026-09-14 fix note below) — scoring all "
+                          f"{len(paths_to_rate)} anyway")
             except Exception as _e_ee:
                 print(f"[v2] Early-exit gate skipped (non-fatal): {_e_ee}")
-        _to_rate_full = [idx for idx in to_rate_indices if paths[idx] not in _ee_skip]
-        _p(0.66, f"Scoring image quality — {len(_to_rate_full)} photos…")
+        _p(0.66, f"Scoring image quality — {len(paths_to_rate)} photos…")
         # Per (folder, preset) key so two folders never share a checkpoint.
         import hashlib as _hl_iqa
         _iqa_key = _hl_iqa.sha1(f"{folder_path}|{preset}".encode()).hexdigest()[:16]
         try:
-            _full_idx = [idx for idx in to_rate_indices if paths[idx] not in _ee_skip]
+            # NOT filtered by _ee_skip: image_paths (paths_to_rate), clip_scores
+            # and lum_stats below are all still the FULL to_rate_indices — the
+            # early-exit gate only informs the log line above, it was never
+            # wired to actually shrink the IQA call. Filtering just iqa_embs/
+            # vlm_breakdowns to _ee_skip while everything else stayed full-length
+            # desynced this array from image_paths, so score_all()'s
+            # `vlm_breakdowns[i]` (i up to len(image_paths)-1) threw
+            # IndexError once i reached the shorter length — crashing the IQA
+            # subprocess on every grade that had any early-exit photos.
+            _full_idx = to_rate_indices
             iqa_embs  = embs[np.asarray(_full_idx, dtype=np.intp)]   # (M, 1536); intp = safe even if empty
             _vlm_bds  = [per_photo_breakdowns[idx] for idx in _full_idx]
 
@@ -2564,7 +2642,7 @@ def run_v2(
                 print(f"[v2] IQA singleton release skipped: {_e_rel}")
             _vram_clear()
             print(f"[v2] IQA heads: {len(_full_idx)} photos scored "
-                  f"({len(_ee_skip)} early-exited)")
+                  f"(early-exit currently inert — {len(_ee_skip)} were eligible to skip but ran anyway)")
             if composition_overrides:
                 print(f"[v2] Composition overrides: {len(composition_overrides)} images "
                       f"(over-the-shoulder portrait → 0.85)")
@@ -3356,7 +3434,10 @@ def run_v2(
     _taste_used  = False
     final_scores = scores_arr.copy()  # copy so Soft-Focus gate doesn't mutate scores_arr
     _ph_weights  = Path("cache/personal_head.pt")
-    _taste_on    = os.environ.get("FIRSTCUT_PERSONAL_TASTE", "").strip() == "1"
+    # 2026-09-14: personal taste blend RETIRED at the user's request — the
+    # head was dragging legit keepers toward Mid. Grades are machine-only,
+    # unconditionally. The block below is dead code kept for provenance.
+    _taste_on    = False
     if _ph_weights.exists() and not _taste_on:
         print("[v2] PersonalHead weights present but the taste blend is OPT-IN "
               "(set FIRSTCUT_PERSONAL_TASTE=1 to enable) — ratings never "
@@ -3511,13 +3592,39 @@ def run_v2(
     from pipeline_stages import mark_duplicate_groups as _mark_duplicate_groups
     sim_flags = _mark_duplicate_groups(cluster_ids, final_scores, paths)
 
-    # ── Step 6: Absolute grade thresholds ────────────────────────────────────
-    # Strong ≥ 0.60  |  Mid 0.41–0.59  |  Weak ≤ 0.40
+    # ── Step 6: Rating-anchored grade thresholds (global fit) ────────────────
+    # 2026-09-14 product rule: a re-grade must not diverge from the
+    # photographer's star ratings — they are the accuracy standard. The ruler
+    # is fitted to ALL rated photos across folders (snapshotted scores), with
+    # the current folder's live machine scores taking precedence where present,
+    # recency weighting, and Bayesian shrinkage toward the shipped defaults
+    # (see rating_calibration.thresholds_from_records). Falls back to 0.60/0.41
+    # whenever the ratings can't support a ruler.
     _p(0.89, "Assigning grades…")
+    _strong_t, _mid_t = STRONG_THRESH, MID_THRESH
+    try:
+        import ratings_store as _rs_thr
+        from rating_calibration import thresholds_from_records as _tfr
+        _stars_map = _rs_thr.load()
+        if _stars_map:
+            _live_scores = {str(p): float(s) for p, s in zip(paths, final_scores)
+                            if np.isfinite(s)}
+            _records = []
+            for _rec in _rs_thr.load_records():
+                _lp = _live_scores.get(_rec["path"])
+                if _lp is not None:
+                    _rec["score"] = _lp     # live beats snapshot
+                if isinstance(_rec.get("score"), (int, float)) and _rec["score"] > 0:
+                    _records.append(_rec)
+            _strong_t, _mid_t, _anchor_info = _tfr(_records)
+            print(f"[v2] Rating-anchored thresholds: strong ≥ {_strong_t:.2f}  "
+                  f"mid ≥ {_mid_t:.2f}  ({_anchor_info})")
+    except Exception as _e_thr:
+        print(f"[v2] rating-anchored thresholds unavailable ({_e_thr}) — defaults")
     from pipeline_stages import assign_grades as _assign_grades
     final_scores, grades = _assign_grades(
         final_scores, paths, np,
-        strong_thresh=STRONG_THRESH, mid_thresh=MID_THRESH,
+        strong_thresh=_strong_t, mid_thresh=_mid_t,
         strong_label=GRADE_STRONG, mid_label=GRADE_MID, weak_label=GRADE_WEAK)
 
     # ── Step 7: EXIF + LanceDB ────────────────────────────────────────────────
@@ -3630,6 +3737,11 @@ def run_v2(
             "score":           _fscore,
             "overall_score":   _fscore,
             "rating":          _fscore,
+            # Distance from the fitted verdict lines — the UI uses this to flag
+            # borderline verdicts ("Strong · borderline") instead of presenting
+            # a cliff-edge bucket as certainty.
+            "grade_margin":    round(min(abs(_fscore - _strong_t),
+                                         abs(_fscore - _mid_t)), 3),
             "human_perception":round(float(pers[i]),         3) if _taste_used else None,
             "personal_score":  round(float(pers[i]),         3) if _taste_used else None,
             **({"embedding": embs[i].tolist()} if keep_embeddings else {}),
@@ -3658,6 +3770,11 @@ def run_v2(
     from pipeline_stages import attach_face_signals as _attach_face_signals
     _attach_face_signals(gallery, person_detected_dict)
 
+    # Capture the run's embeddings for the preference stage (Step 8a, below)
+    # BEFORE releasing the array — the stage references them by path and dies
+    # with a silent NameError if `embs` is gone. Same objects, no copy.
+    _pref_embs = {paths[i]: embs[i] for i in range(n)}
+
     # embs used for last time above (embedding tolist); release before catalog write
     del embs
     gc.collect()
@@ -3670,6 +3787,60 @@ def run_v2(
             for p in all_paths
             if p in gallery_by_path or p in cached_rows
         ]
+
+    # ── Step 8a: Pairwise preference stage (Stages 2 & 3, 2026-09-15) ─────────
+    # Trains the pairwise model on ALL rated photos (embedding anchors pulled
+    # from LanceDB + this run's live embeddings), lets the holdout gate decide
+    # deployment, and — only if the gate passes — attaches pref_score /
+    # pref_cull suggestions. Verdicts stay with the rating-anchored ruler.
+    _pref_info = None
+    try:
+        import preference_model as _pm
+        import ratings_store as _rs_pref
+        try:
+            from lance_store import current_encoder_tag as _cet
+        except ImportError:
+            _cet = lambda: ""
+        _pref_recs = [dict(r) for r in _rs_pref.load_records()]
+        _pref_live = {paths[i]: float(final_scores[i]) for i in range(n)
+                      if np.isfinite(final_scores[i])}
+        for _r in _pref_recs:
+            _lp = _pref_live.get(_r["path"])
+            if _lp is not None:
+                _r["score"] = _lp
+        # Rated photos from other folders usually have no snapshotted score
+        # (legacy ratings) — recover their machine score from the LanceDB row
+        # so they can serve as cross-folder anchors.
+        try:
+            import lance_store as _ls_pref
+            _need_score = [r["path"] for r in _pref_recs
+                           if not isinstance(r.get("score"), (int, float))
+                           or r["score"] <= 0]
+            if _need_score:
+                _sc = _ls_pref.query_scores_for_paths_bulk(_need_score)
+                for _r in _pref_recs:
+                    if _r["path"] in _sc:
+                        _r["score"] = _sc[_r["path"]]
+                if _sc:
+                    print(f"[v2] pref-stage score backfill from LanceDB: "
+                          f"{len(_sc)} rated records")
+        except Exception as _e_sb:
+            print(f"[v2] pref-stage score backfill skipped: {_e_sb}")
+        # _pref_embs was captured before `del embs` (see face-signal block);
+        # extend it with cross-folder rated anchors + cached gallery vectors.
+        try:
+            import lance_store as _ls_pref2
+            _want = sorted({r["path"] for r in _pref_recs} |
+                           {g["path"] for g in gallery})
+            _pref_embs.update(_ls_pref2.query_embeddings_for_paths_bulk(_want))
+        except Exception as _e_pv:
+            print(f"[v2] pref-stage anchor-vector fetch skipped: {_e_pv}")
+        _pref_info = _pm.apply_to_gallery(
+            gallery, _pref_recs, _pref_embs, encoder_tag=_cet())
+        print(f"[v2] preference stage: active={_pref_info.get('active')} "
+              f"({_pref_info.get('reason') or _pref_info.get('gate', {})})")
+    except Exception as _e_pref:
+        print(f"[v2] preference stage skipped: {_e_pref}")
 
     # ── Step 8b: Atomic server-side catalog.json write ───────────────────────
     # Keeps catalog.json in sync immediately after LanceDB upsert, regardless of

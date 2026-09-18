@@ -51,7 +51,11 @@ export function AspectStrip({
   breakdown: Record<string, number> | null | undefined;
   className?: string;
 }) {
-  const entries = Object.entries(breakdown ?? {}).slice(0, 5);
+  const entries = Object.entries(breakdown ?? {})
+    .filter(([k, v]) => typeof v === 'number' && !k.startsWith('_')
+      && !['Aesthetic', 'aesthetic', 'Personal', 'personal', 'nima', 'AADB', 'aadb',
+           'Exemplar', 'exemplar', 'overall_score', 'score', 'gemma_score'].includes(k))
+    .slice(0, 5);
   if (!entries.length) return null;
   return (
     <div className={cn('flex w-full gap-px', className)} aria-hidden>

@@ -550,15 +550,18 @@ def _in_process_pull_stream_locked(model_name: str):
                                      "message": "file not found on the hub (404)"}) + "\n").encode()
                     ok_all = False
                     continue
-                r.raise_for_status()
                 if r.status_code == 416:
                     # Range beyond EOF: the .part is bigger than the source file
-                    # (inflation from an older buggy resume). Start over.
+                    # (inflation from an older buggy resume). Start over. MUST
+                    # be checked before raise_for_status() below — 416 is a 4xx
+                    # error status, so calling raise_for_status() unconditionally
+                    # first raised HTTPError here every time and made this
+                    # recovery branch unreachable dead code.
                     have, append = 0, False
                     r.close()
                     headers = {}
                     r = _rq.get(url, stream=True, timeout=(15, 90), allow_redirects=True)
-                    r.raise_for_status()
+                r.raise_for_status()
                 # A server that ignores Range answers 200 — restart cleanly.
                 append = (r.status_code == 206 and have > 0)
                 done = have if append else 0

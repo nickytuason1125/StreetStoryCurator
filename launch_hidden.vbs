@@ -5,12 +5,14 @@ appDir = Left(WScript.ScriptFullName, InStrRev(WScript.ScriptFullName, "\"))
 
 shell.CurrentDirectory = Left(appDir, Len(appDir) - 1)
 
-' Lite-by-default on this machine (16 GB RAM, measured: the full pipeline
-' needs 3.8-4.2 GB free and this box rarely has it). Pin the small encoder
-' and lite defaults for EVERY launch — see LITE_MODE.md. The vars are set on
-' this host process and inherited by the pythonw child below.
-shell.Environment("PROCESS")("SIGLIP_TIER") = "low"
-shell.Environment("PROCESS")("FIRSTCUT_LITE") = "1"
+' Tier policy (2026-09-13): NO pin here. The tier is now LIBRARY STATE —
+' src/library_tier.py persists the first choice (or the user's explicit
+' pick) and every later grade inherits it, so adding photos no longer
+' re-encodes the library and the quality never silently drops between
+' runs. Lite remains an EXPLICIT choice: Start-Lite.bat (or Start-Lite.sh)
+' still sets SIGLIP_TIER=low / FIRSTCUT_LITE=1 for its session. Removing
+' the old hard pin here is what stops "the same grade came out worse than
+' last time" — see LITE_MODE.md and src/library_tier.py.
 
 Dim pythonwPath, scriptPath, crashLog, stampFile
 pythonwPath = appDir & "venv\Scripts\pythonw.exe"

@@ -131,6 +131,70 @@ def _auto_enc_batch() -> int:
     """
     return _PROFILE.encode_batch
 
+# ── CUDA instability memory (2026-09-15) ─────────────────────────────────────
+# crash.log shows the ONNX CUDA provider hard-crashing at 0xC0000005
+# (rc=3221225477) in streaks: the retry ladder burns all 4 attempts, the run
+# pauses, waits for RAM/VRAM recovery, respawns — and crashes again. The GPU
+# path on this 6 GB card (shared with WebView2 + the warm CLIP session) is
+# unstable under exactly the machine states a cull creates. A CPU-provider
+# encode is slower (~2–4x) but finishes, and embeddings are the same vectors
+# (fp32 vs fp16 last-bit drift is accepted by the existing determinism guard).
+# This module-level memory records the crash streak in cache/ so a LATER cull
+# doesn't repeat today's 10-minute crash-loop: after 2 native CUDA deaths the
+# ladder switches to the CPU provider for the rest of the run, and a clean CUDA
+# run clears the memory so the faster path is retried next time.
+def _backend_flag_path() -> Path:
+    return Path(__file__).resolve().parent.parent / "cache" / "encoder_backend.json"
+
+
+def _record_cuda_crash() -> int:
+    """Increment the persisted CUDA crash streak. Returns the new count."""
+    import time as _t
+    import json as _j
+    try:
+        p = _backend_flag_path()
+        try:
+            d = _j.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            d = {}
+        streak = int(d.get("cuda_crashes", 0)) + 1
+        # A crash more than 24 h after the last one starts a fresh streak —
+        # yesterday's driver state says nothing about today's.
+        last = float(d.get("last_crash_ts", 0) or 0)
+        if last and (_t.time() - last) > 86400:
+            streak = 1
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(_j.dumps({
+            "cuda_crashes": streak,
+            "last_crash_ts": _t.time(),
+        }), encoding="utf-8")
+        return streak
+    except Exception:
+        return 0
+
+
+def _clear_cuda_crashes() -> None:
+    try:
+        p = _backend_flag_path()
+        if p.exists():
+            p.unlink()
+    except Exception:
+        pass
+
+
+def _recent_cuda_crash_streak() -> int:
+    """How many CUDA deaths were recorded in the last 24 h (0 if none)."""
+    import time as _t
+    import json as _j
+    try:
+        d = _j.loads(_backend_flag_path().read_text(encoding="utf-8"))
+        last = float(d.get("last_crash_ts", 0) or 0)
+        if last and (_t.time() - last) <= 86400:
+            return int(d.get("cuda_crashes", 0))
+    except Exception:
+        pass
+    return 0
+
 
 def _hf_checkpoint_present() -> bool:
     """True when the lean fp16 HF checkpoint exists (encode_worker prefers it)."""
@@ -176,6 +240,169 @@ def _default_ram_floor_gb() -> float:
     return _hf_floors()[1] if _hf_checkpoint_present() else 2.0
 
 
+def _query_free_vram_gb() -> "float | None":
+    """Free VRAM on device 0 via nvidia-smi, or None when unmeasurable.
+
+    Lives HERE, not in encode_worker, because the parent must never import
+    encode_worker (it imports torch — see the CUDA-free grade-worker tests).
+    """
+    try:
+        import subprocess as _sp
+        _flags = 0x08000000 if os.name == "nt" else 0   # CREATE_NO_WINDOW
+        _out = _sp.check_output(
+            ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+            creationflags=_flags, text=True, timeout=5,
+        )
+        return float(_out.strip().splitlines()[0]) / 1024.0
+    except Exception:
+        return None
+
+
+def _pause_status_path():
+    return Path(__file__).resolve().parent.parent / "cache" / "encoder_pause.json"
+
+
+def _write_pause_status(why: str) -> None:
+    """Park the WHY where the UI can see it.
+
+    crash.log explains a parked grade to developers; the UI used to just show
+    a frozen progress bar with no reason. The grade-state endpoint reads this
+    file and the status line shows it. Deleted on resume."""
+    try:
+        import json as _json_status
+        import time as _t_status
+        _pause_status_path().write_text(_json_status.dumps({
+            "why": why, "since_epoch": _t_status.time(),
+        }), encoding="utf-8")
+    except Exception:
+        pass  # status is cosmetic — never break the pause on it
+
+
+def _clear_pause_status() -> None:
+    try:
+        _pause_status_path().unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+_pause_notifier = None              # callable(str) — surfaces pauses to the UI
+PAUSE_MAX_WAIT_S_OVERRIDE = None    # per-caller bounded wait; beats the env var
+_warm_job_loss_streak = 0           # consecutive warm jobs lost to no-resp
+# Warm no-resp budget: minimum wall-clock seconds and the scale applied to
+# the per-job no-CPU window. Module-level so tests can shrink the budget
+# instead of waiting out the production 300 s floor.
+_NO_RESP_MIN_S = 300.0
+_NO_RESP_SCALE = 3.0
+
+
+def set_pause_notifier(fn) -> None:
+    """Register a callback invoked every pause heartbeat with a human-readable
+    reason. The creative router uses this to push SSE progress messages so a
+    memory-starved run explains itself instead of looking hung."""
+    global _pause_notifier
+    _pause_notifier = fn
+
+
+def set_pause_budget(seconds: "float | None") -> None:
+    """Bound the resource-pause wait for the calling pipeline (None = env/∞)."""
+    global PAUSE_MAX_WAIT_S_OVERRIDE
+    PAUSE_MAX_WAIT_S_OVERRIDE = float(seconds) if seconds else None
+
+
+def _pause_for_resources(why: str, need_gb: "float | None" = None) -> None:
+    """OOM is a PAUSE, not a death (2026-09-13).
+
+    Blocks until system RAM and VRAM can fund a (possibly reduced-batch)
+    encode, then returns. The chunk checkpoint means every finished photo is
+    already durable, so waiting costs nothing but time — the run continues
+    from exactly where it stopped instead of dying and asking for a manual
+    Resume.
+
+    `need_gb` is the threshold the CALLER re-measures with on return; the
+    pause must gate on the SAME metric, or the two can disagree (pause says
+    recovered, gate says starved) and the caller/pause pair livelocks. It
+    defaults to the encoder's hard floor + a small margin.
+
+    Poll every 10 s; heartbeat every 60 s so crash.log always shows WHY the
+    grade is parked. SIGLIP_PAUSE_MAX_WAIT_S bounds the wait (seconds);
+    unset/0 = wait indefinitely, which is the contract: a transient app
+    hogging memory must never turn into a crashed grade. Only when a budget
+    IS set and expires does this raise — and even then the checkpoint makes
+    that a clean resumable stop, not data loss.
+    """
+    import time as _time
+    try:
+        import psutil as _ps
+    except Exception:
+        return   # cannot measure → cannot pause meaningfully; caller proceeds
+    try:
+        _budget = float(os.environ.get("SIGLIP_PAUSE_MAX_WAIT_S", "") or 0)
+    except (TypeError, ValueError):
+        _budget = 0.0
+    # Per-caller override wins: the creative pipeline cannot checkpoint, so it
+    # needs a bounded wait (a story build that stalls forever is a broken UX;
+    # a paused grade is free).
+    if PAUSE_MAX_WAIT_S_OVERRIDE is not None:
+        _budget = float(PAUSE_MAX_WAIT_S_OVERRIDE)
+    if need_gb is None:
+        need_gb = _default_hard_floor_gb() + 0.5   # hard floor + a small margin
+    _start = _time.time()
+    _beat = 0.0
+    # First act: hand our own dead pages back. The server's working set is the
+    # grade's high-water mark, and IT is often the memory pressure that caused
+    # the pause — freed heap only becomes available RAM once the OS reclaims
+    # the resident pages.
+    try:
+        import ctypes as _ct_trim
+        if sys.platform == "win32":
+            _psapi = _ct_trim.WinDLL("psapi")
+            _psapi.EmptyWorkingSet(_ct_trim.WinDLL("kernel32").GetCurrentProcess())
+    except Exception:
+        pass
+    while True:
+        try:
+            _free = _ps.virtual_memory().available / 1e9
+        except Exception:
+            _free = None
+        _vram = _query_free_vram_gb()
+        _ok_ram = _free is None or _free >= need_gb
+        _ok_vram = _vram is None or _vram >= 1.5
+        if _ok_ram and _ok_vram:
+            _f_txt = "?" if _free is None else f"{_free:.1f} GB"
+            _v_txt = "?" if _vram is None else f"{_vram:.1f} GB"
+            _clear_pause_status()
+            print(f"[siglip2] RESUMING — resources recovered (RAM {_f_txt}, "
+                  f"VRAM {_v_txt} free); checkpoint intact, continuing", flush=True)
+            return
+        _now = _time.time()
+        if _now - _beat >= 60.0:
+            _f_txt = "?" if _free is None else f"{_free:.1f} GB"
+            _v_txt = "?" if _vram is None else f"{_vram:.1f} GB"
+            _write_pause_status(why)
+            _beat_msg = (f"[siglip2] PAUSED ({why}) — RAM {_f_txt} free (need {need_gb:.1f}), "
+                  f"VRAM {_v_txt} free; waiting for memory (every finished photo is "
+                  f"checkpointed; the grade continues automatically)")
+            print(_beat_msg, flush=True)
+            # Surface the pause to registered UI listeners (SSE progress) so a
+            # starved run explains itself instead of looking hung.
+            try:
+                if _pause_notifier is not None:
+                    _pause_notifier(
+                        f"Waiting for memory: {_f_txt} RAM free "
+                        f"(need ~{need_gb:.1f} GB) — close some apps…"
+                    )
+            except Exception:
+                pass
+            _beat = _now
+        if _budget and (_now - _start) >= _budget:
+            raise MemoryError(
+                f"Paused {_budget:.0f} s waiting for memory ({why}) — giving up only "
+                f"because SIGLIP_PAUSE_MAX_WAIT_S expired. Progress is checkpointed.")
+        # Poll interval: 10 s for an unbounded wait (production); scaled down
+        # when a short budget is set so bounded callers (tests) don't stall.
+        _time.sleep(min(10.0, max(0.2, _budget / 5.0)) if _budget else 10.0)
+
+
 def _enforce_ram_floor() -> None:
     """Raise MemoryError if free RAM is below the floor. Called before EVERY
     encode (not just at construction) so a doomed model load fails cleanly
@@ -201,49 +428,67 @@ def _enforce_ram_floor() -> None:
     def _free() -> float:
         return _ps.virtual_memory().available / 1e9
 
-    _avail = _free()
-    if _avail >= _floor:
-        return
-
-    # ── Adaptive, not fatal ──────────────────────────────────────────────────
-    # This used to raise immediately, so a transient dip (a browser tab, an
-    # antivirus sweep, the previous stage's buffers not yet reclaimed) killed
-    # the whole grade. Free RAM is volatile: collect our own garbage, wait
-    # briefly, and re-check before giving up. Only if memory stays below the
-    # HARD floor do we refuse — and the hard floor is the encoder's MEASURED
-    # peak (2.71 GB for the HF fp16 loader) plus a margin, not the comfort
-    # figure. Between hard and soft we proceed with a smaller decode batch and
-    # say so, because a slow grade beats a refused one.
-    import gc as _gc, time as _time
-    _gc.collect()
-    for _wait in (0.5, 1.5, 3.0):
+    # ── OOM is a PAUSE, not a death (2026-09-13) ─────────────────────────────
+    # The whole gate now lives in a recovery loop: every "refuse" path below
+    # instead waits in _pause_for_resources until the machine can fund the
+    # encode. SIGLIP_PAUSE_MAX_WAIT_S bounds the wait for callers that need a
+    # bounded stop (tests); unset = wait indefinitely, because the chunk
+    # checkpoint makes waiting free and a crashed grade is the thing we are
+    # eliminating.
+    while True:
         _avail = _free()
         if _avail >= _floor:
-            print(f"[siglip2] RAM recovered to {_avail:.1f} GB — continuing")
             return
-        _time.sleep(_wait)
-    _avail = _free()
-    if _avail >= _floor:
-        return
 
-    _hard_env = os.environ.get("SIGLIP_HARD_MIN_RAM_GB")
-    try:
-        _hard = float(_hard_env) if _hard_env else _default_hard_floor_gb()
-    except (TypeError, ValueError):
-        _hard = _default_hard_floor_gb()
+        # ── Adaptive, not fatal ──────────────────────────────────────────────
+        # This used to raise immediately, so a transient dip (a browser tab, an
+        # antivirus sweep, the previous stage's buffers not yet reclaimed) killed
+        # the whole grade. Free RAM is volatile: collect our own garbage, wait
+        # briefly, and re-check before giving up. Only if memory stays below the
+        # HARD floor do we refuse — and the hard floor is the encoder's MEASURED
+        # peak (2.71 GB for the HF fp16 loader) plus a margin, not the comfort
+        # figure. Between hard and soft we proceed with a smaller decode batch and
+        # say so, because a slow grade beats a refused one.
+        import gc as _gc, time as _time
+        _gc.collect()
+        for _wait in (0.5, 1.5, 3.0):
+            _avail = _free()
+            if _avail >= _floor:
+                print(f"[siglip2] RAM recovered to {_avail:.1f} GB — continuing")
+                return
+            _time.sleep(_wait)
+        _avail = _free()
+        if _avail >= _floor:
+            return
 
-    if _avail >= _hard:
-        # Shrink the per-batch decode buffers; the model load itself is fixed.
-        os.environ["SIGLIP_ENC_BATCH"] = "2"
-        print(f"[siglip2] Low RAM ({_avail:.1f} GB < {_floor:.1f} GB soft floor) — "
-              f"proceeding with a reduced encode batch instead of failing. "
-              f"Expect a slower encode.")
-        return
+        _hard_env = os.environ.get("SIGLIP_HARD_MIN_RAM_GB")
+        try:
+            _hard = float(_hard_env) if _hard_env else _default_hard_floor_gb()
+        except (TypeError, ValueError):
+            _hard = _default_hard_floor_gb()
 
-    raise MemoryError(
-        f"Not enough free RAM for the vision model: only {_avail:.1f} GB free, "
-        f"need at least ~{_hard:.1f} GB. Close a couple of apps and retry."
-    )
+        if _avail >= _hard:
+            # Shrink the per-batch decode buffers; the model load itself is fixed.
+            os.environ["SIGLIP_ENC_BATCH"] = "2"
+            print(f"[siglip2] Low RAM ({_avail:.1f} GB < {_floor:.1f} GB soft floor) — "
+                  f"proceeding with a reduced encode batch instead of failing. "
+                  f"Expect a slower encode.")
+            return
+
+        try:
+            _pause_for_resources(
+                f"not enough RAM for the vision model "
+                f"({_avail:.1f} GB free, need ~{_hard:.1f} GB)",
+                need_gb=_hard + 0.5)
+        except MemoryError:
+            raise MemoryError(
+                f"Not enough free RAM for the vision model: only {_avail:.1f} GB free, "
+                f"need at least ~{_hard:.1f} GB, and it did not recover within the pause "
+                f"budget (SIGLIP_PAUSE_MAX_WAIT_S). Close a couple of apps and retry — "
+                f"progress so far is checkpointed."
+            )
+        # Recovered: loop re-measures and proceeds (with a reduced batch if the
+        # soft floor is still out of reach).
 
 
 def _siglip2_cache_exists() -> bool:
@@ -292,7 +537,22 @@ _WARM: dict | None = None
 
 
 def _warm_enabled() -> bool:
-    return os.environ.get("FIRSTCUT_WARM_ENCODER", "1").strip() != "0"
+    if os.environ.get("FIRSTCUT_WARM_ENCODER", "1").strip() == "0":
+        return False
+    # Memory gate (2026-09-16): warm's failure mode IS memory pressure —
+    # measured live, under <5 GB free the serve worker wedged at model load
+    # on every attempt while the one-shot ladder succeeded in seconds. A
+    # warm "optimisation" that costs 5-30 min of no-resp budget when the
+    # machine is tight is worse than no warm at all, so require comfortable
+    # headroom before using it.
+    try:
+        import memory_plan as _mp_we
+        _free = _mp_we.free_ram_gb()
+        if _free is not None and _free < 4.5:
+            return False
+    except Exception:
+        pass
+    return True
 
 
 def _warm_shutdown() -> None:
@@ -360,10 +620,128 @@ def _ppid_alive(psutil_mod, ppid) -> bool:
         return False
 
 
+def _real_worker_pid(proc) -> "int | None":
+    """The REAL interpreter pid behind a spawned encode worker (2026-09-16).
+
+    On this machine the venv python.exe is a launcher: it starts the base
+    Python312 as a CHILD and waits. So proc.pid (the launcher) is NOT the pid
+    the worker sees via os.getpid() — measured live: launcher 46160, worker
+    276. Any parent-side pid comparison against os.getpid() inside the worker
+    (the ready-marker handshake, the CPU liveness watchdog) must use the
+    child's pid. Returns the python-named descendant of proc.pid, or None.
+    """
+    try:
+        import psutil as _ps
+        kids = _ps.Process(proc.pid).children(recursive=True)
+        for _k in kids:
+            if "python" in (_k.name() or "").lower():
+                return _k.pid
+        return kids[0].pid if kids else None
+    except Exception:
+        return None
+
+
+def _worker_tree_cpu(proc) -> "tuple[float | None, int]":
+    """Total CPU seconds of the whole worker tree (wrapper + real interpreter
+    + any descendants), plus the tree size. Returns (None, 0) if the root is
+    gone.
+
+    Watching a SINGLE pid broke both ways (2026-09-16): the venv launcher
+    wrapper's cpu_times never move (it just waits on its child), and
+    _real_worker_pid can transiently return None when the wrapper has not
+    spawned the interpreter yet — either way the liveness watchdog read a
+    HEALTHY, model-loading worker as 'job lost in respawn race' and killed it
+    every ~90 s. Summing the tree is robust to both: a loading or encoding
+    worker always moves the total, a lost job never does.
+    """
+    try:
+        import psutil as _ps
+        root = _ps.Process(proc.pid)
+        total = sum(root.cpu_times())
+        n = 1
+        for _k in root.children(recursive=True):
+            try:
+                total += sum(_k.cpu_times())
+                n += 1
+            except (_ps.NoSuchProcess, _ps.AccessDenied):
+                continue
+        return total, n
+    except Exception:
+        return None, 0
+
+
+def _warm_ready_wait(proc, timeout_s: float = 45.0, spawn_ts: "float | None" = None) -> bool:
+    """Wait until the serve worker writes its ready marker (2026-09-16).
+
+    serve() writes cache/encode_worker.ready.json {pid, ts} once its stdin
+    reader is live — the earliest point a submitted job is guaranteed to be
+    CONSUMED. Before this handshake, _warm_run wrote a job into a worker that
+    was still importing (or that lost the singleton gate and already exited),
+    and the no-CPU watchdog ate 45 s before classifying the job as lost —
+    the 'respawn race' lines that litter crash.log.
+
+    The marker pid IS the worker's own os.getpid() — the real interpreter pid —
+    so it is adopted directly (verified alive + python-named) instead of
+    re-deriving it via psutil children() enumeration. The old per-iteration
+    _real_worker_pid call could BLOCK indefinitely against a wedged child
+    (observed 2026-09-16: parent hung past its own 45 s deadline), and the
+    wrapper pid it sometimes fell back on broke the CPU watchdog.
+
+    A stale foreign marker (a previous worker's leftover) is rejected by the
+    ``spawn_ts`` guard: the marker ts must postdate our spawn.
+
+    Returns:
+      True  — the worker behind proc is ready; submit the job.
+      False — timeout or the worker exited (gate loss / import crash);
+              the caller falls back to the one-shot ladder immediately.
+    """
+    import json as _json
+    import time as _t
+    _dir = os.environ.get("FIRSTCUT_DATA_DIR")
+    p = Path(_dir) if _dir else Path(__file__).resolve().parent.parent / "cache"
+    p = p / "encode_worker.ready.json"
+    deadline = _t.time() + timeout_s
+    while _t.time() < deadline:
+        if proc.poll() is not None:
+            return False   # died before becoming ready (gate exit, import OOM)
+        try:
+            d = _json.loads(p.read_text(encoding="utf-8"))
+            mp = int(d.get("pid", 0))
+            ts = float(d.get("ts", 0) or 0)
+            # The marker's pid is the real interpreter's self-reported pid.
+            # Accept it when it is (a) not our wrapper pid, (b) alive and
+            # python-named, and (c) written after we spawned (not stale).
+            if (mp and mp != proc.pid
+                    and (spawn_ts is None or ts >= spawn_ts - 1.0)):
+                try:
+                    import psutil as _ps
+                    _proc = _ps.Process(mp)
+                    if "python" in (_proc.name() or "").lower():
+                        global _WARM
+                        if _WARM is not None:
+                            _WARM["real_pid"] = mp
+                        return True
+                except Exception:
+                    pass
+            # A DIFFERENT pid in the marker is only conclusive when OUR worker
+            # has exited — that is the singleton-gate signature (a healthy
+            # machine-wide worker ate our slot). While our worker is alive it
+            # may simply not have booted far enough to write its marker yet,
+            # so keep waiting (up to the timeout) instead of fast-failing on
+            # a stale foreign entry.
+            if mp and mp != proc.pid and proc.poll() is not None:
+                return False
+        except Exception:
+            pass
+        _t.sleep(0.5)
+    return False
+
+
 def _warm_ensure(worker_path: Path) -> bool:
     """A live warm worker, spawning one if needed. False = could not spawn."""
     global _WARM
     import sys
+    import time as _t
     import win_job
     if _WARM is not None and _WARM["proc"].poll() is None:
         return True
@@ -384,9 +762,54 @@ def _warm_ensure(worker_path: Path) -> bool:
     except Exception as exc:
         print(f"[siglip2] warm encoder spawn failed (non-fatal): {exc}", flush=True)
         return False
-    _WARM = {"proc": proc, "stdin": proc.stdin}
+    _WARM = {"proc": proc, "stdin": proc.stdin, "spawn_ts": _t.time()}
     print(f"[siglip2] warm encoder spawned pid={proc.pid}", flush=True)
+    # The ready wait runs in a daemon thread joined with a hard timeout:
+    # its psutil calls (Process(mp).name() et al.) can BLOCK indefinitely
+    # against a wedged child (observed 2026-09-16 — the parent hung past its
+    # own 45 s deadline), so the wait itself must never be trusted to return.
+    if proc.poll() is None and not _warm_ready_wait_bounded(proc, _WARM["spawn_ts"]):
+        # Never became ready: it either died (singleton-gate exit — another
+        # healthy worker owns the machine-wide lock — or an import crash) or
+        # is wedged in imports. Killing it here means the caller's warm attempt
+        # reports failure in seconds and the one-shot ladder runs, instead of a
+        # job being submitted into a dead pipe and discovered 45 s later.
+        print(f"[siglip2] warm encoder pid={proc.pid} never signalled ready — "
+              f"not submitting jobs to it", flush=True)
+        _warm_shutdown()
+        return False
+    # real_pid is adopted from the worker's own ready marker inside
+    # _warm_ready_wait (the marker carries the interpreter's os.getpid()).
+    # _real_worker_pid is NOT called here: its psutil children() enumeration
+    # blocked indefinitely against a wedged child (2026-09-16).
+    if _WARM.get("real_pid") is None:
+        _WARM["real_pid"] = None
     return proc.poll() is None
+
+
+def _warm_ready_wait_bounded(proc, spawn_ts: "float | None" = None,
+                             timeout_s: float = 45.0) -> bool:
+    """_warm_ready_wait with a HARD wall-clock bound.
+
+    The inner wait's psutil calls can block indefinitely against a wedged
+    child process (2026-09-16), so the wait runs in a daemon thread that the
+    caller abandons after ``timeout_s`` no matter what. A leaked probe thread
+    costs nothing: it is daemonized, touches only file reads, and dies as soon
+    as the wedged process resolves or the process exits.
+    """
+    import threading as _threading
+    _result = {"ok": False}
+
+    def _probe():
+        try:
+            _result["ok"] = _warm_ready_wait(proc, spawn_ts=spawn_ts)
+        except Exception:
+            _result["ok"] = False
+
+    _th = _threading.Thread(target=_probe, daemon=True, name="warm-ready-probe")
+    _th.start()
+    _th.join(timeout_s)
+    return _result["ok"]
 
 
 def _warm_no_cpu_s(n_items: int) -> float:
@@ -406,6 +829,44 @@ def _warm_no_cpu_s(n_items: int) -> float:
         except ValueError:
             pass
     return 90.0 if n_items <= 64 else min(600.0, 90.0 + float(n_items))
+
+
+def _warm_force_release() -> None:
+    """Kill the machine-wide warm encoder and clear its lock (2026-09-13).
+
+    crash.log 2026-09-13 19:43: a warm worker wedged mid-job while its
+    heartbeat stayed FRESH (alive but not serving). Every serve-mode respawn
+    then exited via _serve_singleton_gate ('already active pid=... exiting'),
+    the request was eaten, _warm_run gave up, and the one-shot ladder ran
+    without the model. Releasing the holder before the one-shot ladder lets
+    the fallback actually run instead of dying in the same state."""
+    import json as _json
+    try:
+        from pathlib import Path as _Path
+        _dir = os.environ.get("FIRSTCUT_DATA_DIR")
+        _lock = _Path(_dir) if _dir else _Path(__file__).resolve().parent.parent / "cache"
+        _lock = _lock / "encoder_warm.lock"
+        _holder = 0
+        try:
+            _holder = int(_json.loads(_lock.read_text(encoding="utf-8")).get("pid", 0))
+        except Exception:
+            pass
+        if _holder and _holder != os.getpid():
+            try:
+                import psutil as _ps
+                _proc = _ps.Process(_holder)
+                if "python" in (_proc.name() or "").lower():
+                    _proc.kill()
+                    print(f"[siglip2] warm force-release: killed wedged holder pid={_holder}", flush=True)
+            except Exception:
+                pass
+        try:
+            _lock.unlink()
+            print("[siglip2] warm lock cleared", flush=True)
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 
 def _warm_run(enc, mode: str, in_path: str, out_path: str,
@@ -435,48 +896,27 @@ def _warm_run(enc, mode: str, in_path: str, out_path: str,
             _warm_shutdown()
             continue
         deadline = _time.time() + 3600
-        # ── Liveness watchdog ─────────────────────────────────────────────────
-        # A warm job that never starts (respawn race eats the request) leaves
-        # the worker at serve-ready with the model loaded and the parent
-        # polling for a resp file that will never be written — the eternal
-        # "frozen at the same %" freeze, 3600 s per attempt. Distinguish a
-        # HEALTHY long job (worker burns CPU) from a LOST one (worker at 0%
-        # CPU): track the worker's total CPU time; if it hasn't moved for 90 s
-        # while no resp has arrived, the job was lost — kill the worker and
-        # fall through to the one-shot spawn ladder (retry ladder +
-        # crash-loop breaker + checkpointed abort). A genuinely working CPU
-        # encode never sits at 0 CPU for 90 s.
-        _liveliness_floor = _time.time() + 60   # grace period: model warm-up
-        # No-CPU window: scaled to the job (see _warm_no_cpu_s), and doubled
-        # when the machine is memory-starved — a swapped-out worker is not
-        # lost, it is SLOW, and killing it forces a one-shot respawn into the
-        # same starvation (the memory watcher owns that regime, not this).
+        # ── Watchdog: pure wall clock (2026-09-16) ────────────────────────────
+        # The old CPU-delta liveness heuristics (45 s no-CPU / 90 s idle
+        # windows over psutil cpu_times) were unfixable in practice:
+        #   • the venv wrapper pid's cpu_times never move → every HEALTHY
+        #     worker read as "job lost in respawn race" and got killed
+        #     mid model-load;
+        #   • tree-CPU sums tick from page-fault handling on a paged-out
+        #     worker, so a wedged job never looked idle;
+        #   • worse, psutil children()/cpu_times() enumeration itself could
+        #     BLOCK indefinitely against a wedged child, hanging the parent
+        #     outside its own watchdog.
+        # The ready-marker handshake already guarantees the job was consumed,
+        # and poll() catches a dead worker — so the only remaining failure is
+        # "job taken, never finishes". That is handled by a pure wall-clock
+        # no-resp budget, scaled to the job, immune to every pathology above.
         _no_cpu_s = _warm_no_cpu_s(n_items)
-        try:
-            import memory_plan as _mp_warm
-            _warm_free = _mp_warm.free_ram_gb()
-            if _warm_free is not None and _warm_free < 2.0:
-                _no_cpu_s = max(_no_cpu_s, 600.0)
-        except Exception:
-            pass
-        # TWO-PHASE liveness (2026-09-11, refined after the real run):
-        #   Phase 1 (fast): a RECEIVED job shows model-load/encode CPU within
-        #     seconds of submission. Zero CPU for 45 s means the respawn race
-        #     ate the request — kill fast; the one-shot spawn is already the
-        #     faster path in that state.
-        #   Phase 2 (patient): once the job is known-started (CPU > 1 s), use
-        #     the scaled _no_cpu_s window — a working worker may legitimately
-        #     stall on the GPU and a slow SD card.
-        _received = False
-        _fast_deadline = _time.time() + 45
-        _last_cpu = 0.0
-        _last_cpu_change = _time.time()
-        try:
-            import psutil as _psutil
-            _warm_ps = _psutil.Process(_WARM["proc"].pid)
-            _last_cpu = sum(_warm_ps.cpu_times())
-        except Exception:
-            _warm_ps = None
+        # (the old low-RAM doubling was removed 2026-09-16: commit-pressure
+        # machines tripped it permanently, inflating the no-resp budget to
+        # 15+ min. _warm_enabled()'s RAM gate now keeps warm off under
+        # pressure, so the flat scaled budget below is the only deadline.)
+        _no_resp_deadline = _time.time() + max(_NO_RESP_MIN_S, _no_cpu_s * _NO_RESP_SCALE)
         while _time.time() < deadline:
             if os.path.exists(resp_path):
                 try:
@@ -492,30 +932,13 @@ def _warm_run(enc, mode: str, in_path: str, out_path: str,
                 print("[siglip2] warm encoder died mid-job — respawning", flush=True)
                 _warm_shutdown()
                 break
-            if _warm_ps is not None and _time.time() > _liveliness_floor:
-                try:
-                    cpu_now = sum(_warm_ps.cpu_times())
-                    if cpu_now > 1.0:
-                        _received = True
-                    if cpu_now != _last_cpu:
-                        _last_cpu = cpu_now
-                        _last_cpu_change = _time.time()
-                    if not _received and _time.time() > _fast_deadline:
-                        print("[siglip2] warm worker showed no CPU 45s after "
-                              "submission — job lost in respawn race; killing "
-                              "worker, falling back to one-shot spawn", flush=True)
-                        _warm_shutdown()
-                        break
-                    if (_received and cpu_now == _last_cpu
-                            and _time.time() - _last_cpu_change > _no_cpu_s):
-                        print(f"[siglip2] warm encoder idle {_no_cpu_s:.0f}s with no resp — "
-                              "job lost in respawn race; killing worker, "
-                              "falling back to one-shot spawn", flush=True)
-                        _warm_shutdown()
-                        break
-                except Exception:
-                    pass   # worker gone — poll() check handles it
-            _time.sleep(0.25)
+            if _time.time() >= _no_resp_deadline:
+                print(f"[siglip2] warm encoder produced no resp within "
+                      f"{max(_NO_RESP_MIN_S, _no_cpu_s * _NO_RESP_SCALE):.0f}s — killing worker, "
+                      "falling back to one-shot spawn", flush=True)
+                _warm_shutdown()
+                break
+            _time.sleep(0.5)
     return "warm encoder lost the job twice (died mid-job / idle no-resp)"
 
 
@@ -581,7 +1004,8 @@ class SigLIP2Encoder:
 
     _WORKER = Path(__file__).resolve().parent / "encode_worker.py"
 
-    def __init__(self, device: str = "auto", quantize: bool = False, progress=None):
+    def __init__(self, device: str = "auto", quantize: bool = False, progress=None,
+                 use_warm: bool = True):
         _p = progress or (lambda f, d: None)
         # Device selection is handled entirely inside encode_worker.py.
         # NOTE: encode_worker.py uses os._exit(0) to bypass PyTorch's CUDA atexit,
@@ -590,6 +1014,15 @@ class SigLIP2Encoder:
         # defers all CUDA work to the encode subprocess (for SigLIP) and then to
         # Qwen/TOPIQ later. encode_worker.py handles device selection itself.
         self.device = device   # informational only; subprocess picks the real device
+        # use_warm=False bypasses the persistent serve-mode worker (and its
+        # liveness watchdog) for this instance and always uses the one-shot
+        # spawn ladder. The CPU text path passes False: the warm watchdog
+        # repeatedly misread a healthy CPU model-load as "job lost in respawn
+        # race" (the real-interpreter pid probe fails under the pythonw/venv
+        # wrapper chain), killing the worker every ~90 s — and for a handful
+        # of text queries the model load dominates anyway, so the warm worker
+        # bought nothing but fragility.
+        self._use_warm = use_warm
         _enforce_ram_floor()   # bail cleanly if RAM can't fit the model
         _p(0.07, "Image analysis ready…")
 
@@ -620,6 +1053,7 @@ class SigLIP2Encoder:
     _RETRY_DELAY_S = 2.0
 
     def _run(self, mode: str, items: list) -> np.ndarray:
+        global _warm_job_loss_streak
         import sys, json, tempfile, subprocess, time
         import win_job
         if not items:
@@ -642,23 +1076,44 @@ class SigLIP2Encoder:
             env.setdefault("PYTHONIOENCODING", "utf-8")
             if mode == "images":
                 env.setdefault("SIGLIP_ENC_BATCH", str(_auto_enc_batch()))
+            # Start on the CPU provider when CUDA crashed recently (see the
+            # instability-memory helpers above): yesterday's streak means the
+            # GPU path is wedging culls, so don't burn this run's ladder on it.
+            if _recent_cuda_crash_streak() >= 2 and env.get("FIRSTCUT_FORCE_CPU", "") != "1":
+                env["FIRSTCUT_FORCE_CPU"] = "1"
+                print(f"[siglip2] recent CUDA crash streak — starting this encode on the "
+                      f"CPU provider (delete cache/encoder_backend.json to re-try the GPU)",
+                      flush=True)
             # ── Preferred path: the persistent warm worker ──────────────────
             # No imports, no model load — the serve-mode worker is already
             # loaded. On any warm-path failure we fall through to the
             # one-shot loop below (today's behaviour, never worse).
             _warm_err = ""
-            if _warm_enabled() and os.environ.get("FIRSTCUT_NO_WARM", "") != "1":
+            # After one no-resp loss, stop trusting the warm worker for the
+            # rest of the process: each loss costs the full no-resp budget
+            # (~5 min) before the one-shot ladder runs anyway (2026-09-16).
+            if (self._use_warm and _warm_enabled()
+                    and _warm_job_loss_streak == 0
+                    and os.environ.get("FIRSTCUT_NO_WARM", "") != "1"):
                 try:
                     _warm_err = _warm_run(self, mode, in_path, out_path, n_items=len(items))
                     if _warm_err is None:
+                        _warm_job_loss_streak = 0
                         return np.load(out_path)
+                    _warm_job_loss_streak += 1
                     print(f"[siglip2] warm encoder unavailable ({str(_warm_err)[-160:]}) — "
                           f"falling back to a one-shot spawn", flush=True)
                 except Exception as _warm_exc:
                     _warm_err = str(_warm_exc)
+                    _warm_job_loss_streak += 1
                     print(f"[siglip2] warm encoder error ({_warm_exc}) — falling back to a one-shot spawn", flush=True)
+            # The warm worker gave up. Release the machine-wide holder so
+            # the one-shot ladder below is not refused by the singleton gate
+            # against a wedged-but-alive warm encoder (crash.log 2026-09-13).
+            _warm_force_release()
             _saw_unreadable = "files unreadable" in (_warm_err or "")
             _last_rc = None
+            _native_crashes = 0
             for _attempt in range(1, self._MAX_ATTEMPTS + 1):
                 print(f"[siglip2] encode_worker start: mode={mode} n={len(items)} attempt={_attempt}", flush=True)
                 import subprocess as _sp
@@ -674,6 +1129,12 @@ class SigLIP2Encoder:
                     )
                 print(f"[siglip2] encode_worker done: rc={r.returncode} npy={os.path.exists(out_path)}", flush=True)
                 if r.returncode == 0 and os.path.exists(out_path):
+                    # A clean CUDA encode is proof the GPU path works again —
+                    # clear the instability memory so future culls get the
+                    # fast provider back. A CPU-forced run leaves the memory
+                    # alone (the streak stands until a CUDA run proves it).
+                    if env.get("FIRSTCUT_FORCE_CPU", "") != "1":
+                        _clear_cuda_crashes()
                     return np.load(out_path)
                 _last_rc = r.returncode
                 # ── Deterministic unreadable-files breaker (2026-09-10) ──────
@@ -707,15 +1168,52 @@ class SigLIP2Encoder:
                     except MemoryError:
                         print(f"[siglip2] encode_worker attempt {_attempt} failed "
                               f"(rc={r.returncode}) and free RAM is below the hard "
-                              f"floor — breaking the respawn loop (checkpoint saved, "
-                              f"resume available)", flush=True)
-                        raise
+                              f"floor — PAUSING until memory recovers instead of "
+                              f"aborting (checkpoint saved, resume is automatic)",
+                              flush=True)
+                        _pause_for_resources("free RAM below the hard floor mid-ladder")
+                        continue
                     # The failure is usually a transient commit/RAM dip, not
                     # code (see the constants' comment). Collect our own
                     # garbage, then back off long enough for the machine to
                     # rebalance — standby lists refill and other processes
                     # free pages on a timescale of seconds, so a 1.5 s retry
                     # only ever won when the dip had already passed.
+                    # -- Adaptive OOM response (2026-09-13) ---------------
+                    # A native death (0xC0000005) or an explicit VRAM refusal
+                    # (exit 5) means the working set did not fit. Halving the
+                    # encode batch halves the activation peak WITHOUT touching
+                    # the model, and a ViT has no cross-image interaction, so
+                    # per-photo results are unchanged. This is a degraded
+                    # RETRY only - the deterministic default batch (keyed on
+                    # device, per test_determinism) is never altered.
+                    if r.returncode in (5, 3221225477):
+                        try:
+                            _b = int(env.get("SIGLIP_ENC_BATCH", "0") or 0)
+                        except (TypeError, ValueError):
+                            _b = 0
+                        if _b > 1:
+                            env["SIGLIP_ENC_BATCH"] = str(max(1, _b // 2))
+                            print(f"[siglip2] OOM response: encode batch {_b} -> "
+                                  f"{env['SIGLIP_ENC_BATCH']} for the next attempt", flush=True)
+                    # ── CUDA instability breaker (2026-09-15) ─────────────
+                    # A native 0xC0000005 death is a GPU-provider crash, not a
+                    # memory dip: halving the batch and re-waiting on RAM just
+                    # replays it (crash.log shows the same rc on 4 straight
+                    # attempts, then again after the respawn pause). After the
+                    # second native death in this run, switch to the CPU
+                    # provider for every remaining attempt — slower, but it
+                    # finishes instead of crash-looping the cull to a standstill.
+                    if r.returncode == 3221225477:
+                        _crash_streak = _record_cuda_crash()
+                        if _crash_streak >= 2 and env.get("FIRSTCUT_FORCE_CPU", "") != "1":
+                            env["FIRSTCUT_FORCE_CPU"] = "1"
+                            env.pop("FIRSTCUT_ORT_PROVIDERS", None)
+                            print(f"[siglip2] CUDA provider crashed natively "
+                                  f"(streak {_crash_streak}) — switching the encode "
+                                  f"to the CPU provider for the rest of this run "
+                                  f"(2-4x slower; delete cache/encoder_backend.json "
+                                  f"to re-try the GPU later)", flush=True)
                     import gc as _gc
                     import memory_plan as _mp_run
                     _free = _mp_run.free_ram_gb()
@@ -739,13 +1237,49 @@ class SigLIP2Encoder:
                         if _free is None or _free >= _floor:
                             break
                         time.sleep(2)
-            raise MemoryError(
-                f"The vision encoder could not start after {self._MAX_ATTEMPTS} attempts "
-                f"(last exit {_last_rc}) — the machine ran out of memory while loading it. "
-                f"Everything graded so far is saved: close a few apps (or reboot if the "
-                f"RAM chip has been red a while) and press Resume — the cull continues "
-                f"from its checkpoint instead of starting over."
-            )
+                    # -- VRAM recovery wait (2026-09-13) -------------------
+                    # A system-RAM wait alone misses the actual binding
+                    # constraint on this machine: the 6 GB card shared with
+                    # WebView2 and the backend's warm CLIP. Hold the retry
+                    # until the card has room too (nvidia-smi inline - the
+                    # parent must NOT import encode_worker, which imports
+                    # torch; see the CUDA-free grade-worker tests).
+                    try:
+                        import subprocess as _sp_v
+                        _flags_v = 0x08000000 if os.name == "nt" else 0
+                        def _free_vram_gb_p():
+                            try:
+                                return float(_sp_v.check_output(
+                                    ["nvidia-smi", "--query-gpu=memory.free",
+                                     "--format=csv,noheader,nounits"],
+                                    creationflags=_flags_v, text=True,
+                                    timeout=5).strip().splitlines()[0]) / 1024.0
+                            except Exception:
+                                return None
+                        _v = _free_vram_gb_p()
+                        if _v is not None and _v < 1.5:
+                            _v_deadline = time.time() + 60
+                            while _v < 1.5 and time.time() < _v_deadline:
+                                print(f"[siglip2] waiting for VRAM recovery "
+                                      f"({_v:.2f} GB free on the card)", flush=True)
+                                time.sleep(3)
+                                _v = _free_vram_gb_p()
+                    except Exception:
+                        pass
+            _vram_note = " (the GPU ran out of VRAM - exit 5)" if _last_rc == 5 else ""
+            # ── OOM is a PAUSE, not a death (2026-09-13) ─────────────────────
+            # The 4-attempt ladder handles transient dips; a sustained squeeze
+            # (an app that will not close, a long antivirus sweep) is weather
+            # on a different timescale. The chunk checkpoint makes waiting
+            # FREE: every finished photo is durable, so pause until the
+            # machine can fund the encode, then restart the whole ladder from
+            # the checkpoint. SIGLIP_PAUSE_MAX_WAIT_S bounds the pause for
+            # callers that need a bounded stop; unset = wait indefinitely.
+            _pause_for_resources(
+                f"vision encoder died after {self._MAX_ATTEMPTS} attempts "
+                f"(last exit {_last_rc}){_vram_note}")
+            return self._run(mode, items)   # fresh ladder, fresh temp files,
+                                            # checkpoint skips finished work
         finally:
             for _f in (in_path, out_path):
                 try: os.unlink(_f)

@@ -253,8 +253,36 @@ def apply(force: bool = False) -> tuple:
     if explicit in _TIERS and not force:
         return explicit, label(explicit), "set explicitly via SIGLIP_TIER"
 
+    # ── Library tier (2026-09-13) ────────────────────────────────────────────
+    # The tier is LIBRARY STATE (see src/library_tier.py): embedding tables and
+    # probe caches are tier-partitioned, so a tier flip between runs makes the
+    # incremental encode cache look empty and re-encodes the whole library —
+    # the exact spiral that ballooned jobs on this 16 GB machine until the
+    # encoder hit its wall. Once a tier has been chosen (explicitly or by the
+    # first auto-selection) it is honored regardless of today's free RAM;
+    # SIGLIP_TIER in the env remains the explicit override above.
+    import library_tier as _lt
+    _lib = _lt.get()
+    # A persisted tier is only honoured when its weights are actually on this
+    # machine. Without this check, a library graded on an install that shipped
+    # 'high' (e.g. a GPU desktop) fails every load on a smaller/CPU-only
+    # install that only has 'low' — library_tier.json stores just the tier
+    # NAME, so nothing else catches the mismatch until the encoder itself
+    # fails against a missing checkpoint.
+    if _lib is not None and not force and available(_lib):
+        os.environ["SIGLIP_TIER"] = _lib
+        return _lib, label(_lib), "library tier (persisted in cache/library_tier.json)"
+    if _lib is not None and not force:
+        print(f"[tier] Persisted library tier '{_lib}' has no weights installed on "
+              f"this machine — re-selecting from what's actually available", flush=True)
+
     tier, lbl, reason = select()
     os.environ["SIGLIP_TIER"] = tier
+    # Persist when there was no prior choice, or the prior choice turned out to
+    # be unavailable here — either way this IS the new first-ever choice for
+    # this machine's copy of the library.
+    if _lib is None or not available(_lib):
+        _lt.set(tier, f"auto-selected at first grade ({reason})")
     missing = [label(t) for t in _ORDER if not available(t)]
     if missing:
         reason += f" (not installed: {', '.join(missing)})"

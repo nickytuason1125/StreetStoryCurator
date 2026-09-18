@@ -421,8 +421,88 @@ def query_light_all() -> list[dict]:
     tbl = _open_table()
     with _lock:
         rows = tbl.search().select(
-            ["path", "grade", "score", "personal_score"]).to_list()
-    return [_row_to_dict(r) for r in rows]
+            ["path", "grade", "score", "personal_score",
+             "breakdown"]).to_list()   # breakdown: small JSON, needed by
+    return [_row_to_dict(r) for r in rows]   # taste_summary (2026-09-15)
+
+
+def query_embeddings_for_paths_bulk(paths: list[str]) -> dict[str, np.ndarray]:
+    """{path: embedding} for wanted paths — WITHOUT the SQL IN-clause.
+
+    2026-09-15: query_embeddings_by_paths's `path IN ('C:\\Users\\…')` matched
+    only 1 of 795 real paths — DataFusion treats backslashes as escape
+    characters inside string literals, mangling every Windows path. A full
+    table scan filtered in Python is immune. Only wanted paths are retained,
+    so RAM stays bounded (~wanted rows × 6 KB); tag discipline is unchanged
+    (rows from a foreign encoder space are skipped)."""
+    if not paths:
+        return {}
+    cur_tag = current_encoder_tag()
+    if not cur_tag:
+        print("[lance_store] encoder tag unknown — not reusing cached embeddings")
+        return {}
+    wanted = set(paths)
+    tbl = _open_table()
+    try:
+        with _lock:
+            rows = (
+                tbl.search()
+                   .select(["path", "embedding", "encoder_source"])
+                   .limit(1_000_000)   # search() defaults to 10 rows otherwise!
+                   .to_list()
+            )
+        result: dict[str, np.ndarray] = {}
+        _skipped = 0
+        for r in rows:
+            rp = r.get("path")
+            if rp not in wanted:
+                continue
+            emb = r.get("embedding")
+            if emb is None:
+                continue
+            if str(r.get("encoder_source") or "") != cur_tag:
+                _skipped += 1
+                continue
+            arr = np.array(emb, dtype=np.float32)
+            if arr.shape == (_EMBED_DIM,):
+                result[rp] = arr
+        if _skipped:
+            print(f"[lance_store] {_skipped} cached embeddings are from another "
+                  f"encoder space — skipped (current: {cur_tag})")
+        return result
+    except Exception as _e:
+        print(f"[lance_store] query_embeddings_for_paths_bulk failed: {_e}")
+        return {}
+
+
+def query_scores_for_paths_bulk(paths: list[str]) -> dict[str, float]:
+    """{path: machine score} for wanted paths — bulk scan, same IN-clause
+    avoidance as query_embeddings_for_paths_bulk. Score is encoder-agnostic,
+    so no tag filter here."""
+    if not paths:
+        return {}
+    wanted = set(paths)
+    tbl = _open_table()
+    try:
+        with _lock:
+            rows = (
+                tbl.search()
+                   .select(["path", "score"])
+                   .limit(1_000_000)
+                   .to_list()
+            )
+        out: dict[str, float] = {}
+        for r in rows:
+            rp = r.get("path")
+            if rp in wanted and r.get("score") is not None:
+                try:
+                    out[rp] = float(r["score"])
+                except (TypeError, ValueError):
+                    continue
+        return out
+    except Exception as _e:
+        print(f"[lance_store] query_scores_for_paths_bulk failed: {_e}")
+        return {}
 
 
 def query_by_paths(paths: list[str]) -> list[dict]:
@@ -679,6 +759,18 @@ def reset() -> None:
 
 
 # ── Internal ──────────────────────────────────────────────────────────────────
+
+def reset_faces() -> None:
+    """Drop the per-photo face-embedding table (Start Fresh)."""
+    global _FACES_TBL, _FACES_DIM
+    import lancedb
+    db = lancedb.connect(_DB_DIR)
+    name = _faces_table_name()
+    if name in db.table_names():
+        db.drop_table(name)
+    _FACES_TBL = None
+    _FACES_DIM = None
+
 
 def _row_to_dict(r: dict) -> dict:
     # Use explicit None-check instead of `or` — numpy arrays are falsy-ambiguous

@@ -43,6 +43,34 @@ async def get_config():
     return JSONResponse({"force_frontier": ff, "version": _version})
 
 
+def _ram_payload() -> dict:
+    """Shared RAM snapshot for /api/system/ram and /api/events (see system_ram)."""
+    import server_impl as _si
+    _free = _si._accurate_free_gb()
+    _commit = _si._accurate_commit_headroom_gb()
+    try:
+        import psutil as _ps
+        _vm = _ps.virtual_memory()
+        _phys_free = round(_vm.available / 1e9, 2)
+        _total = round(_vm.total / 1e9, 1)
+        _pct = round(_vm.percent, 1)
+    except Exception:
+        _phys_free = _total = _pct = None
+    return {
+        # Commit-aware — the gates' figure. What "free" means for grading.
+        "ram_free_gb":   round(_free, 2) if _free is not None else _phys_free,
+        "ram_total_gb":  _total,
+        "ram_percent":   _pct,
+        "ram_min_gb":    _GRADE_MIN_RAM_GB,
+        # Diagnostics: why the number is what it is.
+        "ram_phys_free_gb":  _phys_free,
+        "ram_commit_free_gb": round(_commit, 2) if _commit is not None else None,
+        "commit_limited": bool(
+            _free is not None and _phys_free is not None and _free < _phys_free - 0.25
+        ),
+    }
+
+
 @router.get("/api/system/ram")
 async def system_ram():
     """Live system-memory snapshot for the UI's RAM readiness indicator.
@@ -50,19 +78,127 @@ async def system_ram():
     Deliberately tiny (psutil only — no torch / model imports) so the frontend can
     poll it every couple of seconds and reflect Task Manager in real time.
     `percent` is memory in use (== Task Manager's headline %); `free` is the
-    'Available' figure. `min_gb` is the hard cull gate (below it grading is 503)."""
+    'Available' figure. `min_gb` is the hard cull gate (below it grading is 503).
+
+    SYNC ACCURACY (2026-09-14): `free` is now the SAME figure the grade gates
+    use — min(physical available, commit headroom) — via server_impl's
+    _accurate_free_gb. The badge can no longer show "3.8 GB free" while the
+    pagefile limit makes the grader refuse the same moment. The scarcer of the
+    two is what gates care about; the raw physical figure and the commit
+    headroom are both included so the UI (or a tooltip) can explain WHY a
+    figure is low.
+    """
+    return JSONResponse(_ram_payload())
+
+
+@router.get("/api/events")
+async def api_events():
+    """THE sync channel (2026-09-14): one SSE stream pushing RAM, grade state,
+    and the catalog revision — each only when it CHANGES.
+
+    Before this, the UI polled four endpoints on independent timers and could
+    act on contradictory snapshots (the 45%-reload bug was exactly that). Now
+    the server is the single source of truth and volunteers every change:
+      {"events": {"ram":   {...same shape as /api/system/ram...},
+                  "grade": {...same shape as /api/grade/state...}}}
+    A missing key means "unchanged since the last event" — no news IS no news.
+    Heartbeats every ~15 s keep proxies from idling the connection out; the UI's
+    EventSource reconnects automatically if the stream drops, and its slow
+    polls remain as a belt-and-braces fallback.
+    """
+    import asyncio as _aio
+    import json as _json_ev
+    import time as _t_ev
+
+    async def _gen():
+        from routers.grading import _grade_state_payload
+        import asyncio as _aio_ev
+        _loop = _aio_ev.get_running_loop()
+        _last: dict = {}
+        _last_emit = _t_ev.monotonic()
+        while True:
+            try:
+                # Off-loop: psutil reads + lock-file stat/PID checks are blocking
+                # calls, and this loop shares the asyncio event loop with the
+                # grade's own SSE progress stream — blocking here delays every
+                # connected client's progress ticks. Compute in the pool.
+                _candidate = await _loop.run_in_executor(None, lambda: {
+                    "ram": _ram_payload(),
+                    "grade": _grade_state_payload(),
+                })
+            except Exception:
+                _candidate = {}
+            out = {}
+            for _k, _v in _candidate.items():
+                try:
+                    _s = _json_ev.dumps(_v, sort_keys=True, default=str)
+                except Exception:
+                    continue
+                if _last.get(_k) != _s:
+                    _last[_k] = _s
+                    out[_k] = _v
+            try:
+                if out:
+                    yield f"data: {_json_ev.dumps({'events': out})}\n\n"
+                    _last_emit = _t_ev.monotonic()
+                elif _t_ev.monotonic() - _last_emit > 15:
+                    yield ": heartbeat\n\n"
+                    _last_emit = _t_ev.monotonic()
+            except Exception:
+                return   # client gone — end the stream cleanly
+            await _aio.sleep(2)
+
+    return StreamingResponse(_gen(), media_type="text/event-stream")
+
+
+def _server_started_epoch() -> int:
+    """Server start time, captured ONCE (2026-09-14 hotfix).
+
+    BUG this fixes: the build stamp originally embedded time() evaluated at
+    REQUEST time — every call to /api/version returned a different stamp, so
+    the UI's version handshake saw a "new backend" every 60 s and reloaded the
+    window in an infinite loop (thumbnails never finished loading, the grid
+    kept resetting). A stamp must change ONLY when the server restarts or the
+    code changes — hence module-level capture.
+    """
+    global _STARTED_EPOCH_CACHE
     try:
-        import psutil as _ps
-        _vm = _ps.virtual_memory()
-        return JSONResponse({
-            "ram_free_gb":  round(_vm.available / 1e9, 1),
-            "ram_total_gb": round(_vm.total / 1e9, 1),
-            "ram_percent":  round(_vm.percent, 1),
-            "ram_min_gb":   _GRADE_MIN_RAM_GB,
-        })
+        if not _STARTED_EPOCH_CACHE:
+            import time as _t0
+            _STARTED_EPOCH_CACHE = int(_t0.time())
+        return _STARTED_EPOCH_CACHE
     except Exception:
-        return JSONResponse({"ram_free_gb": None, "ram_total_gb": None,
-                             "ram_percent": None, "ram_min_gb": _GRADE_MIN_RAM_GB})
+        return 0
+
+_STARTED_EPOCH_CACHE = 0
+
+
+@router.get("/api/version")
+async def backend_version():
+    """Build stamp for the UI↔backend version handshake.
+
+    The UI fetches this on mount, on window focus, and every 60 s; a changed
+    stamp means the server process was restarted with newer code (or restarted
+    at all), so the frontend hard-reloads rather than talking a stale contract
+    to a fresh backend (or displaying a gallery against a dead one). The stamp
+    mixes the newest source mtime with the server's START time — both captured
+    once at boot/request-module-load, so the stamp is STABLE for the life of
+    the process.
+    """
+    from pathlib import Path as _P
+    stamp = 0.0
+    _unit = _P(__file__).parent.parent
+    for _f in ("server_impl.py", "grade_worker.py", "grade_runner.py",
+               "src/memory_plan.py", "routers/grading.py", "routers/library.py"):
+        try:
+            stamp = max(stamp, (_unit / _f).stat().st_mtime)
+        except Exception:
+            pass
+    _started = _server_started_epoch()
+    return JSONResponse({
+        "build": f"{int(stamp)}-{_started}",
+        "started_epoch": _started,
+    })
 
 
 @router.get("/api/models/status")
@@ -128,6 +264,25 @@ async def model_status():
     except Exception:
         pass
 
+    # Sidecar model residency (2026-09-16): the Qwen-VL critique + text-judge
+    # GGUFs live in a disposable sidecar process. Expose what's warm so the
+    # UI/telemetry can see it. None = no sidecar running at all.
+    sidecar_loaded = None
+    try:
+        import sys, os
+        src_dir = os.path.join(os.path.dirname(__file__), "..", "src")
+        src_dir = os.path.abspath(src_dir)
+        if src_dir not in sys.path:
+            sys.path.insert(0, src_dir)
+        from sidecar_client import probe_health as _sc_ph, read_marker as _sc_rm
+        _m = _sc_rm()
+        if _m:
+            _h = _sc_ph(int(_m["port"]), timeout=0.8)
+            if _h:
+                sidecar_loaded = _h.get("loaded")
+    except Exception:
+        pass
+
     # GPU / VRAM telemetry — via nvidia-smi, NOT torch.cuda. This endpoint is polled
     # by the frontend; torch.cuda.get_device_properties/memory_reserved would give
     # this long-lived SERVER process a CUDA context, which can race the grade worker's
@@ -146,32 +301,41 @@ async def model_status():
     try:
         import time as _t_smi
         _now = _t_smi.monotonic()
+        _have_gpu_info = False
         if _SMI_CACHE is not None and (_now - _SMI_CACHE_TS) < _SMI_CACHE_S:
+            # Cache hit: use the cached numbers. (This branch used to fall
+            # through to the nvidia-smi spawn below with _smi/_sp undefined —
+            # a NameError swallowed by the except, leaving compute_device
+            # "unknown", which the UI rendered as a CPU warning. The whole
+            # point of the cache is to NOT spawn nvidia-smi here.)
             (_tot, _free, _nm) = _SMI_CACHE
             vram_total_gb = round(_tot / 1024.0, 1)
             vram_free_gb  = round(_free / 1024.0, 1)
             if not gpu_name:
                 gpu_name = _nm
+            _have_gpu_info = True
         else:
             import subprocess as _sp, shutil as _sh
             _smi = _sh.which("nvidia-smi") or r"C:\Windows\System32\nvidia-smi.exe"
-        _out = _sp.run(
-            [_smi, "--query-gpu=memory.total,memory.free,name",
-             "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=4,
-            creationflags=0x08000000 if os.name == "nt" else 0,
-        )
-        if _out.returncode == 0 and _out.stdout.strip():
-            _tot, _free, _nm = [x.strip() for x in _out.stdout.strip().splitlines()[0].split(",")]
-            try:
-                _SMI_CACHE      = (float(_tot), float(_free), _nm)
-                _SMI_CACHE_TS   = _now
-            except Exception:
-                pass
-            vram_total_gb = round(float(_tot) / 1024.0, 1)   # MiB -> GB
-            vram_free_gb  = round(float(_free) / 1024.0, 1)
-            if not gpu_name:
-                gpu_name = _nm
+            _out = _sp.run(
+                [_smi, "--query-gpu=memory.total,memory.free,name",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=4,
+                creationflags=0x08000000 if os.name == "nt" else 0,
+            )
+            if _out.returncode == 0 and _out.stdout.strip():
+                _tot, _free, _nm = [x.strip() for x in _out.stdout.strip().splitlines()[0].split(",")]
+                try:
+                    _SMI_CACHE      = (float(_tot), float(_free), _nm)
+                    _SMI_CACHE_TS   = _now
+                except Exception:
+                    pass
+                vram_total_gb = round(float(_tot) / 1024.0, 1)   # MiB -> GB
+                vram_free_gb  = round(float(_free) / 1024.0, 1)
+                if not gpu_name:
+                    gpu_name = _nm
+                _have_gpu_info = True
+        if _have_gpu_info:
             _sd = last.get("siglip_device", "unknown")
             _qd = last.get("qwen_device",   "unknown")
             if _qd == "gpu" or _sd == "gpu":
@@ -212,6 +376,7 @@ async def model_status():
         "qwen_download_pct":  qwen_dl_pct,
         "warmup_done":        warmup_done,
         "warmup_running":     warmup_running,
+        "sidecar_loaded":     sidecar_loaded,
         "compute_device":     compute_device,  # "gpu" | "cpu" | "unknown"
         "vram_free_gb":       vram_free_gb,
         "vram_total_gb":      vram_total_gb,

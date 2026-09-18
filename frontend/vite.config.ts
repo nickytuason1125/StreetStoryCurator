@@ -10,6 +10,12 @@ const backendProxy = {
 
 export default defineConfig({
   plugins: [react()],
+  // Build stamp baked into the bundle at build time. The UI compares it to
+  // what it last loaded (localStorage) and reloads itself once when a newer
+  // build exists — no more "rebuilt dist, window kept running old JS".
+  define: {
+    __BUILD_ID__: JSON.stringify(new Date().toISOString()),
+  },
   server: {
     open: false,
     port: 5173,

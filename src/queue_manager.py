@@ -16,7 +16,6 @@ from pathlib import Path
 
 import model_registry as _mr
 _GGUF_PATH = _mr.vision_gguf_path()
-_LOCK_PATH = Path(__file__).resolve().parent.parent / "cache" / "grading.lock"
 
 
 def _grade_worker_running() -> bool:
@@ -25,11 +24,23 @@ def _grade_worker_running() -> bool:
     never blocked forever. This gates annotation independently of gpu_lock: when a
     grade's SSE stream disconnects (window closed) gpu_lock is released early while
     the worker keeps grading, so gpu_lock alone would let the annotation model
-    (Ollama qwen2.5vl:3b, ~3-4 GB) load and OOM the still-running grade."""
+    (Ollama qwen2.5vl:3b, ~3-4 GB) load and OOM the still-running grade.
+
+    Resolves the lock path via grade_lock.lock_path(_DATA_DIR) — NOT
+    Path(__file__).parent.parent — because in a packaged build _DATA_DIR (the
+    writable per-user app-data dir) diverges from the install/bundle directory
+    __file__ lives under; a bundle-relative path never matched what
+    grade_worker.py actually writes, so this gate silently never fired outside
+    dev checkouts. server_impl is imported lazily: queue_manager is only ever
+    imported from inside it (function-local, after _DATA_DIR is defined), so a
+    module-level import here would risk import-order issues for no benefit."""
     try:
-        if not _LOCK_PATH.exists():
+        from server_impl import _DATA_DIR
+        from grade_lock import lock_path
+        _lock_path = lock_path(_DATA_DIR)
+        if not _lock_path.exists():
             return False
-        _pid = int((_LOCK_PATH.read_text(encoding="utf-8").strip() or "0"))
+        _pid = int((_lock_path.read_text(encoding="utf-8").strip() or "0"))
         if _pid <= 0:
             return False
         import psutil

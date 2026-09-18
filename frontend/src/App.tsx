@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef, memo } from "react";
+﻿import { useState, useEffect, useCallback, useMemo, useRef, memo } from "react";
 import axios from "axios";
 import {
   DndContext, closestCenter, KeyboardSensor, PointerSensor,
@@ -46,7 +46,7 @@ import { API, photoUrl, sanitizePath, thumbUrl } from "./lib/api";
 import { APP_VERSION } from "./lib/version";
 import { useGuardedInterval } from "./hooks/useGuardedInterval";
 import { useWindowedGrid } from "./hooks/useWindowedGrid";
-import { gc, ramReadiness } from "./lib/grading";
+import { gc, ramReadiness, calibratedAspects } from "./lib/grading";
 
 /* The three hot views are memoized at the import boundary: during grading,
  * progress ticks re-render App, but with stable props these 60 KB+ subtrees
@@ -91,27 +91,27 @@ const photoId = (path: string): string => {
 /* gLow() mapped each grade to a 14% tinted badge background. Deleted: the
  * machine's verdict is a 2px rule under the frame, not a filled badge behind
  * text. gl() was a duplicate of gradeLabel() in theme/tokens.ts. */
-// gIcon() lived here — it mapped grades to ✅ / ⚠️ / ❌. It had no callers left,
+// gIcon() lived here — it mapped grades to âœ… / âš ï¸ / âŒ. It had no callers left,
 // and emoji-as-status is the clearest "generated interface" tell there is. The
 // grade is carried by the rule under each frame instead. Do not reintroduce it.
 
 const _SLOGANS: Array<[RegExp, string]> = [
   // Patterns match the backend's (model-agnostic) progress wording. Never put a
   // model name in the SLOGAN text — these strings are shown to the user.
-  [/scanning folder|found \d+|already graded/i, "Pulling the contact sheet…"],
-  [/checking image files|unusable images/i,     "Culling the camera-shake casualties…"],
-  [/analyz|image analysis/i,                    "Reading the light in every frame…"],
-  [/near-duplicate|marking duplicates/i,        "Picking the best frame from each burst…"],
-  [/preparing deep analysis/i,                  "The photo editor is pulling up a chair…"],
-  [/judging each photo|deep analysis ready/i,   "Studying composition, moment, and story…"],
-  [/scoring image quality|quality scoring/i,    "Running the darkroom technical check…"],
-  [/light and contrast/i,                       "Measuring the exposure…"],
-  [/style reference|creative brief/i,           "Comparing against the reference portfolio…"],
-  [/taste profile/i,                            "Recalling your editorial eye…"],
-  [/refining composition/i,                     "Second shooter weighing in…"],
-  [/sequenc|assigning grades|building your gallery/i, "Building the selects…"],
-  [/combining scores/i,                         "Matching each frame to its genre…"],
-  [/saving results|photo details/i,             "Filing the contact sheet…"],
+  [/scanning folder|found \d+|already graded/i, "Pulling the contact sheetâ€¦"],
+  [/checking image files|unusable images/i,     "Culling the camera-shake casualtiesâ€¦"],
+  [/analyz|image analysis/i,                    "Reading the light in every frameâ€¦"],
+  [/near-duplicate|marking duplicates/i,        "Picking the best frame from each burstâ€¦"],
+  [/preparing deep analysis/i,                  "The photo editor is pulling up a chairâ€¦"],
+  [/judging each photo|deep analysis ready/i,   "Studying composition, moment, and storyâ€¦"],
+  [/scoring image quality|quality scoring/i,    "Running the darkroom technical checkâ€¦"],
+  [/light and contrast/i,                       "Measuring the exposureâ€¦"],
+  [/style reference|creative brief/i,           "Comparing against the reference portfolioâ€¦"],
+  [/taste profile/i,                            "Recalling your editorial eyeâ€¦"],
+  [/refining composition/i,                     "Second shooter weighing inâ€¦"],
+  [/sequenc|assigning grades|building your gallery/i, "Building the selectsâ€¦"],
+  [/combining scores/i,                         "Matching each frame to its genreâ€¦"],
+  [/saving results|photo details/i,             "Filing the contact sheetâ€¦"],
 ];
 function toSlogan(desc: string): string {
   if (!desc) return '';
@@ -148,7 +148,7 @@ function SortableItem({ id, children }: { id: string; children: React.ReactNode 
 
 /* GridView moved to components/views/GridView.tsx. */
 
-/* ── Critique trigger parser ────────────────────────────────────── */
+/* â”€â”€ Critique trigger parser â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 // Parses <trigger type="blur|heatmap|grid">text</trigger> tags emitted by the
 // jury LLM into hoverable inline spans that drive the image overlay state.
 // Falls back to plain text if the LLM produces no tags.
@@ -214,10 +214,18 @@ function buildReasoningFromBreakdown(score: number, grade: string, breakdown: Re
   // avgScore is kept for internal note selection only (moody/chiaroscuro detection).
   const bdVals = Object.values(breakdown).filter(v => typeof v === 'number') as number[];
   const avgScore = bdVals.length > 0 ? bdVals.reduce((s, v) => s + v, 0) / bdVals.length : score;
+  // Aspect notes are picked against the calibrated cut-points (0.78/0.62/0.45),
+  // so the raw CLIP-scale subscores must be remapped onto the photo's own
+  // calibrated score scale first — otherwise a Strong photo reads "Frame is
+  // loose" in every row of its own analysis (2026-09-16).
+  const cal = calibratedAspects(
+    Object.fromEntries(Object.entries(breakdown).filter(([, v]) => typeof v === 'number')) as Record<string, number>,
+    typeof score === 'number' && isFinite(score) ? score : avgScore,
+  );
   const pct  = Math.round(score * 100);
   // Only rank real photographic aspects (keys with copy in NOTES). Excludes private
   // metadata and technical-audit fields so the Best/Weakest footer never names jargon.
-  const sorted = Object.entries(breakdown)
+  const sorted = Object.entries(cal)
     .filter(([k,v]) => typeof v === 'number' && k in NOTES)
     .sort((a,b) => b[1]-a[1]);
   const topKey    = sorted[0]?.[0]       ?? 'Narrative';
@@ -251,7 +259,7 @@ function buildReasoningFromBreakdown(score: number, grade: string, breakdown: Re
 
 /* Aspect -> canonical dimension classifier moved to lib/aspects.ts - shared by App and the analysis panel. */
 
-/* ── Factor Annotations overlay ────────────────────────────────── */
+/* â”€â”€ Factor Annotations overlay â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 const REGION_BOX: Record<string, [number,number,number,number]> = {
   'top-third':    [0,      0,      1,    0.33],
   'center':       [0.2,    0.2,    0.6,  0.6],
@@ -307,7 +315,7 @@ function FactorAnnotations({ factors }: { factors: any[] }) {
 
         const impactAbs = Math.round(Math.abs(f.impact ?? 0) * 100);
         const badge = isStrength ? `[+${impactAbs}]` : isWeakness ? `[-${impactAbs}]` : null;
-        const glyph = isStrength ? '●' : isWeakness ? '✕' : '○';
+        const glyph = isStrength ? 'â—' : isWeakness ? 'âœ•' : 'â—‹';
 
         return (
           <g key={i}>
@@ -370,7 +378,7 @@ function FactorAnnotations({ factors }: { factors: any[] }) {
   );
 }
 
-/* ── Analysis HUD — pen-notation corner annotation on the image ──── */
+/* â”€â”€ Analysis HUD — pen-notation corner annotation on the image â”€â”€â”€â”€ */
 function AnalysisHUD({ grade, score, breakdown }: { grade: string; score: number; breakdown: Record<string,number> }) {
   const ASPECT_KEYS = ['Technical','Composition','Lighting','Narrative','Human/Culture'];
   const aspects = ASPECT_KEYS.map(k => [k, (breakdown[k] ?? 0)] as [string,number]);
@@ -417,7 +425,7 @@ function AnalysisHUD({ grade, score, breakdown }: { grade: string; score: number
   );
 }
 
-/* ── Niche registry (mirrors src/niche_registry.py) ─────────────── */
+/* â”€â”€ Niche registry (mirrors src/niche_registry.py) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 const NICHE_GROUPS = [
   { category: "Street & Documentary", niches: [
     { key: "classic_street",  label: "Classic Street" },
@@ -451,7 +459,7 @@ const NICHE_GROUPS = [
   ]},
 ];
 
-/* ── App ────────────────────────────────────────────────────────── */
+/* â”€â”€ App â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 export default function App() {
   const [folder,     setFolder]     = useState("");
   const [preset,     setPreset]     = useState("classic_street");
@@ -461,13 +469,19 @@ export default function App() {
   const [loading,      setLoading]      = useState(false);
   const [listLoading,  setListLoading]  = useState(false);
   const [gradeProgress, setGradeProgress] = useState(0);
+  // Smoothed twin of gradeProgress: the backend emits progress in coarse,
+  // unevenly spaced jumps (and a fully-cached run fires a single 1.0 tick),
+  // so the raw value snaps 0→100 in one frame. The bar renders this eased
+  // value instead; gradeProgress stays the exact target for ETA math.
+  const [gradeProgressDisplay, setGradeProgressDisplay] = useState(0);
+  const gradeProgressDisplayRef = useRef(0);
   const [gradeDesc,     setGradeDesc]     = useState("");
   // Encoder quality tier chosen for this run ("Fast" | "Balanced" | "Pro").
   // Deliberately a plain quality word — never a model name.
   const [gradeQuality,  setGradeQuality]  = useState("");
   const [gradeStartMs,  setGradeStartMs]  = useState<number | null>(null);
   const [gradeEtaSecs,  setGradeEtaSecs]  = useState<number | null>(null);
-  const [toast,      setToast]      = useState<{msg: string; type: "success"|"error"|"info"} | null>(null);
+  const [toast,      setToast]      = useState<{msg: string; type: "success"|"error"|"info"; ms?: number} | null>(null);
   const [catalogSaveFailed, setCatalogSaveFailed] = useState(false);
   const [selId,      setSelId]      = useState<string | null>(null);
   /* Rehydrated per-photo detail (breakdown/reasoning_log) for the selected
@@ -481,7 +495,7 @@ export default function App() {
   const [graderUsed, setGraderUsed] = useState<'fast'|'deep'|'scan'|null>(null);  // which grader actually ran (transparency badge)
   const [mainTab,    setMainTab]    = useState<"gallery"|"duplicates"|"creative">("gallery");
   /* Duplicates view: groups render incrementally (4 at a time via a scroll
-   * sentinel) so 119 groups × ~150 thumbs never mount at once. */
+   * sentinel) so 119 groups Ã— ~150 thumbs never mount at once. */
   const [dupGroupsShown, setDupGroupsShown] = useState(4);
   useEffect(() => { setDupGroupsShown(4); }, [mainTab]);
   const revealMoreDupGroups = useCallback(() => setDupGroupsShown(n => n + 4), []);
@@ -542,7 +556,7 @@ export default function App() {
   // Live system-memory snapshot, polled every 2 s (see /api/system/ram) so the RAM
   // readiness indicator tracks Task Manager in real time rather than refreshing
   // only on modal open.
-  const [sysRam, setSysRam] = useState<{ram_free_gb:number|null,ram_total_gb:number|null,ram_percent:number|null,ram_min_gb:number}|null>(null);
+  const [sysRam, setSysRam] = useState<{ram_free_gb:number|null,ram_total_gb:number|null,ram_percent:number|null,ram_min_gb:number,ram_phys_free_gb?:number|null,ram_commit_free_gb?:number|null,commit_limited?:boolean}|null>(null);
   const [preGradeModal,  setPreGradeModal]  = useState<{photoCount:number}|null>(null);
   const preGradeDialogRef = useRef<HTMLDivElement>(null);
   // Modal accessibility: Escape closes, Tab is trapped inside the dialog, and
@@ -578,16 +592,16 @@ export default function App() {
   const [pegFile,        setPegFile]        = useState<File | null>(null);
   const [pegHash,        setPegHash]        = useState<string | null>(null);
   const [pegLoading,     setPegLoading]     = useState(false);
-  // ── Semantic search state ─────────────────────────────────────────────────
+  // â”€â”€ Semantic search state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [searchQuery,    setSearchQuery]    = useState("");
   const [searchResults,  setSearchResults]  = useState<Set<string> | null>(null); // Set of paths
   const [searchLoading,  setSearchLoading]  = useState(false);
-  // ── Jury critique state ───────────────────────────────────────────────────
+  // â”€â”€ Jury critique state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [juryLoading,    setJuryLoading]    = useState(false);
   const [juryCritique,   setJuryCritique]   = useState<string | null>(null);
   const [juryThink,      setJuryThink]      = useState<string | null>(null);
   const [juryCritPath,   setJuryCritPath]   = useState<string | null>(null);
-  // ── Engine health state ───────────────────────────────────────────────────
+  // â”€â”€ Engine health state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [engineHealth,        setEngineHealth]        = useState<{ status: "checking"|"online"|"offline"; missing: string[] }>({ status: "checking", missing: [] });
   /* ollamaPs state removed 2026-08-30: polled every 15 s, never rendered anywhere. */
   const [bannerDismissed,     setBannerDismissed]     = useState(false);
@@ -596,8 +610,9 @@ export default function App() {
   const [currentDownloadModel,setCurrentDownloadModel]= useState("");
   const [downloadError,       setDownloadError]       = useState<string | null>(null);
   const [updateRequired,      setUpdateRequired]      = useState(false);
-  // ── Creative Direction state ──────────────────────────────────────────────
+  // â”€â”€ Creative Direction state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [creativeAnchor,   setCreativeAnchor]   = useState<string | null>(null);
+  const [creativeResultsB, setCreativeResultsB] = useState<any[]>([]);
   const [creativePrompt,   setCreativePrompt]   = useState("");
   const [creativeMode,     setCreativeMode]     = useState<"canny"|"depth">("canny");
   // 4-10. Below 4 there is no sequence to speak of; above 10 the set stops
@@ -609,19 +624,21 @@ export default function App() {
   const [creativeResults,     setCreativeResults]     = useState<any[]>([]);
   const [creativeOutDir,      setCreativeOutDir]      = useState("");
   // Non-empty when the sequence was NOT art-directed: a score sort wearing a
-  // story’s clothes. Shown, never swallowed.
+  // story™s clothes. Shown, never swallowed.
   const [creativeFallback,    setCreativeFallback]    = useState("");
   // How tightly the chosen set hangs together, reported by story_selector.
   // Deliberately a readout, not a gate: no cohesion floor could be justified
   // without grading on a curve, so the number is shown and the user judges.
   const [creativeSelection,   setCreativeSelection]   = useState<any>(null);
+  const [creativeRuleSet,     setCreativeRuleSet]     = useState<any>(null);
+  const [creativeTimings,     setCreativeTimings]     = useState<any>(null);
   const [creativeShowOriginal,setCreativeShowOriginal]= useState(false);
   const [usedCount,           setUsedCount]           = useState(0);
   const [sequenceSaving,      setSequenceSaving]      = useState(false);
-  // ── PDF RAG state ─────────────────────────────────────────────────────────
+  // â”€â”€ PDF RAG state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [ragPdfs,       setRagPdfs]       = useState<{name:string,pages:number,phrases:number}[]>([]);
   const [ragUploading,  setRagUploading]  = useState(false);
-  // ── Auditor / XAI overlay state ───────────────────────────────────────────
+  // â”€â”€ Auditor / XAI overlay state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [isAuditModeActive,     setIsAuditModeActive]     = useState(false);
   const [reasoningOverlayUrl,   setReasoningOverlayUrl]   = useState<string | null>(null);
   const [reasoningOverlayPath,  setReasoningOverlayPath]  = useState<string | null>(null);
@@ -645,20 +662,66 @@ export default function App() {
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
-  const notify = useCallback((msg: string, type: "success"|"error"|"info" = "info") =>
-    setToast({ msg, type }), []);
+  const notify = useCallback((msg: string, type: "success"|"error"|"info" = "info", ms?: number) =>
+    setToast({ msg, type, ms }), []);
 
   useEffect(() => {
     if (!toast) return;
     // Errors need longer — they usually name something the user must act on,
     // and 3.2 s is not enough to read a path or a reason.
-    const t = setTimeout(() => setToast(null), toast.type === "error" ? 10_000 : 3200);
+    const t = setTimeout(() => setToast(null), toast.ms ?? (toast.type === "error" ? 10_000 : 3200));
     return () => clearTimeout(t);
   }, [toast]);
 
   /* live ETA countdown while grading is in progress */
   const gradeProgressRef = useRef(gradeProgress);
   gradeProgressRef.current = gradeProgress;
+  // Highest progress seq applied. Both SSE messages and /api/grade/state
+  // reconciles carry the runner's monotonic seq; anything older is stale
+  // (replayed lines, buffer flushes, a slow poll) and must not move the UI.
+  const lastSeqRef = useRef(0);
+  /* Eased progress: step the display value toward the backend target on an
+     80 ms interval (not per-frame — App re-renders are not free). Backwards
+     jumps (a new run resetting to 0) snap immediately; forward jumps glide. */
+  useEffect(() => {
+    if (!loading) {
+      gradeProgressDisplayRef.current = gradeProgressRef.current;
+      setGradeProgressDisplay(gradeProgressRef.current);
+      return;
+    }
+    const id = setInterval(() => {
+      const target = gradeProgressRef.current;
+      setGradeProgressDisplay(prev => {
+        if (target <= prev) { gradeProgressDisplayRef.current = target; return target; }
+        const next = prev + (target - prev) * 0.18;
+        const eased = (target - next) < 0.004 ? target : next;
+        gradeProgressDisplayRef.current = eased;
+        return eased;
+      });
+    }, 80);
+    return () => clearInterval(id);
+  }, [loading]);
+  /* Grade-state reconciler (single source of truth): while a grade runs, poll
+     /api/grade/state every 3 s and adopt anything newer than the last applied
+     seq. SSE stays for snappy updates; this is the safety net that catches
+     dropped streams, missed ticks, and parked-encoder explanations. */
+  useEffect(() => {
+    if (!loading) return;
+    let dead = false;
+    const id = setInterval(async () => {
+      try {
+        const d = (await axios.get(`${API}/api/grade/state`)).data;
+        if (dead) return;
+        if (typeof d.seq === 'number' && d.seq > lastSeqRef.current) {
+          if (typeof d.progress === 'number') setGradeProgress(d.progress);
+          if (d.desc) setGradeDesc(String(d.desc));
+          lastSeqRef.current = d.seq;
+        }
+        if (d.encoder_pause) setGradeDesc(`Encoder paused — ${d.encoder_pause}`);
+      } catch { /* server busy — next tick retries */ }
+    }, 3000);
+    return () => { dead = true; clearInterval(id); };
+  }, [loading]);
   useEffect(() => {
     if (!loading || gradeStartMs === null) {
       setGradeEtaSecs(null);
@@ -688,7 +751,7 @@ export default function App() {
       fetch(`${API}/`)
         .then(r => {
           // Retry on ANY non-ready outcome — a non-OK response used to stop the
-          // loop silently and leave the app on "Starting…" forever.
+          // loop silently and leave the app on "Startingâ€¦" forever.
           if (r.ok && !cancelled) setBackendReady(true);
           else if (!cancelled && attempts <= 100) timerId = setTimeout(check, 600);
         })
@@ -716,7 +779,7 @@ export default function App() {
         if (v && v !== "unknown" && v !== APP_VERSION) setStaleBackend(v);
         else setStaleBackend(null);
         // change-guard: a new object identity every poll re-rendered the whole
-        // tree 6×/min even when nothing changed. Identity moves on real change.
+        // tree 6Ã—/min even when nothing changed. Identity moves on real change.
         setEngineHealth(prev => {
           const missing = d.missing_models ?? [];
           const same = prev.status === status &&
@@ -752,7 +815,9 @@ export default function App() {
         setSysRam(prev => {
           const same = prev && prev.ram_free_gb === d.ram_free_gb &&
                        prev.ram_total_gb === d.ram_total_gb &&
-                       prev.ram_percent === d.ram_percent;
+                       prev.ram_percent === d.ram_percent &&
+                       prev.ram_phys_free_gb === d.ram_phys_free_gb &&
+                       prev.ram_commit_free_gb === d.ram_commit_free_gb;
           return same ? prev : d;
         });
       }
@@ -973,7 +1038,7 @@ export default function App() {
 
   /* keyboard nav — full culling flow, no mouse required.
    *
-   *   ←/→ or h/l   move selection          g / e   grid ⇄ loupe
+   *   â†/→ or h/l   move selection          g / e   grid â‡„ loupe
    *   1–5          star (repeat = clear)   0       clear stars
    *   x            toggle "used" (persisted to photo_flags.json)
    *
@@ -1018,6 +1083,8 @@ export default function App() {
   /* clear creative state when folder changes */
   useEffect(() => {
     setCreativeResults([]);
+    setCreativeResultsB([]);
+    setCreativeRuleSet(null);
     setCreativeAnchor(null);
     setCreativePrompt('');
     setCreativeOutDir('');
@@ -1347,7 +1414,7 @@ export default function App() {
     const ps = data.photos.map((p: any) => ({ ...p, id: photoId(p.path) }));
     // Apply same auto-redact logic as grading so duplicates are hidden in the gallery
     const autoRedacted = new Set<string>(
-      ps.filter((p: any) => p.cluster_id >= 0 && !(p.sim_flag || '').startsWith('★'))
+      ps.filter((p: any) => p.cluster_id >= 0 && !(p.sim_flag || '').startsWith('â˜…'))
         .map((p: any) => p.path)
     );
     const firstVisible =
@@ -1373,6 +1440,177 @@ export default function App() {
       notify(`Resumed — ${n} photos from ${savedFolders.length} folder${savedFolders.length !== 1 ? 's' : ''}`, 'success');
     } catch { notify('Failed to resume session', 'error'); }
   }, [notify, applyCatalog]);
+
+  /* â”€â”€ Backend build handshake (2026-09-14) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+   * The UI must never be glued to a stale backend: if the server process is
+   * restarted with newer code (or at all), its build stamp changes, and the
+   * UI hard-reloads ONCE so state, catalog and SSE all come from the same
+   * code generation. Checked on mount, on window focus, and every 60 s. */
+  const backendBuildRef = useRef<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    backendBuildRef.current = sessionStorage.getItem('fc_backend_build');
+    const check = () => {
+      fetch(`${API}/api/version`)
+        .then(r => r.ok ? r.json() : null)
+        .then((d: any) => {
+          if (cancelled || !d?.build) return;
+          const prev = backendBuildRef.current;
+          if (prev && prev !== d.build) {
+            // NEVER reload mid-grade: a hard reload kills the SSE stream and
+            // throws the user back to the homepage at 45% (seen live
+            // 2026-09-14). If a grade is running, defer — the reattach poll
+            // reloads once the grade finishes.
+            fetch(`${API}/api/grade/state`)
+              .then(r => r.ok ? r.json() : { grading: false })
+              .then((gs: any) => {
+                if (cancelled) return;
+                if (gs?.grading || gs?.foreign_lock) {
+                  pendingReloadRef.current = d.build;
+                  return;   // reattach effect fires the reload post-grade
+                }
+                sessionStorage.setItem('fc_backend_build', d.build);
+                window.location.reload();
+              })
+              .catch(() => {});
+            return;
+          }
+          backendBuildRef.current = d.build;
+          sessionStorage.setItem('fc_backend_build', d.build);
+        })
+        .catch(() => {});
+    };
+    check();
+    const onVis = () => { if (document.visibilityState === 'visible') check(); };
+    document.addEventListener('visibilitychange', onVis);
+    const id = setInterval(check, 60_000);
+    return () => { cancelled = true; document.removeEventListener('visibilitychange', onVis); clearInterval(id); };
+  }, []);
+
+  /* â”€â”€ Background-grade reattach + push sync (2026-09-14) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+   * A grade outlives its SSE stream (window close / reload / dropped
+   * connection) — the runner keeps going and commits the catalog itself.
+   * PRIMARY transport: the /api/events push channel — the server volunteers
+   * RAM and grade-state changes, so the UI reacts in ~2 s with zero polling.
+   * FALLBACK: a slow /api/grade/state poll covers the window where the push
+   * channel is reconnecting. Both feed the SAME applyGradeState handler, so
+   * neither transport can drive the UI to a different truth. */
+  const bgGradeDoneRef = useRef<number>(0);
+  const lastRevRef = useRef<number>(0);
+  const applyGradeState = useCallback(async (d: any) => {
+    // Stale lock â‰  running grade: a lock whose pid has no live process is
+    // a leftover file (grade_in_progress sweeps on read, but between sweeps
+    // the UI must not show a phantom grade). Only verifiable liveness counts.
+    const lockDead = d.foreign_lock && d.lock_alive === false;
+    if ((d.grading || d.foreign_lock) && !lockDead) {
+      bgGradeDoneRef.current = 0;
+      lastRevRef.current = d.catalog_rev || lastRevRef.current;
+      setLoading(true);
+      if (typeof d.progress === 'number') setGradeProgress(d.progress);
+      // Adopt the runner's seq on reattach so live SSE ticks older than this
+      // snapshot can't rewind what we just adopted.
+      if (typeof d.seq === 'number' && d.seq > lastSeqRef.current) lastSeqRef.current = d.seq;
+      // Don't fight the live SSE stream for the status line — the
+      // "(reattached)" marker only applies when no foreground stream runs.
+      const streaming = gradeBusyRef.current;
+      const fcount = (d.folders || []).length;
+      if (!streaming) {
+        setGradeDesc(
+          (d.desc ? String(d.desc) : '') +
+          (fcount ? ` — ${fcount} folder${fcount !== 1 ? 's' : ''} (reattached)` : ' (reattached)')
+        );
+      }
+      if (d.started_at) setGradeStartMs(d.started_at * 1000);
+    } else if (d.finished_at && d.finished_at > bgGradeDoneRef.current) {
+      bgGradeDoneRef.current = d.finished_at;
+      setLoading(false);
+      setGradeProgress(1);
+      // A deferred version-handshake reload (held back because this grade
+      // was running) fires now — the grade is done, the reload is safe.
+      const pendingBuild = pendingReloadRef.current;
+      if (pendingBuild) {
+        sessionStorage.setItem('fc_backend_build', pendingBuild);
+        window.location.reload();
+        return;
+      }
+      // Only refetch + notify when the catalog actually changed underneath
+      // us (rev moved past what we last rendered) — a grade that ended
+      // without committing anything new doesn't justify a reload.
+      if ((d.catalog_rev || 0) > lastRevRef.current || lastRevRef.current === 0) {
+        lastRevRef.current = d.catalog_rev || lastRevRef.current;
+        try {
+          const cr = await axios.get(`${API}/api/catalog?t=${Date.now()}`);
+          if (cr.data?.exists && cr.data?.photos?.length) {
+            applyCatalog(cr.data);
+            notify(`Background grade finished — ${cr.data.photos.length} photos in the gallery`, 'success');
+          }
+        } catch { /* catalog refetch is best-effort */ }
+      }
+    }
+  }, [applyCatalog, notify]);
+
+  // â”€â”€ PRIMARY: the push channel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  useEffect(() => {
+    let closed = false;
+    let es: EventSource | null = null;
+    const connect = () => {
+      if (closed) return;
+      es = new EventSource(`${API}/api/events`);
+      es.onmessage = (e) => {
+        try {
+          const m = JSON.parse(e.data);
+          if (m?.events?.grade) { void applyGradeState(m.events.grade); }
+          if (m?.events?.ram) {
+            setSysRam(prev => {
+              const d = m.events.ram;
+              const same = prev && prev.ram_free_gb === d.ram_free_gb &&
+                           prev.ram_total_gb === d.ram_total_gb &&
+                           prev.ram_percent === d.ram_percent &&
+                           prev.ram_phys_free_gb === d.ram_phys_free_gb &&
+                           prev.ram_commit_free_gb === d.ram_commit_free_gb;
+              return same ? prev : d;
+            });
+          }
+        } catch { /* malformed frame — server sends the next one */ }
+      };
+      // EventSource auto-reconnects on drop; nothing to do here.
+    };
+    connect();
+    return () => { closed = true; es?.close(); };
+  }, [applyGradeState]);
+
+  // â”€â”€ FALLBACK: slow snapshot poll, in case the push channel is down â”€â”€â”€â”€â”€â”€â”€â”€
+  useEffect(() => {
+    let stop = false;
+    const tick = async () => {
+      try {
+        const r = await fetch(`${API}/api/grade/state`);
+        if (!r.ok) return;
+        const d = await r.json();
+        if (stop) return;
+        await applyGradeState(d);
+      } catch { /* server briefly down — next tick retries */ }
+    };
+    tick();
+    const id = setInterval(tick, 3000);   // 3 s: a finished grade flips the UI fast even if the push channel is down
+    return () => { stop = true; clearInterval(id); };
+  }, [applyGradeState]);
+
+  // â”€â”€ Cull smoothness: preload the neighbours' loupe images â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Arrow-key culling felt jerky because each step waited on a fresh
+  // multi-megapixel decode (the server was mid-decode while the UI already
+  // showed the crossfade thumb). Decoding the previous/next frame in the
+  // background means a step onto a neighbour is usually a cache hit.
+  useEffect(() => {
+    const i = filteredPhotos.findIndex(p => p.id === selId);
+    if (i < 0) return;
+    for (const n of [i - 1, i + 1]) {
+      const p = filteredPhotos[n];
+      if (!p) continue;
+      const img = new Image();
+      img.src = photoUrl(p.path) + '&max=2048';
+    }
+  }, [selId, filteredPhotos]);
 
   const handleAddFolder = useCallback(async (newFolder: string) => {
     setListLoading(true);
@@ -1419,7 +1657,11 @@ export default function App() {
   // second layer, not the first.
   const gradeBusyRef = useRef(false);
   const handleGrade = useCallback(async (forceRescan = false, skipModal = false) => {
-    if (gradeBusyRef.current) return;
+    if (gradeBusyRef.current) {
+      // Never silent: a swallowed click reads as a broken button (2026-09-16).
+      notify('A cull is already running — wait for it to finish or reload the app.', 'info');
+      return;
+    }
     const safePath = sanitizePath(folder);
     if (!safePath && folders.length === 0) { notify("Enter a folder path, or use Open folder to browse.", "error"); return; }
     if (!skipModal) {
@@ -1441,6 +1683,7 @@ export default function App() {
     gradeBusyRef.current = true;
     setLoading(true);
     setGradeProgress(0);
+    lastSeqRef.current = 0;   // a new run's seq starts from zero
     setGradeDesc("");
     setGradeStartMs(Date.now());
     setGradeEtaSecs(null);
@@ -1452,6 +1695,46 @@ export default function App() {
     // Multi-folder grading stays available by opening a folder and grading it;
     // a folder-less start still falls back to the saved library list.
     const allFolderPaths = safePath ? [safePath] : folders.map(sanitizePath);
+    // Shared by both "stream lost" paths (quiet end + errored end): the runner
+    // is durable, so poll its status, then load the committed gallery. Declared
+    // here so both the try and catch blocks can reach it.
+    const waitAndLoadBackground = async () => {
+      for (let poll = 0; poll < 720; poll++) {   // up to 60 min
+        await new Promise(r => setTimeout(r, 5000));
+        let active = true;
+        try {
+          // grade/state carries both the grading flag AND the runner's live
+          // progress — adopt it (same seq guard as the reconciler) so the bar
+          // keeps moving even though the SSE stream is gone.
+          const st = await axios.get(`${API}/api/grade/state`);
+          const d = st.data;
+          active = !!d.grading;
+          if (typeof d.seq === 'number' && d.seq > lastSeqRef.current
+              && typeof d.progress === 'number') {
+            lastSeqRef.current = d.seq;
+            setGradeProgress(d.progress);
+            if (d.desc) setGradeDesc(`${String(d.desc)} (background)`);
+          }
+          if (d.encoder_pause) setGradeDesc(`Encoder paused — ${d.encoder_pause}`);
+        }
+        catch { continue; }   // server hiccup — keep waiting, runner is durable
+        if (active) continue;
+        try {
+          const r = await axios.get(`${API}/api/catalog?t=${Date.now()}`);
+          const n = applyCatalog(r.data);
+          if (n > 0) {
+            setMainTab('gallery');
+            setLoupeMode('grid');
+            notify(`Cull finished — ${n} graded photos loaded.`, 'success');
+          } else {
+            notify('The grader finished but wrote no results — check the server log.', 'error');
+          }
+        } catch {
+          notify('The cull finished, but loading its results failed — reopen the gallery.', 'error');
+        }
+        break;
+      }
+    };
     try {
       const resp = await fetch(`${API}/api/grade/v2/stream`, {
         method: 'POST',
@@ -1466,6 +1749,15 @@ export default function App() {
       const decoder = new TextDecoder();
       let buf = '';
       let sawDone = false;
+      // Quiet-finish detector (2026-09-16): heartbeats keep the 45 s read
+      // timeout fed, so a stream that never delivers its done event (a lost
+      // finish between runner and generator) would sit here forever — the bar
+      // froze at 46% exactly like this on 2026-09-15. If no data line arrives
+      // for 60 s, ask /api/grade/state: when the runner is done and the
+      // catalog is committed, end the stream and take the normal finish path.
+      let lastDataAt = Date.now();
+      let quietFinished = false;
+      let lastProbeRef = 0;
       const _readWithTimeout = (): Promise<ReadableStreamReadResult<Uint8Array>> =>
         // The losing timer used to keep running after a successful read,
         // accumulating one dead 45 s timer per chunk on long grades.
@@ -1485,10 +1777,19 @@ export default function App() {
         buf += decoder.decode(value, { stream: true });
         const lines = buf.split('\n');
         buf = lines.pop() ?? '';
+        let gotData = false;
         for (const line of lines) {
           if (!line.startsWith('data: ')) continue;
+          gotData = true;
           let msg: any;
           try { msg = JSON.parse(line.slice(6)); } catch { continue; }
+          // Stale-tick guard: the runner stamps every message with a monotonic
+          // seq. Replay/reconnect/buffer-flush duplicates are dropped here so
+          // they can never drag progress backwards or double-fire.
+          if (typeof msg.seq === 'number') {
+            if (msg.seq <= lastSeqRef.current) continue;
+            lastSeqRef.current = msg.seq;
+          }
           if (msg.progress !== undefined) setGradeProgress(msg.progress);
           if (msg.desc) {
             // "Quality: Pro" is a one-off banner, not a stage — show it in the
@@ -1503,7 +1804,7 @@ export default function App() {
             const ps = msg.data.map((p: any) => ({ ...p, id: photoId(p.path) }));
             setPhotos(ps);
             setRedacted(new Set<string>(
-              ps.filter((p: any) => p.cluster_id >= 0 && !(p.sim_flag || '').startsWith('★'))
+              ps.filter((p: any) => p.cluster_id >= 0 && !(p.sim_flag || '').startsWith('â˜…'))
                 .map((p: any) => p.path)
             ));
             const firstVisible = ps.find((p: any) => !((p.grade as string)?.includes('Weak')))
@@ -1545,8 +1846,27 @@ export default function App() {
             break outer;
           }
         }
+        if (gotData) { lastDataAt = Date.now(); continue; }
+        if (Date.now() - lastDataAt > 60_000 && !quietFinished) {
+          lastProbeRef = Date.now();
+          try {
+            const st = await axios.get(`${API}/api/grade/state`);
+            const d = st.data;
+            if (!d.grading && d.finished_at) {
+              quietFinished = true;
+              // The runner finished but its done event never reached this
+              // stream. Close it and let the post-loop finish path load the
+              // committed gallery — no toast, no error, just the results.
+              break;
+            }
+            // Still running (e.g. an encoder respawn): reset the window so
+            // the next probe happens after another 60 s of heartbeats only.
+            lastDataAt = Date.now() - 30_000;   // next probe in 30 s
+            if (d.encoder_pause) setGradeDesc(`Encoder paused — ${d.encoder_pause}`);
+          } catch { /* server busy — the read timeout still guards us */ }
+        }
       }
-      // ── Stream ended WITHOUT a done event ─────────────────────────────────
+      // â”€â”€ Stream ended WITHOUT a done event â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
       // The runner is durable: on a dropped connection it detaches and
       // finishes in the background, then commits the catalog. Silence here
       // read as "grading stopped early" (2026-09-11: a finished 2,754-photo
@@ -1554,38 +1874,34 @@ export default function App() {
       // Say what is happening and WATCH for the finish — poll the runner
       // status, then load the committed gallery automatically.
       if (!sawDone) {
-        notify('Connection dropped — the cull keeps running in the background. Loading your results when it finishes…', 'info');
-        setGradeDesc('Finishing in the background…');
-        for (let poll = 0; poll < 720; poll++) {   // up to 60 min
-          await new Promise(r => setTimeout(r, 5000));
-          let active = true;
-          try { active = (await axios.get(`${API}/api/grading/status`)).data.grading; }
-          catch { continue; }   // server hiccup — keep waiting, runner is durable
-          if (active) continue;
-          try {
-            const r = await axios.get(`${API}/api/catalog?t=${Date.now()}`);
-            const n = applyCatalog(r.data);
-            if (n > 0) {
-              setMainTab('gallery');
-              setLoupeMode('grid');
-              notify(`Cull finished — ${n} graded photos loaded.`, 'success');
-            } else {
-              notify('The grader finished but wrote no results — check the server log.', 'error');
-            }
-          } catch {
-            notify('The cull finished, but loading its results failed — reopen the gallery.', 'error');
-          }
-          break;
+        // quietFinished: the cull is ALREADY done (probe above confirmed it) —
+        // don't tell the user it "keeps running"; waitAndLoadBackground's
+        // first tick sees grading:false and loads the gallery with the
+        // success toast in ~5 s.
+        if (!quietFinished) {
+          notify('Connection dropped — the cull keeps running in the background. Loading your results when it finishesâ€¦', 'info');
         }
+        setGradeDesc('Finishing in the backgroundâ€¦');
+        await waitAndLoadBackground();
       }
     } catch (err: any) {
       // The grade stream failed — either the worker died (server emits an
       // explicit error) or the client read timed out (grader stalled). The
-      // worker checkpoints completed grades to catalog.json before any crash,
-      // so try to recover graded-so-far instead of dropping the user on a blank
-      // gallery with a bare error.
+      // runner is durable: a dropped stream does NOT stop it, so FIRST check
+      // whether the cull is still running before declaring failure — saying
+      // "stopped early" and then watching the cull carry on was the lie users
+      // actually saw. Only when the runner is genuinely idle do we fall back
+      // to checkpoint recovery.
       const msg = err?.message || 'Failed';
       const isStall = /No response from server/i.test(msg);
+      let stillRunning = false;
+      try { stillRunning = (await axios.get(`${API}/api/grading/status`)).data.grading; } catch { /* assume not */ }
+      if (stillRunning) {
+        notify('Connection dropped — the cull keeps running in the background. Loading your results when it finishesâ€¦', 'info');
+        setGradeDesc('Finishing in the backgroundâ€¦');
+        await waitAndLoadBackground();
+        return;
+      }
       try {
         const r = await axios.get(`${API}/api/catalog?t=` + Date.now());
         const n = applyCatalog(r.data);
@@ -1599,10 +1915,16 @@ export default function App() {
       } catch {
         notify(`${msg}`, 'error');
       }
+    } finally {
+      // ALWAYS release the re-entrancy guard and the grading UI — including on
+      // the early `return` paths above (background reattach after a dropped
+      // stream). A `return` used to skip this block, leaving gradeBusyRef
+      // stuck true for the whole session, which silently swallowed every
+      // later Scan/Re-grade click: "the buttons do nothing" (2026-09-16).
+      gradeBusyRef.current = false;
+      setLoading(false);
+      setGradeProgress(0);
     }
-    gradeBusyRef.current = false;
-    setLoading(false);
-    setGradeProgress(0);
   }, [folder, folders, preset, notify, applyCatalog]);
 
   /* generate sequence */
@@ -1610,7 +1932,7 @@ export default function App() {
     const pool = photos
       .filter(p => p.grade !== 'Pending')
       .filter(p => seqMinStars === 0 || (p.stars ?? 0) >= seqMinStars);
-    const filterNote = seqMinStars > 0 ? ` rated ${seqMinStars}★+` : '';
+    const filterNote = seqMinStars > 0 ? ` rated ${seqMinStars}â˜…+` : '';
     if (pool.length < 5) { notify(`A sequence needs at least 5 graded photos${filterNote}. Grade more, or clear the filter.`, 'error'); return; }
     setLoading(true);
     try {
@@ -1654,8 +1976,10 @@ export default function App() {
     if (photos.length === 0) { notify('No photos loaded.', 'error'); return; }
     setCreativeLoading(true);
     setCreativeProgress(0);
-    setCreativeStage('Initialising…');
+    setCreativeStage('Initialisingâ€¦');
     setCreativeResults([]);
+    setCreativeResultsB([]);
+    setCreativeRuleSet(null);
     try {
       const resp = await fetch(`${API}/api/creative-direction/stream`, {
         method: 'POST',
@@ -1674,8 +1998,24 @@ export default function App() {
       const reader  = resp.body!.getReader();
       const decoder = new TextDecoder();
       let buf = '';
+      // Stall guard: the server sends ": ping" heartbeat comments every 10s,
+      // so a healthy stream always delivers bytes. If nothing arrives within
+      // 45s the connection is wedged — surface the error instead of spinning
+      // on "Initialisingâ€¦" forever.
+      const CREATIVE_READ_TIMEOUT_MS = 45_000;
+      const _readWithTimeout = (): Promise<ReadableStreamReadResult<Uint8Array>> =>
+        new Promise((resolve, reject) => {
+          const t = setTimeout(
+            () => reject(new Error('Connection stalled — the server stopped responding. Try again.')),
+            CREATIVE_READ_TIMEOUT_MS,
+          );
+          reader.read().then(
+            v => { clearTimeout(t); resolve(v); },
+            e => { clearTimeout(t); reject(e); },
+          );
+        });
       outer: while (true) {
-        const { done, value } = await reader.read();
+        const { done, value } = await _readWithTimeout();
         if (done) break;
         buf += decoder.decode(value, { stream: true });
         const lines = buf.split('\n');
@@ -1691,9 +2031,14 @@ export default function App() {
             if (msg.data?.error) throw new Error(msg.data.error);
             const outputs = msg.data?.outputs ?? [];
             setCreativeResults(outputs);
+            setCreativeResultsB(msg.data?.alt_outputs ?? []);
             setCreativeOutDir(msg.data?.output_dir ?? '');
             setCreativeFallback(msg.data?.director_fallback ?? '');
             setCreativeSelection(msg.data?.selection ?? null);
+            setCreativeRuleSet(msg.data?.rule_set
+              ? { ...msg.data.rule_set, subject: msg.data?.subject ?? null }
+              : null);
+            setCreativeTimings(msg.data?.timings ?? null);
             const ok = outputs.filter((r: any) => r.success).length;
             if (ok === 0 && outputs.length === 0) {
               notify('Creative Direction ran but produced no outputs.', 'info');
@@ -1715,9 +2060,14 @@ export default function App() {
     }
   }, [creativeAnchor, creativePrompt, creativeMode, creativeCount, photos, folder, folders, notify]);
 
-  const handleSaveSequence = useCallback(async () => {
-    const successes = creativeResults.filter((r: any) => r.success);
-    if (!successes.length) return;
+  const handleSaveSequence = useCallback(async (outputsArg?: any[]) => {
+    const successes = (outputsArg ?? creativeResults).filter((r: any) => r.success);
+    if (!successes.length) {
+      // Never silent: a do-nothing button reads as broken (the Save Sequence
+      // "nothing happens" report). Say why nothing was saved.
+      notify('Nothing to save — run Creative Direction first (no successful outputs).', 'error');
+      return;
+    }
     setSequenceSaving(true);
     try {
       const resp = await fetch(`${API}/api/creative-direction/save-sequence`, {
@@ -1727,8 +2077,21 @@ export default function App() {
       });
       const data = await resp.json();
       if (data.ok) {
-        notify(`Saved ${data.count} photos to ${data.story_dir.split(/[\\/]/).pop()}`, 'success');
+        // The Story folder lands NEXT TO THE USER'S PHOTOS (base_dir), and
+        // the server zips it straight into Downloads (server-side — the old
+        // blob-anchor download silently did nothing in WebView2). Reveal the
+        // zip when we have it, else the folder.
+        const revealTarget = data.zip_path || data.story_dir;
+        notify(
+          data.zip_path
+            ? `Saved ${data.count} photos — zip in Downloads: ${data.zip_path}`
+            : `Saved ${data.count} photos to ${data.story_dir}`,
+          'success', 9000);
         setUsedCount(data.used_total ?? 0);
+        try {
+          const pw = (window as any).pywebview;
+          if (pw?.api?.reveal_folder) await pw.api.reveal_folder(revealTarget);
+        } catch { /* browser/dev mode — the toast carries the full path */ }
       } else {
         notify(`Could not save. ${data.error}`, 'error');
       }
@@ -1888,7 +2251,7 @@ export default function App() {
   const handleFindPerson = async (tokens: string[]) => {
     if (!tokens.length) return;
     const [path, idxStr] = tokens[0].split('|');
-    notify('Finding similar faces…');
+    notify('Finding similar facesâ€¦');
     try {
       const r = await fetch(`${API}/api/people-search?path=${encodeURIComponent(path)}&idx=${idxStr}`);
       const d = await r.json();
@@ -1902,7 +2265,7 @@ export default function App() {
       setMainTab('gallery');
       // Honest semantics: SigLIP-2 is an appearance encoder, not a biometric
       // one — the matches are similar-looking faces, best first (measured
-      // 2026-09: same-appearance ≈0.70–0.80 L2, everything else 0.80–0.97).
+      // 2026-09: same-appearance â‰ˆ0.70–0.80 L2, everything else 0.80–0.97).
       notify(`Found ${matches.length} frame${matches.length !== 1 ? 's' : ''} with a similar-looking face — best first`, 'success');
     } catch {
       notify('People search failed — check the server log.', 'error');
@@ -1976,7 +2339,7 @@ export default function App() {
         {backendError ? (
           <>
             {/* An error explains what happened and what to do next. The previous
-                version showed a ⚠️ over "Make sure the app is running correctly",
+                version showed a âš ï¸ over "Make sure the app is running correctly",
                 which tells someone staring at a stopped app precisely nothing. */}
             <p className="t-label !text-alarm-crit">Not connected</p>
             <p className="max-w-[38ch] text-center text-sm text-ink">
@@ -1994,7 +2357,7 @@ export default function App() {
         ) : (
           <>
             <div style={{ width:40, height:40, border:`3px solid ${T.raisedHover}`, borderTopColor:T.ink3, borderRadius:'var(--r-round)', animation:'spin .8s linear infinite' }}/>
-            <span style={{ fontSize:'var(--text-sm)', color:T.ink2, letterSpacing:'var(--track-body)' }}>Starting FirstCut…</span>
+            <span style={{ fontSize:'var(--text-sm)', color:T.ink2, letterSpacing:'var(--track-body)' }}>Starting FirstCutâ€¦</span>
           </>
         )}
       </div>
@@ -2105,7 +2468,7 @@ export default function App() {
                 {/* Generic error */}
                 {downloadError && !isDownloading && (
                   <span style={{ fontSize:'var(--text-xs)', color:T.alarmCrit, fontWeight:600, flex:1, minWidth:0 }}>
-                    ✕ {downloadError}
+                    âœ• {downloadError}
                   </span>
                 )}
                 {/* Download / Retry button */}
@@ -2138,7 +2501,7 @@ export default function App() {
                         border: `1px solid ${isCpu ? T.alarmWarn : T.lineStrong}`,
                         color: isGpu ? T.ink2 : isCpu ? T.alarmWarn : T.ink3,
                       }}>
-                      {chip.display} {isGpu ? '✓ GPU' : isCpu ? '⚡ CPU' : '—'}
+                      {chip.display} {isGpu ? 'âœ“ GPU' : isCpu ? 'âš¡ CPU' : '—'}
                     </span>
                   );
                 })}
@@ -2163,7 +2526,7 @@ export default function App() {
                 title="Dismiss"
                 style={{ marginLeft:'auto', flexShrink:0, background:'none', border:'none', cursor:'pointer',
                   color: isOffline ? T.well : T.ink3, fontSize:'var(--text-md)', lineHeight:'var(--leading-none)', padding:'2px 4px' }}>
-                ✕
+                âœ•
               </button>
             )}
           </div>
@@ -2217,7 +2580,7 @@ export default function App() {
                           style={{ display:'block', marginTop:8, padding:'6px 14px', cursor: isDownloading ? 'default' : 'pointer',
                             background:'transparent', color:T.ink, border:`1px solid ${T.lineStrong}`,
                             borderRadius:'var(--r-sm)', fontSize:'var(--text-xs)' }}>
-                          {isDownloading ? 'Downloading…' : 'Download now (about 6 GB)'}
+                          {isDownloading ? 'Downloadingâ€¦' : 'Download now (about 6 GB)'}
                         </button>
                       )}
                     </div>
@@ -2235,7 +2598,7 @@ export default function App() {
                 <div style={{ display:'flex', gap:10, padding:'10px 0', borderBottom:`1px solid ${T.line}` }}>
                   <div style={{ width:9, height:9, borderRadius:'var(--r-round)', border:`2px solid ${T.ink3}`, borderTopColor:'transparent', animation:'spin .8s linear infinite', flexShrink:0, marginTop:4 }}/>
                   <div style={{ flex:1, minWidth:0 }}>
-                    <div style={{ fontSize:'var(--text-sm)', color:T.ink }}>Loading Vision Engine…</div>
+                    <div style={{ fontSize:'var(--text-sm)', color:T.ink }}>Loading Vision Engineâ€¦</div>
                     <div style={{ fontSize:'var(--text-xs)', color:T.ink3, lineHeight:'var(--leading-body)', marginTop:2 }}>~30–60 seconds — Start Culling unlocks automatically.</div>
                   </div>
                 </div>
@@ -2289,7 +2652,7 @@ export default function App() {
                 <div style={{ display:'flex', gap:10, padding:'10px 0', borderBottom:`1px solid ${T.line}` }}>
                   <div style={{ width:9, height:9, borderRadius:'var(--r-round)', border:`2px solid ${T.ink3}`, borderTopColor:'transparent', animation:'spin .8s linear infinite', flexShrink:0, marginTop:4 }}/>
                   <div style={{ flex:1, minWidth:0 }}>
-                    <div style={{ fontSize:'var(--text-sm)', color:T.ink }}>Calibrating pipeline…</div>
+                    <div style={{ fontSize:'var(--text-sm)', color:T.ink }}>Calibrating pipelineâ€¦</div>
                     <div style={{ fontSize:'var(--text-xs)', color:T.ink3, lineHeight:'var(--leading-body)', marginTop:2 }}>Warming CUDA kernels on your best photos — Start Culling unlocks when done.</div>
                   </div>
                 </div>
@@ -2331,7 +2694,7 @@ export default function App() {
                   {nicheDetecting && (
                     <span className="flex items-center gap-1 normal-case tracking-normal text-ink-3" style={{ marginLeft:'auto' }}>
                       <span style={{ width:9, height:9, borderRadius:'var(--r-round)', border:'2px solid currentColor', borderTopColor:'transparent', animation:'spin .8s linear infinite' }}/>
-                      Detecting ideal niche…
+                      Detecting ideal nicheâ€¦
                     </span>
                   )}
                   {!nicheDetecting && nicheRec?.detected && nicheRec?.preset === preset && (
@@ -2392,7 +2755,7 @@ export default function App() {
                     icon={(graderStatus?.qwen_loading || graderStatus?.warmup_running)
                       ? <span style={{ width:10, height:10, borderRadius:'var(--r-round)', border:'2px solid currentColor', borderTopColor:'transparent', animation:'spin .8s linear infinite' }}/>
                       : undefined}>
-                    {graderStatus?.qwen_loading ? 'Loading Engine…' : graderStatus?.warmup_running ? 'Calibrating…' : 'Start Culling'}
+                    {graderStatus?.qwen_loading ? 'Loading Engineâ€¦' : graderStatus?.warmup_running ? 'Calibratingâ€¦' : 'Start Culling'}
                   </Button>
                 </div>
               );
@@ -2430,7 +2793,7 @@ export default function App() {
         />
       )}
 
-      {/* ── Header ─────────────────────────────────────────────── */}
+      {/* â”€â”€ Header â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       {/* overflow-x-auto keeps the toolbar's minimum width from stretching the
           whole app: on a narrow window the bar scrolls internally instead of
           pushing every full-width section (sheet, count, panels) past the
@@ -2528,7 +2891,7 @@ export default function App() {
         {/* GPU / CPU compute chip */}
         {graderStatus && (() => {
           const dev = graderStatus.compute_device;
-          if (!dev) return null;
+          if (!dev || dev === 'unknown') return null;   // unknown â‰  CPU — don't warn on missing data
           const isGpu  = dev === 'gpu';
           const free   = graderStatus.vram_free_gb;
           const total  = graderStatus.vram_total_gb;
@@ -2726,11 +3089,11 @@ export default function App() {
             <div className="h-px flex-1 overflow-hidden rounded-sm bg-well" style={{ height: 3 }}>
               <div
                 className="h-full bg-ink-3 transition-[width] duration-slow ease"
-                style={{ width: `${Math.max(2, gradeProgress * 100)}%` }}
+                style={{ width: `${Math.max(2, gradeProgressDisplay * 100)}%` }}
               />
             </div>
             <span className="t-num shrink-0 text-xs text-ink">
-              {Math.round(gradeProgress * 100)}%
+              {Math.round(gradeProgressDisplay * 100)}%
             </span>
             {gradeEtaSecs !== null && gradeEtaSecs > 3 && (
               <span className="t-num shrink-0 text-xs text-ink-3">
@@ -2804,8 +3167,8 @@ export default function App() {
             which has its own slogan above. */}
         {!isGrading && (() => {
           const warmMsg =
-            listLoading ? 'Generating fast-scroll thumbnails…' :
-            (graderStatus?.qwen_loading || graderStatus?.warmup_running) ? 'Waking up models…' :
+            listLoading ? 'Generating fast-scroll thumbnailsâ€¦' :
+            (graderStatus?.qwen_loading || graderStatus?.warmup_running) ? 'Waking up modelsâ€¦' :
             null;
           if (!warmMsg) return null;
           return (
@@ -2817,7 +3180,7 @@ export default function App() {
         })()}
       </div>
 
-      {/* ── Rating filter ──────────────────────────────────────────
+      {/* â”€â”€ Rating filter â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
        * Star ratings are the photographer's own judgement, so this is one of
        * the few bars allowed to show the warm mark colour. */}
       {mainTab === 'gallery' && isDone && (
@@ -2885,7 +3248,7 @@ export default function App() {
         </div>
       )}
 
-      {/* ── Body ───────────────────────────────────────────────── */}
+      {/* â”€â”€ Body â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       {mainTab === 'gallery' ? (
         <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden', minHeight:0 }}>
 
@@ -2924,7 +3287,23 @@ export default function App() {
               {photos.length === 0 ? (
                 <WelcomeStage catalogBanner={catalogBanner} onOpenFolder={openBrowser}
                   onResume={handleResume}
-                  onStartFresh={() => { axios.post(`${API}/api/catalog/clear`); setCatalogBanner(false); }}/>
+                  onStartFresh={async () => {
+                    // Backend: wipe catalog + grade caches (lance.db photos
+                    // table, iqa_ckpt, light_scores — see /api/catalog/clear).
+                    try { await axios.post(`${API}/api/catalog/clear`); } catch { /* banner still closes */ }
+                    // Frontend: drop the stale graded gallery too — otherwise
+                    // the old grades stay on screen and Start Fresh looks
+                    // like it did nothing.
+                    setPhotos([]);
+                    setCarousel([]);
+                    setSelId(null);
+                    setSelectedIds(new Set());
+                    setRedacted(new Set());
+                    setShowDuplicates(false);
+                    setGradeProgress(0);
+                    setGradeDesc("");
+                    setCatalogBanner(false);
+                  }}/>
               ) : sel ? (
                 <ErrorBoundary variant="inline" label="Loupe">
                 <LoupeStage
@@ -2974,7 +3353,7 @@ export default function App() {
             </>)}
           </div>
 
-          {/* ── Filmstrip (loupe mode only) ─────────────────────── */}
+          {/* â”€â”€ Filmstrip (loupe mode only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
           {loupeMode === 'loupe' && photos.length > 0 && (
           <div style={{ flexShrink:0, background:T.surface, borderTop:`1px solid ${T.line}`, display:'flex', flexDirection:'column' }}>
             <div style={{ height:20, flexShrink:0, display:'flex', alignItems:'center', justifyContent:'space-between', padding:'0 12px', borderBottom:`1px solid ${T.line}` }}>
@@ -3023,7 +3402,7 @@ export default function App() {
         </div>
 
       ) : mainTab === 'duplicates' ? (
-        /* ── Duplicates grid view — see components/views/SimilarShots.tsx ── */
+        /* â”€â”€ Duplicates grid view — see components/views/SimilarShots.tsx â”€â”€ */
         <ErrorBoundary variant="inline" label="Duplicates">
         <SimilarShots
           groups={dupStats.groups}
@@ -3036,7 +3415,7 @@ export default function App() {
         </ErrorBoundary>
 
       ) : mainTab === 'creative' ? (
-        /* ── Creative Direction view ───────────────────────────── */
+        /* â”€â”€ Creative Direction view â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
         <ErrorBoundary variant="inline" label="Creative Director">
         <CreativeDirector
           photos={photos} creativeResults={creativeResults} creativeLoading={creativeLoading}
@@ -3046,6 +3425,9 @@ export default function App() {
           creativeAnchor={creativeAnchor} setCreativeAnchor={setCreativeAnchor}
           seqMode={seqMode} setSeqMode={setSeqMode}
           handleRunCreativeDirection={handleRunCreativeDirection} handleSaveSequence={handleSaveSequence}
+          creativeResultsB={creativeResultsB}
+          creativeRuleSet={creativeRuleSet}
+          creativeTimings={creativeTimings}
           sequenceSaving={sequenceSaving}
           creativeSelection={creativeSelection} creativeFallback={creativeFallback}
           creativeProgress={creativeProgress} creativeStage={creativeStage}
@@ -3057,21 +3439,21 @@ export default function App() {
         </ErrorBoundary>
       ) : null}
 
-      {/* ── Status bar ─────────────────────────────────────────── */}
+      {/* â”€â”€ Status bar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       <div className="flex h-6 shrink-0 items-center gap-4 border-t border-line bg-surface px-3">
         <span className="t-num flex-1 truncate text-xs text-ink-2">
           {sel ? sel.path.split(/[\\/]/).pop() : 'Open a folder to begin'}
         </span>
         <div className="flex shrink-0 gap-3">
-          {[['⌘K','Commands'],['← →','Navigate'],['1–5','Rate'],['0','Clear'],['X','Used'],['G','Grid'],['E','Loupe']].map(([k, a]) => (
+          {[['âŒ˜K','Commands'],['â† →','Navigate'],['1–5','Rate'],['0','Clear'],['X','Used'],['G','Grid'],['E','Loupe']].map(([k, a]) => (
             <KbdHint key={k} keys={k} label={a}/>
           ))}
         </div>
       </div>
 
-      {/* ── Folder browser modal ────────────────────────────────── */}
-      {/* ── Command palette (⌘K / Ctrl-K) — the keyboard's complete control
-              surface. Self-registering listener; App only supplies actions. ── */}
+      {/* â”€â”€ Folder browser modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {/* â”€â”€ Command palette (âŒ˜K / Ctrl-K) — the keyboard's complete control
+              surface. Self-registering listener; App only supplies actions. â”€â”€ */}
       <CommandPalette actions={[
         { id: 'grade',    label: 'Grade folder',     group: 'Grade', hint: 'run the grader',                 run: () => { void handleGrade(); } },
         { id: 'loupe',    label: 'Open loupe',       group: 'View',  kbd: 'E', hint: 'view current',         run: () => setLoupeMode('loupe') },
@@ -3079,10 +3461,10 @@ export default function App() {
         { id: 'gallery',  label: 'Gallery view',     group: 'View',                                          run: () => setMainTab('gallery') },
         { id: 'dupes',    label: 'Duplicates view',  group: 'View',  hint: 'similar shots',                  run: () => setMainTab('duplicates') },
         { id: 'creative', label: 'Creative Director', group: 'View', hint: 'sequence builder',               run: () => setMainTab('creative') },
-        { id: 'open',     label: 'Open folder…',     group: 'Library', hint: 'browse',                       run: () => openBrowser() },
-        { id: 'add',      label: 'Add folder…',      group: 'Library',                                       run: () => openAddFolder() },
+        { id: 'open',     label: 'Open folderâ€¦',     group: 'Library', hint: 'browse',                       run: () => openBrowser() },
+        { id: 'add',      label: 'Add folderâ€¦',      group: 'Library',                                       run: () => openAddFolder() },
         { id: 'clear',    label: 'Clear used marks', group: 'Library',                                       run: () => handleClearUsed() },
-        { id: 'export',   label: 'Export sequence…', group: 'Export', hint: `${carousel.length} in sequence`, run: () => setExportModal(true) },
+        { id: 'export',   label: 'Export sequenceâ€¦', group: 'Export', hint: `${carousel.length} in sequence`, run: () => setExportModal(true) },
       ]}/>
 
       {showBrowser && (

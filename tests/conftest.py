@@ -18,6 +18,52 @@ from pathlib import Path
 
 _TMP = Path(tempfile.mkdtemp(prefix="fg_test_lance_"))
 os.environ["FIRSTCUT_LANCE_DIR"] = str(_TMP / "lance.db")
+# The persisted LIBRARY TIER must not leak between tests either: it is state
+# on disk (cache/library_tier.json), so point it at the scratch dir. Tests
+# that exercise it set FIRSTCUT_LIB_TIER_FILE explicitly anyway (see
+# test_library_tier.py); this default keeps every OTHER test hermetic.
+os.environ["FIRSTCUT_LIB_TIER_FILE"] = str(_TMP / "library_tier.json")
+
+# Scrub session-level SIGLIP/FIRSTCUT overrides (2026-09-13). The dev machine's
+# terminal had SIGLIP_TIER=low set at session level; it leaked into the pytest
+# process and its subprocesses, switching _PROFILE to the low tier so
+# test_ram_sensitivity (which assumes the high-tier floors 4.0/3.0) and
+# test_portability (batch 8) failed with low-tier numbers (batch 2, floor 1.2).
+# Tests that WANT an override set it explicitly; a stray one from the shell
+# session must never be able to fake a failure.
+for _k in list(os.environ):
+    if _k.startswith(("SIGLIP_", "FIRSTCUT_")) and _k not in ("FIRSTCUT_LANCE_DIR", "FIRSTCUT_LIB_TIER_FILE"):
+        del os.environ[_k]
+
+# Production pauses INDEFINITELY on OOM (the keep-trucking contract); in tests
+# that is a hang — the suite runs while the dev machine itself is often below
+# the hard floor, and any in-process _enforce_ram_floor would park forever.
+# Bounded pause: tests assert readable outcomes, not infinite patience. Tests
+# that need the pause semantics explicitly set their own budget
+# (test_floor_pauses_then_resumes_when_memory_recovers).
+os.environ["SIGLIP_PAUSE_MAX_WAIT_S"] = "0.05"
+
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolate_env():
+    """Snapshot and restore os.environ around EVERY test (2026-09-13).
+
+    The grading pipeline legitimately mutates the process env at runtime:
+    _enforce_ram_floor writes SIGLIP_ENC_BATCH=2 on a low-RAM machine, and
+    tier_select.select/apply publish SIGLIP_TIER. On a memory-starved dev
+    machine those fire during tests that import siglip2_encoder, and the
+    values then leak into later, unrelated tests — test_portability's
+    'assert 2 == 8' was literally the OOM-shrunk batch, and the floor tests
+    saw the auto-selected low tier's 1.6/1.2 GB floors instead of high's
+    4.0/3.0. Each test now starts from the scrubbed session state.
+    """
+    _snap = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(_snap)
 
 
 def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001

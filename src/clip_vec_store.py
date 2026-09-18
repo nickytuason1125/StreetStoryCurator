@@ -97,6 +97,19 @@ def _connect_or_create():
 
 # -- Public API ---------------------------------------------------------------
 
+def reset() -> None:
+    """Drop the clip_vectors table (Start Fresh: it is per-photo derived data).
+
+    The next lookup recreates an empty table and Story mode re-encodes — the
+    cache is a pure optimization, nothing here is user data."""
+    global _tbl
+    import lancedb
+    db = lancedb.connect(_DB_DIR)
+    if _TBL_NAME in db.table_names():
+        db.drop_table(_TBL_NAME)
+    _tbl = None
+
+
 def get_embeddings(paths: list[str], source: str) -> dict[str, np.ndarray]:
     """
     Return {path: (512,) float32} for every path already cached under `source`.

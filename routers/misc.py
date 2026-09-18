@@ -343,6 +343,61 @@ async def clear_catalog():
         print(f"[catalog/clear] backup skipped: {_e}")
         if _CATALOG_PATH.exists():
             _CATALOG_PATH.unlink()
+
+    # Start Fresh means a fresh GRADE, not just a fresh catalog view. Without
+    # this block the pipeline still finds cached embeddings/quality scores on
+    # the next scan and short-circuits to "All N photos already graded" — the
+    # user asked to start over and got the old grades back. Three caches feed
+    # that short-circuit; all three are cleared best-effort:
+    #   1. cache/lance.db photos table — SigLIP embeddings + committed grades
+    #      (the source of `cached_rows` in grade_pipeline_v2.run_v2)
+    #   2. cache/iqa_ckpt/*.json       — per-folder quality-score checkpoints
+    #   3. cache/light_scores.json     — the tonal analyzer's memo cache
+    try:
+        import lance_store
+        lance_store.reset()
+        print("[catalog/clear] grade cache: lance.db photos table dropped")
+    except Exception as _e:
+        print(f"[catalog/clear] lance reset skipped: {_e}")
+    try:
+        import clip_vec_store
+        clip_vec_store.reset()
+        print("[catalog/clear] grade cache: clip_vectors table dropped")
+    except Exception as _e:
+        print(f"[catalog/clear] clip reset skipped: {_e}")
+    try:
+        import lance_store as _ls_faces
+        _ls_faces.reset_faces()
+        print("[catalog/clear] grade cache: faces table dropped")
+    except Exception as _e:
+        print(f"[catalog/clear] faces reset skipped: {_e}")
+    try:
+        import shutil
+        _ckpt_dir = _DATA_DIR / "cache" / "iqa_ckpt"
+        if _ckpt_dir.exists():
+            shutil.rmtree(_ckpt_dir, ignore_errors=True)
+            print("[catalog/clear] grade cache: iqa_ckpt cleared")
+    except Exception as _e:
+        print(f"[catalog/clear] iqa checkpoint clear skipped: {_e}")
+    try:
+        # Per-photo derived aggregates: recomputed from the photos on the next
+        # run. NOT user data — user_ratings.json and personal_head survive a
+        # Start Fresh deliberately (they are your ratings and taste model).
+        for _derived in ("tonal_stats.json", "drive_scan_state.json", "drive_scan_leaf_dirs.json"):
+            _f = _DATA_DIR / "cache" / _derived
+            if _f.exists():
+                _f.unlink()
+        print("[catalog/clear] grade cache: derived stats cleared")
+    except Exception as _e:
+        print(f"[catalog/clear] derived-stats clear skipped: {_e}")
+    try:
+        _light = _DATA_DIR / "cache" / "light_scores.json"
+        if _light.exists():
+            _light.unlink()
+        analyzer.cache.clear()
+        print("[catalog/clear] grade cache: light_scores cleared")
+    except Exception as _e:
+        print(f"[catalog/clear] light-score cache clear skipped: {_e}")
     return {"ok": True}
 
 

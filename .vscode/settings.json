@@ -39,6 +39,56 @@
         "**/build": true
     },
 
+    // Memory efficiency — the file watcher is a SEPARATE system from
+    // files.exclude/search.exclude and was indexing every binary in
+    // data/, cache/ (lance.db) and the venv. Excluding it stops the
+    // watcher from buffering thousands of change events in RAM.
+    "files.watcherExclude": {
+        "**/venv/**": true,
+        "**/.venv/**": true,
+        "**/node_modules/**": true,
+        "**/dist/**": true,
+        "**/build/**": true,
+        "**/cache/**": true,
+        "**/models/**": true,
+        "**/output/**": true,
+        "**/data/**": true,
+        "**/__pycache__/**": true
+    },
+
+    // Pylance: don't index the venv or generated dirs (it was cataloging
+    // every installed package), and skip dependency indexing entirely.
+    "python.analysis.exclude": [
+        "**/venv/**",
+        "**/.venv/**",
+        "**/dist/**",
+        "**/cache/**",
+        "**/output/**"
+    ],
+    "python.analysis.indexing": false,
+    "python.analysis.packageIndexDepths": [],
+
+    // ── Light-on-the-laptop tuning ─────────────────────────────────────
+    // Renderer: skip features that burn GPU/RAM for looks.
+    "editor.minimap.enabled": false,
+    "editor.cursorSmoothCaretAnimation": "off",
+    "editor.smoothScrolling": false,
+    "workbench.list.smoothScrolling": false,
+    "editor.renderWhitespace": "none",
+    "editor.largeFileOptimizations": true,
+
+    // Background churn: no auto-update downloads/installs mid-session
+    // (each extension update restarts the extension host and spikes RAM).
+    "extensions.autoUpdate": false,
+    "extensions.autoCheckUpdates": false,
+    "update.mode": "manual",
+    "telemetry.telemetryLevel": "off",
+
+    // Git: don't re-scan every repo (incl. frontend/node_modules) on focus.
+    "git.autoRepositoryDetection": false,
+    "git.autorefresh": false,
+    "search.followSymlinks": false,
+
     // Editor quality-of-life
     "editor.rulers": [100],
     "editor.tabSize": 4,

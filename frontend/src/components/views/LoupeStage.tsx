@@ -436,7 +436,7 @@ export function LoupeStage({
                       let fi = 0;
                       _points = Object.entries(_bd || {})
                         .filter(([k,v]) => typeof v === 'number' && !k.startsWith('_')
-                          && !['Aesthetic','Personal','aesthetic','personal','overall_score','score','gemma_score'].includes(k))
+                          && !['Aesthetic','Personal','aesthetic','personal','overall_score','score','gemma_score','AADB','aadb','Exemplar','exemplar'].includes(k))
                         .map(([k,v]) => {
                           const pos = POS[k.toLowerCase()] ?? FALLBACK[fi++ % FALLBACK.length];
                           return { cx: pos[0]*W, cy: pos[1]*H, rx: W*0.155, ry: H*0.155, tier: _tierFromVal(v as number) };
@@ -503,7 +503,7 @@ export function LoupeStage({
                       // Mirror the aspect-point heatmap: count one tier per graded aspect.
                       Object.entries(_bdL || {})
                         .filter(([k,v]) => typeof v === 'number' && !k.startsWith('_')
-                          && !['Aesthetic','Personal','aesthetic','personal','overall_score','score','gemma_score'].includes(k))
+                          && !['Aesthetic','Personal','aesthetic','personal','overall_score','score','gemma_score','AADB','aadb','Exemplar','exemplar'].includes(k))
                         .forEach(([,v]) => { _counts[_tierFromVal(v as number)]++; });
                     } else {
                       _b.forEach(x => { _counts[regionGuide(x.label).tier]++; });

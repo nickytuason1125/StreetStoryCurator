@@ -14,6 +14,26 @@ import './index.css'
 import App from './App.tsx'
 import ErrorBoundary from './ErrorBoundary.tsx'
 
+// ── Build handshake ──────────────────────────────────────────────────────────
+// __BUILD_ID__ is baked in at build time (vite.config.ts define). If it differs
+// from what this window last loaded, a NEWER bundle exists on disk — reload
+// once so the UI never keeps running stale JS after a rebuild. Guarded by a
+// sessionStorage flag so the reload happens at most once per load, never
+// loops, and is skipped entirely in the Vite dev server (HMR handles it).
+declare const __BUILD_ID__: string
+try {
+  const isDev = import.meta.env.DEV
+  const seen = sessionStorage.getItem('fc_frontend_build')
+  if (!isDev && seen && seen !== __BUILD_ID__) {
+    sessionStorage.setItem('fc_frontend_build', __BUILD_ID__)
+    sessionStorage.setItem('fc_frontend_reloaded', '1')
+    location.reload()
+  } else if (!isDev) {
+    sessionStorage.setItem('fc_frontend_build', __BUILD_ID__)
+    sessionStorage.removeItem('fc_frontend_reloaded')
+  }
+} catch { /* storage unavailable — never block boot on it */ }
+
 try {
   const root = createRoot(document.getElementById('root')!)
   flushSync(() => {

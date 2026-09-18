@@ -18,7 +18,7 @@ from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, field_validator, validator, model_validator
 
 from server_impl import (  # shared state & helpers
-    Path, THUMB_DIR, _HEIC_EXTS, _IMAGE_EXTS, _THUMB_ONDEMAND, _THUMB_PREWARM, _gen_preview, _grading_active, _safe_dir_path, _safe_image_path, asyncio, get_analyzer, os, threading,
+    Path, THUMB_DIR, _HEIC_EXTS, _IMAGE_EXTS, _THUMB_ONDEMAND, _THUMB_PREWARM, _gen_preview, _grading_active, _safe_dir_path, _safe_image_path, _thumb_od_permits, _thumb_pw_permits, asyncio, get_analyzer, os, threading,
 )
 
 router = APIRouter()
@@ -131,12 +131,28 @@ async def serve_thumb(path: str = Query(...)):
     # pixel; below it, 204 and the tile self-heals on the retry ladder.
     _thumb_free_gb = None
     try:
-        import psutil as _ps_thumb
-        _thumb_free_gb = _ps_thumb.virtual_memory().available / 1e9
+        # SYNC ACCURACY (2026-09-14): the commit-aware figure — same source the
+        # grade gates and the RAM badge use, so all three always agree.
+        import server_impl as _si_thumb
+        _thumb_free_gb = _si_thumb._accurate_free_gb()
     except Exception:
-        pass
+        try:
+            import psutil as _ps_thumb
+            _thumb_free_gb = _ps_thumb.virtual_memory().available / 1e9
+        except Exception:
+            pass
     if _thumb_free_gb is not None and _thumb_free_gb < 1.2:
-        return Response(status_code=204)
+        # Last resort before refusing: the server itself is the biggest
+        # controllable consumer (~1.8 GB private measured 2026-09-14) and much
+        # of it is idle decode/cache pages. Trim its working set and re-measure
+        # — a squeeze caused by our own bloat should not leave the grid blank.
+        try:
+            import server_impl as _si_trim
+            _thumb_free_gb = _si_trim._trim_server_working_set()
+        except Exception:
+            pass
+        if _thumb_free_gb < 1.2:
+            return Response(status_code=204)
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(_THUMB_ONDEMAND, _gen_one_thumb, str(src))
     if thumb_path.exists():
@@ -449,9 +465,21 @@ def _gen_one_thumb(path: str, low_priority: bool = False) -> None:
     done = threading.Event()
     with _thumb_inflight_lock:
         _thumb_inflight[key] = done
+    # Adaptive permit (2026-09-14): concurrency gated LIVE by free RAM (see
+    # server_impl._retune_thumb_permits) - wide when comfortable, narrow during
+    # a squeeze, no restart needed. Background jobs skip when starved (the next
+    # folder open re-covers them); user-facing decodes proceed anyway after the
+    # wait - one ~200 MB transient beats a permanently shimmering tile.
+    _permits = _thumb_pw_permits if low_priority else _thumb_od_permits
+    _permit_wait = 120.0 if low_priority else 30.0
+    _got_permit = _permits.acquire(timeout=_permit_wait)
     try:
+        if not _got_permit and low_priority:
+            return   # starved background job - the grid retries on next open
         _gen_one_thumb_decode(path, low_priority)
     finally:
+        if _got_permit:
+            _permits.release()
         # Conditional pop: a waiter that fell through may have re-registered
         # the key while our finally was pending — never evict their entry.
         with _thumb_inflight_lock:
@@ -616,6 +644,16 @@ async def list_folder(body: dict):
     loop = asyncio.get_running_loop()
     paths = await loop.run_in_executor(None, _scan)
 
+    # Warm-ahead on user intent (2026-09-16): choosing a folder is the signal
+    # that a critique / Story session may follow. Warm the model sidecar in
+    # the background (never blocks this response; skipped during grades;
+    # throttled inside the server helper).
+    try:
+        from server_impl import _sidecar_warm_on_browse
+        _sidecar_warm_on_browse()
+    except Exception:
+        pass
+
     # Pre-warm thumbnails in the background — BOUNDED.
     # The low-priority executor (2 workers) processes them without blocking
     # on-demand requests from the browser.
@@ -684,21 +722,17 @@ class GradeRequest(BaseModel):
             p = Path(v).resolve(strict=False)
         except (ValueError, OSError):
             raise ValueError("Invalid path")
-        # ── Card wake-up retry ────────────────────────────────────────────────
-        # Removable readers behind USB selective suspend (and dirty-flagged
-        # exFAT volumes re-mounting) can vanish for a second exactly when a
-        # grade is submitted. Three probes over ~4 s absorbs the nap; a genuinely
-        # missing folder still refuses, with a message that names the likely fix.
-        import time as _retry_time
-        for _probe in range(3):
-            if p.is_dir():
-                break
-            if _probe < 2:
-                _retry_time.sleep(2.0)
-        if not p.is_dir():
-            raise ValueError(
-                f"Folder not reachable: {v} — if this is an SD card or USB drive, "
-                "replug it (or re-insert the card) and try again.")
+        # Reachability (does the folder actually exist right now?) is NOT
+        # checked here on purpose. This validator is a synchronous Pydantic
+        # classmethod that runs inline while FastAPI parses the request body —
+        # a blocking time.sleep() retry loop here (there used to be one, up to
+        # ~4s absorbing a USB/SD-card wake-up nap) froze the WHOLE asyncio
+        # event loop for that long, stalling every other client's SSE
+        # progress, thumbnail requests, and health polling, not just this
+        # request. The card-wake-up retry now lives only where it can be
+        # async: grade_photos_v2_stream's own _dir_ok (routers/grading.py),
+        # which every endpoint that grades a folder (including /api/regrade
+        # and /api/scan) routes through.
         return str(p)
 
 

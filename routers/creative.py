@@ -18,9 +18,11 @@ from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, field_validator, validator, model_validator
 
 from server_impl import (  # shared state & helpers
-    Path, _BG_EXECUTOR, _DATA_DIR, _load_used_cd_paths, _save_used_cd_paths, asyncio,
+    Path, _BG_EXECUTOR, _CATALOG_PATH, _DATA_DIR, _load_used_cd_paths,
+    _save_used_cd_paths, asyncio,
 )
 import json
+import os
 
 router = APIRouter()
 
@@ -30,6 +32,75 @@ def __getattr__(name):
     # dynamic accesses (e.g. late-bound state added after the split).
     import server_impl as _si
     return getattr(_si, name)
+
+
+@router.post("/api/creative-direction/expand-brief")
+async def expand_brief(payload: dict):
+    """Rewrite a low-context brief into a proper style brief via the local LLM.
+
+    Keeps the user's goal, adds the craft context the parser and chooser need
+    (light, mood, subject, constraints) WITHOUT inventing subjects or places.
+    Falls back to a deterministic template expansion built from the parsed
+    rule set when the LLM is unavailable — the button never dead-ends.
+    """
+    prompt = (payload.get("prompt") or "").strip()
+    if not prompt:
+        raise HTTPException(400, "Empty brief")
+    expanded = None
+    source = "fallback"
+    try:
+        import local_llm
+        raw = local_llm.generate(
+            f"User's short photo brief: '{prompt[:300]}'\n"
+            "Rewrite it as ONE concise street-photography style brief (max 35 words) "
+            "that keeps the user's goal and adds the missing craft context: light, "
+            "mood, subject treatment, constraints. Do NOT invent subjects, places "
+            "or events the user did not imply. Output only the rewritten brief.",
+            system="You expand terse photo briefs into concise style briefs. Plain text only.",
+            max_tokens=120,
+            temperature=0.3,
+        )
+        if raw:
+            expanded = raw.strip().strip('"').strip()
+            source = "llm"
+    except Exception as e:
+        print(f"[cd] expand-brief LLM failed ({e}) — using template fallback", flush=True)
+    if not expanded:
+        from creative_director_agent import _keyword_rule_set
+        rs = _keyword_rule_set(prompt)
+        parts = [prompt]
+        if rs.get("LIGHTING_MOOD") and rs["LIGHTING_MOOD"] != "neutral":
+            parts.append(rs["LIGHTING_MOOD"])
+        if rs.get("GEOMETRIC_PRIORITY") == "High":
+            parts.append("strong geometry")
+        if rs.get("HARD_FILTER_PEOPLE"):
+            parts.append("no people")
+        expanded = ", ".join(parts) + ", strong composition, clean visual storytelling"
+        source = "template"
+    return {"expanded": expanded, "source": source}
+
+
+@router.post("/api/creative-direction/interpret")
+async def interpret_brief(payload: dict):
+    """Keyword-only preview of how the pipeline will read a brief.
+
+    Runs the SAME tables as the pipeline's first-stage parser
+    (creative_director_agent._keyword_rule_set) — no GGUF, no network, ~ms —
+    so the brief editor can show 'will read as: …' live while the user types.
+    The GGUF refinement pass may still add nuance at run time; this preview is
+    the deterministic floor.
+    """
+    try:
+        from photo_brief import build_brief, RECOMMENDED_KEYWORDS
+        text = (payload.get("prompt") or "").strip()
+        d = build_brief(text).to_dict()
+        # The brief editor's quick-add chips render from here — one source of
+        # truth shared with the parser, so a chip can never promise vocabulary
+        # the pipeline ignores.
+        d["recommended"] = RECOMMENDED_KEYWORDS
+        return d
+    except Exception as e:
+        raise HTTPException(500, f"interpret failed: {e}")
 
 
 @router.post("/api/creative-direction/stream")
@@ -79,6 +150,15 @@ async def creative_direction_stream(payload: dict):
         try:
             import numpy as np
             import json
+
+            # Creative runs cannot checkpoint, so a resource pause must be
+            # BOUNDED — and its reason must reach the user, not just crash.log.
+            try:
+                import siglip2_encoder as _s2e
+                _s2e.set_pause_budget(180.0)
+                _s2e.set_pause_notifier(lambda msg: _progress(0.05, msg))
+            except Exception:
+                pass
 
             # ── Fetch all graded images (Strong + Mid + Weak) ─────────────────
             _progress(0.01, "Loading graded images…")
@@ -145,6 +225,18 @@ async def creative_direction_stream(payload: dict):
                         embeddings = [_emb_map.get(p, np.zeros(1536, dtype=np.float32)) for p in strong_paths]
                         n_real = sum(1 for e in embeddings if np.any(e != 0))
                         print(f"[cd] Embeddings enriched from LanceDB: {n_real}/{len(embeddings)} real")
+                        # Zero-embedding guard: catalog rows that missed in
+                        # LanceDB carry zero vectors, on which centroid/dedup/
+                        # diversity math silently degenerates (all sims = 0).
+                        # Drop them and say so instead of pretending.
+                        _keep = [i for i, e in enumerate(embeddings) if np.any(e != 0)]
+                        if len(_keep) < len(embeddings):
+                            _dropped = len(embeddings) - len(_keep)
+                            _progress(0.03, f"Skipped {_dropped} photos without stored embeddings")
+                            strong_paths  = [strong_paths[i] for i in _keep]
+                            embeddings    = [embeddings[i] for i in _keep]
+                            scores        = [scores[i] for i in _keep]
+                            aspect_scores = [aspect_scores[i] for i in _keep]
             except Exception as e:
                 print(f"[cd] LanceDB query failed: {e}")
 
@@ -200,9 +292,22 @@ async def creative_direction_stream(payload: dict):
             _progress(0.03, f"Found {len(strong_paths)} images for creative direction")
 
             # ── Release SigLIP-2 singleton before Creative Mode LLMs load ─────
+            # ONLY when VRAM is actually tight — an unconditional release
+            # forced a full SigLIP reload on the next grading action (model
+            # ping-pong between tabs). The Story GGUF has an offload ladder
+            # and can run on CPU when VRAM is free.
             try:
                 from grade_pipeline_v2 import release_grading_models
-                release_grading_models()
+                _need_release = True
+                try:
+                    import torch as _torch
+                    if _torch.cuda.is_available():
+                        _free_gb, _total_gb = _torch.cuda.mem_get_info()
+                        _need_release = (_free_gb / 1e9) < 2.5
+                except Exception:
+                    pass
+                if _need_release:
+                    release_grading_models()
             except Exception as _e_rel:
                 print(f"[server] release_grading_models skipped: {_e_rel}")
                 # Belt-and-suspenders: a release failure must never leave
@@ -245,8 +350,10 @@ async def creative_direction_stream(payload: dict):
                 }
                 if new_used:
                     updated = _load_used_cd_paths() | new_used
-                    # Reset when the whole pool has cycled through
-                    if len(updated) >= len(strong_paths):
+                    # Reset only when every currently-graded image has been
+                    # used — comparing against the run's own pool size used
+                    # to wipe history prematurely.
+                    if set(strong_paths) and set(strong_paths) <= updated:
                         updated = new_used
                     _save_used_cd_paths(updated)
 
@@ -256,13 +363,31 @@ async def creative_direction_stream(payload: dict):
             _push({"error": str(exc)})
         finally:
             import gc as _gc
+            # Release the run's resident models (CPU text encoder, vision
+            # critic, 8B LLM) — they used to sit in RAM forever after the
+            # build, which is the 4+ GB spike. FIRSTCUT_KEEP_CD_MODELS=1
+            # opts out (faster back-to-back builds, permanently higher RAM).
+            import os as _os
+            if _os.environ.get("FIRSTCUT_KEEP_CD_MODELS", "") != "1":
+                try:
+                    from creative_director import release_creative_models
+                    release_creative_models()
+                except Exception as _e_rel:
+                    print(f"[server] release_creative_models skipped: {_e_rel}", flush=True)
             _gc.collect()
 
     _BG_EXECUTOR.submit(_run)
 
     async def _event_stream():
         while True:
-            msg = await queue.get()
+            try:
+                msg = await asyncio.wait_for(queue.get(), timeout=10.0)
+            except asyncio.TimeoutError:
+                # Heartbeat comment: keeps the connection (and any proxy /
+                # middleware) from silently swallowing the stream while a
+                # long pipeline stage produces no messages.
+                yield ": ping\n\n"
+                continue
             yield f"data: {json.dumps(msg)}\n\n"
             if "done" in msg or "error" in msg:
                 break
@@ -296,6 +421,76 @@ async def list_portfolio(payload: dict):
     except Exception as e:
         print(f"[cd/portfolio] list failed: {e}", flush=True)
         raise HTTPException(500, "Could not list the portfolio folder — see the server log for details.")
+
+
+@router.post("/api/creative-direction/download-sequence")
+async def download_sequence(payload: dict):
+    """Zip a SAVED story sequence for the browser's Downloads folder.
+
+    Body: { outputs: [{output_path, source_path, params, success}], base_dir }
+    The zip contains the story's copies (in the user's chosen order) plus a
+    manifest.json recording slot, role, source and reasoning — so the sequence
+    is a self-contained artefact, not just a folder on disk.
+    """
+    import zipfile
+    import tempfile
+    from datetime import datetime
+
+    outputs = payload.get("outputs") or []
+    base_dir = (payload.get("base_dir") or "").strip()
+    items = [o for o in outputs if o.get("success") and o.get("output_path")]
+    if not items:
+        raise HTTPException(400, "No saved sequence outputs to download")
+
+    zip_path = None
+    try:
+        # Build in a temp dir; the browser download is the deliverable.
+        tmp = tempfile.mkdtemp(prefix="story_dl_")
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        zip_path = Path(tmp) / f"Story_Sequence_{stamp}.zip"
+
+        manifest = []
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as zf:
+            used: set = set()
+            for i, o in enumerate(items):
+                src = Path(o["output_path"])
+                if not src.exists():
+                    continue
+                name = src.name
+                stem, ext = src.stem, src.suffix
+                k = 1
+                while name in used:
+                    name = f"{stem}_{k}{ext}"
+                    k += 1
+                used.add(name)
+                zf.write(str(src), arcname=name)
+                manifest.append({
+                    "seq": i + 1,
+                    "role": (o.get("params") or {}).get("role", "unknown"),
+                    "filename": name,
+                    "source_path": o.get("source_path", ""),
+                })
+            zf.writestr("manifest.json", json.dumps({
+                "saved": datetime.now().isoformat(timespec="seconds"),
+                "count": len(manifest),
+                "sequence": manifest,
+            }, indent=2))
+
+        return FileResponse(
+            str(zip_path),
+            media_type="application/x-zip-compressed",
+            filename=zip_path.name,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[cd] download-sequence failed: {e}", flush=True)
+        if zip_path and zip_path.exists():
+            try:
+                zip_path.unlink()
+            except Exception:
+                pass
+        raise HTTPException(500, f"Could not build the sequence zip: {e}")
 
 
 @router.post("/api/creative-direction/save-sequence")
@@ -353,6 +548,23 @@ async def save_cd_sequence(payload: dict):
     import json as _j
     (story_dir / "manifest.json").write_text(_j.dumps(manifest, indent=2))
 
+    # Zip straight into the user's Downloads folder, server-side. The old
+    # frontend flow fetched a zip blob and anchor-clicked it — which silently
+    # does nothing inside the WebView2 desktop window, so users never saw the
+    # copy. The server has real filesystem access: write it directly.
+    zip_path = None
+    try:
+        import zipfile as _zf
+        _dl = Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Downloads"
+        _dl.mkdir(parents=True, exist_ok=True)
+        zip_path = _dl / f"Story_Sequence_{timestamp}.zip"
+        with _zf.ZipFile(zip_path, "w", _zf.ZIP_DEFLATED) as z:
+            for f in sorted(story_dir.iterdir()):
+                z.write(f, f.name)
+        print(f"[server] save-sequence: zip → {zip_path}", flush=True)
+    except Exception as _e_zip:
+        print(f"[server] save-sequence: zip to Downloads failed: {_e_zip}", flush=True)
+
     # Mark source paths as used
     source_paths = {o["source_path"] for o in successes if o.get("source_path")}
     used = _load_used_cd_paths() | source_paths
@@ -361,6 +573,7 @@ async def save_cd_sequence(payload: dict):
     return JSONResponse({
         "ok":        True,
         "story_dir": str(story_dir),
+        "zip_path":  str(zip_path) if zip_path else None,
         "count":     len(manifest),
         "used_total": len(used),
     })

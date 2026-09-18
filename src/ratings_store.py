@@ -72,6 +72,28 @@ def load() -> dict:
     return {k: _stars_of(v) for k, v in _read_raw().items() if _stars_of(v) > 0}
 
 
+def load_records() -> list:
+    """Return [{path, stars, score, rated_at}] for every rated photo that has a
+    snapshotted machine score. This is the full cross-folder calibration table:
+    ratings from LX3, tpe_master and every other folder together, each carrying
+    the machine score as it stood when the rating was made. New ratings are
+    stamped with `rated_at` (set_rating) so the calibration can weight recent
+    taste more heavily; legacy entries carry no timestamp and count at full
+    weight."""
+    out = []
+    for k, v in _read_raw().items():
+        stars = _stars_of(v)
+        if stars <= 0 or not isinstance(v, dict):
+            continue
+        out.append({
+            "path": k,
+            "stars": stars,
+            "score": v.get("score"),
+            "rated_at": v.get("rated_at"),
+        })
+    return out
+
+
 def get(path: str) -> int:
     """Stars for one path, 0 if unrated."""
     return _stars_of(_read_raw().get(path))
@@ -120,7 +142,7 @@ def set_rating(path: str, stars: int, score: float | None = None,
         if stars and int(stars) > 0:
             existing = cur.get(path)
             prior_source = existing.get("source") if isinstance(existing, dict) else None
-            entry: dict = {"stars": int(stars)}
+            entry: dict = {"stars": int(stars), "rated_at": time.time()}
             if score is not None:
                 entry["score"] = float(score)
             if personal_score is not None:

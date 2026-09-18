@@ -62,7 +62,7 @@ export const FilmThumb = memo(function FilmThumb({
             {(p.path.split(/[\\/]/).pop() ?? '').replace(/\.[^.]+$/, '')}
           </span>
           {p.has_annotations && <AnnotatedMark/>}
-          {p.stars > 0 && (
+          {(p.stars ?? 0) > 0 && (
             <svg width="6" height="6" viewBox="0 0 24 24" fill={T.mark} stroke={T.mark} strokeWidth="2" className="shrink-0">
               <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26"/>
             </svg>
@@ -330,7 +330,7 @@ export function GridView({
                     >
                     {(p.path.split(/[\\/]/).pop() ?? '').replace(/\.[^.]+$/, '')}
                   </span>
-                  {p.stars > 0 && (
+                  {(p.stars ?? 0) > 0 && (
                     <span className="shrink-0 leading-none" title={`${p.stars} of 5`}
                       >
                       <svg width="8" height="8" viewBox="0 0 24 24" fill={T.mark} stroke={T.mark} strokeWidth="2">
@@ -338,7 +338,7 @@ export function GridView({
                       </svg>
                     </span>
                   )}
-                  {p.stars > 0 && <span className="t-num shrink-0 text-xs text-mark-ink">{p.stars}</span>}
+                  {(p.stars ?? 0) > 0 && <span className="t-num shrink-0 text-xs text-mark-ink">{p.stars}</span>}
                   {p.has_annotations && <AnnotatedMark/>}
                   {/* No raw score on the cell. ".041 MID" is the machine's
                       internal number leaking into a contact sheet — it asks the

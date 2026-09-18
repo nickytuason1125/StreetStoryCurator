@@ -154,6 +154,20 @@ def warmup() -> bool:
             return False
 
 
+# ── Idle tracking (2026-09-14) ────────────────────────────────────────────────
+# The CLIP model stays resident once warmed (~0.7 GB). The server's RAM
+# watchdog now releases it after 5 idle minutes; this is the wiring.
+_LAST_USED = 0.0
+
+def _touch() -> None:
+    global _LAST_USED
+    _LAST_USED = time.monotonic()
+
+def idle_seconds() -> float:
+    """Seconds since the model was last actually used (∞ if never loaded)."""
+    return (time.monotonic() - _LAST_USED) if _LAST_USED else 1e12
+
+
 def is_ready() -> bool:
     return _ready
 
@@ -219,6 +233,7 @@ def detect(image_paths: list[str], sample_limit: int = 0) -> Optional[dict]:
     """
     if not warmup():
         return None
+    _touch()
     paths = [p for p in (image_paths or []) if p]
     if not paths:
         return None

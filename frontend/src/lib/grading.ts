@@ -41,6 +41,40 @@ export function ramReadiness(gs: any): {
   return { level: 'clear', free, total, percent, min, readout, tip: `${free.toFixed(1)} GB free${usedTip} — clear to grade.` };
 }
 
+/* ── Aspect calibration ──────────────────────────────────────────────────────
+ * The pipeline's final score is a calibrated, gated fusion (archetype weights,
+ * anchor floors, hard rejects, rating-anchored thresholds), but the per-aspect
+ * breakdown values are RAW head outputs on the CLIP scale — typically 0.35-0.55
+ * even for keepers. Comparing raw aspects against the calibrated grade
+ * cut-points (Strong >= 0.60 / Weak < 0.41) makes every calculation contradict
+ * the grade: a Strong photo read as "Mid/Weak" in every row of its own panel.
+ *
+ * The fix is a per-photo linear remap: shift the photo's aspect family so its
+ * mean lands on the photo's final score, preserving the spread BETWEEN aspects
+ * (which aspect carries and which drags) while putting them on the scale the
+ * grade actually uses. Raw zeros are preserved — the grader emits 0 for
+ * "not scored" (e.g. Human/Culture with no person) and shifting those would
+ * manufacture data out of nothing. */
+export function calibratedAspects(
+  raw: Record<string, number>,
+  score: number,
+): Record<string, number> {
+  const vals = Object.entries(raw)
+    .filter(([, v]) => typeof v === 'number' && isFinite(v) && v > 0);
+  if (!vals.length || typeof score !== 'number' || !isFinite(score)) return { ...raw };
+  const mean = vals.reduce((s, [, v]) => s + v, 0) / vals.length;
+  const off  = score - mean;
+  const out: Record<string, number> = { ...raw };
+  for (const [k, v] of vals) out[k] = Math.max(0, Math.min(1, v + off));
+  return out;
+}
+
+/** Same cut-points the grade vocabulary documents (tokens.ts): the tier an
+ * aspect's CALIBRATED value occupies. */
+export function aspectTier(v: number): 'Strong' | 'Mid' | 'Weak' {
+  return v >= 0.60 ? 'Strong' : v >= 0.41 ? 'Mid' : 'Weak';
+}
+
 /** Grade → token colour. Mid is deliberately silent (see tokens.css). */
 export function gc(g: string) {
   const k = gradeKey(g);
@@ -49,3 +83,4 @@ export function gc(g: string) {
   if (k === 'mid')    return T.ink2;   // silent — neutral, never amber
   return T.ink3;
 }
+

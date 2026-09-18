@@ -1,5 +1,5 @@
-"""
-local_llm.py — the one text-LLM runtime, in-process, offline.
+﻿"""
+local_llm.py — the one text-LLM runtime, offline, via the disposable sidecar.
 
 Why this module exists
 ----------------------
@@ -34,21 +34,17 @@ tier_select's cached subprocess probe, the same way jury_engine asks.
 from __future__ import annotations
 
 import os
+import time
 import threading
 from pathlib import Path
 from typing import Optional
 
 _ROOT = Path(__file__).resolve().parent.parent
 
-# Offload ladder, best first. A build without enough VRAM fails at construction
-# rather than at generation time, so backing off one rung at a time is how we
-# find the level this machine can actually hold. 0 is pure CPU and must stay last
-# — it is the rung with nothing after it, so nothing optional may ride on it.
-_GPU_LAYER_LADDER = (-1, 20, 10, 0)
-
-_llm = None
+# Offload ladder: the vision/text GGUF loaders live in src/vlm_sidecar.py now
+# (see _GPU_LAYER_LADDER there). This module is the CLIENT — it keeps the
+# skip-reporting semantics and the public API, not the weights.
 _load_attempted = False
-_lock = threading.Lock()
 
 
 def _setting(name: str, default):
@@ -178,79 +174,64 @@ def _suppress_thinking(system):
     return ((system + " ") if system else "") + "/no_think"
 
 
-def _load():
-    """Load the singleton, or return None. Never raises."""
-    global _llm, _load_attempted, _last_skip
-    if _llm is not None:
-        return _llm
-    with _lock:
-        if _llm is not None:
-            return _llm
-        if _load_attempted:
-            return None                      # already failed; don't retry per call
+_OLLAMA_TEXT_TIMEOUT = (5, 120)   # (connect, read) — cold VRAM load budget
 
-        path = model_path()
-        if not path.exists():
-            _last_skip = f"no text model installed at {path.name}"
-            _load_attempted = True
-            print(f"[llm] {_last_skip} — text features disabled")
-            return None
 
-        need = required_ram_gb()
-        free = _free_ram_gb()
-        if free < need:
-            # Deliberately does NOT set _load_attempted. Free memory is
-            # transient: observed live, a Story run reported "only 2.0 GB free"
-            # while 4.04 GB actually was, because a single refusal while Chrome
-            # was open had latched the model off for the life of the server.
-            # Closing Chrome did not help; only restarting the app did, which
-            # to a user is indistinguishable from the feature being broken.
-            _last_skip = (f"only {free:.1f} GB RAM free, needs ~{need:.1f} GB "
-                          f"for {path.name}")
-            print(f"[llm] {_last_skip} — skipping the text model rather than "
-                  f"pushing this machine into swap")
-            return None
+def _check_ollama_available() -> bool:
+    """Ping Ollama /api/version once per 60 s; False immediately if down."""
+    global _ollama_last_check, _ollama_ok
+    try:
+        now = time.monotonic()
+    except Exception:
+        return False
+    if now - _ollama_last_check < 60.0:
+        return _ollama_ok
+    try:
+        import requests as _rq
+        _ollama_ok = _rq.get("http://localhost:11434/api/version",
+                             timeout=2).ok
+    except Exception:
+        _ollama_ok = False
+    _ollama_last_check = now
+    return _ollama_ok
 
-        try:
-            from llama_cpp import Llama
-        except Exception as e:
-            _last_skip = f"llama_cpp unavailable ({e})"
-            _load_attempted = True
-            print(f"[llm] {_last_skip} — text features disabled")
-            return None
 
-        try:
-            from tier_select import has_gpu
-            has_cuda = has_gpu()
-        except Exception:
-            has_cuda = False
+_ollama_last_check = 0.0
+_ollama_ok = False
 
-        ladder = _GPU_LAYER_LADDER if has_cuda else (0,)
-        last_err: Optional[Exception] = None
-        for n_gpu in ladder:
-            try:
-                _llm = Llama(
-                    model_path=str(path),
-                    n_ctx=4096,
-                    n_gpu_layers=n_gpu,
-                    # flash_attn halves the KV cache, but some builds reject it on
-                    # a pure-CPU context. The n_gpu=0 rung is the last resort, so
-                    # nothing optional may be the thing that fails there.
-                    flash_attn=(n_gpu != 0),
-                    n_threads=min(os.cpu_count() or 4, 8),
-                    verbose=False,
-                )
-                print(f"[llm] {path.name} loaded (n_gpu_layers={n_gpu})")
-                _last_skip = None
-                return _llm
-            except Exception as e:
-                last_err = e
-                print(f"[llm] load failed at n_gpu_layers={n_gpu} ({e}) — backing off")
-        _load_attempted = True          # this build cannot load these weights
-        _last_skip = f"the model failed to load ({last_err})"
-        print(f"[llm] load failed on every offload level: {last_err}")
-        _llm = None
+
+def _ollama_text(messages, *, max_tokens: int, temperature: float,
+                 json_schema=None, model: str) -> Optional[str]:
+    """One text chat completion against Ollama. None when it fails — callers
+    fall back to the sidecar."""
+    try:
+        import requests as _rq
+    except Exception:
         return None
+    payload = {
+        "model": model, "stream": False, "messages": messages,
+        "keep_alive": "30s",   # self-unload: no resident RAM between requests
+        "options": {"temperature": temperature, "num_predict": max_tokens},
+    }
+    if json_schema is not None:
+        payload["format"] = json_schema   # Ollama structured output (JSON schema)
+    for attempt in (1, 2):
+        try:
+            r = _rq.post("http://localhost:11434/api/chat", json=payload,
+                         timeout=_OLLAMA_TEXT_TIMEOUT)
+            if r.ok:
+                msg = (r.json().get("message") or {}).get("content") or ""
+                return msg.strip() or None
+            print(f"[llm] Ollama/{model} HTTP {r.status_code}")
+            return None
+        except _rq.exceptions.ReadTimeout:
+            if attempt == 1:
+                print(f"[llm] Ollama/{model} read-timeout (cold load?) — retrying once")
+                continue
+        except Exception as e:
+            print(f"[llm] Ollama/{model} failed: {e}")
+            return None
+    return None
 
 
 def generate(prompt: str,
@@ -267,58 +248,102 @@ def generate(prompt: str,
     are why removing the Ollama gate is safe. Raising instead would convert a
     degraded feature into a broken grade.
 
-    ``json_schema`` constrains decoding via GBNF when llama_cpp supports it. The
-    HTTP API this replaces had no grammar support at all, so callers that want
-    structured output were parsing free text and hoping; they no longer have to.
+    ``json_schema`` constrains decoding via GBNF — the schema travels to the
+    sidecar, which builds the LlamaGrammar next to the model.
+
+    The model runs in the disposable sidecar process (sidecar_client), NOT
+    here: this server process used to hold a 1.5 GB llama.cpp resident whose
+    RAM could never fully return after an in-place unload. Same public
+    behaviour, same skip-reporting semantics, different address space.
     """
-    llm = _load()
-    if llm is None:
+    global _last_skip, _load_attempted
+    path = model_path()
+    if not path.exists():
+        _last_skip = f"no text model installed at {path.name}"
+        print(f"[llm] {_last_skip} — text features disabled")
+        return None
+    if _load_attempted:
+        return None                      # already failed; don't retry per call
+
+    need = required_ram_gb()
+    free = _free_ram_gb()
+    if free < need:
+        # Deliberately does NOT set _load_attempted. Free memory is transient:
+        # a single refusal while Chrome was open must not latch the model off
+        # for the life of the server (see the original in-process comment).
+        _last_skip = (f"only {free:.1f} GB RAM free, needs ~{need:.1f} GB "
+                      f"for {path.name}")
+        print(f"[llm] {_last_skip} — skipping the text model rather than "
+              f"pushing this machine into swap")
         return None
 
-    grammar = None
-    if json_schema is not None:
-        try:
-            import json as _json
-            from llama_cpp import LlamaGrammar
-            grammar = LlamaGrammar.from_json_schema(_json.dumps(json_schema))
-        except Exception as e:
-            print(f"[llm] grammar build failed ({e}) — unconstrained decoding")
+    try:
+        import sidecar_client as _sc
+    except Exception as e:
+        _last_skip = f"sidecar client unavailable ({e})"
+        return None
 
     system = _suppress_thinking(system)
     messages = ([{"role": "system", "content": system}] if system else []) + \
                [{"role": "user", "content": prompt}]
-    try:
-        kwargs = dict(messages=messages, max_tokens=max_tokens,
-                      temperature=temperature)
-        if grammar is not None:
-            kwargs["grammar"] = grammar
-        out = llm.create_chat_completion(**kwargs)
-        return _strip_thinking(out["choices"][0]["message"]["content"] or "")
-    except Exception as e:
-        global _last_skip
-        _last_skip = f"the model failed mid-answer ({e})"
-        print(f"[llm] generation failed: {e}")
+
+    schema = json_schema
+    # Ollama-first (2026-09-17): the text Art Director used to depend solely
+    # on the sidecar, whose detached spawn is the flakiest link in the chain
+    # (observed WinError 50 from a windowed server) — a spawn failure silently
+    # degraded Story Mode to score-sort. Ollama is already installed with
+    # capable text models, runs them on CUDA, and keep_alive self-unloads:
+    # same accuracy, no RAM balloon, no spawn roulette. The sidecar stays as
+    # the fallback for machines without Ollama.
+    for _model in ("qwen3.5:4b", "llama3.2:latest"):
+        if _check_ollama_available():
+            raw = _ollama_text(messages, max_tokens=max_tokens,
+                               temperature=temperature, json_schema=schema,
+                               model=_model)
+            if raw:
+                _last_skip = None
+                return _strip_thinking(raw)
+    for attempt in (1, 2):
+        payload = {"kind": "text", "messages": messages,
+                   "max_tokens": max_tokens, "temperature": temperature,
+                   "json_schema": schema}
+        try:
+            import model_residency as _res; _res.register('text_llm', unload, 1.5)
+        except Exception:
+            pass
+        j = _sc.infer(payload)
+        if j is None:
+            _last_skip = "the model sidecar could not start"
+            return None
+        if j.get("ok"):
+            _last_skip = None
+            return _strip_thinking(j.get("text") or "")
+        if j.get("grammar_failed") and attempt == 1:
+            # This build cannot build the GBNF schema — retry unconstrained,
+            # exactly like the old in-process grammar path did.
+            print(f"[llm] grammar build failed ({j.get('error')}) — unconstrained decoding")
+            schema = None
+            continue
+        # Weights missing in the sidecar, or a genuine load failure.
+        _load_attempted = True
+        _last_skip = f"the model failed to load ({j.get('error')})"
+        print(f"[llm] {_last_skip}")
         return None
+    return None
 
 
 def unload() -> None:
-    """Release the singleton so a GPU-heavy stage can have the VRAM back.
+    """Release the text model so a GPU-heavy stage can have the VRAM back.
 
+    Targets the sidecar's text slot; when vision is still loaded the sidecar
+    stays up for it, otherwise the process exits and ALL its RAM returns.
     Resets the attempt flag too: an unload is a deliberate act, and the next
     caller should get a fresh try rather than inherit an earlier failure.
     """
-    global _llm, _load_attempted
-    with _lock:
-        _llm = None
-        _load_attempted = False
-    import gc
-    gc.collect()
+    global _load_attempted
+    _load_attempted = False
     try:
-        import torch
-        # is_initialized() FIRST. is_available() would itself create the CUDA
-        # context this whole module is arranged to avoid in the server process.
-        if torch.cuda.is_initialized():
-            torch.cuda.empty_cache()
-            torch.cuda.ipc_collect()
+        import sidecar_client as _sc
+        _sc.evict("text")
     except Exception:
         pass

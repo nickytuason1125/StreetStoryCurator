@@ -5,24 +5,24 @@ Governs the 5-image "Story Sequence" using only Original Pixel Metadata.
 No pixel modification is performed. The output is always the original file.
 
 Pipeline
-────────
+â”€â”€â”€â”€â”€â”€â”€â”€
 1. Phi-4-mini-reasoning Agent (CPU GGUF) → Rule Set JSON
    Reads the Style Brief as Boolean Constraints. Emits HARD_FILTER_PEOPLE,
    GEOMETRIC_PRIORITY, LIGHTING_MOOD, BRIEF_KEYWORDS.
 
 2. D-FINE-nano person_kill_switch (batched, GPU when available)
-   If HARD_FILTER_PEOPLE is True and class:person is detected (conf ≥ 0.35),
+   If HARD_FILTER_PEOPLE is True and class:person is detected (conf â‰¥ 0.35),
    the image is DISQUALIFIED from the Story Sequence. Absolute — no exceptions.
 
 3. SigLIP-2 Penalty — Subject Intrusion (CPU)
-   people_sim > 0.40 OR Human/Culture aspect > 0.55 → score × 0.10.
+   people_sim > 0.40 OR Human/Culture aspect > 0.55 → score Ã— 0.10.
 
 4. Story Sequence Selection — select_story_sequence()
    Greedy max-dissimilarity + role guarantee over top-40 by score.
 
 5. Cinematic Reorder
    Opener → slot 0, Contrast → slot n//2, Closer → slot n-1.
-   Luminance smoothing (adjacent Δ < 25%).
+   Luminance smoothing (adjacent Î” < 25%).
 
 6. Copy Originals → output_dir/Final_Portfolio/
    Output is 100% the original capture. No stylization.
@@ -35,14 +35,15 @@ Per-image narrative roles (assigned by content, not list position):
   detail   → third-highest score (texture / decisive gesture)
 
 Cinematic pacing constraints:
-  • Opener + Closer negative space ≥ 30% (sim_to_centroid ≤ 0.70)
-  • Contrast placed at exactly slot n//2 in narrative order
-  • Luminance smoothing: adjacent images must not differ > 25% mean brightness
-  • Diversity guard: any pair with cosine sim > 0.88 is penalised / swapped
+  â€¢ Opener + Closer negative space â‰¥ 30% (sim_to_centroid â‰¤ 0.70)
+  â€¢ Contrast placed at exactly slot n//2 in narrative order
+  â€¢ Luminance smoothing: adjacent images must not differ > 25% mean brightness
+  â€¢ Diversity guard: any pair with cosine sim > 0.88 is penalised / swapped
 """
 from __future__ import annotations
 
 import itertools
+import os
 import time
 import json
 import re
@@ -56,17 +57,17 @@ try:
 except ImportError:  # pragma: no cover
     _cv2 = None
 
-# ── Shot roles ────────────────────────────────────────────────────────────────
+# â”€â”€ Shot roles â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 _ROLE_ORDER = ["subject", "opener", "closer", "contrast", "detail"]
 
-# ── Cinematic pacing thresholds ───────────────────────────────────────────────
-_NEG_SPACE_THRESH  = 0.70   # sim_to_centroid ≤ this → qualifies as negative space
+# â”€â”€ Cinematic pacing thresholds â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+_NEG_SPACE_THRESH  = 0.70   # sim_to_centroid â‰¤ this → qualifies as negative space
 _DUP_SIM_THRESH    = 0.88   # cosine sim > this → near-duplicate; penalise / swap
 _LUM_SMOOTH_THRESH = 0.25   # max allowed mean-brightness diff between adjacent images
 _POOL_DEDUP_THRESH = 0.92   # pre-selection pool dedup: hard-drop near-identical shots
 
-# ── Empty-brief filtering ─────────────────────────────────────────────────────
+# â”€â”€ Empty-brief filtering â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 _EMPTY_BRIEF_KEYWORDS = {"empty", "liminal", "desert", "void", "abandoned", "desolate"}
 _PEOPLE_SIM_THRESHOLD = 0.40   # SigLIP-2 cosine sim to "people" concept → hard penalty
 _PEOPLE_PENALTY       = 0.10   # score multiplier when triggered
@@ -79,6 +80,28 @@ _YOLO_MIN_AREA_FRAC   = 0.0005  # ignore detections < 0.05% of canvas (distant b
 # CPU-side text encoder cache — loaded lazily on first semantic search when the
 # grading singleton (GPU) is unavailable.  Avoids reloading 3.7 GB on every query.
 _text_enc_cpu: Optional["SigLIP2Encoder"] = None  # type: ignore[name-defined]
+
+
+def release_creative_models() -> None:
+    """Free every CPU/GPU-resident model a creative run loaded (2026-09-16).
+
+    Delegates to the model residency registry — one coordinator instead of
+    per-module unload calls. The next build pays the reload (~60-90 s); set
+    FIRSTCUT_KEEP_CD_MODELS=1 to keep everything resident instead.
+    """
+    import gc as _gc
+    try:
+        import model_residency as _res
+        _res.release_all()
+    except Exception:
+        pass
+    _gc.collect()
+
+
+def _drop_text_enc() -> None:
+    """Unload handle for the model residency registry."""
+    global _text_enc_cpu
+    _text_enc_cpu = None
 
 
 def embed_text_query(query: str) -> np.ndarray:
@@ -95,6 +118,13 @@ def embed_text_query(query: str) -> np.ndarray:
     """
     global _text_enc_cpu
 
+    # Refresh the residency LRU stamp — the server's idle reaper must not
+    # evict the encoder between queries in an active creative run.
+    try:
+        import model_residency as _res_t; _res_t.touch('siglip_text_cpu')
+    except Exception:
+        pass
+
     # Fast path: grading singleton already loaded — borrow its text tower
     try:
         import grade_pipeline_v2 as _gp
@@ -107,8 +137,9 @@ def embed_text_query(query: str) -> np.ndarray:
     # Slow path: load CPU encoder once and cache for the session
     if _text_enc_cpu is None:
         from siglip2_encoder import SigLIP2Encoder
-        print("[cd] embed_text_query: loading SigLIP-2 text encoder on CPU…")
-        _text_enc_cpu = SigLIP2Encoder(device="cpu")
+        print("[cd] embed_text_query: loading SigLIP-2 text encoder on CPUâ€¦")
+        _text_enc_cpu = SigLIP2Encoder(device="cpu", use_warm=False)
+        import model_residency as _res; _res.register('siglip_text_cpu', _drop_text_enc, 3.5)
 
     emb = _text_enc_cpu.encode_text([query])  # (1, 1536)
     return emb[0]
@@ -118,6 +149,10 @@ def _embed_texts(queries: list[str]) -> np.ndarray:
     """Batch variant of embed_text_query → (N, 1536) float32 (same encoder paths)."""
     global _text_enc_cpu
     try:
+        import model_residency as _res_t; _res_t.touch('siglip_text_cpu')
+    except Exception:
+        pass
+    try:
         import grade_pipeline_v2 as _gp
         if _gp._enc_singleton is not None:
             return _gp._enc_singleton.encode_text(queries)
@@ -125,8 +160,9 @@ def _embed_texts(queries: list[str]) -> np.ndarray:
         pass
     if _text_enc_cpu is None:
         from siglip2_encoder import SigLIP2Encoder
-        print("[cd] _embed_texts: loading SigLIP-2 text encoder on CPU…")
-        _text_enc_cpu = SigLIP2Encoder(device="cpu")
+        print("[cd] _embed_texts: loading SigLIP-2 text encoder on CPUâ€¦")
+        _text_enc_cpu = SigLIP2Encoder(device="cpu", use_warm=False)
+        import model_residency as _res; _res.register('siglip_text_cpu', _drop_text_enc, 3.5)
     return _text_enc_cpu.encode_text(queries)
 
 
@@ -161,6 +197,32 @@ def semantic_search(
     ]
 
 
+# Subject parsing lives in photo_brief (the Brief object) — aliased here for
+# backwards compatibility with existing call sites and tests.
+from photo_brief import parse_subject_only as _parse_subject_only
+from photo_brief import build_brief as _build_brief
+from photo_brief import REQUIRED_DONE_KEYS
+
+
+def _peg_stem_match(stem: str, image_hash: str) -> bool:
+    """Exact/boundary peg match — never a blind substring.
+
+    'TPE26-1' must match 'TPE26-1' or 'TPE26-1_xyz' but NOT 'TPE26-105'
+    (substring matching silently picked the wrong reference photo).
+    """
+    if stem == image_hash:
+        return True
+    # The hash may sit mid-stem after a folder prefix (carousel_01_TPE26-1).
+    tail = stem.rsplit("_", 1)[-1]
+    if tail == image_hash:
+        return True
+    if tail.startswith(image_hash):
+        rest = tail[len(image_hash):]
+        # Only accept if what follows is not more of the same number.
+        return not (rest and rest[0].isdigit())
+    return False
+
+
 def generate_jury_critique(image_hash: str) -> dict:
     """
     Generate a 3-paragraph jury critique for a single image via DeepSeek-R1:8b.
@@ -176,11 +238,10 @@ def generate_jury_critique(image_hash: str) -> dict:
     import lance_store as _ls
     import requests as _req
 
-    # ── Fetch record from LanceDB ─────────────────────────────────────────────
+    # â”€â”€ Fetch record from LanceDB â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     all_rows = _ls.query_all(min_score=0.0)
-    record   = next(
-        (r for r in all_rows
-         if Path(r["path"]).stem == image_hash or image_hash in Path(r["path"]).stem),
+    record = next(
+        (r for r in all_rows if _peg_stem_match(Path(r["path"]).stem, image_hash)),
         None,
     )
     if record is None:
@@ -205,7 +266,7 @@ def generate_jury_critique(image_hash: str) -> dict:
     archetype = _dominant_style(record)
     filename  = Path(record["path"]).name
 
-    # ── Build minimal prompt (payload starvation) ─────────────────────────────
+    # â”€â”€ Build minimal prompt (payload starvation) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     prompt = (
         "ROLE: Brutally honest Magnum Photo Editor. "
         "TASK: Critique this single street photograph. "
@@ -230,7 +291,7 @@ def generate_jury_critique(image_hash: str) -> dict:
         if m_think:
             think_text = m_think.group(1).strip()
 
-        # Strip <think>…</think> from user-facing critique
+        # Strip <think>â€¦</think> from user-facing critique
         m_after = re.search(r"</think>\s*(.*)", raw, re.DOTALL)
         if m_after:
             critique = m_after.group(1).strip()
@@ -322,21 +383,31 @@ def _brief_vector(style_prompt: str, M=None):
 def _revision_enabled() -> bool:
     """Is the contact-sheet critique pass switched on?
 
-    Off by default. Measured through the real endpoint on a real folder: the
-    request did not return in ten minutes, and the server log showed the cause
-    --  rendering the set as one contact sheet and encoding it through a vision
-    model on CPU took 170s for the image slice alone, plus ~32s decoding, per
-    iteration, for a feature that proposes at most one slot swap.
-
-    Every other stage of a Story run is now single-digit seconds, so this one
-    decided whether the product was usable at all. Kept, not deleted: it works,
-    and on a GPU it is cheap. Same shape as deep_grade -- opt-in.
+    Was off by default: on CPU the vision slice alone measured 170s per
+    iteration (~32s more decoding) for a feature that proposes at most one
+    slot swap — it decided whether Story Mode was usable at all on the
+    target laptop. Now ON by default when the GPU can fund it (free VRAM
+    â‰¥ 4 GB makes the vision pass cheap), OFF on CPU-only/memory-tight
+    machines. Explicit override still wins:
+        FIRSTCUT_STORY_REVISION=1  → always on
+        FIRSTCUT_STORY_REVISION=0  → always off
     """
     try:
         import run_profile
-        return bool(run_profile.setting("FIRSTCUT_STORY_REVISION"))
+        _explicit = run_profile.setting("FIRSTCUT_STORY_REVISION")
+        if _explicit is not None and str(_explicit).strip() != "":
+            return str(_explicit).strip() not in ("0", "false", "off")
     except Exception:
-        return False
+        _explicit = None
+    # Auto: enable only when a GPU actually has headroom for the 2B vision critic.
+    try:
+        import torch as _torch
+        if _torch.cuda.is_available():
+            _free_gb, _total_gb = _torch.cuda.mem_get_info()
+            return (_free_gb / 1e9) >= 4.0
+    except Exception:
+        pass
+    return False
 
 
 def _focus_pool(paths, embeddings, scores, aspects, style_prompt="", k=12,
@@ -454,7 +525,7 @@ def ask_local_art_director(
     """
     Phase 2 — Mixture of Experts Art Director, running the local text model.
 
-    Payload Starvation: slices pool to ≤ 25 items and strips all vectors, paths,
+    Payload Starvation: slices pool to â‰¤ 25 items and strips all vectors, paths,
     and heavy float arrays.  Each item keeps only:
         id (int index), score (int 0–100), style (dominant aspect), profile (str).
 
@@ -495,7 +566,10 @@ def ask_local_art_director(
             f"Candidates: {user_msg}\n"
             f"Select exactly {limit} IDs as a JSON array, e.g. [0,3,7,2,1].",
             system=system_prompt,
-            max_tokens=300,
+            # Reasoning models routinely burn >300 tokens inside their think
+            # block before emitting the JSON array — the old 300 cap truncated
+            # mid-think and the parse fell back to a silent score sort.
+            max_tokens=700,
             temperature=0.25,
         )
         if not raw:
@@ -534,15 +608,9 @@ def ask_local_art_director(
                 # What remains is a list that may simply be SHORT.
                 n_model = len(selected)
                 if n_model < limit:
-                    for c in sorted(candidate_pool,
-                                    key=lambda x: -float(x.get("score", 0))):
-                        if len(selected) >= limit:
-                            break
-                        cp = c.get("path", "")
-                        if cp and cp not in selected:
-                            selected.append(cp)
+                    _diversity_fill(selected, candidate_pool, limit)
                     reason = (f"the model chose {n_model} of {limit}; the rest "
-                              f"were filled from the highest-scoring candidates")
+                              f"were filled by visual diversity")
                     print(f"[cd] {model_name}: {reason}")
                     return selected[:limit], reason
                 print(f"[cd] {model_name}: selected {len(selected)} images")
@@ -563,12 +631,55 @@ def ask_local_art_director(
     ], (reason or "the local text model was unavailable")
 
 
+def _diversity_fill(selected: list[str], candidate_pool: list[dict], limit: int) -> None:
+    """Complete a short model pick to `limit` IN PLACE with max-min
+    dissimilarity candidates.
+
+    The old fill took the highest-scoring leftovers, which could add a
+    near-duplicate of a shot the model had already chosen — exactly what the
+    diversity guard elsewhere in the pipeline exists to prevent. Each
+    art_pool entry carries its "_embedding", so greedy farthest-point
+    selection against everything already picked is available for free;
+    candidates without an embedding fall back to score order.
+    """
+    try:
+        import numpy as _np
+    except Exception:
+        return
+    sel_set = set(selected)
+    chosen_embs = [
+        c["_embedding"] for c in candidate_pool
+        if c.get("path") in sel_set and c.get("_embedding") is not None
+    ]
+    remaining = [
+        c for c in candidate_pool
+        if c.get("path") and c.get("path") not in sel_set
+    ]
+    while len(selected) < limit and remaining:
+        def _rank(c: dict) -> float:
+            e = c.get("_embedding")
+            if e is None or not chosen_embs:
+                return float(c.get("score", 0.0))
+            e = _np.asarray(e, dtype=_np.float32)
+            sims = []
+            for ce in chosen_embs:
+                ce = _np.asarray(ce, dtype=_np.float32)
+                sims.append(float(_np.dot(e, ce) /
+                                  ((_np.linalg.norm(e) * _np.linalg.norm(ce)) + 1e-9)))
+            return -max(sims)   # most-dissimilar first
+        best = max(remaining, key=_rank)
+        selected.append(best["path"])
+        if best.get("_embedding") is not None:
+            chosen_embs.append(best["_embedding"])
+        remaining.remove(best)
+
+
 def _empty_brief_detected(style_prompt: str) -> bool:
     text = style_prompt.lower()
     return any(kw in text for kw in _EMPTY_BRIEF_KEYWORDS)
 
 
-# ── Step 1: Diptych Engine — OpenCV HSV histogram matcher ────────────────────
+# â”€â”€ Step 1: Diptych Engine — OpenCV HSV histogram matcher â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def get_diptych_matches(
     anchor_path: str,
@@ -653,7 +764,7 @@ def _apply_brief_constraints(
     """
     Subject Intrusion penalty for empty-brief sessions.
 
-    SigLIP-2 people_sim > 0.40  OR  Human/Culture aspect > 0.55 → score × 0.10.
+    SigLIP-2 people_sim > 0.40  OR  Human/Culture aspect > 0.55 → score Ã— 0.10.
     Returns (adjusted_scores, disqualification_notes).
     """
     if not _empty_brief_detected(style_prompt):
@@ -688,7 +799,7 @@ def _apply_brief_constraints(
                 f"disqualification: Subject Intrusion — person presence detected. "
                 f"people_sim={people_sim:.3f} (threshold {_PEOPLE_SIM_THRESHOLD}), "
                 f"human_culture={human_culture:.2f} (threshold {_HUMAN_CULTURE_THRESH}). "
-                f"Score {sc:.3f}→{adjusted[i]:.4f} (×{_PEOPLE_PENALTY}). "
+                f"Score {sc:.3f}→{adjusted[i]:.4f} (Ã—{_PEOPLE_PENALTY}). "
                 f"Brief implies empty scene: '{style_prompt[:60]}'."
             )
             print(f"[cd] Subject Intrusion: {Path(path).name}  {notes[i]}")
@@ -704,7 +815,7 @@ def person_kill_switch(paths: list[str], style_prompt: str) -> set[str]:
     D-FINE-nano Auditor Guardrail — CPU.
 
     Literal Judge enforcement: if the brief implies an empty/no-people scene,
-    D-FINE-nano scans ALL candidates at conf ≥ 0.35. Any image where
+    D-FINE-nano scans ALL candidates at conf â‰¥ 0.35. Any image where
     class:person is detected is DISQUALIFIED from the Story Sequence.
     This is an absolute Boolean Constraint — no score adjustment, no clean-up.
     """
@@ -740,7 +851,7 @@ def person_kill_switch(paths: list[str], style_prompt: str) -> set[str]:
                     blocked.add(path)
                     print(
                         f"[cd] person_kill_switch: DISQUALIFIED {Path(path).name} "
-                        f"— person conf≥{_YOLO_PERSON_CONF}, "
+                        f"— person confâ‰¥{_YOLO_PERSON_CONF}, "
                         f"box_area={box_area:.0f}px"
                     )
                     break
@@ -758,7 +869,7 @@ def person_kill_switch(paths: list[str], style_prompt: str) -> set[str]:
 
 
 def _mean_luminance(path: str) -> float:
-    """Mean luminance in [0, 1] via 64×64 PIL grayscale thumbnail."""
+    """Mean luminance in [0, 1] via 64Ã—64 PIL grayscale thumbnail."""
     try:
         from PIL import Image
         with Image.open(path) as _raw:
@@ -807,7 +918,7 @@ def _cinematic_reorder(
         bucket = by_role.get(role, [])
         return bucket.pop(0) if bucket else -1
 
-    # ── Compute fixed slots, resolving collisions for short sequences ─────────
+    # â”€â”€ Compute fixed slots, resolving collisions for short sequences â”€â”€â”€â”€â”€â”€â”€â”€â”€
     opener_slot  = 0
     closer_slot  = n - 1
 
@@ -901,7 +1012,7 @@ def _cinematic_reorder(
 
     final = best_seq
     print(
-        f"[cd] cinematic reorder (TSP): best max Δlum={best_delta:.3f}  "
+        f"[cd] cinematic reorder (TSP): best max Î”lum={best_delta:.3f}  "
         f"(threshold={_LUM_SMOOTH_THRESH})"
     )
 
@@ -910,7 +1021,7 @@ def _cinematic_reorder(
         diff = abs(all_lum[final[j]] - all_lum[final[j + 1]])
         if diff > _LUM_SMOOTH_THRESH:
             print(
-                f"[cd] luminance penalty: slots {j}→{j+1}  Δ={diff:.2f}  "
+                f"[cd] luminance penalty: slots {j}→{j+1}  Î”={diff:.2f}  "
                 f"({Path(paths[final[j]]).name} → {Path(paths[final[j+1]]).name})"
             )
 
@@ -934,7 +1045,7 @@ def _assign_roles_by_content(
     Assign narrative roles based on image content.
 
     subject  → highest aesthetic score
-    opener   → negative-space + highest score (sim_to_centroid ≤ 0.70)
+    opener   → negative-space + highest score (sim_to_centroid â‰¤ 0.70)
     closer   → negative-space + 2nd-highest score
     contrast → most visually distinct (furthest from centroid)
     detail   → third-highest score
@@ -1121,7 +1232,7 @@ def select_story_sequence(
     )
 
 
-# ── Brief-aware aspect re-scoring ─────────────────────────────────────────────
+# â”€â”€ Brief-aware aspect re-scoring â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _compute_brief_scores(
     paths: list[str],
@@ -1153,7 +1264,7 @@ def _compute_brief_scores(
         "Human/Culture":1.0,
     }
 
-    # Lighting-dominant: rain, reflections, neon, fog, golden hour, night…
+    # Lighting-dominant: rain, reflections, neon, fog, golden hour, nightâ€¦
     _LIGHT_KW = {"rain", "wet", "reflection", "reflections", "puddle", "fog", "mist",
                  "neon", "golden", "sunset", "sunrise", "shadow", "shadows", "glow",
                  "night", "dusk", "dawn", "light", "dark", "atmosphere", "overcast",
@@ -1203,7 +1314,7 @@ def _compute_brief_scores(
     return aligned
 
 
-# ── Pre-selection pool deduplication ─────────────────────────────────────────
+# â”€â”€ Pre-selection pool deduplication â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _dedup_pool(
     paths: list[str],
@@ -1255,7 +1366,7 @@ def _dedup_pool(
     return out_paths, out_embs, out_sc, out_asp
 
 
-# ── Top-level Purist Orchestrator ─────────────────────────────────────────────
+# â”€â”€ Top-level Purist Orchestrator â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def run_creative_direction(
     strong_paths:      list[str],
@@ -1286,28 +1397,92 @@ def run_creative_direction(
       6. Originals copied to output_dir/Final_Portfolio/.
     """
     from creative_director_agent import generate_rule_set, generate_director_brief
+    from photo_brief import REQUIRED_DONE_KEYS
+    from stage_runner import StageTimer
 
-    _p = progress or (lambda f, d: None)
+    p = progress or (lambda f, d: None)
+    timer = StageTimer()
+    timer.mark("load_enrich")
 
-    # Filled by _focus_pool. Cohesion is reported to the user rather than
-    # enforced as a threshold -- no floor could be justified without grading on
-    # a curve, so the number goes on screen for the user to judge instead.
+    # The Brief object: one parse of the user's text, consumed by every
+    # downstream stage (subject filter, prompts, post-run display).
+    brief = _build_brief(style_prompt)
+    # Cohesion is reported to the user rather than enforced as a threshold --
+    # no floor could be justified without grading on a curve, so the number
+    # goes on screen for the user to judge instead.
     _selection_diag: dict = {}
 
     if not strong_paths:
         return {"error": "No images to curate.", "outputs": [], "total": 0}
 
-    # ── Step 3: Peg override / global-best anchor ─────────────────────────────
+    # â”€â”€ Step 3: Peg override / global-best anchor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # If peg_image_hash is set, pull the top-40 nearest neighbors in LanceDB to
     # that uploaded reference image and replace the incoming pool entirely.
     # Otherwise, focus the pool on the 40 most similar images to the highest-
     # scoring shot (visual coherence anchor without an explicit peg).
+    #
+    # Subject filter (2026-09-16): "vehicles only" style briefs. The brief is
+    # parsed for "<subject> only"; a SigLIP text embedding of the subject is
+    # compared against every pool photo's image embedding (already in memory),
+    # and only the most on-subject quarter survives — with adaptive relaxation
+    # until at least n_target+4 candidates remain, so the run never starves.
+    # Runs BEFORE the focus pool so on-subject frames can't be crowded out by
+    # higher-graded off-subject shots.
+    timer.mark('subject_filter')
+    _subject = ((brief.subject, brief.subject_query)
+                if brief.subject and brief.subject_mode == "hard" else None)
+    if _subject and strong_paths and embeddings:
+        _sub_name, _sub_query = _subject
+        try:
+            _svec = _embed_texts([_sub_query])[0].astype(np.float32)
+            _svec /= np.linalg.norm(_svec) + 1e-9
+            _mat = np.stack([np.asarray(e, dtype=np.float32) for e in embeddings])
+            _mat /= np.linalg.norm(_mat, axis=1, keepdims=True) + 1e-9
+            _sims = _mat @ _svec
+            _keep_idx = np.array([], dtype=int)
+            # Calibrated threshold first (measured on the catalog by
+            # src/calibrate_subjects.py), then adaptive in-pool quantiles.
+            _cal_logged = False
+            try:
+                from calibrate_subjects import threshold_for as _thr_for
+                _cal_thr = _thr_for(_sub_query)
+                if _cal_thr is not None:
+                    _keep_idx = np.flatnonzero(_sims >= _cal_thr)
+                    if len(_keep_idx) >= n_target + 4:
+                        _cal_logged = True
+                        _p(0.05, f"Subject filter '{_sub_name} only': kept "
+                                 f"{len(_keep_idx)} of {len(strong_paths)} photos (calibrated)")
+            except Exception:
+                pass
+            for _q in (0.75, 0.60, 0.50, 0.35, 0.25):
+                if len(_keep_idx) >= n_target + 4:
+                    break
+                _thr = float(np.quantile(_sims, _q))
+                _keep_idx = np.flatnonzero(_sims >= _thr)
+                if len(_keep_idx) >= n_target + 4:
+                    break
+            if len(_keep_idx) >= n_target + 1:
+                if not _cal_logged:
+                    _p(0.05, f"Subject filter '{_sub_name} only': kept "
+                             f"{len(_keep_idx)} of {len(strong_paths)} photos")
+                strong_paths       = [strong_paths[i] for i in _keep_idx]
+                embeddings         = [embeddings[i] for i in _keep_idx]
+                scores             = [scores[i] for i in _keep_idx]
+                aspect_scores_list = [aspect_scores_list[i] for i in _keep_idx]
+            else:
+                _p(0.05, f"Subject filter '{_sub_name} only': too few matches "
+                         f"({len(_keep_idx)}) — keeping the whole pool")
+        except Exception as _e_subj:
+            print(f"[cd] subject filter skipped: {_e_subj}", flush=True)
+    elif _subject:
+        _p(0.05, f"Subject filter '{_subject[0]} only' skipped — no embeddings for the pool")
+
     if peg_image_hash:
         try:
             import lance_store as _ls
             all_rows  = _ls.query_all(min_score=0.0)
             peg_row   = next(
-                (r for r in all_rows if peg_image_hash in Path(r["path"]).stem),
+                (r for r in all_rows if _peg_stem_match(Path(r["path"]).stem, peg_image_hash)),
                 None,
             )
             if peg_row is not None:
@@ -1336,19 +1511,19 @@ def run_creative_direction(
                 out=_selection_diag)
             _p(0.01, f"Pool focused to {len(strong_paths)} across the whole library")
 
-    # ── Text-semantic pool rerank ─────────────────────────────────────────────
+    # â”€â”€ Text-semantic pool rerank â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Embed the style brief with SigLIP-2's text tower and re-rank the candidate
     # pool so that semantically matching images (e.g. "black and white", "rain")
     # rise to the top *before* the LLM sees the manifest.
     #
-    # • With peg only: peg-based neighbors are already in pool — text rerank
+    # â€¢ With peg only: peg-based neighbors are already in pool — text rerank
     #   re-orders them by brief match without touching the anchor.
-    # • With text only (no peg): pool was sorted by anchor/score similarity;
+    # â€¢ With text only (no peg): pool was sorted by anchor/score similarity;
     #   text rerank pushes brief-relevant images ahead of the anchor bias.
-    # • With both: peg defines the visual cluster; text filters within it.
+    # â€¢ With both: peg defines the visual cluster; text filters within it.
     #
     # Blend: 60% aesthetic score + 40% cosine similarity to text embedding.
-    # Similarity is re-normalised from [−1, 1] → [0, 1] before blending.
+    # Similarity is re-normalised from [âˆ’1, 1] → [0, 1] before blending.
     _rag_selected: list[str] = []      # declared at function scope: an empty
                                        # brief must still reach generate_rule_set
     if style_prompt.strip():
@@ -1377,7 +1552,27 @@ def run_creative_direction(
                 from pdf_rag import load_concepts as _rag_load
                 _rag_phrases = _rag_load()
                 if _rag_phrases:
-                    _ph_vecs  = _embed_texts(_rag_phrases).astype(np.float32)
+                    # Static phrase set — cache the embeddings so every build
+                    # doesn't pay a SigLIP text-tower pass (same convention as
+                    # cache/stable_text_embs.npz).
+                    import hashlib as _hl
+                    _rag_key  = _hl.sha1("\x00".join(_rag_phrases).encode("utf-8")).hexdigest()[:16]
+                    _rag_cache = Path(__file__).resolve().parent.parent / "cache" / "rag_phrase_embs.npz"
+                    _ph_vecs = None
+                    if _rag_cache.exists():
+                        try:
+                            _z       = np.load(_rag_cache)
+                            if str(_z["key"]) == _rag_key:
+                                _ph_vecs = _z["vecs"].astype(np.float32)
+                        except Exception:
+                            _ph_vecs = None
+                    if _ph_vecs is None or _ph_vecs.shape[0] != len(_rag_phrases):
+                        _ph_vecs  = _embed_texts(_rag_phrases).astype(np.float32)
+                        try:
+                            _rag_cache.parent.mkdir(parents=True, exist_ok=True)
+                            np.savez_compressed(_rag_cache, key=_rag_key, vecs=_ph_vecs)
+                        except Exception:
+                            pass
                     _ph_vecs /= np.linalg.norm(_ph_vecs, axis=1, keepdims=True) + 1e-9
                     _sims     = _ph_vecs @ _text_vec                       # (P,)
 
@@ -1428,8 +1623,9 @@ def run_creative_direction(
         except Exception as _e_tr:
             print(f"[cd] text-semantic rerank skipped: {_e_tr}")
 
-    # ── Step 1: Rule Set + Director Brief from Brief ──────────────────────────
-    _p(0.02, "Agent: generating Rule Set from Style Brief…")
+    timer.mark("rule_set_agent")
+    # â”€â”€ Step 1: Rule Set + Director Brief from Brief â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    _p(0.02, "Agent: generating Rule Set from Style Briefâ€¦")
     # Book phrases matched to this brief travel with it: when the GGUF
     # refinement fires (keyword-ambiguous brief), the model sees the reference
     # vocabulary, so HARD_FILTER_PEOPLE / GEOMETRIC / LIGHTING_MOOD reflect the
@@ -1440,6 +1636,11 @@ def run_creative_direction(
     _p(0.06, f"Rule Set: HARD_FILTER_PEOPLE={rule_set['HARD_FILTER_PEOPLE']}  "
              f"GEOMETRIC={rule_set['GEOMETRIC_PRIORITY']}  "
              f"MOOD={rule_set['LIGHTING_MOOD']}")
+    # Sync the Brief with the (possibly GGUF-refined) rule set so every later
+    # consumer — prompts, return payload, display — reads the refined values.
+    brief.mood = rule_set["LIGHTING_MOOD"]
+    brief.geometry = rule_set["GEOMETRIC_PRIORITY"]
+    brief.hard_filters = (["no_people"] if rule_set["HARD_FILTER_PEOPLE"] else [])
 
     # Director Brief uses the same Phi-4 GGUF (already loaded as singleton)
     # Provides thematic_niche + color_profile_target for the Judge's Verdict
@@ -1462,10 +1663,11 @@ def run_creative_direction(
     except Exception:
         pass
 
-    # ── Step 2: D-FINE-nano person_kill_switch ────────────────────────────────
+    timer.mark("person_kill")
+    # â”€â”€ Step 2: D-FINE-nano person_kill_switch â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     yolo_blocked: set[str] = set()
     if rule_set["HARD_FILTER_PEOPLE"]:
-        _p(0.08, f"person_kill_switch: scanning {len(strong_paths)} images (D-FINE, conf≥0.35)…")
+        _p(0.08, f"person_kill_switch: scanning {len(strong_paths)} images (D-FINE, confâ‰¥0.35)â€¦")
         yolo_blocked = person_kill_switch(strong_paths, style_prompt)
         if yolo_blocked:
             _p(0.14, f"person_kill_switch: {len(yolo_blocked)} images DISQUALIFIED")
@@ -1492,61 +1694,93 @@ def run_creative_direction(
             if p in strong_paths
         ]
 
-    # ── Pre-dedup: remove near-identical shots from pool ─────────────────────
+    # â”€â”€ Pre-dedup: remove near-identical shots from pool â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Burst duplicates (cosine sim > 0.92) are collapsed to their best-scoring
     # representative before any selection logic runs, guaranteeing that no two
     # visually near-identical images can appear in the final sequence.
-    _p(0.15, f"Deduplicating candidate pool ({len(filtered_paths)} images)…")
+    timer.mark("pool_scoring")
+    _p(0.15, f"Deduplicating candidate pool ({len(filtered_paths)} images)â€¦")
     filtered_paths, filtered_embs, filtered_scores, filtered_aspects = _dedup_pool(
         filtered_paths, filtered_embs, filtered_scores, filtered_aspects,
     )
     _p(0.16, f"Candidate pool after dedup: {len(filtered_paths)} images")
 
-    # ── Step 3: SigLIP-2 Subject Intrusion penalty ────────────────────────────
-    _p(0.16, "Applying Subject Intrusion constraints…")
+    # â”€â”€ Step 3: SigLIP-2 Subject Intrusion penalty â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    _p(0.16, "Applying Subject Intrusion constraintsâ€¦")
     adjusted_scores, disq_notes = _apply_brief_constraints(
         filtered_paths, filtered_embs, filtered_scores,
         aspect_scores_list=filtered_aspects,
         style_prompt=style_prompt,
     )
 
-    # ── Step 3b: Brief-aware aspect re-scoring ────────────────────────────────
+    # â”€â”€ Step 3b: Brief-aware aspect re-scoring â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Maps brief keywords → aspect weights and blends them with the existing
     # score so the prompt actually influences which photos are selected.
     # Without this step, non-empty briefs are silently ignored because
     # select_story_sequence() is pure score+diversity with no prompt awareness.
-    _p(0.19, "Applying brief-aware scoring…")
+    _p(0.19, "Applying brief-aware scoringâ€¦")
     adjusted_scores = _compute_brief_scores(
         filtered_paths, filtered_aspects, adjusted_scores,
         rule_set, style_prompt,
     )
 
-    # ── Step 4: Story / Competition mode branching ────────────────────────────
+    # â”€â”€ Step 4: Story / Competition mode branching â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     mode = (mode or "story").lower()
 
-    # Competition mode: apply strict similarity guard (cos_sim ≤ 0.85)
+    # Competition mode: apply strict similarity guard (cos_sim â‰¤ 0.85)
     if mode == "competition":
-        _p(0.20, "Competition mode: applying strict variance filter (cos_sim ≤ 0.85)…")
+        _p(0.20, "Competition mode: applying strict variance filter (cos_sim â‰¤ 0.85)â€¦")
+        _pre_paths = filtered_paths
         filtered_paths, filtered_embs, filtered_scores, filtered_aspects = _dedup_pool(
             filtered_paths, filtered_embs, filtered_scores, filtered_aspects, thresh=0.85
         )
-        adjusted_scores = _compute_brief_scores(
-            filtered_paths, filtered_aspects, filtered_scores, rule_set, style_prompt
-        )
+        # Realign the already-adjusted scores to the surviving subset instead
+        # of re-scoring from raw grades — the old recompute threw away the
+        # SigLIP subject-intrusion penalty (Ã—0.10), letting people-heavy
+        # shots back into competition sequences.
+        _keep = set(filtered_paths)
+        adjusted_scores = [s for p, s in zip(_pre_paths, adjusted_scores) if p in _keep]
 
     # 4a: Pre-filter avoid_paths, cap pool to top-40 by score for LLM manifest
     avoid    = set(avoid_paths or [])
+    print(f"[cd] dedup: avoid list has {len(avoid)} paths; "
+          f"sample={sorted(avoid)[:2]}", flush=True)
+    _leaked = [p for p in filtered_paths if p in avoid]
+    if _leaked:
+        print(f"[cd] dedup: {len(_leaked)} avoided path(s) present in the "
+              f"pool before filter — sample={_leaked[:2]}", flush=True)
+    pool_idx = [i for i, p in enumerate(filtered_paths) if p not in avoid]
+    _leaked_after = [filtered_paths[i] for i in pool_idx if filtered_paths[i] in avoid]
+    if _leaked_after:
+        print(f"[cd] dedup: STILL present after filter: {_leaked_after[:2]}", flush=True)
     pool_idx = [i for i, p in enumerate(filtered_paths) if p not in avoid]
     if not pool_idx:
         pool_idx = list(range(len(filtered_paths)))
+        _p(0.20, "Every focused candidate is already marked used — reusing the "
+                 "pool (rotation exhausted). Press 'Clear used' for a fresh cycle.")
 
     pool_sc = np.array([adjusted_scores[i] for i in pool_idx], dtype=np.float32)
-    # Give the LLM at least 4× headroom: e.g. n_target=8 → manifest of 32 candidates.
+    # Give the LLM at least 4Ã— headroom: e.g. n_target=8 → manifest of 32 candidates.
     # Floor at 25 so short sequences still get a meaningful pool for the MoE.
     top_n   = _director_pool_size(n_target, len(pool_idx))
     top_idx = np.argsort(-pool_sc)[:top_n].tolist()
 
     # Build candidate pool with path + score + breakdown + semantic profile
+    # Last-resort profile source: the grader's reasoning_log from LanceDB (one
+    # batched lookup — catalog rows never carry semantic_profile today, so
+    # without this the Art Director chooses from bare numbers).
+    _pool_log: dict = {}
+    try:
+        import lance_store as _ls_cd
+        _pool_log = {
+            r["path"]: str(r.get("reasoning_log") or "")
+            for r in _ls_cd.query_by_paths(
+                [filtered_paths[pool_idx[pi]] for pi in top_idx]
+            )
+        }
+    except Exception as _e_log:
+        print(f"[cd] reasoning_log lookup skipped: {_e_log}")
+
     art_pool: list[dict] = []
     for rank, pi in enumerate(top_idx):
         real_i  = pool_idx[pi]
@@ -1556,6 +1790,18 @@ def run_creative_direction(
         semantic_profile = ""
         if isinstance(aspects, dict):
             semantic_profile = str(aspects.get("semantic_profile", ""))
+        if not semantic_profile and isinstance(aspects, dict):
+            # Synthesise a profile from the graded aspects so the director
+            # isn't choosing blind (nobody writes semantic_profile today).
+            _parts = [
+                f"{_k} {aspects[_k]:.2f}"
+                for _k in ("Narrative", "Lighting", "Composition", "Human/Culture", "Technical")
+                if isinstance(aspects.get(_k), (int, float))
+            ]
+            if _parts:
+                semantic_profile = "; ".join(_parts)
+        if not semantic_profile:
+            semantic_profile = _pool_log.get(path, "")[:200]
         art_pool.append({
             "id":               rank,
             "_real_idx":        real_i,
@@ -1563,7 +1809,7 @@ def run_creative_direction(
             "score":            float(adjusted_scores[real_i]),
             "breakdown":        aspects,
             "semantic_profile": semantic_profile,
-            "reasoning_log":    "",
+            "reasoning_log":    _pool_log.get(path, ""),
             "yolo_blocked":     path in yolo_blocked,
             "_embedding":       filtered_embs[real_i],
         })
@@ -1571,33 +1817,53 @@ def run_creative_direction(
     # 4b: Art Director — one local model; the mode drives the system prompt
     llm_paths: list[str] = []
     director_fallback: Optional[str] = None
+    timer.mark("art_director")
     if mode == "story":
         # Build dynamic role list for the middle slots (everything between Opener and Closer)
         _n_mid    = max(0, n_target - 2)
         _mid_roles = ["Subject", "Detail", "Contrast", "Wildcard"][:_n_mid]
         _mid_desc  = ", ".join(_mid_roles) if _mid_roles else "Subject"
+        # 2026-09-16: the chooser now sees the FULL brief (it was truncated to
+        # 150 chars - an "instagram" goal or any specific intent past char 150
+        # was invisible) plus the parsed rule set, so its selection is
+        # consistent with the filters that already removed photos upstream.
+        _rule_txt = (
+            f"Interpreted constraints (already applied to the pool): "
+            f"HARD_FILTER_PEOPLE={brief.hard_filters and 'no_people' in brief.hard_filters}, "
+            f"GEOMETRIC_PRIORITY={brief.geometry}, "
+            f"LIGHTING_MOOD='{brief.mood}', "
+            f"matched keywords={brief.keywords or 'none'}."
+        )
+        _audience_txt = (f"The audience/goal is {brief.audience} — weigh that when "
+                         "weighing candidates. ") if brief.audience else ""
         _story_prompt = (
             f"You are a Magnum Photo Editor curating a {n_target}-image street photo story. "
             "Use <think> tags to critique visual pacing and negative space before selecting. "
-            f"Style brief: '{style_prompt[:150]}'. "
-            f"You MUST select EXACTLY {n_target} images — no more, no fewer. "
-            f"Slot 1 (index 0): Opener — negative space or wide establishing shot. "
-            f"Slot {n_target} (index {n_target - 1}): Closer — quiet resolution or trailing negative space. "
-            f"Middle slots 2–{n_target - 1} ({_mid_desc}): maintain visual tension and luminance pacing. "
+            f"The user's full brief: '{style_prompt[:600]}'. "
+            f"{_rule_txt} {_audience_txt}"
+            f"Honour the brief's intent (audience, mood, subject) when weighing candidates. "
+            f"You MUST select EXACTLY {n_target} images - no more, no fewer. "
+            f"Slot 1 (index 0): Opener - negative space or wide establishing shot. "
+            f"Slot {n_target} (index {n_target - 1}): Closer - quiet resolution or trailing negative space. "
+            f"Middle slots 2-{n_target - 1} ({_mid_desc}): maintain visual tension and luminance pacing. "
             f"Output ONLY a JSON array of {n_target} integer IDs after your </think> closing tag, "
             "e.g. [3,0,7,2,1]."
         )
-        _p(0.22, f"Art Director (Story): selecting {n_target} images from top-{top_n}…")
+        _p(0.22, f"Art Director (Story): selecting {n_target} images from top-{top_n}...")
         llm_paths, director_fallback = ask_local_art_director(
             _story_prompt, art_pool, model_name="Story", limit=n_target)
     elif mode == "competition":
         _comp_prompt = (
             "You are a strict LensCulture Jury Member. No <think> tags. "
-            f"Brief: '{style_prompt[:150]}'. "
+            f"The user's full brief: '{style_prompt[:600]}'. "
+            f"Interpreted constraints: HARD_FILTER_PEOPLE={brief.hard_filters and 'no_people' in brief.hard_filters}, "
+            f"GEOMETRIC_PRIORITY={brief.geometry}, "
+            f"LIGHTING_MOOD='{brief.mood}'. "
+            f"{(f'The audience/goal is {brief.audience}. ' if brief.audience else '')}"
             f"Select exactly {n_target} standalone competition winners by visual uniqueness. "
             "Output ONLY a JSON array of IDs [0..N-1], nothing else."
         )
-        _p(0.22, f"Art Director (Competition): selecting {n_target} images from top-{top_n}…")
+        _p(0.22, f"Art Director (Competition): selecting {n_target} images from top-{top_n}...")
         llm_paths, director_fallback = ask_local_art_director(
             _comp_prompt, art_pool, model_name="Competition", limit=n_target)
 
@@ -1631,7 +1897,7 @@ def run_creative_direction(
             for c in art_pool
         ]
         from creative_director_agent import select_sequence_from_batch
-        _p(0.22, f"Agent: selecting {n_target}-image sequence from top-{top_n} candidates…")
+        _p(0.22, f"Agent: selecting {n_target}-image sequence from top-{top_n} candidatesâ€¦")
         llm_ids = select_sequence_from_batch(candidates_legacy, n_target, style_prompt, rule_set)
 
         if llm_ids:
@@ -1642,7 +1908,7 @@ def run_creative_direction(
             seq_aspects = [filtered_aspects[i] if filtered_aspects else {} for i in sel_real]
             _p(0.30, f"Agent selected {len(seq_paths)} images (single-pass reasoning)")
         else:
-            _p(0.22, f"Greedy selection: top-{n_target} diverse images…")
+            _p(0.22, f"Greedy selection: top-{n_target} diverse imagesâ€¦")
             seq_paths, seq_embs, seq_scores = select_story_sequence(
                 filtered_paths, filtered_embs, adjusted_scores,
                 n_min=min(5, n_target), n_max=n_target,
@@ -1664,8 +1930,9 @@ def run_creative_direction(
             "rule_set": rule_set,
         }
 
-    # ── Step 5: Cinematic Reorder ─────────────────────────────────────────────
-    _p(0.32, "Applying cinematic reorder…")
+    # â”€â”€ Step 5: Cinematic Reorder â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    timer.mark("reorder")
+    _p(0.32, "Applying cinematic reorderâ€¦")
     bucket_embs = np.stack([np.asarray(e, dtype=np.float32) for e in seq_embs])
     embs_n      = bucket_embs / (np.linalg.norm(bucket_embs, axis=1, keepdims=True) + 1e-9)
 
@@ -1679,14 +1946,62 @@ def run_creative_direction(
     if seq_aspects:
         seq_aspects = [seq_aspects[i] for i in cin_order]
 
-    # ── Step 5a: Agentic self-revision loop (Story Mode only) ────────────────
+    timer.mark("revision")
+    # â”€â”€ Step 5a: Agentic self-revision loop (Story Mode only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Propose -> render contact sheet -> critique -> revise, bounded to a few
     # iterations. Competition Mode's brief is about independent standout
     # images, not narrative pacing, so its single-pass flow is untouched.
+        # ── Step 5a: Agentic self-revision loop (Story Mode only) ────────────────
+    # Propose -> render contact sheet -> critique -> revise, bounded to a few
+    # iterations. Competition Mode's brief is about independent standout
+    # images, not narrative pacing, so its single-pass flow is untouched.
+    #
+    # Speed guard (2026-09-16): the vision critic loads with n_gpu_layers=-1,
+    # but llama.cpp falls back to CPU SILENTLY when VRAM is occupied —
+    # measured at ~170 s per iteration on CPU vs ~10-20 s on GPU. By the time
+    # the loop runs, other models may have claimed VRAM since the run started,
+    # so re-check NOW and release grading models if that buys the headroom;
+    # if the GPU still can't fund it, skip — one speculative swap is not
+    # worth ~8 minutes of CPU.
     revision_log: list[dict] = []
-    if mode == "story" and not _revision_enabled():
-        _p(0.35, "Sequence review skipped (set FIRSTCUT_STORY_REVISION=1 to enable)")
+    _rev_ready = False
+    if mode == "story" and _revision_enabled():
+        def _free_vram_gb():
+            # nvidia-smi, NOT torch.cuda — this runs in the SERVER process,
+            # whose documented fate (vram_manager.purge_vram note, multiple
+            # 0xC0000005 incidents) is to fault CUDA subprocesses at their
+            # teardown if the parent ever initialises a CUDA context here.
+            # torch.cuda.is_available()/mem_get_info() initialise exactly that
+            # context; nvidia-smi measures the GPU without touching the driver.
+            try:
+                import subprocess as _sp
+                _out = _sp.check_output(
+                    ["nvidia-smi", "--query-gpu=memory.free",
+                     "--format=csv,noheader,nounits"],
+                    creationflags=0x08000000 if os.name == "nt" else 0,
+                )
+                return float(_out.decode().strip().splitlines()[0]) / 1024.0
+            except Exception:
+                return None
+
+        _vram = _free_vram_gb()
+        if _vram is not None and _vram < 4.0:
+            # Try to buy the headroom back before giving up.
+            try:
+                from grade_pipeline_v2 import release_grading_models
+                release_grading_models()
+            except Exception:
+                pass
+            _vram = _free_vram_gb()
+        _rev_ready = _vram is None or _vram >= 4.0
+        if not _rev_ready:
+            _p(0.35, f"Sequence review skipped (GPU busy: {_vram:.1f} GB free, "
+                     "the vision critic needs ~4 GB — would run on CPU)")
     elif mode == "story":
+        _p(0.35, "Sequence review skipped (set FIRSTCUT_STORY_REVISION=1 to "
+                 "force it — no free VRAM for the vision critic)")
+
+    if mode == "story" and _rev_ready:
         _p(0.33, "Reviewing sequence (contact-sheet critique)…")
         try:
             from contact_sheet import run_revision_loop
@@ -1703,7 +2018,7 @@ def run_creative_direction(
         except Exception as _e_revise:
             _p(0.35, f"Revision loop skipped ({_e_revise})")
 
-    # ── Step 5b: 8B Judge's Verdict (GPU, loaded AFTER sequence is final) ───────
+    # â”€â”€ Step 5b: 8B Judge's Verdict (GPU, loaded AFTER sequence is final) â”€â”€â”€â”€â”€â”€â”€
     # DeepSeek-R1-Distill-Llama-8B (INT4) generates the official competition
     # narrative. VRAM is purged by the caller via purge_vram() after this step.
     # Skipped gracefully if 8B weights absent.
@@ -1723,7 +2038,7 @@ def run_creative_direction(
         # is opt-in rather than a silent two-minute wait.
         _p(0.40, "Judge's Verdict skipped (set FIRSTCUT_STORY_VERDICT=1 to enable)")
     else:
-      _p(0.36, "Generating Judge's Verdict…")
+      _p(0.36, "Generating Judge's Verdictâ€¦")
       try:
           from jury_engine import generate_judges_verdict_8b
           seq_narrative = generate_judges_verdict_8b(
@@ -1743,7 +2058,8 @@ def run_creative_direction(
       else:
           _p(0.40, "8B Judge unavailable — verdict skipped")
 
-    # ── Step 6: Copy Originals to Final_Portfolio/ ────────────────────────────
+    timer.mark("copy_outputs")
+    # â”€â”€ Step 6: Copy Originals to Final_Portfolio/ â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     out_dir = Path(output_dir) / "Final_Portfolio"
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1768,7 +2084,10 @@ def run_creative_direction(
             shutil.copy2(path, str(out_path))
             rlog = (
                 f"Role: {role.upper()} — Purist original capture.\n"
-                f"Score: {score:.3f}  |  Brief: '{style_prompt[:60]}'\n"
+                # Full brief, never truncated: this string is what the user
+                # sees as "the prompt" for the photo — a 60-char cut mangled
+                # longer briefs and made A/B look inconsistent.
+                f"Score: {score:.3f}  |  Brief: '{style_prompt}'\n"
                 f"Rule Set: HARD_FILTER_PEOPLE={rule_set['HARD_FILTER_PEOPLE']}  "
                 f"GEOMETRIC={rule_set['GEOMETRIC_PRIORITY']}  "
                 f"MOOD={rule_set['LIGHTING_MOOD']}\n"
@@ -1811,7 +2130,76 @@ def run_creative_direction(
 
     _p(1.0, f"Purist selection complete — {n_ok}/{n} images in Final_Portfolio")
 
-    return {
+    timer.mark("alt_sequence")
+    # ── Step 7: Alternate sequence (variant B) ─────────────────────────────
+    # A second candidate for the user to approve: greedy max-dissimilarity
+    # picks from the same pool that PREFER frames the primary sequence did
+    # not use. Nearly free (embeddings already in memory) and it turns one
+    # take-it-or-leave-it answer into a real choice.
+    alt_outputs: list[dict] = []
+    try:
+        _ROLE_CYCLE = ["opener", "subject", "detail", "contrast", "closer"]
+        _primary = set(seq_paths)
+        _pool = [
+            (p, s, e) for p, s, e in zip(filtered_paths, adjusted_scores, (filtered_embs or []))
+            if p not in _primary
+        ]
+        if len(_pool) < n:
+            # Not enough unused frames — allow reuse rather than a short B.
+            _pool = [
+                (p, s, e) for p, s, e in zip(filtered_paths, adjusted_scores, (filtered_embs or []))
+            ]
+        if _pool:
+            _scores_arr = np.asarray([s for _, s, _ in _pool], dtype=np.float32)
+            _order = np.argsort(-_scores_arr)
+            _has_embs = bool(_pool) and _pool[0][2] is not None
+            if _has_embs:
+                _embs = np.stack([np.asarray(e, dtype=np.float32) for _, _, e in _pool])
+                _embs /= np.linalg.norm(_embs, axis=1, keepdims=True) + 1e-9
+                _picked: list[int] = [int(_order[0])]
+                while len(_picked) < min(n, len(_pool)):
+                    _rest = [i for i in range(len(_pool)) if i not in _picked]
+                    _dists = 1.0 - (_embs[_rest] @ _embs[_picked].T).max(axis=1)
+                    _picked.append(_rest[int(np.argmax(_dists))])
+            else:
+                _picked = [int(i) for i in _order[:min(n, len(_pool))]]
+            for _pos, _i in enumerate(_picked[:n]):
+                _p_path, _p_score, _ = _pool[_i]
+                _role = _ROLE_CYCLE[_pos % len(_ROLE_CYCLE)]
+                _fname = Path(_p_path).stem + "_alt.jpg"
+                _opath = out_dir / _fname
+                try:
+                    shutil.copy2(_p_path, str(_opath))
+                    # Same brief + rule set as Sequence A (2026-09-17): B used
+                    # to carry bare params, so the UI showed it without the
+                    # prompt — reading as if B was generated from something
+                    # else. Both sequences come from the SAME brief.
+                    _rlog = (
+                        f"Role: {_role.upper()} — Purist original capture (variant B).\n"
+                        f"Score: {_p_score:.3f}  |  Brief: '{style_prompt}'\n"
+                        f"Rule Set: HARD_FILTER_PEOPLE={rule_set['HARD_FILTER_PEOPLE']}  "
+                        f"GEOMETRIC={rule_set['GEOMETRIC_PRIORITY']}  "
+                        f"MOOD={rule_set['LIGHTING_MOOD']}\n"
+                        "Engine: purist_original_alt — no pixel modification."
+                    )
+                    alt_outputs.append({
+                        "source_path":   _p_path,
+                        "output_path":   str(_opath),
+                        "filename":      _fname,
+                        "params":        {"role": _role, "seq_pos": _pos, "rule_set": rule_set},
+                        "success":       True,
+                        "engine":        "purist_original_alt",
+                        "reasoning_log": _rlog,
+                    })
+                except Exception as _e_alt:
+                    print(f"[cd] alt copy failed {Path(_p_path).name}: {_e_alt}")
+            if alt_outputs:
+                print(f"[cd] alternate sequence: {len(alt_outputs)} images copied")
+    except Exception as _e_alt_all:
+        print(f"[cd] alternate sequence skipped: {_e_alt_all}")
+
+    timings = timer.snapshot()
+    _done = {
         "outputs":     outputs,
         "output_dir":  str(out_dir),
         "total":       n,
@@ -1823,4 +2211,21 @@ def run_creative_direction(
         # score sort wearing a story's clothes.
         "director_fallback": director_fallback,
         "selection": _selection_diag,
+        # Variant B: greedy max-dissimilarity picks preferring frames the
+        # primary did not use — for the approve-between-two UI.
+        "alt_outputs": alt_outputs,
+        # Subject extracted from "<subject> only" briefs, if any.
+        "subject": brief.subject,
+        # The parsed Brief: one interpretation of the user's text, shared by
+        # every stage. The frontend renders from this, not from re-parsing.
+        "brief": brief.to_dict(),
+        # Per-stage timing profile (see stage_runner.StageTimer).
+        "timings": timings,
     }
+    # SSE done-payload contract (photo_brief.REQUIRED_DONE_KEYS): the frontend
+    # renders from these keys. A missing key = silent UI breakage, so fail loud.
+    _missing = REQUIRED_DONE_KEYS - _done.keys()
+    if _missing:
+        raise RuntimeError(f"creative-direction payload missing keys: {sorted(_missing)}")
+    return _done
+

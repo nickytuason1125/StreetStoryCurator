@@ -21,6 +21,7 @@ from server_impl import (  # shared state & helpers
     Path, _CATALOG_PATH, _DATA_DIR, _grading_active, _release_annotation_model, _trim_crash_log, analyzer, annotation_queue, asyncio, gpu_lock, os, sys,
 )
 import json
+import threading
 
 # The unit root — the directory that holds server_impl.py, grade_runner.py and
 # crash.log. NOT this module's directory.
@@ -142,12 +143,159 @@ async def ollama_status():
     return JSONResponse(result)
 
 
+# ── Live grade state (2026-09-14) ────────────────────────────────────────────
+# The detached runner design means a grade survives a window close / reload —
+# but until now the UI had NO way to reattach: a fresh window showed nothing
+# until the user clicked Resume. This dict mirrors what the SSE generator sees
+# (spawn, progress ticks, finish/detach) so /api/grade/state can answer "is a
+# grade running right now, and how far along is it?" even after the original
+# stream is gone.
+_GRADE_LIVE: dict = {
+    "running":     False,
+    "started_at":  None,     # epoch seconds
+    "finished_at": None,     # epoch seconds of the last completion/error
+    "progress":    None,     # 0..1, as reported by the runner
+    "desc":        "",
+    "seq":         0,        # monotonic progress counter (stale-tick guard)
+    "folders":     [],
+    "pid":         None,
+    "error":       None,
+}
+
+def _grade_live_update(**kw) -> None:
+    try:
+        _GRADE_LIVE.update(kw)
+    except Exception:
+        pass
+
+def _grade_live_finish(error: str | None = None) -> None:
+    import time as _t_gl
+    try:
+        _GRADE_LIVE.update({
+            "running": False, "finished_at": _t_gl.time(),
+            "pid": None, "error": error,
+        })
+    except Exception:
+        pass
+    _trim_working_set()
+
+
+def _trim_working_set() -> None:
+    """Hand the grade's high-water RAM back to the OS (Windows).
+
+    A grade allocates hundreds of MB (parsed catalog, embeddings, score
+    buffers) that stay resident as working-set high-water long after the
+    buffers are freed — the server was the machine's single biggest memory
+    consumer, which then starved the NEXT encode's RAM floor and parked the
+    grade at 'waiting for memory'. Python frees the heap; only the OS can
+    reclaim the resident pages. EmptyWorkingSet does exactly that: pages the
+    process doesn't touch go to standby and are instantly available to the
+    encode worker. Any touch faults them back in at trivial cost."""
+    try:
+        if sys.platform == "win32":
+            import ctypes as _ct
+            _psapi = _ct.WinDLL("psapi")
+            _kernel = _ct.WinDLL("kernel32")
+            _psapi.EmptyWorkingSet(_kernel.GetCurrentProcess())
+    except Exception:
+        pass  # trimming is an optimization — never fail a grade finish on it
+
+
 @router.get("/api/grading/status")
 async def grading_status():
     """Is a grade runner alive right now? The UI polls this after a dropped
     stream: the runner is durable (detaches and finishes in the background),
     so 'stream ended' must not read as 'grade died'."""
     return {"grading": _grading_active.is_set()}
+
+
+def _grade_state_payload() -> dict:
+    """Reattach/sync payload: is a grade running, how far, is the data fresh?
+
+    The runner is durable (detaches and finishes in the background), so a
+    window reload mid-grade must not read as "grade died". `foreign_lock`
+    covers a runner owned by ANOTHER server stack (grading.lock from a live
+    foreign pid). Shared verbatim by /api/grade/state and the /api/events
+    push channel, so both transports can never report different truths.
+    """
+    _foreign = False
+    _lock_pid = None
+    _lock_alive = False
+    try:
+        from src.grade_lock import grade_in_progress as _gip, lock_path as _lp
+        _has_lock = bool(_gip(_DATA_DIR))
+        _foreign = _has_lock and not _grading_active.is_set()
+        if _has_lock:
+            try:
+                _lock_pid = int((_lp(_DATA_DIR)).read_text(encoding="utf-8").strip())
+            except Exception:
+                _lock_pid = None
+            # Verifiable liveness, not a flag: the pid in the lock either has a
+            # live process behind it or the lock is stale (grade_in_progress
+            # already sweeps dead pids on read, so a live lock implies a live
+            # runner — this just lets the UI SEE the truth too).
+            if _lock_pid is not None:
+                try:
+                    import psutil as _ps_state
+                    _lock_alive = _ps_state.pid_exists(_lock_pid)
+                except Exception:
+                    _lock_alive = True   # assume alive; sweep handles staleness
+    except Exception:
+        pass
+    # Catalog revision — mtime of the catalog file. The UI compares this to the
+    # rev it last rendered: equal → the gallery is fresh, no refetch; changed →
+    # something committed (grade, checkpoint, rating save) and a refetch is
+    # warranted. Replaces guessing "did the data change?" with reading it.
+    _catalog_rev = 0
+    try:
+        import os as _os_state
+        if _CATALOG_PATH.exists():
+            _catalog_rev = int(_CATALOG_PATH.stat().st_mtime * 1000)
+    except Exception:
+        pass
+    # Encoder pause status — the vision encoder parks (RAM/VRAM wait, crash-loop
+    # backoff) instead of dying, and crash.log used to be the only place that
+    # said why. Surface it so a stalled-looking progress bar explains itself.
+    _encoder_pause = None
+    try:
+        from pathlib import Path as _P_state
+        import json as _json_state
+        _pf = _P_state(__file__).resolve().parent.parent / "cache" / "encoder_pause.json"
+        if _pf.exists():
+            _encoder_pause = _json_state.loads(_pf.read_text(encoding="utf-8")).get("why")
+    except Exception:
+        _encoder_pause = None
+    return dict(_GRADE_LIVE, grading=_grading_active.is_set(),
+                foreign_lock=_foreign, lock_pid=_lock_pid,
+                lock_alive=_lock_alive, catalog_rev=_catalog_rev,
+                encoder_pause=_encoder_pause)
+
+
+@router.get("/api/grade/state")
+async def grade_state():
+    """One-shot snapshot of _grade_state_payload() (see it for the field docs).
+    The push twin lives at /api/events — the UI subscribes there and only uses
+    this endpoint as a mount-time snapshot and reconnect fallback."""
+    return _grade_state_payload()
+
+
+async def _dir_ok(fp: str) -> bool:
+    """Is this folder reachable right now? Retries through a brief absence —
+    a removable reader behind USB selective suspend (or a dirty-flagged exFAT
+    volume re-mounting) can vanish for a second exactly when a grade is
+    submitted. Three probes over ~4s absorbs the nap.
+
+    asyncio.sleep, NOT time.sleep: this is awaited from inside an async route
+    handler, so a blocking sleep here would freeze the WHOLE event loop —
+    every other client's SSE progress, thumbnail requests, and health polling
+    — for up to 4s per unreachable folder, not just this request. Module-level
+    (not a closure) so it's independently unit-testable."""
+    for _probe in range(3):
+        if os.path.isdir(fp):
+            return True
+        if _probe < 2:
+            await asyncio.sleep(2.0)
+    return False
 
 
 @router.post("/api/grade/v2/stream")
@@ -206,19 +354,11 @@ async def grade_photos_v2_stream(req: GradeRequest):
     # run the same models locally through llama_cpp. Removed, not made optional.
 
     # Resolve all valid folders — folder_paths (multi) takes priority over folder_path.
-    # Same wake-up retry as GradeRequest.validate_folder_path: removable readers
-    # behind USB selective suspend vanish for a second exactly at submit time.
-    import time as _fp_retry_time
-    def _dir_ok(fp: str) -> bool:
-        for _probe in range(3):
-            if os.path.isdir(fp):
-                return True
-            if _probe < 2:
-                _fp_retry_time.sleep(2.0)
-        return False
-    all_folders = [str(Path(fp).resolve()) for fp in req.folder_paths if _dir_ok(fp)]
+    # _dir_ok (module-level, above) absorbs the same removable-reader wake-up
+    # nap the old validator used to retry for.
+    all_folders = [str(Path(fp).resolve()) for fp in req.folder_paths if await _dir_ok(fp)]
     if not all_folders:
-        if req.folder_path and _dir_ok(req.folder_path):
+        if req.folder_path and await _dir_ok(req.folder_path):
             all_folders = [str(Path(req.folder_path).resolve())]
         else:
             raise HTTPException(400, "No valid folder path provided")
@@ -329,6 +469,18 @@ async def grade_photos_v2_stream(req: GradeRequest):
             except Exception:
                 pass
             _release_annotation_model()   # free the ~1.5-4 GB annotation model
+            # The sidecar (Qwen-VL + text GGUF, up to ~4 GB RAM / ~4 GB VRAM)
+            # is idle weight during a grade — the grade pipeline loads its own
+            # models in the runner subprocess. Exit it: both RAM and VRAM are
+            # back before the encode subprocess spawns. It respawns (warm-ahead
+            # re-warms on the next browse) after the grade.
+            try:
+                import sidecar_client as _sc_grade
+                if _sc_grade.read_marker():
+                    _sc_grade.evict()
+                    print("[server] grade start: model sidecar evicted", flush=True)
+            except Exception:
+                pass
             _precull_ram_sweep()          # parent-cache sweep BEFORE the encode subprocess spawns
             import tempfile as _tf, subprocess as _sp
 
@@ -432,14 +584,25 @@ async def grade_photos_v2_stream(req: GradeRequest):
             try: _rlog.close()   # child keeps its inherited fd
             except Exception: pass
             print(f"[server] Grade runner subprocess pid={_proc.pid}", flush=True)
+            _grade_live_update(pid=_proc.pid, running=True, error=None)
 
             _loop = asyncio.get_running_loop()
             _pos = 0
             _done = False
+            # Monotonic sequence for progress messages. The frontend drops any
+            # event whose seq is not newer than the last one it applied, so a
+            # stale tick (an SSE buffer flush after reconnect, a cached run's
+            # instant 1.0, an auto-resume's replayed lines) can never drag the
+            # UI backwards or make it jump.
+            _seq = 0
             # AUTO-RESUME budget: a crashed runner is re-spawned in place up to
-            # 2 extra times (3 attempts total). Each respawn continues from the
+            # 5 extra times (6 attempts total). Each respawn continues from the
             # encode checkpoint + incremental Lance cache, so no work is lost.
-            _auto_resume_total = 2
+            # (Raised from 3 on 2026-09-13: the encoder now PAUSES internally
+            # through memory squeezes, so a runner death means an uncatchable
+            # native fault in the parent — rare, but a bad night on this 16 GB
+            # machine shouldn't end a cull that still has checkpointed work.)
+            _auto_resume_total = 5
             _auto_resume_left = _auto_resume_total
             def _read_new():
                 # Binary read from the last byte offset; only consume up to the last
@@ -458,7 +621,7 @@ async def grade_photos_v2_stream(req: GradeRequest):
                     return ""
 
             def _emit(_line):
-                nonlocal _done
+                nonlocal _done, _seq
                 _line = _line.strip()
                 if not _line:
                     return None
@@ -466,6 +629,17 @@ async def grade_photos_v2_stream(req: GradeRequest):
                     _msg = _json.loads(_line)
                 except Exception:
                     return None
+                # Stamp the sequence BEFORE anything consumes the message, so
+                # the SSE copy and the _GRADE_LIVE mirror carry the same seq.
+                _seq += 1
+                _msg["seq"] = _seq
+                # Mirror live progress for /api/grade/state reattachment.
+                if "progress" in _msg or _msg.get("desc"):
+                    _grade_live_update(
+                        progress=_msg.get("progress", _GRADE_LIVE.get("progress")),
+                        desc=str(_msg.get("desc") or _GRADE_LIVE.get("desc", "")),
+                        seq=_seq,
+                    )
                 if _msg.get("done") and annotation_queue is not None:
                     for _g in _msg.get("data", []):
                         _gpath = _g.get("path", "")
@@ -509,6 +683,13 @@ async def grade_photos_v2_stream(req: GradeRequest):
                                 _free_r = _mp_resume.free_ram_gb()
                                 if _free_r is None or _free_r >= _floor:
                                     break
+                                # HEARTBEAT during the wait (2026-09-15): this
+                                # loop used to go silent for up to 120 s, the
+                                # client's 45 s read timeout fired, and every
+                                # crash-at-38% read as a dropped stream. An SSE
+                                # comment keeps the client's read alive without
+                                # carrying any state.
+                                yield ": heartbeat\n\n"
                                 await asyncio.sleep(5)
                                 _waited += 5
                             _free_r = _mp_resume.free_ram_gb()
@@ -518,11 +699,11 @@ async def grade_photos_v2_stream(req: GradeRequest):
                                           "will make the restart stick. ")
                         except Exception:
                             pass
-                        _attempt_no = 3 - _auto_resume_left
+                        _attempt_no = (_auto_resume_total + 1) - _auto_resume_left
                         print(f"[server] Grade runner crashed (code={_proc.returncode}) — "
                               f"auto-restarting from checkpoint (attempt {_attempt_no}/3)",
                               flush=True)
-                        yield f"data: {_json.dumps({'notice': f'The grade crashed but auto-restarts from its checkpoint (restart {_attempt_no} of 3).{_cause}'})}\n\n"
+                        yield f"data: {_json.dumps({'notice': f'The grade crashed but auto-restarts from its checkpoint (restart {_attempt_no} of {_auto_resume_total + 1}).{_cause}'})}\n\n"
                         try:
                             _rlog = open(_crash_path, "a", encoding="utf-8", errors="replace")
                             _proc = _wj.popen(
@@ -601,6 +782,7 @@ async def grade_photos_v2_stream(req: GradeRequest):
                     except Exception:
                         pass
                     _grading_active.clear()
+                    _grade_live_finish()
                     try:
                         if _gl is not None and _acquired and loop.is_running():
                             loop.call_soon_threadsafe(_gl.release)
@@ -636,6 +818,7 @@ async def grade_photos_v2_stream(req: GradeRequest):
                 except Exception:
                     pass
                 _grading_active.clear()   # resume background thumbnail prewarm
+                _grade_live_finish()
                 if _gl is not None and _acquired:
                     _gl.release()
 
@@ -660,6 +843,8 @@ async def grade_photos_v2_stream(req: GradeRequest):
     # Every early-return above (400, 503) has already been passed, so the flag
     # cannot outlive a refused request.
     _grading_active.set()
+    _grade_live_update(running=True, started_at=__import__("time").time(),
+                       folders=list(all_folders), error=None)
 
     # ── Cross-process claim BEFORE the runner exists ─────────────────────────
     # The grade_runner subprocess only writes grading.lock once its Python is

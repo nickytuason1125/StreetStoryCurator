@@ -1,12 +1,12 @@
 import suppress_console  # patches subprocess/multiprocessing/asyncio/BLAS before anything else imports them
 import os
-# Personal taste blend ON (2026-09-10): the user's 795 star ratings ARE the
-# accuracy standard, but the blend defaulted to opt-in OFF so grading ignored
-# them. Set in the SERVER process (and inherited by every grade_runner child)
-# so PersonalHead scores actually blend into the final grades. The launcher
-# sets this too; doubled here so ANY entry point (uvicorn direct, tests)
-# agrees. Remove both to restore ratings-never-grade.
-os.environ.setdefault("FIRSTCUT_PERSONAL_TASTE", "1")
+# Personal taste blend RETIRED (2026-09-14, user decision): the user saw the
+# taste head override legit keepers (TPE26-107 pulled from Strong to Mid) and
+# asked for the personal calculation to be gone entirely. Grading now stands
+# on the machine grader alone everywhere. The pipeline still honours an
+# explicit FIRSTCUT_PERSONAL_TASTE=0/1 from the environment — this default is
+# just no longer ON.
+os.environ.setdefault("FIRSTCUT_PERSONAL_TASTE", "0")
 # Boundary-band Deep Grade (2026-09-10): when Deep Grade runs, spend the VLM's
 # seconds only on the ambiguous Mid/Strong boundary — unambiguous frames keep
 # their instant CLIP verdicts. Full-folder VLM = 60–90 min; band = ~20 min.
@@ -268,38 +268,328 @@ _BG_EXECUTOR    = ThreadPoolExecutor(max_workers=1)
 # Two separate executors so on-demand thumbnail requests (serve_thumb) are
 # never queued behind background pre-warm jobs.
 def _thumb_pool_sizes() -> tuple[int, int]:
-    """Size the thumbnail worker pools by total RAM so concurrent RAW decodes
-    don't spike memory on small machines. Returns (on_demand, prewarm)."""
+    """HARDWARE CEILING for the thumbnail pools. Returns (on_demand, prewarm).
+
+    History: this used to read FREE RAM and freeze the result for the process
+    lifetime - a boot at 2-3 GB free pinned the grid to 2 workers for ever,
+    even after Chrome closed and 5 GB freed up. Since 2026-09-14 the ceiling
+    is hardware-only (installed RAM never changes mid-session) and the actual
+    concurrency is gated by _thumb_od_permits / _thumb_pw_permits, which are
+    retuned every 30 s from live free RAM (src/adaptive_permits.py). The old
+    free-RAM table moved there - same numbers, now live instead of frozen."""
     try:
         import psutil as _ps
-        # Sized on what is FREE, floored by what is installed.
-        #
-        # Using total RAM alone put 6 concurrent full-resolution decodes on a
-        # 16 GB machine that had 2 GB free, which is the RAM spike people see
-        # the moment a folder is opened: a 24 MP frame is ~100 MB decoded, so
-        # six at once is ~600 MB on top of a cull that already wants 2.5 GB.
-        #
-        # A machine is not "16 GB" at the moment it matters; it is however much
-        # is free right then. The installed figure still sets the ceiling, so a
-        # big idle machine keeps its fan-out.
         total_gb = _ps.virtual_memory().total / 1e9
-        free_gb  = _ps.virtual_memory().available / 1e9
         by_total = 8 if total_gb >= 24 else 6 if total_gb >= 12 else 4 if total_gb >= 8 else 2
-        by_free  = 8 if free_gb >= 8 else 6 if free_gb >= 5 else 4 if free_gb >= 3 else 2
-        ondemand = max(2, min(by_total, by_free))
-        prewarm  = 2 if (total_gb >= 16 and free_gb >= 4) else 1
-        return ondemand, prewarm
+        return by_total, (4 if total_gb >= 16 else 2)
     except Exception:
         return 6, 2
 
-_THUMB_OD_WORKERS, _THUMB_PW_WORKERS = _thumb_pool_sizes()
-_THUMB_ONDEMAND = ThreadPoolExecutor(max_workers=_THUMB_OD_WORKERS)  # high-priority, browser-facing
-_THUMB_PREWARM  = ThreadPoolExecutor(max_workers=_THUMB_PW_WORKERS)  # low-priority background warm-up
+_THUMB_OD_CEIL, _THUMB_PW_CEIL = _thumb_pool_sizes()
+_THUMB_ONDEMAND = ThreadPoolExecutor(max_workers=_THUMB_OD_CEIL)  # high-priority, browser-facing
+_THUMB_PREWARM  = ThreadPoolExecutor(max_workers=_THUMB_PW_CEIL)  # low-priority background warm-up
+
+# ── Live concurrency gates (2026-09-14) ──────────────────────────────────────
+# Each decode waits for a permit before decoding. Limits retune every 30 s
+# from CURRENT free RAM, so the pool is wide when the machine is comfortable
+# and politely narrow during a squeeze - without a restart. See
+# src/adaptive_permits.py for the gate semantics.
+from src.adaptive_permits import AdaptivePermits as _AdaptivePermits
+
+def _thumb_permit_limits() -> tuple:
+    try:
+        import psutil as _ps
+        free_gb = _ps.virtual_memory().available / 1e9
+    except Exception:
+        return _THUMB_OD_CEIL, _THUMB_PW_CEIL
+    # On-demand ladder tuned for the card-reader case (2026-09-15): the grid's
+    # first screen is 15+ tiles, each a ~40 MB RAW read. At 4-wide that screen
+    # took tens of seconds to fill ("thumbnails taking forever"). Each decode
+    # is a short ~200 MB transient; when NO grade is running the encoder is
+    # idle, so we can run wider than the grade-time comfort numbers — the
+    # hard pool ceiling still caps us, and the RAM gates in serve_thumb /
+    # _gen_one_thumb_decode still refuse at the true starvation floor.
+    _ga = globals().get("_grading_active")   # defined below — retune thread may run first
+    _grade_squeezed = bool(_ga and _ga.is_set())
+    if _grade_squeezed:
+        od = 8 if free_gb >= 8 else 6 if free_gb >= 5 else 4 if free_gb >= 3 else 2
+    else:
+        od = 8 if free_gb >= 8 else 8 if free_gb >= 5 else 6 if free_gb >= 3 else 4
+    pw = _THUMB_PW_CEIL if free_gb >= 4 else (2 if free_gb >= 2 else 1)
+    return min(od, _THUMB_OD_CEIL), min(pw, _THUMB_PW_CEIL)
+
+try:
+    import psutil as _ps_boot_p
+    _free_boot_p = _ps_boot_p.virtual_memory().available / 1e9
+except Exception:
+    _free_boot_p = None
+_fb = _free_boot_p or 0.0
+_od0, _pw0 = ((8, 4) if _fb >= 8 else (6, 4) if _fb >= 5 else (4, 2) if _fb >= 3 else (2, 1))
+_thumb_od_permits = _AdaptivePermits(min(_od0, _THUMB_OD_CEIL), "thumb-ondemand")
+_thumb_pw_permits = _AdaptivePermits(min(_pw0, _THUMB_PW_CEIL), "thumb-prewarm")
+
+def _retune_thumb_permits() -> None:
+    while True:
+        try:
+            _od, _pw = _thumb_permit_limits()
+            _thumb_od_permits.set_limit(_od)
+            _thumb_pw_permits.set_limit(_pw)
+        except Exception:
+            pass
+        import time as _t_r
+        _t_r.sleep(30)
+
+threading.Thread(target=_retune_thumb_permits, daemon=True,
+                 name="thumb-permit-retune").start()
 
 # Set while a grade is streaming. Background thumbnail PREWARM (bulk RAW decodes)
 # is skipped while this is set so it doesn't spike RAM next to the SigLIP-2 / Qwen
 # load; on-demand thumbnails (what the user is actually looking at) still run.
 _grading_active = threading.Event()
+
+
+# ── RAM watchdog (2026-09-14) ────────────────────────────────────────────────
+# The server process is the single biggest controllable consumer on the machine
+# (~1.8 GB private measured on the 16 GB dev box): decode buffers, preview
+# caches and allocator arenas from hours of thumbnail/preview work. When system
+# RAM gets tight those idle pages still count against "available", which
+# (a) 204'd the whole thumbnail grid at the 1.2 GB thumb gate, and (b) helped
+# push the grader's judge-stage checkpoint below its floor ("grading stopped
+# early"). The watchdog trims THIS process's working set back to the OS when
+# free RAM drops — idle pages go to the pagefile, live objects are untouched —
+# and the trim is also available to the thumb gate as a last resort before it
+# refuses a decode.
+_trim_lock = threading.Lock()
+_last_trim_ts = 0.0
+
+def _accurate_free_gb() -> "float | None":
+    """THE one memory figure every endpoint and gate must agree on.
+
+    The old sync bug: /api/system/ram reported psutil's physical-only
+    'available', while the grade gates (memory_plan) gate on
+    min(physical free, commit headroom) — so the UI could show "3.8 GB free"
+    while the pagefile limit made the SAME machine refuse a grade. Numbers the
+    UI and the gates quote must come from the same function, or they will
+    disagree exactly when it matters (a squeeze).
+    """
+    try:
+        import sys as _s_acc, os as _o_acc
+        _src = _o_acc.path.join(_o_acc.path.dirname(__file__), "src")
+        if _src not in _s_acc.path:
+            _s_acc.path.insert(0, _src)
+        from src.memory_plan import free_ram_gb as _frg
+        return _frg()
+    except Exception:
+        try:
+            import psutil as _ps_acc
+            return _ps_acc.virtual_memory().available / 1e9
+        except Exception:
+            return None
+
+def _accurate_commit_headroom_gb() -> "float | None":
+    """Paging-file headroom (commit limit − commit charge), or None."""
+    try:
+        import sys as _s_ch, os as _o_ch
+        _src = _o_ch.path.join(_o_ch.path.dirname(__file__), "src")
+        if _src not in _s_ch.path:
+            _s_ch.path.insert(0, _src)
+        from src.memory_plan import commit_headroom_gb as _chg
+        return _chg()
+    except Exception:
+        return None
+
+def _trim_server_working_set() -> float:
+    """gc + EmptyWorkingSet on the SERVER process; returns free GB after.
+
+    Rate-limited to once per 30 s (a trim pages ~1 GB of idle pages out, which
+    is wasted work if the memory was about to be used again anyway). Always
+    returns the post-trim measurement so callers can retry a refused decode.
+    """
+    global _last_trim_ts
+    import time as _t_trim
+    with _trim_lock:
+        if _t_trim.monotonic() - _last_trim_ts < 30.0:
+            return _accurate_free_gb() or 0.0
+        _last_trim_ts = _t_trim.monotonic()
+    import gc as _gc_trim
+    _gc_trim.collect()
+    if os.name == "nt":
+        try:
+            import ctypes as _ct
+            _k32 = _ct.windll.kernel32
+            _handle = _k32.GetCurrentProcess()
+            _ten = _ct.c_size_t(10)
+            if not _k32.SetProcessWorkingSetSize(_handle, _ten, _ten):
+                _ct.windll.psapi.EmptyWorkingSet(_handle)
+        except Exception:
+            pass
+    _free_after = _accurate_free_gb()
+    print(f"[server] RAM watchdog: trimmed server working set — "
+          f"{_free_after if _free_after is not None else '?'} GB free", flush=True)
+    return _free_after or 0.0
+
+def _ram_watchdog() -> None:
+    # Supervisor form (2026-09-14): the inner loop never ends, and if anything
+    # escapes it (BaseException included) the outer loop logs and restarts — a
+    # watchdog that dies silently is worse than no watchdog.
+    import time as _t_w
+    while True:
+        try:
+            _last_beat = 0.0
+            while True:
+                try:
+                    _free = _accurate_free_gb()
+                    _pressure = _free is not None and _free < 2.0
+                    # Trim earlier than the old 1.0 GB trigger: 2.5 GB is just
+                    # above the grade-admission floor, so the trim runs BEFORE
+                    # a cull has to refuse instead of after it stalled.
+                    if _free is not None and _free < 2.5:
+                        _trim_server_working_set()
+                    # Idle model unload — the idle cap shrinks under pressure:
+                    #   comfortable: 5 min idle → unload
+                    #   squeezed (<2 GB free): 60 s idle → unload now
+                    #
+                    # Unified residency reaper (2026-09-16): instead of the old
+                    # two hardcoded module checks, EVERY model that registered
+                    # itself with model_residency at load time (vision_vl,
+                    # text_llm, siglip_text_cpu, ...) gets idle-evicted here.
+                    # Skipped while a grade is active — the grade pipeline owns
+                    # its models' lifecycles and the worker is a subprocess.
+                    # Pressure-responsive sidecar evict (2026-09-16): when the
+                    # machine is squeezed and no grade is running, the sidecar
+                    # exits entirely — its RAM AND VRAM (the Qwen-VL can hold
+                    # ~4 GB of VRAM) return to the OS at once. Next use respawns
+                    # it; the warm-ahead path re-warms when headroom returns.
+                    #
+                    # BUSY/LOADING GUARD (the "stuck at 33%" fix): never evict
+                    # while the sidecar is mid-inference, mid-preload, or still
+                    # inside its first 120 s (cold-loading weights — which on a
+                    # CPU-offloaded VL model transiently eats ~5 GB and would
+                    # otherwise trip this very eviction, killing the job and
+                    # forcing an endless kill→respawn→cold-load thrash). Also
+                    # require genuine IDLENESS: an active story run calls the
+                    # sidecar every few seconds, so its idle_s stays small and
+                    # it survives the squeeze until the run finishes.
+                    if _pressure and not _grading_active.is_set():
+                        try:
+                            import sidecar_client as _sc_press
+                            _m_press = _sc_press.read_marker()
+                            if _m_press:
+                                _safe_to_evict = True
+                                _h_press = _sc_press.probe_health(
+                                    int(_m_press["port"]), timeout=1.5)
+                                if _h_press:
+                                    if _h_press.get("busy"):
+                                        _safe_to_evict = False
+                                    try:
+                                        if float(_h_press.get("idle_s", 0)) < 120:
+                                            _safe_to_evict = False
+                                    except Exception:
+                                        pass
+                                try:
+                                    _age = time.time() - float(
+                                        _m_press.get("started", 0))
+                                    if _age < 120:
+                                        _safe_to_evict = False
+                                except Exception:
+                                    pass
+                                if _safe_to_evict:
+                                    print("[server] RAM pressure — evicting the "
+                                          "model sidecar (RAM + VRAM back to the OS)",
+                                          flush=True)
+                                    _sc_press.evict()
+                        except Exception:
+                            pass
+                    _idle_cap = 60.0 if _pressure else 300.0
+                    _evicted = []
+                    if not _grading_active.is_set():
+                        try:
+                            import sys as _s_iu, os as _o_iu
+                            _src_iu = _o_iu.path.join(_o_iu.path.dirname(__file__), "src")
+                            if _src_iu not in _s_iu.path:
+                                _s_iu.path.insert(0, _src_iu)
+                            import model_residency as _res_iu
+                            _evicted = _res_iu.evict_idle(_idle_cap)
+                            if _evicted:
+                                print(f"[server] RAM: idle-evicted resident "
+                                      f"model(s): {', '.join(_evicted)} "
+                                      f"(idle > {_idle_cap:.0f} s)", flush=True)
+                        except Exception:
+                            pass
+                    _loaded = []
+                    try:
+                        import fast_niche_detector as _fnd_iu
+                        if _fnd_iu.is_ready():
+                            _loaded.append("niche")
+                            if _fnd_iu.idle_seconds() > _idle_cap:
+                                print(f"[server] RAM: niche detector idle "
+                                      f"{_fnd_iu.idle_seconds():.0f} s — unloading", flush=True)
+                                _fnd_iu.release()
+                                _loaded.remove("niche")
+                    except Exception:
+                        pass
+                    # Heartbeat: every 10 min, prove the watchdog is alive and
+                    # say what it sees — a dead watchdog must be OBSERVABLE.
+                    _now = _t_w.monotonic()
+                    if _now - _last_beat > 600:
+                        _last_beat = _now
+                        print(f"[server] watchdog: alive — "
+                              f"{_free if _free is not None else '?'} GB free, "
+                              f"models resident: {', '.join(_loaded) or 'none'}", flush=True)
+                except Exception:
+                    pass
+                _t_w.sleep(20)
+        except BaseException as _e_wd:
+            try:
+                print(f"[server] RAM watchdog crashed and restarted: {_e_wd!r}", flush=True)
+            except Exception:
+                pass
+            _t_w.sleep(5)
+
+threading.Thread(target=_ram_watchdog, daemon=True,
+                 name="ram-watchdog").start()
+
+
+# ── Warm-ahead on user intent (2026-09-16) ───────────────────────────────────
+# Browsing a folder is the signal that a critique / Story / text-LLM session
+# may follow. Warm the sidecar's models in the background NOW so the first
+# real request doesn't pay the 60-120 s cold load. Guardrails:
+#   never during a grade (the grade needs the RAM/VRAM itself),
+#   text model always (small), vision only with ≥3.5 GB RAM headroom,
+#   throttled to once per 10 minutes.
+_sidecar_warm_lock = threading.Lock()
+_sidecar_last_warm = 0.0
+
+def _sidecar_warm_on_browse() -> None:
+    global _sidecar_last_warm
+    if _grading_active.is_set():
+        return
+    import time as _t_warm
+    now = _t_warm.monotonic()
+    with _sidecar_warm_lock:
+        if now - _sidecar_last_warm < 600.0:
+            return
+        _sidecar_last_warm = now
+
+    def _warm():
+        try:
+            import sys as _s, os as _o
+            _src = _o.path.join(_o.path.dirname(__file__), "src")
+            if _src not in _s.path:
+                _s.path.insert(0, _src)
+            import sidecar_client as _sc
+            if not _sc.ensure():
+                return
+            print("[server] warm-ahead: sidecar up — preloading text model", flush=True)
+            _sc.preload("text")
+            # Vision is Ollama-first now (GPU, keep_alive self-unloads in 30 s).
+            # Preloading the sidecar's CPU vision model here ballooned ~8 GB of
+            # committed RAM — the "stuck at 33%" episode. The sidecar vision
+            # slot stays cold unless Ollama is unavailable.
+        except Exception:
+            pass
+
+    threading.Thread(target=_warm, daemon=True, name="sidecar-warm").start()
 
 
 def _release_annotation_model() -> None:
@@ -510,7 +800,7 @@ def _auto_tune_hardware() -> None:
           f"→ QWEN_BS_CEIL={os.environ.get('QWEN_BS_CEIL')} "
           f"QWEN_VRAM_RESERVE={os.environ.get('QWEN_VRAM_RESERVE')} "
           f"SIGLIP_MIN_FREE_RAM_GB={os.environ.get('SIGLIP_MIN_FREE_RAM_GB')} "
-          f"THUMB_POOLS={_THUMB_OD_WORKERS}/{_THUMB_PW_WORKERS}")
+          f"THUMB_POOLS={_thumb_od_permits.limit}/{_thumb_pw_permits.limit}")
 
 
 @asynccontextmanager
@@ -566,6 +856,31 @@ async def lifespan(app: FastAPI):
         _n_swept = _sweep_orphan_workers()
         if _n_swept:
             print(f"[server] startup: swept {_n_swept} orphan encode_worker(s)")
+    except Exception:
+        pass  # hygiene, not correctness
+
+    # Startup hygiene (2026-09-16): a dead server's warm worker can survive the
+    # orphan sweep (pid markers lag behind the real interpreter) while still
+    # holding encoder_warm.lock AND a loaded model — measured at multiple GB of
+    # RAM that starves the next creative run's floor gate into an indefinite
+    # pause. Force-release the lock at boot: the holder is killed only if it is
+    # a python process, and a healthy server would have adopted/never started.
+    try:
+        from siglip2_encoder import _warm_force_release
+        _warm_force_release()
+    except Exception:
+        pass  # hygiene, not correctness
+
+    # Startup hygiene (2026-09-16): orphan VLM sidecar. The Qwen-VL GGUF now
+    # lives in a disposable sidecar process (critique_engine's client). If the
+    # owning server died without sweeping it, the sidecar still self-exits on
+    # its own idle timer — but that can be minutes of GBs held for nothing.
+    # Kill a provably orphaned sidecar now (its parent PID is checked, so a
+    # live peer instance's sidecar is never touched).
+    try:
+        from src import critique_engine as _ce_sweep
+        if _ce_sweep.sweep_orphan_sidecar():
+            pass
     except Exception:
         pass  # hygiene, not correctness
 
@@ -760,7 +1075,51 @@ app.add_middleware(
 # WebView fetches it on every cold start. Compressing the wire payload
 # (~10× for JSON) turns a multi-second fetch into a fraction of one.
 # minimum_size keeps tiny responses (health, thumbs) uncompressed.
-app.add_middleware(GZipMiddleware, minimum_size=2048)
+#
+# SSE exception: stock Starlette 0.36 GZipMiddleware never flushes the zlib
+# buffer in streaming mode, so tiny text/event-stream chunks accumulate and
+# are never sent — the client hangs forever and the request eventually dies
+# with RuntimeError('No response returned.'). The responder below flags SSE
+# responses as already-encoded so every body message flows through the
+# passthrough branch untouched.
+from starlette.datastructures import Headers as _GzipHeaders
+from starlette.middleware.gzip import (
+    GZipMiddleware as _BaseGZipMiddleware,
+    GZipResponder as _BaseGZipResponder,
+)
+
+
+class _SSESafeResponder(_BaseGZipResponder):
+    async def send_with_gzip(self, message):
+        if message["type"] == "http.response.start":
+            # Base class's own "start" handling (below) unconditionally sets
+            # content_encoding_set = "content-encoding" in headers — which is
+            # always False here (no such header exists yet) and would wipe
+            # out an override made BEFORE this call. Let it run first, then
+            # override the flag it just computed.
+            await super().send_with_gzip(message)
+            headers = _GzipHeaders(raw=message["headers"])
+            if headers.get("content-type", "").startswith("text/event-stream"):
+                # Mark as pre-encoded → every body chunk is forwarded as-is.
+                self.content_encoding_set = True
+            return
+        await super().send_with_gzip(message)
+
+
+class SSESafeGZipMiddleware(_BaseGZipMiddleware):
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            headers = _GzipHeaders(scope=scope)
+            if "gzip" in headers.get("Accept-Encoding", ""):
+                responder = _SSESafeResponder(
+                    self.app, self.minimum_size, compresslevel=self.compresslevel
+                )
+                await responder(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(SSESafeGZipMiddleware, minimum_size=2048)
 
 # ── I1: unhandled exceptions never reach the client as raw text ──────────────
 # A handler crash used to bubble up as an opaque 500 with no trail (or, where
@@ -900,6 +1259,7 @@ _PREVIEW_DIR = _DATA_DIR / "cache" / "previews"
 _PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
 
 _HEIC_EXTS = frozenset({".heic", ".heif"})
+_RAW_EXTS = frozenset({".arw", ".cr2", ".cr3", ".nef", ".orf", ".rw2", ".raf", ".dng", ".pef", ".srw"})
 
 _PREVIEW_MAX = 200  # keep newest N previews; delete oldest beyond this
 

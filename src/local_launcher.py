@@ -63,13 +63,33 @@ if __name__ == "__main__" and "--server-only" in sys.argv and sys.platform == "w
             "netstat -ano | findstr :8000",
             shell=True, text=True, creationflags=0x08000000,
         )
-        for _ln in _early_out.splitlines():
-            _parts = _ln.split()
-            if len(_parts) >= 5 and _parts[3] == "LISTENING":
-                _sp_early.run(
-                    ["taskkill", "/F", "/PID", _parts[4]],
-                    creationflags=0x08000000, capture_output=True,
-                )
+        _holders = [
+            _ln.split()[4] for _ln in _early_out.splitlines()
+            if len(_ln.split()) >= 5 and _ln.split()[3] == "LISTENING"
+        ]
+        # Adopt, don't kill (2026-09-16): a HEALTHY FirstCut server already on
+        # :8000 is a peer instance's live server — killing it caused a
+        # launch-race where two instances took turns murdering each other's
+        # backend (and the UI kept being served by whichever survived, old code
+        # included). Probe health first; only kill an unhealthy/stale holder.
+        _healthy = False
+        if _holders:
+            try:
+                import urllib.request as _ur, json as _json
+                with _ur.urlopen("http://127.0.0.1:8000/api/health/engine", timeout=2) as _r:
+                    _healthy = _json.loads(_r.read().decode()).get("status") == "online"
+            except Exception:
+                _healthy = False
+        if _healthy:
+            print("[launcher] healthy FirstCut server already on :8000 — adopting it", flush=True)
+            if "--server-only" in sys.argv:
+                sys.exit(0)   # this launcher would only duplicate the backend
+            _holders = []     # full-app window: keep the live server, don't kill
+        for _pid in _holders:
+            _sp_early.run(
+                ["taskkill", "/F", "/PID", _pid],
+                creationflags=0x08000000, capture_output=True,
+            )
         time.sleep(0.3)  # give OS time to release the file handle
     except Exception:
         pass
@@ -463,6 +483,18 @@ def _kill_stray_backends() -> None:
     reuse died silently right here (21:54, 21:58, 23:39), while the one boot
     where this loop errored out early came up perfectly. Exempt the parent
     process explicitly; stray zombies from OTHER stacks never are it."""
+    # ── Grade-awareness (2026-09-13) ─────────────────────────────────────────
+    # While cache/grading.lock is fresh this function is a NO-OP: the boot
+    # retry loop calls it after a health-check miss, and a backend mid-grade
+    # can answer slowly — killing it there killed the GRADE ("grading stopped
+    # early"). A grade that survives always checkpoints; the launch waits.
+    try:
+        from src.grade_lock import grade_in_progress as _gip_kill
+        if _gip_kill(_ROOT / "cache"):
+            print("[launcher] grade in flight — skipping stray-backend kill", flush=True)
+            return
+    except Exception:
+        pass  # lock unreadable → old behaviour; never block a launch
     try:
         import psutil as _ps
         me = os.getpid()
@@ -621,6 +653,22 @@ def _another_window_launcher() -> bool:
     try:
         import psutil
         me = os.getpid()
+        # ── Grade-awareness (2026-09-13) ─────────────────────────────────────
+        # A relaunch while a grade is in flight in the detached backend used to
+        # fall into _kill_stray_backends (below), which kills server_impl /
+        # grade_runner / grade_worker by name — killing the GRADE with it.
+        # That is the "grading stopped early" incident class: the window was
+        # closed mid-cull, a second launch hit a transient health-check miss,
+        # and the retry loop murdered a perfectly healthy grading backend.
+        # While a fresh grading.lock exists, this launcher must not touch any
+        # firstcut python process; it waits for the grade instead.
+        try:
+            from src.grade_lock import grade_in_progress as _gip
+            if _gip(_ROOT / "cache"):
+                return True   # "another window launcher is starting" semantics:
+                              # the safe branch — wait, never kill
+        except Exception:
+            pass  # lock unreadable → old behaviour; never block a launch
         for p in psutil.process_iter(["pid", "name", "cmdline"]):
             try:
                 if p.info["pid"] == me:
@@ -736,6 +784,24 @@ def main():
         if _server_healthy(url):
             _log("Reusing running decoupled backend server")
         else:
+            # ── Grade-aware boot (2026-09-13) ────────────────────────────────
+            # An unhealthy health check while a grade is in flight usually
+            # means the server is busy STREAMING the cull (SSE work on the
+            # event loop), not that it is dead. Killing + respawning here is
+            # what produced "grading stopped early" on a relaunch. Wait — the
+            # grade checkpoints, and the server answers again when free.
+            try:
+                from src.grade_lock import grade_in_progress as _gip_boot
+                if _gip_boot(_ROOT / "cache"):
+                    _log("Backend unhealthy but a grade is in flight — waiting for it (up to 10 min)", flush=True)
+                    _grade_wait_deadline = time.time() + 600
+                    while time.time() < _grade_wait_deadline:
+                        if _server_healthy(url):
+                            _log("Backend answered again — reusing it")
+                            break
+                        time.sleep(5)
+            except Exception:
+                pass  # gate must never block a launch
             _booted = False
             for _attempt in range(1, 4):
                 _kill_stray_backends()
@@ -764,6 +830,20 @@ def main():
                 except Exception as e:
                     _log(f"pick_folder error: {e}")
                 return None
+
+            def reveal_folder(self, path: str):
+                """Open Windows Explorer with `path` selected. The Save Sequence
+                flow needs this: the Story folder is created next to the user's
+                photos, and the blob-anchor zip download does not work inside
+                WebView2 — without a reveal, saving looks like a no-op."""
+                try:
+                    import subprocess as _sp
+                    _sp.Popen(["explorer", "/select,", str(path)],
+                              creationflags=0x08000000)
+                    return True
+                except Exception as e:
+                    _log(f"reveal_folder error: {e}")
+                return False
 
         _icon = str(_ROOT / "icon.ico")
 

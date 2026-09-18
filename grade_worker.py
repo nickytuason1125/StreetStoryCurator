@@ -16,7 +16,9 @@ from pathlib import Path
 # npz mirror), so the blend engages rather than skipping on tier mismatch.
 # setdefault keeps FIRSTCUT_PERSONAL_TASTE=0 working as an explicit
 # opt-out for anyone who wants ratings to stay pure curation.
-os.environ.setdefault("FIRSTCUT_PERSONAL_TASTE", "1")
+# 2026-09-14: default flipped to 0 — the user retired the personal
+# calculation (taste head was pulling legit keepers toward Mid).
+os.environ.setdefault("FIRSTCUT_PERSONAL_TASTE", "0")
 
 # Suppress cmd-window flashes from child processes (same patch as server.py).
 try:
@@ -122,6 +124,82 @@ def grade_worker_main(
         # user's whole graded catalog instead of just leaving the previous
         # (still-valid) one in place until fresh data replaces it.
 
+        def _grade_folder_with_oom_resume(progress_fn, folder_path):
+            """run_v2 with an automatic wait-and-resume on a recoverable OOM.
+
+            memory_plan raises a checkpointed MemoryError when free RAM stays
+            below the hard floor for the whole ride-out window (measured
+            2026-09-14: judge stage, 0.5 GB free for >90 s). Previously that
+            surfaced as "Grading stopped early" and the user had to click
+            Grade again. Everything is checkpointed at that point, so instead:
+            trim our own working set, poll until RAM recovers (or give up
+            after the cap and re-raise so the old recoverable flow applies),
+            then re-run run_v2 — it resumes from the checkpoint, skipping
+            already-graded work.
+            """
+            import time as _t_oom
+            try:
+                import memory_plan as _mp_oom
+            except Exception:
+                _mp_oom = None
+
+            def _free() -> "float | None":
+                try:
+                    return _mp_oom.free_ram_gb()
+                except Exception:
+                    return None
+
+            def _floor() -> float:
+                try:
+                    return _mp_oom._hard_floor_gb()
+                except Exception:
+                    return 1.5
+
+            _MAX_RETRIES = 4
+            _MAX_WAIT_S = 600.0    # per attempt: up to 10 min for RAM to clear
+            for _attempt in range(1, _MAX_RETRIES + 1):
+                try:
+                    return run_v2(
+                        folder_path,
+                        preset       = preset,
+                        force_rescan = force_rescan,
+                        progress     = progress_fn,
+                        mogco_target = 0,
+                        scan_mode    = scan_mode,
+                        sample_limit = sample_limit,
+                        deep_grade   = deep_grade,
+                    )
+                except MemoryError as _me:
+                    _msg = str(_me)
+                    # Only the deliberate checkpointed abort is recoverable —
+                    # a genuine allocator MemoryError inside a model load is
+                    # re-raised untouched.
+                    if "Out of memory at the" not in _msg or _mp_oom is None:
+                        raise
+                    if _attempt == _MAX_RETRIES:
+                        raise
+                    _mp_oom._trim_working_set()
+                    print(f"[grade_worker] OOM checkpoint hit — waiting for RAM "
+                          f"to recover before resuming from the checkpoint "
+                          f"(attempt {_attempt}/{_MAX_RETRIES})…", flush=True)
+                    progress_fn(0.0, "Low memory — waiting for RAM, grading will resume automatically…")
+                    _deadline = _t_.monotonic() + _MAX_WAIT_S
+                    while _t_.monotonic() < _deadline:
+                        _t_.sleep(10)
+                        _f = _free()
+                        if _f is not None and _f >= _floor():
+                            break
+                    else:
+                        _f = _free()
+                    if _f is None or _f < _floor():
+                        print(f"[grade_worker] RAM did not recover within "
+                              f"{_MAX_WAIT_S:.0f} s ({_f if _f is not None else '?'} GB) "
+                              f"— giving up after {_attempt} attempt(s)", flush=True)
+                        raise
+                    print(f"[grade_worker] RAM recovered ({_f:.1f} GB free) — "
+                          f"resuming from checkpoint", flush=True)
+                    progress_fn(0.0, "Memory recovered — resuming from checkpoint…")
+
         for i, fp in enumerate(all_folders):
             p_start = i / n
             p_end   = (i + 1) / n
@@ -132,16 +210,7 @@ def grade_worker_main(
             if n > 1:
                 _fp(0.0, f"Grading folder {i+1}/{n}: {Path(fp).name}")
 
-            result = run_v2(
-                fp,
-                preset       = preset,
-                force_rescan = force_rescan,
-                progress     = _fp,
-                mogco_target = 0,
-                scan_mode    = scan_mode,
-                sample_limit = sample_limit,
-                deep_grade   = deep_grade,
-            )
+            result = _grade_folder_with_oom_resume(_fp, fp)
             # Slim PER FOLDER (2026-09-07 SD-upload OOM). Each entry's
             # "embedding" is a 1536-element Python-float list (~49 KB); slimming
             # only AFTER the loop kept every folder's embeddings resident

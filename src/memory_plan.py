@@ -402,6 +402,35 @@ def plan_for(n_photos: int, requested_scan: bool) -> dict | None:
     return None  # even the reduced-batch Scan does not fit → caller refuses
 
 
+def _trim_working_set() -> None:
+    """Return this process's idle pages to the OS (Windows) and gc first.
+
+    A long-lived grade worker accumulates a fat working set of pages it no
+    longer touches (freed-then-cached allocator arenas, spent decode buffers).
+    Those pages count against the machine's *available* RAM, so a checkpoint
+    that measures 0.5 GB free may be measuring our own bloat. gc.collect()
+    releases Python objects; EmptyWorkingSet forces the rest of the working
+    set to the pagefile, which is exactly where idle pages belong when the
+    alternative is aborting the run.
+    """
+    import gc as _gc
+    _gc.collect()
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        # SetProcessWorkingSetSize(GetCurrentProcess(), -1, -1) == EmptyWorkingSet
+        psapi = ctypes.windll.psapi
+        k32 = ctypes.windll.kernel32
+        handle = k32.GetCurrentProcess()
+        min_ws = ctypes.c_size_t(10)     # 10 bytes: minimum possible working set
+        max_ws = ctypes.c_size_t(10)
+        if not k32.SetProcessWorkingSetSize(handle, min_ws, max_ws):
+            psapi.EmptyWorkingSet(handle)
+    except Exception:
+        pass
+
+
 def memory_checkpoint(stage: str, progress=None) -> None:
     """Stage-boundary RAM check for the running pipeline.
 
@@ -469,6 +498,30 @@ def memory_checkpoint(stage: str, progress=None) -> None:
             return
 
     if free < hard:
+        # Last chance before aborting: the "available" figure includes THIS
+        # process's idle pages. Trim them back to the OS and re-measure once —
+        # on the 16 GB dev machine this routinely recovers 0.5–1.5 GB and
+        # turns a would-be abort into a continuation (2026-09-14 judge-stage
+        # aborts at "0.5 GB free" while the worker itself sat on >1 GB of
+        # untouched pages).
+        _trim_working_set()
+        try:
+            import time as _t2
+            _t2.sleep(2)
+        except Exception:
+            pass
+        free = free_ram_gb() or free
+        if free >= hard:
+            print(f"[memory_plan] Trimmed this process's working set — "
+                  f"recovered to {free:.1f} GB free, continuing", flush=True)
+            if progress is not None:
+                try:
+                    progress(0.0, "Memory freed — continuing")
+                except Exception:
+                    pass
+            if free < hard + TIGHT_BAND_GB and os.environ.get("SIGLIP_ENC_BATCH") != "2":
+                os.environ["SIGLIP_ENC_BATCH"] = "2"
+            return
         raise MemoryError(
             f"Out of memory at the '{stage}' stage: {free:.1f} GB free, "
             f"need ~{hard:.1f} GB to keep going. Everything graded so far is "

@@ -183,6 +183,13 @@ def _run_floor(free_gb: float, env: dict, onnx: bool = False) -> subprocess.Comp
     """
     code = f"""
 import sys, types; sys.path.insert(0, r"{_ROOT / 'src'}")
+# PIN THE TIER: these tests are about the HIGH tier's torch floors (soft 4.0 /
+# hard 3.0) vs the ONNX floors. The tier is otherwise resolved from the library
+# tier file / free-RAM auto-selection, and any in-suite state that shifts it
+# (a test persisting a lighter tier, a memory-starved moment) silently changes
+# the floors under test and fakes a failure. The assumption is now explicit.
+import os as _os
+_os.environ["SIGLIP_TIER"] = "high"
 import psutil
 psutil.virtual_memory = lambda: types.SimpleNamespace(available=int({free_gb} * 1e9))
 import siglip2_encoder as s
@@ -196,6 +203,10 @@ except MemoryError as e:
 """
     e = dict(os.environ); e.update(env)
     e.pop("SIGLIP_ENC_BATCH", None)
+    # Bounded pause: production waits indefinitely for memory to recover (the
+    # checkpoint makes that free); these tests assert the REFUSED branch, so
+    # give the pause a tiny budget — the refusal must still be readable.
+    e.setdefault("SIGLIP_PAUSE_MAX_WAIT_S", "0.05")
     return subprocess.run([sys.executable, "-c", code], capture_output=True,
                           text=True, cwd=str(_ROOT), timeout=300, env=e)
 
@@ -247,6 +258,52 @@ def test_onnx_still_refuses_when_truly_out_of_memory():
 def test_floor_opt_out_still_honoured():
     out = _run_floor(0.2, {"SIGLIP_MIN_FREE_RAM_GB": "0"}, onnx=False)
     assert "PROCEEDED" in out.stdout, out.stdout + out.stderr
+
+
+def test_floor_pauses_then_resumes_when_memory_recovers():
+    """THE contract (2026-09-13): OOM is a PAUSE, not a death.
+
+    A machine below the hard floor must NOT raise — it must wait, and when
+    memory recovers, proceed. This is the fix for the '45% wall' incident
+    class: free RAM dipped mid-encode, the gate raised, and a grade that was
+    45% done died. With the pause, the same state continues automatically.
+    """
+    code = f"""
+import sys, types, os, itertools; sys.path.insert(0, r"{_ROOT / 'src'}")
+os.environ["SIGLIP_TIER"] = "high"
+os.environ["SIGLIP_PAUSE_MAX_WAIT_S"] = "10"
+import psutil
+# Starved for the whole gate ride-out (initial + adaptive waits), THEN ample.
+# NOTE: the iterators are bound ONCE outside the lambda — recreating the chain
+# inside the lambda would restart it every call and the machine would never
+# recover (that exact bug made this test's first draft fail).
+import itertools
+_seq = itertools.chain(itertools.repeat(0.8e9, 6), itertools.repeat(8.0e9))
+psutil.virtual_memory = lambda: types.SimpleNamespace(available=next(_seq))
+import siglip2_encoder as s
+s._hf_checkpoint_present = lambda: True
+s._onnx_active = lambda: False
+s._query_free_vram_gb = lambda: None      # VRAM gate passes in the test harness
+import memory_plan as _mp
+_mp_seq = itertools.chain(itertools.repeat(0.8, 4), itertools.repeat(8.0))
+_mp.free_ram_gb = lambda: next(_mp_seq)
+try:
+    s._enforce_ram_floor()
+    print("PROCEEDED")
+except MemoryError as e:
+    print("REFUSED", e)
+"""
+    import subprocess as _sp
+    import os as _os
+    e = dict(_os.environ)
+    e.setdefault("SIGLIP_PAUSE_MAX_WAIT_S", "10")
+    out = _sp.run([sys.executable, "-c", code], capture_output=True,
+                  text=True, cwd=str(_ROOT), timeout=300, env=e)
+    assert "PAUSED" in out.stdout, f"must pause, not crash: {out.stdout + out.stderr}"
+    assert "RESUMING" in out.stdout, f"must resume on recovery: {out.stdout + out.stderr}"
+    assert "PROCEEDED" in out.stdout, (
+        f"after recovery the encode must continue: {out.stdout + out.stderr}")
+    assert "REFUSED" not in out.stdout, out.stdout
 
 
 # ── 5. native-extension load order (the 0xC0000005 regression) ───────────────

@@ -49,6 +49,13 @@ def _device():
     forced = os.environ.get("FIRSTCUT_TORCH_DEVICE", "")
     if forced and forced != "auto":
         return forced
+    # FIRSTCUT_FORCE_CPU (2026-09-15): a crashing NVIDIA driver DLL
+    # (nvobjectloader64.dll, 0xC0000005 at model load) killed every worker
+    # spawn mid-cull. The ONNX path honors this switch directly; the torch
+    # path (this line) must too, because torch.cuda.is_available() itself can
+    # survive while the CUDA session dies later in native code.
+    if os.environ.get("FIRSTCUT_FORCE_CPU", "").strip() == "1":
+        return "cpu"
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
@@ -160,6 +167,21 @@ def _onnx_session(graph: str = ""):
     but does not put them on the search path, so add them explicitly."""
     from pathlib import Path as _P
     _tl = _P(_ROOT) / "venv" / "Lib" / "site-packages" / "torch" / "lib"
+    # ── cuDNN version preference (2026-09-16) ─────────────────────────────────
+    # torch 2.5.1+cu121 bundles cuDNN 9.1 and its lib dir is what ORT ends up
+    # loading. onnxruntime-gpu 1.22 is built against a newer cuDNN 9.x, and the
+    # old 9.1 DLLs under concurrent allocation pressure reproduce as native
+    # 0xC0000005 deaths in the encode worker (crash.log streaks on 2026-09-15).
+    # The nvidia-cudnn-cu12 wheel carries a current cuDNN 9 — prefer its bin dir
+    # BEFORE torch/lib so ORT resolves cudnn64_9.dll from the wheel. Missing
+    # wheel → torch's 9.1 stays, exactly as before.
+    _cudnn = _P(_ROOT) / "venv" / "Lib" / "site-packages" / "nvidia" / "cudnn" / "bin"
+    if _cudnn.is_dir():
+        try:
+            os.add_dll_directory(str(_cudnn))
+            os.environ["PATH"] = str(_cudnn) + os.pathsep + os.environ.get("PATH", "")
+        except Exception:
+            pass
     if _tl.is_dir():
         try:
             os.add_dll_directory(str(_tl))
@@ -196,10 +218,30 @@ def _onnx_session(graph: str = ""):
     # session, skip CUDA DELIBERATELY and use the next provider (DML/CPU).
     if any("CUDA" in p for p in prov):
         _vram = _free_vram_gb()
-        if _vram is not None and _vram < 1.5:
-            _fb = next((p for p in prov if "CUDA" not in p), "CPUExecutionProvider")
-            print(f"[encode_worker] CUDA skipped — only {_vram:.2f} GB VRAM free; using {_fb}", flush=True)
-            prov = [p for p in prov if "CUDA" not in p] or ["CPUExecutionProvider"]
+        # -- Smart VRAM gate (2026-09-13) -----------------------------------
+        # The old gate silently fell back to DML/CPU below 1.5 GB. Two
+        # problems: the high-tier CPU path is measured unusable (6.5-7.6 GB,
+        # 11-14 s/img), and a silent provider switch drifts embeddings (fp16
+        # kernel cosine ~0.9997) - borderline grades can flip. A VRAM squeeze
+        # is usually TRANSIENT (2026-09-07: warm-up died on 'CUDA failure 2'
+        # with the card idle minutes later), so wait for recovery first; only
+        # if the squeeze outlasts the wait, refuse with exit 5 so the parent
+        # reports a readable VRAM message instead of a native 0xC0000005
+        # from a mid-graph allocation failure.
+        if _vram is not None and _vram < 1.5 and _gpu_present():
+            import time as _t
+            _vram_deadline = _t.time() + 60.0
+            while _t.time() < _vram_deadline:
+                print(f"[encode_worker] VRAM squeeze ({_vram:.2f} GB free) - waiting for recovery", flush=True)
+                _t.sleep(3.0)
+                _vram = _free_vram_gb()
+                if _vram is None or _vram >= 1.5:
+                    break
+            if _vram is not None and _vram < 1.5:
+                print(f"[encode_worker] VRAM refusal: only {_vram:.2f} GB free for the CUDA "
+                      f"session (need ~1.5). The card is shared with the desktop, WebView2 "
+                      f"and the backend's warm CLIP - close one of them and retry.", flush=True)
+                os._exit(5)
     _g = graph or _ONNX_VISION
     # ── VRAM arena cap ────────────────────────────────────────────────────────
     # ORT's CUDA arena defaults to grow-as-needed with big extend steps; on a
@@ -529,8 +571,28 @@ def encode_images_onnx(sess, paths, batch=8):
         for img in pil:
             arrs.append(_onnx_preprocess(img))
         x = np.stack(arrs).astype(np.float16)
-        e = sess.run(None, {"pixel_values": x})[0].astype(np.float32)
-        e = e / (np.linalg.norm(e, axis=1, keepdims=True) + 1e-9)
+        try:
+            e = sess.run(None, {"pixel_values": x})[0].astype(np.float32)
+        except Exception as _oom:
+            # -- Mid-encode OOM shrink (2026-09-13) -------------------------
+            # A VRAM squeeze that outlasts the pre-flight gate can land HERE
+            # as a Python-level CUDA/bad_alloc failure. Catch the catchable
+            # form and retry the same chunk ONE image at a time: a batch of 1
+            # needs almost no activation memory, and a ViT has no cross-image
+            # interaction, so the result is bit-identical to the batched run.
+            if not ("memory" in str(_oom).lower() or "alloc" in str(_oom).lower()
+                    or "cuda" in str(_oom).lower()):
+                raise
+            print(f"[encode_worker] OOM on batch of {len(x)} - retrying one image "
+                  f"at a time ({str(_oom)[:120]})", flush=True)
+            e = None
+            for _sub in arrs:
+                _e = sess.run(None, {"pixel_values": _sub[None].astype(np.float16)})[0].astype(np.float32)
+                _e = _e / (np.linalg.norm(_e, axis=1, keepdims=True) + 1e-9)
+                e = _e if e is None else np.concatenate([e, _e], axis=0)
+            e = np.asarray(e, dtype=np.float32)
+        if e is not None:
+            e = e / (np.linalg.norm(e, axis=1, keepdims=True) + 1e-9)
         if out is None:
             out = np.zeros((len(paths), e.shape[1]), dtype=np.float32)
         out[written:written + len(e)] = e
@@ -745,6 +807,24 @@ def serve():
             _respond(False, _tb.format_exc())
 
     print("[encode_worker] serve ready", flush=True)
+    # ── Ready marker (2026-09-16) ──────────────────────────────────────────────
+    # The parent's _warm_ensure waits for THIS pid to appear here before
+    # submitting a job. Closes the respawn race: a fresh serve instance that
+    # exits immediately at the singleton gate (another healthy worker already
+    # serves machine-wide) never writes the marker, so the parent learns of the
+    # loss in seconds instead of burning the 45 s no-CPU watchdog on a job that
+    # was eaten. The pid check makes stale markers from dead workers harmless.
+    try:
+        from pathlib import Path as _Pm
+        import time as _tm
+        _rd = _Pm(os.environ.get("FIRSTCUT_DATA_DIR", "")) if os.environ.get("FIRSTCUT_DATA_DIR") else None
+        if _rd is None:
+            _rd = _Pm(__file__).resolve().parent.parent / "cache"
+        _rd.mkdir(parents=True, exist_ok=True)
+        (_rd / "encode_worker.ready.json").write_text(_json.dumps(
+            {"pid": os.getpid(), "ts": _tm.time()}), encoding="utf-8")
+    except Exception:
+        pass   # marker is an optimization — serve() works without it
     while True:
         try:
             line = lines.get(timeout=idle_s)
