@@ -42,7 +42,7 @@ import { FolderBrowser } from "./components/views/FolderBrowser";
 import { T, gradeRule, gradeKey, gradeLabel, formatScore } from "./theme/tokens";
 import { cn } from "./lib/cn";
 import ErrorBoundary from "./ErrorBoundary";
-import { API, photoUrl, sanitizePath, thumbUrl } from "./lib/api";
+import { API, isTauri, photoUrl, sanitizePath, thumbUrl } from "./lib/api";
 import { APP_VERSION } from "./lib/version";
 import { useGuardedInterval } from "./hooks/useGuardedInterval";
 import { useWindowedGrid } from "./hooks/useWindowedGrid";
@@ -517,6 +517,16 @@ export default function App() {
   const [redacted,      setRedacted]      = useState<Set<string>>(new Set());
   const [showDuplicates,setShowDuplicates] = useState(false);
   const [folders,      setFolders]      = useState<string[]>([]);
+  // A folder in `folders` grades in FULL unless it's ALSO a key with entries
+  // in the explicit_paths sent to /api/grade/v2/stream. `wholeFolders` tracks
+  // which folders in `folders` were added whole (handleAddFolder) rather than
+  // via individually-checked photos — those always win over any narrowing,
+  // even if some of their photos were also individually picked at some point.
+  const [wholeFolders, setWholeFolders] = useState<Set<string>>(new Set());
+  // Every individually-checked (not whole-folder) photo path added so far,
+  // across every folder visited this session. Grouped by parent folder at
+  // grade time to build the request's explicit_paths.
+  const [pickedPaths,  setPickedPaths]  = useState<Set<string>>(new Set());
   const [browserMode,  setBrowserMode]  = useState<'open'|'add'>('open');
   const [catalogBanner,setCatalogBanner]= useState(false);
   const saveTimerRef       = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -526,6 +536,10 @@ export default function App() {
   const [bFolders,   setBFolders]   = useState<string[]>([]);
   const [bImages,    setBImages]    = useState<string[]>([]);
   const [bSelFolders, setBSelFolders] = useState<Set<string>>(new Set());
+  // Individually-checked photos in the folder browser's image grid (add mode
+  // only). Ephemeral — resets on navigate/close, unlike pickedPaths which
+  // accumulates for the whole session.
+  const [bSelImages, setBSelImages] = useState<Set<string>>(new Set());
   const [lastBClick, setLastBClick] = useState<number | null>(null);
   const [bLoading,   setBLoading]   = useState(false);
   const [copied,     setCopied]     = useState(false);
@@ -552,7 +566,8 @@ export default function App() {
   const [backendError,   setBackendError]   = useState(false);
   // Batch 4: non-null when the backend's build version disagrees with the UI's.
   const [staleBackend,   setStaleBackend]   = useState<string | null>(null);
-  const [graderStatus,   setGraderStatus]   = useState<{last_mode:string,draft_available:boolean,verify_available:boolean,last_error:string|null,qwen_warm:boolean,qwen_loading:boolean,qwen_download_pct:number|null,warmup_done:boolean,warmup_running:boolean,compute_device?:string,vram_free_gb?:number|null,vram_total_gb?:number|null,gpu_name?:string|null,ram_free_gb?:number|null,ram_total_gb?:number|null,ram_min_gb?:number}|null>(null);
+const [staleBundle,    setStaleBundle]    = useState(false);
+  const [graderStatus,   setGraderStatus]   = useState<{last_mode:string,draft_available:boolean,verify_available:boolean,last_error:string|null,qwen_warm:boolean,qwen_int4_cached?:boolean,qwen_loading:boolean,qwen_download_pct:number|null,warmup_done:boolean,warmup_running:boolean,compute_device?:string,vram_free_gb?:number|null,vram_total_gb?:number|null,gpu_name?:string|null,ram_free_gb?:number|null,ram_total_gb?:number|null,ram_min_gb?:number}|null>(null);
   // Live system-memory snapshot, polled every 2 s (see /api/system/ram) so the RAM
   // readiness indicator tracks Task Manager in real time rather than refreshing
   // only on modal open.
@@ -591,6 +606,9 @@ export default function App() {
   const [heatmapLoading, setHeatmapLoading] = useState(false);
   const [pegFile,        setPegFile]        = useState<File | null>(null);
   const [pegHash,        setPegHash]        = useState<string | null>(null);
+  // Pinned source paths (2026-09-22): frames the user locked from the last
+  // build; sent with every creative-direction run so they reappear.
+  const [creativePinned, setCreativePinned] = useState<string[]>([]);
   const [pegLoading,     setPegLoading]     = useState(false);
   // â”€â”€ Semantic search state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [searchQuery,    setSearchQuery]    = useState("");
@@ -626,12 +644,17 @@ export default function App() {
   // Non-empty when the sequence was NOT art-directed: a score sort wearing a
   // story™s clothes. Shown, never swallowed.
   const [creativeFallback,    setCreativeFallback]    = useState("");
+const [creativeDirectorNote, setCreativeDirectorNote] = useState("");
   // How tightly the chosen set hangs together, reported by story_selector.
   // Deliberately a readout, not a gate: no cohesion floor could be justified
   // without grading on a curve, so the number is shown and the user judges.
   const [creativeSelection,   setCreativeSelection]   = useState<any>(null);
+const [creativeRotation,    setCreativeRotation]    = useState<{ used_total?: number; last_sequence?: number; pool_eligible?: number | null; pool_total?: number | null; recent_dup_dropped?: number; used_paths?: string[]; last_paths?: string[] } | null>(null);
   const [creativeRuleSet,     setCreativeRuleSet]     = useState<any>(null);
   const [creativeTimings,     setCreativeTimings]     = useState<any>(null);
+  // Judge's Verdict + provenance (2026 protocol), first-class in the payload.
+  const [creativeVerdict,     setCreativeVerdict]     = useState<string | null>(null);
+  const [creativeJudgeMeta,   setCreativeJudgeMeta]   = useState<any>(null);
   const [creativeShowOriginal,setCreativeShowOriginal]= useState(false);
   const [usedCount,           setUsedCount]           = useState(0);
   const [sequenceSaving,      setSequenceSaving]      = useState(false);
@@ -778,6 +801,10 @@ export default function App() {
         const v = d.version;
         if (v && v !== "unknown" && v !== APP_VERSION) setStaleBackend(v);
         else setStaleBackend(null);
+        // Bundle staleness: source is newer than the built dist/ the server
+        // serves — the on-screen UI is not the code in the repo. Fix is
+        // `npm run build`, then reload.
+        setStaleBundle(d.bundle_stale === true);
         // change-guard: a new object identity every poll re-rendered the whole
         // tree 6Ã—/min even when nothing changed. Identity moves on real change.
         setEngineHealth(prev => {
@@ -923,12 +950,24 @@ export default function App() {
   }, [preGradeModal]);
 
   /* fetch excluded-photo count from the server */
-  useEffect(() => {
+  const refreshRotationStatus = useCallback(() => {
     fetch(`${API}/api/creative-direction/used-count`)
       .then(r => r.json())
       .then(d => setUsedCount(d.count ?? 0))
       .catch(() => {});
+    fetch(`${API}/api/creative-direction/rotation-status`)
+      .then(r => r.json())
+      .then(d => setCreativeRotation(prev => ({
+        ...(prev ?? {}),
+        used_total: d.used_total ?? 0,
+        last_sequence: (d.last_paths ?? []).length,
+        used_paths: d.used_paths ?? [],
+        last_paths: d.last_paths ?? [],
+      })))
+      .catch(() => {});
   }, []);
+
+  useEffect(() => { refreshRotationStatus(); }, [refreshRotationStatus]);
 
   const sel = useMemo(() => {
     const base = photos.find(p => p.id === selId) ?? photos[0] ?? null;
@@ -1029,10 +1068,18 @@ export default function App() {
    * before initialization" (TDZ) the moment this view mounts. */
   const handleSetStars = useCallback((id: string, stars: number) => {
     setPhotos(prev => prev.map(p => p.id === id ? { ...p, stars } : p));
-    // Fire-and-forget: train PersonalHead + queue DPO event
     const path = photos.find(p => p.id === id)?.path;
     if (path) {
-      axios.post(`${API}/api/personal/star`, { path, stars }).catch(() => {});
+      // A star is ground truth for THIS photo's grade — the backend patches
+      // catalog.json and returns the resulting bucket (yours if rated, the
+      // algorithm's own if cleared back to 0); reflect it here immediately
+      // instead of waiting for the next catalog poll to notice the file changed.
+      axios.post(`${API}/api/personal/star`, { path, stars })
+        .then(r => {
+          const grade = r.data?.grade;
+          if (grade) setPhotos(prev => prev.map(p => p.id === id ? { ...p, grade } : p));
+        })
+        .catch(() => {});
     }
   }, [photos]);
 
@@ -1089,8 +1136,12 @@ export default function App() {
     setCreativePrompt('');
     setCreativeOutDir('');
     setCreativeFallback('');
+setCreativeDirectorNote('');
     setCreativeSelection(null);
+    setCreativeRotation(null);
     setCreativeShowOriginal(false);
+    setCreativeVerdict(null);
+    setCreativeJudgeMeta(null);
   }, [folder]);
 
   /* load photos when folder changes (skipped when resuming from catalog) */
@@ -1387,7 +1438,7 @@ export default function App() {
     setBPath(p); loadBrowser(p);
   }, [bPath, loadBrowser]);
 
-  const handleBrowserFolderClick = useCallback((e: MouseEvent, path: string, _idx: number) => {
+  const handleBrowserFolderClick = useCallback((e: React.MouseEvent, path: string, _idx: number) => {
     const isCtrl = (e as any).ctrlKey || (e as any).metaKey;
     if (isCtrl) {
       // Ctrl+click toggles folder selection (for multi-add)
@@ -1401,6 +1452,7 @@ export default function App() {
       setBPath(path);
       loadBrowser(path);
       setBSelFolders(new Set());
+      setBSelImages(new Set());
     }
   }, [loadBrowser]);
 
@@ -1447,6 +1499,10 @@ export default function App() {
    * UI hard-reloads ONCE so state, catalog and SSE all come from the same
    * code generation. Checked on mount, on window focus, and every 60 s. */
   const backendBuildRef = useRef<string | null>(null);
+  // A newer backend build seen mid-grade: the reload is deferred to the end of
+  // the grade (applyGradeState). This ref was used but never declared, so
+  // EVERY grade completion threw a ReferenceError before the catalog refetch.
+  const pendingReloadRef = useRef<string | null>(null);
   useEffect(() => {
     let cancelled = false;
     backendBuildRef.current = sessionStorage.getItem('fc_backend_build');
@@ -1625,9 +1681,38 @@ export default function App() {
         return [...prev, ...added];
       });
       setFolders(prev => prev.includes(newFolder) ? prev : [...prev, newFolder]);
+      // Whole-folder add always wins over any earlier individual-photo
+      // narrowing for this folder — see wholeFolders' declaration.
+      setWholeFolders(prev => new Set(prev).add(newFolder));
       notify(`Added ${rawPhotos.length} photos from ${newFolder.split(/[\\/]/).pop()}`, 'success');
     } catch { notify('Failed to add folder', 'error'); }
     finally { setListLoading(false); }
+  }, [notify]);
+
+  // Individually-picked photos, added directly from paths already in hand
+  // (the folder browser's own listing) — no network round trip needed, since
+  // /api/list-folder never carries real EXIF anyway (it's loaded lazily via
+  // /api/exif when a photo is selected).
+  const addPhotosByPath = useCallback((paths: string[]) => {
+    if (!paths.length) return;
+    setPhotos(prev => {
+      const existing = new Set(prev.map(p => p.path));
+      const added = paths
+        .filter(p => !existing.has(p))
+        .map(p => ({ id:photoId(p), path:p, grade:'Pending', score:0, breakdown:{}, critique:'', reasoning_log:'', is_verified:false, stars:0, exif:{} }));
+      return [...prev, ...added];
+    });
+    setPickedPaths(prev => {
+      const next = new Set(prev);
+      for (const p of paths) next.add(p);
+      return next;
+    });
+    setFolders(prev => {
+      const parents = new Set(paths.map(p => p.replace(/[\\/][^\\/]*$/, '')));
+      const missing = Array.from(parents).filter(f => !prev.includes(f));
+      return missing.length ? [...prev, ...missing] : prev;
+    });
+    notify(`Added ${paths.length} photo${paths.length === 1 ? '' : 's'}`, 'success');
   }, [notify]);
 
   const pickFolder = useCallback(async () => {
@@ -1735,11 +1820,22 @@ export default function App() {
         break;
       }
     };
+    // Per-folder narrowing: a folder added WHOLE (wholeFolders) always grades
+    // in full; a folder that only ever received individually-checked photos
+    // (pickedPaths) grades ONLY those. The server re-validates every path
+    // against the folders it actually resolved, so an entry here for a
+    // folder outside this run's scope is simply ignored, never trusted blind.
+    const explicitPaths: Record<string, string[]> = {};
+    for (const f of folders) {
+      if (wholeFolders.has(f)) continue;
+      const subset = Array.from(pickedPaths).filter(p => p.replace(/[\\/][^\\/]*$/, '') === f);
+      if (subset.length) explicitPaths[f] = subset;
+    }
     try {
       const resp = await fetch(`${API}/api/grade/v2/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ folder_path: allFolderPaths[0], folder_paths: allFolderPaths, preset, scan_mode: scanMode, deep_grade: deepGrade, force_rescan: forceRescan, mogco_target: mogcoTarget }),
+        body: JSON.stringify({ folder_path: allFolderPaths[0], folder_paths: allFolderPaths, explicit_paths: explicitPaths, preset, scan_mode: scanMode, deep_grade: deepGrade, force_rescan: forceRescan, mogco_target: mogcoTarget }),
       });
       if (!resp.ok) {
         try { const d = await resp.json(); throw new Error(d.error ?? `Server error ${resp.status}`); }
@@ -1991,6 +2087,7 @@ export default function App() {
           structure_mode:  creativeMode,
           n_target:        creativeCount,
           peg_image_hash:  pegHash ?? null,
+          pinned_paths:    creativePinned,
           mode:            seqMode === 'auto' || seqMode === 'competition' ? seqMode : 'story',
         }),
       });
@@ -2034,11 +2131,15 @@ export default function App() {
             setCreativeResultsB(msg.data?.alt_outputs ?? []);
             setCreativeOutDir(msg.data?.output_dir ?? '');
             setCreativeFallback(msg.data?.director_fallback ?? '');
+            setCreativeDirectorNote(msg.data?.director_note ?? '');
             setCreativeSelection(msg.data?.selection ?? null);
+            setCreativeRotation(msg.data?.rotation ?? null);
             setCreativeRuleSet(msg.data?.rule_set
               ? { ...msg.data.rule_set, subject: msg.data?.subject ?? null }
               : null);
             setCreativeTimings(msg.data?.timings ?? null);
+            setCreativeVerdict(msg.data?.judges_verdict ?? null);
+            setCreativeJudgeMeta(msg.data?.judge_meta ?? null);
             const ok = outputs.filter((r: any) => r.success).length;
             if (ok === 0 && outputs.length === 0) {
               notify('Creative Direction ran but produced no outputs.', 'info');
@@ -2052,13 +2153,21 @@ export default function App() {
         }
       }
     } catch (err: any) {
-      notify(`Could not style the photos. ${err.message || err}`, 'error');
+      // A raw Python error ("name '_p' is not defined") is not a user
+      // message. Known-good messages pass through; anything that smells
+      // like an interpreter crash gets a readable line instead.
+      const msg: string = String(err?.message ?? err ?? '');
+      const isDevDetail =
+        /NameError|TypeError|KeyError|AttributeError|IndexError|Traceback|is not defined|NoneType/.test(msg);
+      notify(isDevDetail
+        ? 'Could not style the photos — the styling pipeline crashed. Check the server log for details.'
+        : `Could not style the photos. ${msg}`, 'error');
     } finally {
       setCreativeLoading(false);
       setCreativeProgress(0);
       setCreativeStage('');
     }
-  }, [creativeAnchor, creativePrompt, creativeMode, creativeCount, photos, folder, folders, notify]);
+  }, [creativeAnchor, creativePrompt, creativeMode, creativeCount, photos, folder, folders, notify, creativePinned]);
 
   const handleSaveSequence = useCallback(async (outputsArg?: any[]) => {
     const successes = (outputsArg ?? creativeResults).filter((r: any) => r.success);
@@ -2099,8 +2208,9 @@ export default function App() {
       notify(`Could not save. ${err.message}`, 'error');
     } finally {
       setSequenceSaving(false);
+      refreshRotationStatus();   // save marks sources used — refresh the strip
     }
-  }, [creativeResults, creativeOutDir, notify]);
+  }, [creativeResults, creativeOutDir, notify, refreshRotationStatus]);
 
   const handleClearUsed = useCallback(async () => {
     try {
@@ -2108,12 +2218,13 @@ export default function App() {
       const data = await resp.json();
       if (data.ok) {
         setUsedCount(0);
+        refreshRotationStatus();
         notify('History cleared — all photos eligible again', 'success');
       }
     } catch (err: any) {
       notify(`Could not clear. ${err.message}`, 'error');
     }
-  }, [notify]);
+  }, [notify, refreshRotationStatus]);
 
   const handleSortByStars = useCallback((n: number) => {
     setCarousel(prev => [...prev].sort((a, b) => {
@@ -2173,17 +2284,22 @@ export default function App() {
     // A webview genuinely cannot resolve a dropped folder to a path: the HTML
     // File API deliberately does not expose one. The honest response is to
     // open the native picker the drop was trying to shortcut, so the gesture
-    // still gets the user where they were going.
+    // still gets the user where they were going — in ADD mode, never Open:
+    // a drop is "here are more photos", not "start over", so it must never
+    // reset the working set back to the empty/home state (2026-09-23).
     const fullPath = (file as any)?.path as string | undefined;
     if (!fullPath) {
-      openBrowser();
+      openAddFolder();
       return;
     }
     const entry = item?.webkitGetAsEntry?.();
     const isDir = entry?.isDirectory || fullPath.endsWith('/') || fullPath.endsWith('\\');
     const fp = isDir ? fullPath : fullPath.split(/[\\/]/).slice(0, -1).join('/') || fullPath;
-    if (fp) { setFolder(fp); setPhotos([]); setSelId(null); }
-  }, [openBrowser]);
+    if (fp) {
+      handleAddFolder(fp);
+      setMainTab('gallery');
+    }
+  }, [openAddFolder, handleAddFolder]);
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -2200,11 +2316,15 @@ export default function App() {
   const handleCreateFromSelection = useCallback(() => {
     if (!selectedIds.size) { notify('Select photos first', 'error'); return; }
     const sel = photos.filter(p => selectedIds.has(p.id));
-    setCarousel(sel);
+    // The standalone 'sequence' tab was removed (1b21ebc) but this handler
+    // still switched to it, so "Start sequence" blanked the whole main area.
+    // Sequencing lives in Creative now; its pinned set is exactly "these
+    // frames must be in the sequence", sent with the next build.
+    setCreativePinned(sel.map(p => p.path));
     setSelectedIds(new Set());
     setSelectMode(false);
-    setMainTab('sequence');
-    notify('Sequence created from selection', 'success');
+    setMainTab('creative');
+    notify(`${sel.length} photo${sel.length !== 1 ? 's' : ''} pinned — build the sequence in Creative`, 'success');
   }, [photos, selectedIds, notify]);
 
   const onResizeDown = useCallback((e: React.MouseEvent) => {
@@ -2538,7 +2658,7 @@ export default function App() {
         <div style={{ position:'fixed', inset:0, zIndex:400, background:T.well, display:'flex', alignItems:'center', justifyContent:'center' }}
           role="presentation"
           onClick={() => setPreGradeModal(null)}>
-          <div ref={preGradeDialogRef} style={{ background:T.surface1, border:`1px solid ${T.lineStrong}`, borderRadius:'var(--r-md)', padding:'28px 32px', maxWidth:420, width:'90%', display:'flex', flexDirection:'column', gap:16 }}
+          <div ref={preGradeDialogRef} style={{ background:T.surface, border:`1px solid ${T.lineStrong}`, borderRadius:'var(--r-md)', padding:'28px 32px', maxWidth:420, width:'90%', display:'flex', flexDirection:'column', gap:16 }}
             role="dialog" aria-modal="true" aria-labelledby="pregrade-title"
             onClick={e => e.stopPropagation()}>
             {/* Header: eyebrow + quiet photo count (moved out of the body so it
@@ -2779,6 +2899,25 @@ export default function App() {
             may misbehave until then.
           </span>
           <Button size="sm" variant="quiet" onClick={() => setStaleBackend(null)}>
+            Dismiss
+          </Button>
+        </div>
+      )}
+
+      {/* Bundle-staleness banner — the mirror of the stale-backend banner:
+          fresh source in the repo but the app is serving the last built
+          dist/. A reload cannot fix it (the fix is `npm run build`, then
+          reload), so no action button. */}
+      {staleBundle && !staleBackend && (
+        <div role="status"
+          className="fixed inset-x-0 top-0 z-[600] flex items-center justify-center gap-3
+                     border-b border-line-strong bg-raised px-3 py-1 text-xs text-ink"
+          style={{ background: 'var(--alarm-warn, var(--raised))' }}>
+          <span>
+            Source changed since the last build — this UI may not match the
+            code. Run <code>npm run build</code> in frontend/ and reload.
+          </span>
+          <Button size="sm" variant="quiet" onClick={() => setStaleBundle(false)}>
             Dismiss
           </Button>
         </div>
@@ -3030,7 +3169,7 @@ export default function App() {
           <Segmented
             iconOnly
             value={loupeMode}
-            onChange={setLoupeMode}
+            onChange={(v: string) => setLoupeMode(v as 'grid' | 'loupe')}
             options={[
               { value: 'loupe', icon: <RectangleHorizontal size={12}/>, title: 'Loupe (E)' },
               { value: 'grid',  icon: <LayoutGrid size={12}/>,          title: 'Grid (G)' },
@@ -3044,7 +3183,7 @@ export default function App() {
           </Button>
         )}
 
-        {isDone && (
+        {isDone && mainTab !== 'creative' && (
           <Button
             icon={<ArrowUpDown size={11}/>}
             title="Move files on disk into Strong / Mid / Weak folders"
@@ -3067,7 +3206,7 @@ export default function App() {
 
         {/* Scan mode. Active state is a luminance step, not a hue — the warm
             colour belongs to the photographer's marks. */}
-        {!isGrading && (
+        {!isGrading && mainTab !== 'creative' && (
           <Button
             variant={scanMode ? 'solid' : 'quiet'}
             onClick={() => setScanMode(v => !v)}
@@ -3101,7 +3240,7 @@ export default function App() {
               </span>
             )}
           </div>
-        ) : (
+        ) : mainTab !== 'creative' ? (
           <Button
             variant="solid"
             onClick={() => handleGrade(true, false)}
@@ -3110,7 +3249,7 @@ export default function App() {
           >
             {isDone ? (scanMode ? 'Re-scan' : 'Re-grade') : (scanMode ? 'Scan' : 'Grade')}
           </Button>
-        )}
+        ) : null}
         </div>
       </header>
 
@@ -3342,9 +3481,9 @@ export default function App() {
               parseCritique={parseCritique} deepCritique={deepCritique} setDeepCritique={setDeepCritique}
               deepCritiqueLoading={deepCritiqueLoading} setDeepCritiqueLoading={setDeepCritiqueLoading}
               reasoningOverlayUrl={reasoningOverlayUrl} buildReasoningFromBreakdown={buildReasoningFromBreakdown}
-              infoTab={infoTab} setInfoTab={setInfoTab}
+              infoTab={infoTab} setInfoTab={(v: string) => setInfoTab(v as typeof infoTab)}
               selectedIds={selectedIds} setSelectedIds={setSelectedIds}
-              handleCopyPath={handleCopyPath} handleSetStars={handleSetStars} setMainTab={setMainTab} copied={copied}
+              handleCopyPath={handleCopyPath} handleSetStars={handleSetStars} setMainTab={(v: string) => setMainTab(v as typeof mainTab)} copied={copied}
               onFindPerson={handleFindPerson}
               handleGenerate={handleGenerate} handleCreateFromSelection={handleCreateFromSelection}
               hasPrev={hasPrev} hasNext={hasNext} selIdx={selIdx} filteredPhotos={filteredPhotos}
@@ -3429,12 +3568,16 @@ export default function App() {
           creativeRuleSet={creativeRuleSet}
           creativeTimings={creativeTimings}
           sequenceSaving={sequenceSaving}
-          creativeSelection={creativeSelection} creativeFallback={creativeFallback}
+          creativeSelection={creativeSelection} creativeFallback={creativeFallback} creativeDirectorNote={creativeDirectorNote}
+          creativeRotation={creativeRotation}
+          creativeVerdict={creativeVerdict} creativeJudgeMeta={creativeJudgeMeta}
           creativeProgress={creativeProgress} creativeStage={creativeStage}
           creativeCount={creativeCount} setCreativeCount={setCreativeCount}
           usedCount={usedCount} handleClearUsed={handleClearUsed}
           pegFile={pegFile} setPegFile={setPegFile} pegHash={pegHash} setPegHash={setPegHash}
+          creativePinned={creativePinned} setCreativePinned={setCreativePinned}
           pegLoading={pegLoading} handlePegUpload={handlePegUpload}
+          notify={notify}
         />
         </ErrorBoundary>
       ) : null}
@@ -3476,12 +3619,18 @@ export default function App() {
           bImages={bImages}
           bSelFolders={bSelFolders}
           setBSelFolders={setBSelFolders}
+          bSelImages={bSelImages}
+          setBSelImages={setBSelImages}
           loading={bLoading}
           onNavigate={loadBrowser}
           onGoUp={goUp}
           onFolderClick={(e, p, i) => handleBrowserFolderClick(e, p, i)}
-          onAddFolders={async (fs) => { for (const nf of fs) await handleAddFolder(nf); }}
-          onUseFolder={() => { setFolder(bPath); setPhotos([]); setSelId(null); setFolders([]); }}
+          onAddFolders={async (fs) => { for (const nf of fs) await handleAddFolder(nf); setMainTab('gallery'); }}
+          onAddImages={(paths) => { addPhotosByPath(paths); setMainTab('gallery'); }}
+          onUseFolder={() => {
+            setFolder(bPath); setPhotos([]); setSelId(null); setFolders([]);
+            setWholeFolders(new Set()); setPickedPaths(new Set());
+          }}
           onClose={() => setShowBrowser(false)}
         />
       )}

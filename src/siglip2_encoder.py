@@ -14,6 +14,7 @@ VRAM Protocol: SigLIP2Encoder() loads → encode_images() → unload().
 from __future__ import annotations
 
 import os
+import sys
 import gc
 from pathlib import Path
 from typing import Optional, List
@@ -293,6 +294,9 @@ _warm_job_loss_streak = 0           # consecutive warm jobs lost to no-resp
 # instead of waiting out the production 300 s floor.
 _NO_RESP_MIN_S = 300.0
 _NO_RESP_SCALE = 3.0
+# Max wait for a warm worker to load its model after a job is handed over.
+# Cold serve load + a 656-prompt text job measured 30 s (2026-09-28).
+_WARM_LOAD_WINDOW_S = float(os.environ.get("FIRSTCUT_WARM_LOAD_WINDOW_S", "150") or 150)
 
 
 def set_pause_notifier(fn) -> None:
@@ -879,13 +883,18 @@ def _warm_run(enc, mode: str, in_path: str, out_path: str,
     import json as _json
     import time as _time
     resp_path = in_path + ".resp.json"
-    try:
-        os.unlink(resp_path)
-    except Exception:
-        pass
+    loaded_path = resp_path + ".loaded"
     for _try in (1, 2):
+        # Per ATTEMPT, not per call: a respawned worker gets the full load
+        # window again (the old once-per-call flag left attempt 2 unguarded).
+        for _stale in (resp_path, loaded_path):
+            try:
+                os.unlink(_stale)
+            except Exception:
+                pass
         if not _warm_ensure(enc._WORKER):
             return "warm encoder could not be spawned"
+        _t0 = _time.time()
         req = _json.dumps({"mode": mode, "in": in_path,
                            "out": out_path, "resp": resp_path})
         try:
@@ -935,6 +944,25 @@ def _warm_run(enc, mode: str, in_path: str, out_path: str,
             if _time.time() >= _no_resp_deadline:
                 print(f"[siglip2] warm encoder produced no resp within "
                       f"{max(_NO_RESP_MIN_S, _no_cpu_s * _NO_RESP_SCALE):.0f}s — killing worker, "
+                      "falling back to one-shot spawn", flush=True)
+                _warm_shutdown()
+                break
+            # ── Load watchdog (2026-09-28) ───────────────────────────────────────
+            # The worker touches <resp>.loaded the moment its model is ready
+            # and encoding starts. Every wedge ever observed happened BEFORE
+            # that point (import/load — root-caused 2026-09-28 to the stdin
+            # reader deadlocking scipy's DLL load, see encode_worker
+            # ._stdin_lines), so no marker within the load window means stuck:
+            # kill it and let the one-shot ladder encode (~15 s measured)
+            # instead of waiting out the no-resp budget (30 min for a 656-
+            # prompt text job — the 48% stall). A cold load measured 30 s;
+            # the window is 5x that. This replaces an RSS guess ("<1 GB =
+            # still importing") that misread a worker still holding a 1.2 GB
+            # ONNX session as healthy and so never fired.
+            if (not os.path.exists(loaded_path)
+                    and _time.time() - _t0 > _WARM_LOAD_WINDOW_S):
+                print(f"[siglip2] warm encoder did not finish loading within "
+                      f"{_WARM_LOAD_WINDOW_S:.0f}s of the job — killing it and "
                       "falling back to one-shot spawn", flush=True)
                 _warm_shutdown()
                 break
@@ -1281,7 +1309,8 @@ class SigLIP2Encoder:
             return self._run(mode, items)   # fresh ladder, fresh temp files,
                                             # checkpoint skips finished work
         finally:
-            for _f in (in_path, out_path):
+            for _f in (in_path, out_path, in_path + ".resp.json",
+                       in_path + ".resp.json.loaded"):
                 try: os.unlink(_f)
                 except Exception: pass
 

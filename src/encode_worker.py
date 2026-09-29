@@ -360,6 +360,18 @@ def _print_peak() -> None:
         pass
 
 
+def _shutdown_raw_pool() -> None:
+    """Best-effort: release RAW decode worker processes before this process
+    exits via os._exit (which skips atexit, so nothing else would do this).
+    win_job's job-object assignment is the backstop if this is skipped or
+    fails — never let pool cleanup block or fail an exit path."""
+    try:
+        import raw_decode_pool as _rdp
+        _rdp.shutdown_pool()
+    except Exception:
+        pass
+
+
 def _norm(e):
     return e / (e.norm(dim=-1, keepdim=True) + 1e-9)
 
@@ -447,6 +459,132 @@ def _decode_last_err() -> "str | None":
     return _DECODE_LAST_ERR
 
 
+_RAW_DECODE_TIMEOUT_S = 30   # matches _decode_with_timeout's default for non-RAW
+
+
+def _decode_raw_batch(raw_paths):
+    """Decode a batch of RAW embedded previews IN PARALLEL across
+    raw_decode_pool's process pool (see that module for why processes, not
+    threads). Returns (images, errors): `images[j]` is a PIL Image or None
+    for raw_paths[j]; `errors` maps path -> reason string for any None.
+
+    Degrades gracefully at two levels — the pool being unavailable at all,
+    and the pool BREAKING mid-batch (a poison file crashing a worker) — by
+    falling back to the pre-existing single-thread rawpy decode for whatever
+    wasn't already decoded. Either way this function never raises; a batch
+    that can't get the speedup still gets decoded, just serially.
+    """
+    from PIL import Image
+    import io as _io
+
+    images: list = [None] * len(raw_paths)
+    errors: dict = {}
+
+    try:
+        import raw_decode_pool as _rdp
+        pool = _rdp.get_pool()
+    except Exception as exc:
+        print(f"[encode_worker] RAW decode pool unavailable ({exc}) — "
+              f"decoding this batch serially", flush=True)
+        for j, p in enumerate(raw_paths):
+            img = _decode_with_timeout(p)
+            images[j] = img
+            if img is None:
+                errors[p] = _decode_last_err() or "raw decode failed"
+        return images, errors
+
+    futures = [pool.submit(_rdp._decode_raw_thumb, p) for p in raw_paths]
+    _rdp.tie_workers_to_job()
+
+    from concurrent.futures import TimeoutError as _FutTimeoutError
+    from concurrent.futures.process import BrokenProcessPool
+
+    _pool_broken = False
+    for j, (p, fut) in enumerate(zip(raw_paths, futures)):
+        if _pool_broken:
+            img = _decode_with_timeout(p)
+            images[j] = img
+            if img is None:
+                errors[p] = _decode_last_err() or "raw decode failed (pool broken)"
+            continue
+        try:
+            kind, payload = fut.result(timeout=_RAW_DECODE_TIMEOUT_S)
+        except _FutTimeoutError:
+            errors[p] = "RAW decode timeout (poison file?)"
+            continue
+        except BrokenProcessPool as exc:
+            print(f"[encode_worker] RAW decode pool crashed ({exc}) — falling "
+                  f"back to serial decode for the rest of this batch", flush=True)
+            _rdp.reset_pool()
+            _pool_broken = True
+            img = _decode_with_timeout(p)
+            images[j] = img
+            if img is None:
+                errors[p] = _decode_last_err() or "raw decode failed (pool broken)"
+            continue
+        except Exception as exc:
+            errors[p] = f"{type(exc).__name__}: {exc}"
+            continue
+
+        if kind == "jpeg":
+            try:
+                images[j] = Image.open(_io.BytesIO(payload)).convert("RGB")
+            except Exception as exc:
+                errors[p] = f"{type(exc).__name__}: {exc}"
+        elif kind == "array":
+            try:
+                raw_bytes, shape, dtype = payload
+                arr = np.frombuffer(raw_bytes, dtype=dtype).reshape(shape)
+                img = Image.fromarray(arr)
+                images[j] = img.convert("RGB") if img.mode != "RGB" else img
+            except Exception as exc:
+                errors[p] = f"{type(exc).__name__}: {exc}"
+        else:
+            errors[p] = payload if isinstance(payload, str) else "raw decode failed"
+    return images, errors
+
+
+def _decode_chunk(chunk):
+    """Decode one batch's worth of paths. RAW files run in parallel across
+    the process pool; everything else keeps the pre-existing single-thread,
+    timeout-guarded decode (already fast for compressed non-RAW formats, and
+    unchanged behavior for them). Returns (pil_images, failed_local, first_err)
+    in chunk order, same contract _iter_decoded_batches always had."""
+    from PIL import Image
+    from raw_support import RAW_EXTS
+
+    pil: list = [None] * len(chunk)
+    failed_local: list = []
+    first_err = None
+    raw_positions = [j for j, p in enumerate(chunk)
+                      if os.path.splitext(p)[1].lower() in RAW_EXTS]
+    raw_set = set(raw_positions)
+
+    for j, p in enumerate(chunk):
+        if j in raw_set:
+            continue
+        img = _decode_with_timeout(p)
+        if img is None:
+            failed_local.append(j)
+            if first_err is None:
+                first_err = _decode_last_err()
+            img = Image.new("RGB", (64, 64), (0, 0, 0))
+        pil[j] = img
+
+    if raw_positions:
+        raw_paths = [chunk[j] for j in raw_positions]
+        decoded, raw_errors = _decode_raw_batch(raw_paths)
+        for j, img in zip(raw_positions, decoded):
+            if img is None:
+                failed_local.append(j)
+                if first_err is None:
+                    first_err = raw_errors.get(chunk[j])
+                img = Image.new("RGB", (64, 64), (0, 0, 0))
+            pil[j] = img
+
+    return pil, failed_local, first_err
+
+
 def _iter_decoded_batches(paths, batch):
     """Yield (start_index, chunk_paths, pil_images, failed_local, first_err).
 
@@ -459,8 +597,11 @@ def _iter_decoded_batches(paths, batch):
     machines this pipeline targets. Reused by BOTH the torch and ONNX encode
     loops so their bookkeeping (failed-index sentinels, first-error capture)
     stays identical.
+
+    Decode itself (_decode_chunk, 2026-09-23) fans RAW files out across a
+    process pool instead of decoding everything on one thread — see
+    raw_decode_pool for why a large RAW-only cull needed this.
     """
-    from PIL import Image
     import queue as _q
     q: "_q.Queue" = _q.Queue(maxsize=2)
     _SENT = object()
@@ -468,15 +609,7 @@ def _iter_decoded_batches(paths, batch):
     def _producer():
         for i in range(0, len(paths), batch):
             chunk = paths[i:i + batch]
-            pil, failed_local, first_err = [], [], None
-            for j, p in enumerate(chunk):
-                img = _decode_with_timeout(p)
-                if img is None:
-                    failed_local.append(j)
-                    if first_err is None:
-                        first_err = _decode_last_err()
-                    img = Image.new("RGB", (64, 64), (0, 0, 0))
-                pil.append(img)
+            pil, failed_local, first_err = _decode_chunk(chunk)
             q.put((i, chunk, pil, failed_local, first_err))
         q.put(_SENT)
 
@@ -717,6 +850,54 @@ def _heartbeat_of(_lock) -> float:
         return 0.0
 
 
+def _stdin_lines():
+    """Yield job lines from the parent's pipe without leaving a blocking read
+    pending on this process's STANDARD INPUT handle.
+
+    The pipe is a synchronous handle, and Windows serialises every operation
+    on a synchronous file object: while a read waits on it, any other call on
+    that handle waits too. serve() waits for jobs on a background thread while
+    the main thread imports transformers -> sklearn -> scipy; scipy's bundled
+    OpenBLAS DLL carries its own C runtime, whose start-up inspects the
+    process's standard handles (GetFileType on stdin) — and queues behind the
+    pending read for ever. A deterministic deadlock at 0% CPU: it froze culls
+    at 48% ("Preparing the style reference…"), the wedge noted in
+    siglip2_encoder on 2026-09-22, and every respawn froze identically
+    (reproduced 3/3 on 2026-09-28; reading via ReadFile alone still froze).
+
+    Fix: keep a private duplicate of the pipe for reading and point the
+    process's standard input (fd 0 and STD_INPUT_HANDLE) at NUL, so anything
+    that inspects stdin gets an instant answer.
+    """
+    if os.name != "nt" or sys.stdin is None:
+        if sys.stdin is not None:
+            yield from sys.stdin
+        return
+    import _winapi
+    import ctypes
+    import msvcrt
+    pipe_fd = os.dup(sys.stdin.fileno())
+    handle = msvcrt.get_osfhandle(pipe_fd)
+    nul_fd = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(nul_fd, 0)
+    os.close(nul_fd)
+    ctypes.windll.kernel32.SetStdHandle(-10, msvcrt.get_osfhandle(0))  # STD_INPUT_HANDLE
+    buf = b""
+    while True:
+        try:
+            data, _err = _winapi.ReadFile(handle, 65536)
+        except OSError:            # ERROR_BROKEN_PIPE: the parent closed stdin
+            data = b""
+        if not data:
+            break
+        buf += data
+        while b"\n" in buf:
+            line, buf = buf.split(b"\n", 1)
+            yield line.decode("utf-8", "replace") + "\n"
+    if buf:
+        yield buf.decode("utf-8", "replace")
+
+
 def serve():
     """Persistent warm-encoder loop (FIRSTCUT_WARM_ENCODER, default on).
 
@@ -755,7 +936,7 @@ def serve():
     lines: "_queue.Queue" = _queue.Queue()
 
     def _reader():
-        for raw in sys.stdin:
+        for raw in _stdin_lines():    # never `for raw in sys.stdin` — see _stdin_lines
             lines.put(raw)
         lines.put(None)          # EOF — parent closed the pipe
 
@@ -779,6 +960,19 @@ def serve():
                 except Exception:
                     pass
 
+        def _mark_loaded():
+            # Liveness signal for the parent (siglip2_encoder._warm_run): the
+            # model is loaded and encoding has begun. A job whose marker never
+            # appears is stuck in import/load — the only phase a warm worker
+            # has ever wedged in — and the parent falls back after a bounded
+            # wait instead of guessing from RSS (which misread a worker that
+            # still held a 1.2 GB ONNX session as healthy, 2026-09-28).
+            if resp_path:
+                try:
+                    open(resp_path + ".loaded", "w").close()
+                except Exception:
+                    pass
+
         try:
             mode = job["mode"]
             in_json, out_npy = job["in"], job["out"]
@@ -786,11 +980,13 @@ def serve():
             if mode == "images" and _onnx_enabled():
                 if state["onnx_sess"] is None:
                     state["onnx_sess"] = _onnx_session()
+                _mark_loaded()
                 embs = encode_images_onnx(state["onnx_sess"], items,
                                           batch=max(1, int(os.environ.get(
                                               "SIGLIP_ENC_BATCH", str(_default_batch())))))
             else:
                 _ensure_loaded()
+                _mark_loaded()
                 _batch = max(1, int(os.environ.get("SIGLIP_ENC_BATCH",
                                                    str(_default_batch()))))
                 if mode == "images":
@@ -830,8 +1026,10 @@ def serve():
             line = lines.get(timeout=idle_s)
         except _queue.Empty:
             print(f"[encode_worker] serve idle {idle_s:.0f}s — exiting to free RAM", flush=True)
+            _shutdown_raw_pool()
             os._exit(0)
         if line is None:
+            _shutdown_raw_pool()
             os._exit(0)          # parent closed stdin — job object/terminate
         line = line.strip()
         if not line:
@@ -868,6 +1066,7 @@ def main():
             embs = encode_images_onnx(_onnx_session(), items, batch=_batch)
             np.save(out_npy, embs.astype(np.float32))
             print(f"[encode_worker] images(onnx): {embs.shape} -> {out_npy}", flush=True)
+            _shutdown_raw_pool()
             _print_peak()
             os._exit(0)
 
@@ -888,6 +1087,7 @@ def main():
             embs = encode_text(kind, m, helper, items)
         np.save(out_npy, embs.astype(np.float32))
         print(f"[encode_worker] {mode}: {embs.shape} -> {out_npy}", flush=True)
+        _shutdown_raw_pool()
         _print_peak()
         os._exit(0)
     except Exception as _exc:  # noqa: BLE001 — top-level boundary of a child process
@@ -896,6 +1096,7 @@ def main():
         # that buried the one line that mattered). Known resource failures get
         # ONE classified line; everything else keeps the full traceback. The
         # exit code stays 1 either way: callers fall back on it, not on text.
+        _shutdown_raw_pool()
         _msg = str(_exc)
         # A bare MemoryError() carries an EMPTY message (CPython raises it with
         # no args under commit exhaustion — observed 2026-09-08 at the cull

@@ -320,11 +320,6 @@ def plan_encode_chunks(n_photos: int) -> int:
     return 200
 
 
-def min_admission_gb() -> float:
-    """The LAST rung's cost — below this, genuinely nothing fits."""
-    return _hard_floor_gb() + 0.3
-
-
 def top_ram_hogs(n: int = 3) -> str:
     """Names the biggest private-RAM consumers right now, for refusal messages.
 
@@ -350,56 +345,53 @@ def top_ram_hogs(n: int = 3) -> str:
 
 
 def plan_for(n_photos: int, requested_scan: bool) -> dict | None:
-    """The richest plan that fits the machine right now.
+    """The plan for this cull: the REQUESTED quality, run lighter if RAM is tight.
 
-    Ladder, richest first:
-      full quality            → measured whole-cull figures (3.8–7.0 GB)
-      Scan                    → measured scan tree, 2.0 GB admitted
-      Scan, reduced batch     → encoder hard floor + 0.3 (the old pre-spawn
-                                gate's territory — the encoder degrades to
-                                batch=2 instead of refusing)
+    Quality is never downgraded behind the user's back (2026-09-28). The old
+    ladder silently fell back from full quality to Scan under ~3.8 GB free —
+    most culls on the 16 GB machine — and Scan skips the image-quality stage,
+    so the same photo got a different grade depending on free RAM, and those
+    Scan grades were then served as final by later culls. Measured the same
+    day, the downgrade bought almost nothing: whole-tree peak RSS Scan vs full
+    was 2.47 vs 2.78 GB (31 photos) and 2.91 vs 3.20 GB (135 photos), and both
+    completed from 2.65 GB free.
 
-    Returns {"plan", "scan_mode", "need_gb", "free_gb", "degraded", "note"}
-    — "plan" names the rung; "degraded" True means the request was
-    downgraded (callers must honour plan["scan_mode"]); None means even the
-    reduced-batch Scan cannot fit and the request should be refused.
+    Ladder, for the requested mode only:
+      <mode>                   → measured whole-cull figure
+      <mode>, reduced batch    → encoder hard floor + 0.3 (encode batch 2 —
+                                 on the default ONNX image encoder the batch
+                                 does not change the embeddings)
+
+    Returns {"plan", "scan_mode", "need_gb", "free_gb", "degraded", "note",
+    "enc_batch"} — "enc_batch" (None or an int) must be applied to THIS
+    grade's subprocess environment only; None means even the reduced batch
+    cannot fit and the request should be refused.
     """
     free = free_ram_gb()
+    base = "scan" if requested_scan else "full"
     if free is None:
         # Cannot measure → admit, same fail-open semantics the old gate had,
         # but LOUD: the encoder's own floors still protect the machine.
-        return {"plan": "scan" if requested_scan else "full",
-                "scan_mode": requested_scan, "need_gb": None, "free_gb": None,
-                "degraded": False,
+        return {"plan": base, "scan_mode": requested_scan, "need_gb": None,
+                "free_gb": None, "degraded": False, "enc_batch": None,
                 "note": "Free RAM could not be measured — relying on the encoder's own floors."}
 
-    ladder = []
-    if not requested_scan:
-        ladder.append(("full", False, _need_full_gb(n_photos)))
-    ladder.append(("scan", True, _need_scan_gb()))
-    ladder.append(("scan+reduced-batch", True, min_admission_gb()))
-
-    for i, (name, scan_mode, need) in enumerate(ladder):
-        if free >= need:
-            degraded = i > 0
-            note = ""
-            if degraded:
-                if name == "scan+reduced-batch":
-                    # Set the batch reduction HERE, in the server process, so
-                    # the runner child inherits it from its very first spawn.
-                    os.environ["SIGLIP_ENC_BATCH"] = "2"
-                    note = (f"RAM is very tight ({free:.1f} GB free) — running a "
-                            f"Scan with a reduced encode batch (needs ~{need:.1f} GB). "
-                            f"Slower, but everything is still graded.")
-                else:
-                    note = (f"RAM is tight ({free:.1f} GB free) — downgraded to a Scan "
-                            f"({need:.1f} GB needed instead of {ladder[0][2]:.1f} GB for full "
-                            f"quality). Everything is still graded; Deep-Grade verification "
-                            f"is skipped. Re-run when more RAM is free for full quality.")
-            return {"plan": name, "scan_mode": scan_mode, "need_gb": need,
-                    "free_gb": free, "degraded": degraded, "note": note}
-
-    return None  # even the reduced-batch Scan does not fit → caller refuses
+    need = _need_scan_gb() if requested_scan else _need_full_gb(n_photos)
+    if free >= need:
+        return {"plan": base, "scan_mode": requested_scan, "need_gb": need,
+                "free_gb": free, "degraded": False, "enc_batch": None, "note": ""}
+    reduced = min_admission_gb()
+    if free >= reduced:
+        # The batch goes to THIS grade's subprocess only. It used to be written
+        # into the server's own os.environ and never reset, so one tight moment
+        # slowed every later cull in the session.
+        return {"plan": f"{base}+reduced-batch", "scan_mode": requested_scan,
+                "need_gb": reduced, "free_gb": free, "degraded": True, "enc_batch": 2,
+                "note": (f"RAM is tight ({free:.1f} GB free) — grading at "
+                         f"{'Scan' if requested_scan else 'full'} quality with a smaller "
+                         f"encode batch (needs ~{reduced:.1f} GB). Slower, but the grades "
+                         f"are the same as with more RAM free.")}
+    return None  # even the reduced batch does not fit → caller refuses
 
 
 def _trim_working_set() -> None:

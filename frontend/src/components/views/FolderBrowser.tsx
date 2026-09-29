@@ -1,27 +1,31 @@
-﻿import { useEffect, useState } from 'react';
-import { X, ArrowUp, FolderOpen, HardDrive } from 'lucide-react';
+﻿import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { X, ArrowUp, FolderOpen, HardDrive, Check } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { cn } from '../../lib/cn';
 import { Thumb } from '../photo/Thumb';
 import { API } from '../../lib/api';
+import { useWindowedGrid } from '../../hooks/useWindowedGrid';
 
 /* â”€â”€ Folder browser modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 /* Native-feeling explorer for picking the working folder. Extracted
  * verbatim from App.tsx during the views split; all state stays owned
  * by App and arrives through props. */
-export function FolderBrowser({ mode, bPath, setBPath, bFolders, bImages, bSelFolders, setBSelFolders, loading, onNavigate, onGoUp, onFolderClick, onAddFolders, onUseFolder, onClose }: {
-  mode: 'add' | 'use';
+export function FolderBrowser({ mode, bPath, setBPath, bFolders, bImages, bSelFolders, setBSelFolders, bSelImages, setBSelImages, loading, onNavigate, onGoUp, onFolderClick, onAddFolders, onAddImages, onUseFolder, onClose }: {
+  mode: 'add' | 'open';
   bPath: string;
   setBPath: (p: string) => void;
   bFolders: string[];
   bImages: string[];
   bSelFolders: Set<string>;
   setBSelFolders: (s: Set<string>) => void;
+  bSelImages: Set<string>;
+  setBSelImages: React.Dispatch<React.SetStateAction<Set<string>>>;
   loading: boolean;
   onNavigate: (path: string) => void;
   onGoUp: () => void;
   onFolderClick: (e: React.MouseEvent, path: string, idx: number) => void;
   onAddFolders: (folders: string[]) => Promise<void>;
+  onAddImages: (paths: string[]) => void;
   onUseFolder: () => void;
   onClose: () => void;
 }) {
@@ -47,6 +51,20 @@ export function FolderBrowser({ mode, bPath, setBPath, bFolders, bImages, bSelFo
     return () => { cancelled = true; };
   }, []);
 
+  /* The image previews are WINDOWED: only the rows near the viewport exist,
+   * so a 4,156-frame card dump issues ~a screenful of /api/thumb requests
+   * instead of all of them at once (2026-09-28: every frame was requested on
+   * open and the visible tiles queued behind thousands of off-screen ones).
+   * The folder list shares the scroll container, so the grid's own offset
+   * is measured and handed to the hook. */
+  const gridRef = useRef<HTMLDivElement | null>(null);
+  const [gridTop, setGridTop] = useState(0);
+  useLayoutEffect(() => {
+    if (gridRef.current) setGridTop(gridRef.current.offsetTop);
+  }, [bFolders, bImages, loading, mode]);
+  const wg = useWindowedGrid({ itemCount: bImages.length, minColWidth: 96, maxCols: 99,
+                               gap: 4, rowExtra: 4, offsetTop: gridTop });
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim p-4">
       <div className="flex h-[82vh] w-full max-w-[640px] flex-col overflow-hidden rounded-md border border-line-strong bg-surface shadow-lg">
@@ -69,19 +87,32 @@ export function FolderBrowser({ mode, bPath, setBPath, bFolders, bImages, bSelFo
             onClick={async () => {
               try {
                 if (mode === 'add') {
-                  const toAdd = bSelFolders.size ? Array.from(bSelFolders) : [bPath];
-                  await onAddFolders(toAdd);
+                  // Nothing explicitly checked -> today's default: add the
+                  // current folder whole. Otherwise add exactly what's
+                  // checked (whole folders AND/OR individually-checked
+                  // photos) together, one combined action.
+                  if (bSelFolders.size === 0 && bSelImages.size === 0) {
+                    await onAddFolders([bPath]);
+                  } else {
+                    if (bSelFolders.size) await onAddFolders(Array.from(bSelFolders));
+                    if (bSelImages.size) onAddImages(Array.from(bSelImages));
+                  }
                 } else {
                   onUseFolder();
                 }
               } catch (err) { /* non-blocking */ }
               onClose();
               setBSelFolders(new Set());
+              setBSelImages(new Set());
             }}
-            disabled={bImages.length===0}
-            title={bImages.length === 0 ? 'This folder holds no images' : undefined}>
+            disabled={bImages.length===0 && bSelFolders.size===0}
+            title={bImages.length === 0 && bSelFolders.size===0 ? 'This folder holds no images' : undefined}>
             {mode === 'add' ? 'Add' : 'Use folder'}
-            {bImages.length > 0 && <span className="t-num ml-1 opacity-70">{bImages.length}</span>}
+            {bSelImages.size > 0 ? (
+              <span className="t-num ml-1 opacity-70">{bSelImages.size}</span>
+            ) : bImages.length > 0 ? (
+              <span className="t-num ml-1 opacity-70">{bImages.length}</span>
+            ) : null}
           </Button>
         </div>
         <div className="flex flex-1 overflow-hidden">
@@ -122,7 +153,7 @@ export function FolderBrowser({ mode, bPath, setBPath, bFolders, bImages, bSelFo
             ))}
           </div>
 
-            <div className="flex-1 overflow-y-auto p-4">
+            <div ref={wg.ref} onScroll={wg.onScroll} className="relative flex-1 overflow-y-auto p-4">
               {loading ? (
                 <div className="flex h-full items-center justify-center text-ink-3">
                   <span className="text-sm">Reading folderâ€¦</span>
@@ -157,18 +188,63 @@ export function FolderBrowser({ mode, bPath, setBPath, bFolders, bImages, bSelFo
                   )}
                   {bImages.length > 0 && (
                     <div>
-                      <p className="t-label mb-2">Images <span className="t-num">{bImages.length}</span></p>
-                      <div className="flex flex-wrap gap-1">
-                        {bImages.slice(0,30).map(img => (
-                          <div key={img} className="relative overflow-hidden rounded-sm border border-line bg-well">
-                            <Thumb path={img} className="block h-thumb w-auto max-w-none"/>
-                          </div>
-                        ))}
-                        {bImages.length > 30 && (
-                          <div className="flex h-thumb min-w-[96px] flex-1 items-center justify-center rounded-sm border border-line bg-raised px-3">
-                            <span className="t-num text-xs text-ink-3">+{bImages.length-30} more</span>
+                      <div className="mb-2 flex items-center justify-between">
+                        <p className="t-label">Images <span className="t-num">{bImages.length}</span></p>
+                        {mode === 'add' && (
+                          <div className="flex items-center gap-2">
+                            {bSelImages.size > 0 && (
+                              <span className="t-num text-xs text-ink-3">{bSelImages.size} checked</span>
+                            )}
+                            <button
+                              onClick={() => setBSelImages(new Set(bImages))}
+                              className="cursor-pointer border-0 bg-transparent p-0 text-xs text-ink-3 underline-offset-2 hover:text-ink hover:underline">
+                              Select all
+                            </button>
+                            {bSelImages.size > 0 && (
+                              <button
+                                onClick={() => setBSelImages(new Set())}
+                                className="cursor-pointer border-0 bg-transparent p-0 text-xs text-ink-3 underline-offset-2 hover:text-ink hover:underline">
+                                Clear
+                              </button>
+                            )}
                           </div>
                         )}
+                      </div>
+                      {/* Fixed 3:2 cells (object-contain, the contact sheet's
+                          never-crop rule) — the fixed stride is what the
+                          windowing needs. */}
+                      <div ref={gridRef} className="grid gap-1"
+                        style={{ gridTemplateColumns: `repeat(${wg.cols}, minmax(0, 1fr))`,
+                                 paddingTop: wg.padTop, paddingBottom: wg.padBottom }}>
+                        {bImages.slice(wg.first, wg.last).map(img => {
+                          const checked = bSelImages.has(img);
+                          return (
+                            <div key={img} className="relative aspect-[3/2] overflow-hidden rounded-sm border border-line bg-well">
+                              <Thumb path={img} className="block h-full w-full object-contain"/>
+                              {mode === 'add' && (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setBSelImages(prev => {
+                                      const next = new Set(prev);
+                                      if (next.has(img)) next.delete(img); else next.add(img);
+                                      return next;
+                                    });
+                                  }}
+                                  aria-label={checked ? 'Uncheck photo' : 'Check photo'}
+                                  className={cn(
+                                    'absolute right-1 top-1 flex h-4 w-4 cursor-pointer items-center justify-center rounded-[3px] border',
+                                    'transition-colors duration-fast ease',
+                                    checked
+                                      ? 'border-mark bg-mark text-ink'
+                                      : 'border-ink-3 bg-scrim text-transparent hover:border-ink-2',
+                                  )}>
+                                  <Check size={11} strokeWidth={3}/>
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
                   )}

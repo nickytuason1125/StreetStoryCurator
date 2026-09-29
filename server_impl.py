@@ -35,7 +35,7 @@ except Exception:
     pass
 
 import asyncio
-import uvicorn, signal, sys, time, threading
+import uvicorn, signal, time, threading
 import requests as _requests
 # Force UTF-8 output so emoji in print() don't crash on cp1252 terminals/threads.
 for _s in (sys.stdout, sys.stderr):
@@ -57,6 +57,19 @@ from pydantic import BaseModel, field_validator
 from typing import List
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
+
+# ── Eager creative_director import (2026-09-22) ─────────────────────────────
+# The MODULE LOAD build marker only used to print on the FIRST creative-
+# direction run, because every router imported the module lazily inside its
+# request handler — a stale server looked freshly-built until mid-run. This
+# import fires the marker (and any load-time wiring) during startup instead,
+# so crash.log is verifiable the moment the server is up.
+try:
+    import creative_director as _cd_eager  # noqa: F401
+    del _cd_eager
+except Exception as _e_cd_eager:
+    print(f"[server] creative_director eager import skipped: {_e_cd_eager}",
+          flush=True)
 
 # ── MODULE PATH DIAGNOSTIC ───────────────────────────────────────────────────
 # Detects whether we are running the local project copy or a global pip-installed clone.
@@ -200,20 +213,47 @@ LAST_SEQUENCE: list = []   # paths from the most recent generation — used as a
 # configuration lands in the same store as every other cache file.
 _USED_CD_PATHS_FILE = _DATA_DIR / "cache" / "used_cd_paths.json"
 
+def _used_entry_path(e) -> str:
+    # History entries are {"path":..., "ts":...} dicts; bare strings are the
+    # pre-2026-09-21 format and are treated as the oldest entries (ts=0).
+    return e.get("path", "") if isinstance(e, dict) else str(e)
+
 def _load_used_cd_paths() -> set:
     """Return the set of source-image paths already used in a saved CD sequence."""
     try:
         if _USED_CD_PATHS_FILE.exists():
             import json as _j
-            return set(_j.loads(_USED_CD_PATHS_FILE.read_text(encoding="utf-8")))
+            data = _j.loads(_USED_CD_PATHS_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return {_used_entry_path(e) for e in data}
     except Exception:
         pass
     return set()
 
-def _save_used_cd_paths(used: set) -> None:
+def _load_used_cd_paths_ordered() -> list:
+    """Used-history ENTRIES (dicts with path + ts), oldest first."""
+    try:
+        if _USED_CD_PATHS_FILE.exists():
+            import json as _j
+            data = _j.loads(_USED_CD_PATHS_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                entries = [e if isinstance(e, dict) else {"path": str(e), "ts": 0}
+                           for e in data]
+                return sorted(entries, key=lambda e: (e.get("ts", 0), e.get("path", "")))
+    except Exception:
+        pass
+    return []
+
+def _save_used_cd_paths(used) -> None:
     import json as _j
     # Atomic replace: a crash mid-write must not destroy the used-history.
-    _atomic_write_text(_USED_CD_PATHS_FILE, _j.dumps(sorted(used), indent=2))
+    # A set is stored sorted-as-strings (legacy shape); a list is stored as
+    # given -- the router passes timestamped dicts in FIFO order.
+    if isinstance(used, set):
+        ordered = sorted(str(p) for p in used)
+    else:
+        ordered = list(used)
+    _atomic_write_text(_USED_CD_PATHS_FILE, _j.dumps(ordered, indent=2))
 
 # GPU mutex — serialises all VRAM-using operations (grading + annotation daemon).
 # Initialised in lifespan() once the event loop is running.
@@ -265,82 +305,11 @@ def _ensure_worker():
 # Keyed by folder path so stale clusters from a previous grade never bleed through.
 GLOBAL_CLUSTER_CACHE: dict = {}          # {"folder": str, "labels": ndarray, "paths": list}
 _BG_EXECUTOR    = ThreadPoolExecutor(max_workers=1)
-# Two separate executors so on-demand thumbnail requests (serve_thumb) are
-# never queued behind background pre-warm jobs.
-def _thumb_pool_sizes() -> tuple[int, int]:
-    """HARDWARE CEILING for the thumbnail pools. Returns (on_demand, prewarm).
-
-    History: this used to read FREE RAM and freeze the result for the process
-    lifetime - a boot at 2-3 GB free pinned the grid to 2 workers for ever,
-    even after Chrome closed and 5 GB freed up. Since 2026-09-14 the ceiling
-    is hardware-only (installed RAM never changes mid-session) and the actual
-    concurrency is gated by _thumb_od_permits / _thumb_pw_permits, which are
-    retuned every 30 s from live free RAM (src/adaptive_permits.py). The old
-    free-RAM table moved there - same numbers, now live instead of frozen."""
-    try:
-        import psutil as _ps
-        total_gb = _ps.virtual_memory().total / 1e9
-        by_total = 8 if total_gb >= 24 else 6 if total_gb >= 12 else 4 if total_gb >= 8 else 2
-        return by_total, (4 if total_gb >= 16 else 2)
-    except Exception:
-        return 6, 2
-
-_THUMB_OD_CEIL, _THUMB_PW_CEIL = _thumb_pool_sizes()
-_THUMB_ONDEMAND = ThreadPoolExecutor(max_workers=_THUMB_OD_CEIL)  # high-priority, browser-facing
-_THUMB_PREWARM  = ThreadPoolExecutor(max_workers=_THUMB_PW_CEIL)  # low-priority background warm-up
-
-# ── Live concurrency gates (2026-09-14) ──────────────────────────────────────
-# Each decode waits for a permit before decoding. Limits retune every 30 s
-# from CURRENT free RAM, so the pool is wide when the machine is comfortable
-# and politely narrow during a squeeze - without a restart. See
-# src/adaptive_permits.py for the gate semantics.
-from src.adaptive_permits import AdaptivePermits as _AdaptivePermits
-
-def _thumb_permit_limits() -> tuple:
-    try:
-        import psutil as _ps
-        free_gb = _ps.virtual_memory().available / 1e9
-    except Exception:
-        return _THUMB_OD_CEIL, _THUMB_PW_CEIL
-    # On-demand ladder tuned for the card-reader case (2026-09-15): the grid's
-    # first screen is 15+ tiles, each a ~40 MB RAW read. At 4-wide that screen
-    # took tens of seconds to fill ("thumbnails taking forever"). Each decode
-    # is a short ~200 MB transient; when NO grade is running the encoder is
-    # idle, so we can run wider than the grade-time comfort numbers — the
-    # hard pool ceiling still caps us, and the RAM gates in serve_thumb /
-    # _gen_one_thumb_decode still refuse at the true starvation floor.
-    _ga = globals().get("_grading_active")   # defined below — retune thread may run first
-    _grade_squeezed = bool(_ga and _ga.is_set())
-    if _grade_squeezed:
-        od = 8 if free_gb >= 8 else 6 if free_gb >= 5 else 4 if free_gb >= 3 else 2
-    else:
-        od = 8 if free_gb >= 8 else 8 if free_gb >= 5 else 6 if free_gb >= 3 else 4
-    pw = _THUMB_PW_CEIL if free_gb >= 4 else (2 if free_gb >= 2 else 1)
-    return min(od, _THUMB_OD_CEIL), min(pw, _THUMB_PW_CEIL)
-
-try:
-    import psutil as _ps_boot_p
-    _free_boot_p = _ps_boot_p.virtual_memory().available / 1e9
-except Exception:
-    _free_boot_p = None
-_fb = _free_boot_p or 0.0
-_od0, _pw0 = ((8, 4) if _fb >= 8 else (6, 4) if _fb >= 5 else (4, 2) if _fb >= 3 else (2, 1))
-_thumb_od_permits = _AdaptivePermits(min(_od0, _THUMB_OD_CEIL), "thumb-ondemand")
-_thumb_pw_permits = _AdaptivePermits(min(_pw0, _THUMB_PW_CEIL), "thumb-prewarm")
-
-def _retune_thumb_permits() -> None:
-    while True:
-        try:
-            _od, _pw = _thumb_permit_limits()
-            _thumb_od_permits.set_limit(_od)
-            _thumb_pw_permits.set_limit(_pw)
-        except Exception:
-            pass
-        import time as _t_r
-        _t_r.sleep(30)
-
-threading.Thread(target=_retune_thumb_permits, daemon=True,
-                 name="thumb-permit-retune").start()
+# Loupe previews (/api/photo?max=N) decode on this small pool, off the event
+# loop. Grid thumbnails do NOT use it: they run on routers.library._THUMBS,
+# one ordered queue that replaced the on-demand/prewarm pools and their
+# RAM-retuned permits (2026-09-28).
+_THUMB_ONDEMAND = ThreadPoolExecutor(max_workers=4, thread_name_prefix="loupe")
 
 # Set while a grade is streaming. Background thumbnail PREWARM (bulk RAW decodes)
 # is skipped while this is set so it doesn't spike RAM next to the SigLIP-2 / Qwen
@@ -799,8 +768,7 @@ def _auto_tune_hardware() -> None:
     print(f"[autotune] RAM {_r(ram_total)}/{_r(ram_free)} GB free, VRAM {_r(vram_total)} GB "
           f"→ QWEN_BS_CEIL={os.environ.get('QWEN_BS_CEIL')} "
           f"QWEN_VRAM_RESERVE={os.environ.get('QWEN_VRAM_RESERVE')} "
-          f"SIGLIP_MIN_FREE_RAM_GB={os.environ.get('SIGLIP_MIN_FREE_RAM_GB')} "
-          f"THUMB_POOLS={_thumb_od_permits.limit}/{_thumb_pw_permits.limit}")
+          f"SIGLIP_MIN_FREE_RAM_GB={os.environ.get('SIGLIP_MIN_FREE_RAM_GB')}")
 
 
 @asynccontextmanager

@@ -60,12 +60,30 @@ export function Thumb({ path, className, eager, onLoad, style }: ThumbProps) {
   // but a retry must never re-request a URL the browser may have
   // negative-cached — so the buster only ever counts up.
   const bust = useRef(0);
+  const imgRef = useRef<HTMLImageElement | null>(null);
+  const shownPath = useRef(path);
 
-  // A new path is a new image — reset the whole retry story.
+  // A new path is a new image — reset the whole retry story. Only on an
+  // ACTUAL path change, and never over an image that is already complete:
+  // this effect runs after paint, and a thumbnail the browser already holds
+  // in memory (the grid loaded it moments ago) fires onLoad BEFORE it runs.
+  // Resetting unconditionally flipped such tiles back to 'loading' with no
+  // second load event ever coming — the post-cull filmstrip sat as blank
+  // skeletons (2026-09-28).
   useEffect(() => {
-    setPhase('loading');
-    setAttempt(0);
-    bust.current = 0;
+    if (shownPath.current !== path) {
+      shownPath.current = path;
+      setAttempt(0);
+      bust.current = 0;
+      const img = imgRef.current;
+      const ready = !!img && img.complete && img.naturalWidth > 0;
+      setPhase(ready ? 'loaded' : 'loading');
+      if (ready) onLoad?.();
+    } else {
+      // First mount: an image already decoded from memory needs no event.
+      const img = imgRef.current;
+      if (img && img.complete && img.naturalWidth > 0) { setPhase('loaded'); onLoad?.(); }
+    }
     return () => window.clearTimeout(timer.current);
   }, [path]);
 
@@ -120,6 +138,7 @@ export function Thumb({ path, className, eager, onLoad, style }: ThumbProps) {
     <>
       {phase === 'loading' && <span aria-hidden className="skeleton absolute inset-0" />}
       <img
+        ref={imgRef}
         src={src}
         alt=""
         decoding="async"

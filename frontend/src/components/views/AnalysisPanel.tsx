@@ -1,5 +1,6 @@
 import { Layers, Eye, EyeOff, Wand2, Copy, Download, RefreshCw } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import axios from 'axios';
 import { Button } from '../ui/Button';
 import { Thumb } from '../photo/Thumb';
 import { StarRating } from '../ui/StarRating';
@@ -40,7 +41,7 @@ export function AnalysisPanel({
   reasoningOverlayUrl: string | null; buildReasoningFromBreakdown: any;
   infoTab: string; setInfoTab: (v: string) => void;
   selectedIds: Set<string>; setSelectedIds: React.Dispatch<React.SetStateAction<Set<string>>>;
-  handleCopyPath: (path: string) => void; handleSetStars: (id: string, stars: number) => void;
+  handleCopyPath: () => void; handleSetStars: (id: string, stars: number) => void;
   setMainTab: (v: string) => void; copied: boolean;
   onFindPerson: (paths: string[]) => void;
   handleGenerate: () => void; handleCreateFromSelection: () => void;

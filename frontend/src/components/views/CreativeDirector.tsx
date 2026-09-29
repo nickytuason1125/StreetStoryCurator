@@ -1,4 +1,4 @@
-﻿import { Wand2, Download, RefreshCw, Layers, Upload, X } from 'lucide-react';
+﻿import { Wand2, Download, RefreshCw, Layers, Upload, X, Pin } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '../ui/Button';
 import { Field, TextArea } from '../ui/Field';
@@ -10,11 +10,11 @@ import { API, photoUrl } from '../../lib/api';
 import { gc } from '../../lib/grading';
 import { cn } from '../../lib/cn';
 
-/* Ã¢”â‚¬Ã¢”â‚¬ CreativeDirector Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬Ã¢”â‚¬
+/* ──────────── CreativeDirector 
  * The whole Creative Direction view: the config sidebar (mood brief,
  * reference PDFs, anchor picker, build controls) and the sequence
  * results grid. Extracted verbatim from App.tsx during the views
- * split Ã¢â‚¬” props carry the same names as the App state they wrap. */
+ * split —————— props carry the same names as the App state they wrap. */
 export function CreativeDirector({
   photos, creativeResults, creativeResultsB, creativeRuleSet, creativeTimings, creativeLoading, engineHealth,
   creativePrompt, setCreativePrompt,
@@ -22,8 +22,13 @@ export function CreativeDirector({
   creativeAnchor, setCreativeAnchor, seqMode, setSeqMode,
   handleRunCreativeDirection, handleSaveSequence, sequenceSaving,
   creativeSelection, creativeFallback, creativeProgress, creativeStage,
+  creativeDirectorNote,
+  creativeRotation,
+creativeVerdict, creativeJudgeMeta,
   creativeCount, setCreativeCount, usedCount, handleClearUsed,
   pegFile, setPegFile, pegHash, setPegHash, pegLoading, handlePegUpload,
+  creativePinned, setCreativePinned,
+  notify,
 }: {
   photos: any[]; creativeResults: any[]; creativeResultsB: any[]; creativeRuleSet: any; creativeTimings: any; creativeLoading: boolean; engineHealth: any;
   creativePrompt: string; setCreativePrompt: (v: string) => void;
@@ -32,9 +37,14 @@ export function CreativeDirector({
   seqMode: string; setSeqMode: (v: any) => void;
   handleRunCreativeDirection: () => void; handleSaveSequence: (outputs?: any[]) => void; sequenceSaving: boolean;
   creativeSelection: any; creativeFallback: string | null; creativeProgress: any; creativeStage: string | null;
+  creativeDirectorNote?: string | null;
+  creativeRotation: { used_total?: number; last_sequence?: number; pool_eligible?: number | null; pool_total?: number | null; recent_dup_dropped?: number; used_paths?: string[]; last_paths?: string[] } | null;
+creativeVerdict: string | null; creativeJudgeMeta: any;
   creativeCount: any; setCreativeCount: (v: any) => void; usedCount: any; handleClearUsed: () => void;
   pegFile: any; setPegFile: (v: any) => void; pegHash: any; setPegHash: (v: any) => void;
   pegLoading: boolean; handlePegUpload: any;
+  creativePinned: string[]; setCreativePinned: (v: any) => void;
+  notify: (msg: string, type?: "success" | "error" | "info", ms?: number) => void;
 }) {
   /* â”€â”€ Two-sequence approval + manual reorder (2026-09-16) â”€â”€
      seqTab picks which candidate is displayed; orderA/orderB hold the
@@ -44,6 +54,12 @@ export function CreativeDirector({
   const [orderA, setOrderA] = useState<number[]>([]);
   const [orderB, setOrderB] = useState<number[]>([]);
   const dragIdx = useRef<number | null>(null);
+  /* Pinned frames (2026-09-22): toggling a card's pin adds/removes its
+     source_path from the pinned set — sent with the next build so the same
+     image shows up again instead of rotating out. */
+  const togglePin = (p: string) =>
+    setCreativePinned((prev: string[]) =>
+      prev.includes(p) ? prev.filter((x: string) => x !== p) : [...prev, p]);
   const bySeqPos = (arr: any[]) => [...arr]
     .sort((x:any,y:any) => (x.params?.seq_pos ?? 99) - (y.params?.seq_pos ?? 99));
   const successResults = bySeqPos(creativeResults.filter((r:any)=>r.success));
@@ -132,7 +148,7 @@ export function CreativeDirector({
                   <TextArea
                     value={creativePrompt}
                     onChange={e=>setCreativePrompt(e.target.value)}
-                    placeholder={`Describe the mood, subject and audience...\ne.g. "rainy evening, neon reflections"\nor "empty streets at dawn"`}
+                    placeholder={`Describe the mood, subject and audience…\ne.g. "rainy evening, neon reflections"`}
                     rows={4}
                   />
                   {/* Low-context brief helper (2026-09-16): quick-add chips
@@ -158,19 +174,19 @@ export function CreativeDirector({
                       {Object.entries(groups).map(([group, chips]) => (
                         <div key={group} className="flex items-start gap-1">
                           <span className="shrink-0 text-xs uppercase tracking-wide text-ink-3 select-none pt-1"
-                            style={{ width: 56 }}>{group}</span>
-                          <div className="grid gap-1 flex-1" style={{ gridTemplateColumns: 'repeat(3, minmax(0, 1fr))' }}>
+                            style={{ width: 76 }}>{group}</span>
+                          <div className="flex flex-wrap gap-1 flex-1 min-w-0">
                             {(expandedChipGroups[group] ? chips : chips.slice(0, 6)).map(chip => (
                               <button key={chip} type="button"
                                 title={`Adds "${chip}" to the brief`}
                                 onClick={() => setCreativePrompt((creativePrompt.trim() ? creativePrompt.replace(/\s*$/, '') + ', ' : '') + chip)}
-                                className="rounded-sm border border-line bg-raised px-2 py-0 text-xs text-ink-3 transition-colors duration-fast ease hover:border-ink-3 hover:text-ink-2 truncate text-left cursor-pointer">
+                                className="rounded-sm border border-line bg-raised px-2 py-0 text-xs text-ink-2 transition-colors duration-fast ease hover:border-ink-3 hover:text-ink text-left cursor-pointer whitespace-nowrap">
                                 <span className="text-ink-3/60">+</span><span className="ml-1">{chip}</span>
                               </button>
                             ))}
                             {chips.length > 6 && (
                               <button type="button"
-                                title={expandedChipGroups[group] ? 'Collapse this group' : `Show ${chips.length - 3} more "${group}" keywords`}
+                                title={expandedChipGroups[group] ? 'Collapse this group' : `Show ${chips.length - 6} more "${group}" keywords`}
                                 onClick={() => setExpandedChipGroups(s => ({ ...s, [group]: !s[group] }))}
                                 className="rounded-sm border border-dashed border-line px-2 py-0 text-xs text-ink-3 hover:text-ink-2 hover:border-ink-3 whitespace-nowrap cursor-pointer">
                                 {expandedChipGroups[group]
@@ -357,7 +373,8 @@ export function CreativeDirector({
               {sortedPhotos.length > 0 && (
                 <div id="anchor-picker" className="flex min-h-0 flex-1 flex-col px-4 pb-4">
                   <p className="mb-2 text-sm text-ink-3">{sortedPhotos.length} photos · sorted by grade · click a photo to set it as the anchor</p>
-                  <AnchorPicker photos={sortedPhotos} anchorPath={creativeAnchor} onPick={setCreativeAnchor}/>
+                  <AnchorPicker photos={sortedPhotos} anchorPath={creativeAnchor} onPick={setCreativeAnchor}
+                    usedPaths={creativeRotation?.used_paths} lastPaths={creativeRotation?.last_paths}/>
                 </div>
               )}
 
@@ -406,6 +423,22 @@ export function CreativeDirector({
                     : seqMode === 'auto' ? 'Build a set'
                     : 'Build the story'}
                 </Button>
+
+                {creativeRotation && (creativeRotation.used_total > 0
+                  || creativeRotation.last_sequence > 0) && (
+                  <p className="mt-1 w-full text-center text-xs text-ink-3">
+                    Rotation: <span className="t-num">{creativeRotation.used_total}</span> set aside
+                    {creativeRotation.last_sequence > 0 && (
+                      <> · <span className="t-num">{creativeRotation.last_sequence}</span> just-used excluded</>
+                    )}
+                    {!!creativeRotation.recent_dup_dropped && (
+                      <> · <span className="t-num">{creativeRotation.recent_dup_dropped}</span> near-duplicates of those dropped</>
+                    )}
+                    {creativeRotation.pool_eligible != null && (
+                      <> · <span className="t-num">{creativeRotation.pool_eligible}</span>/<span className="t-num">{creativeRotation.pool_total}</span> eligible</>
+                    )}
+                  </p>
+                )}
 
                 {usedCount > 0 && (
                   <button onClick={handleClearUsed}
@@ -477,6 +510,12 @@ export function CreativeDirector({
                           {creativeRuleSet.HARD_FILTER_PEOPLE && (
                             <span style={{background:T.raisedHover, borderRadius:'var(--r-sm)', padding:'1px 6px', fontWeight:600}}>no people</span>
                           )}
+                          {Array.isArray(creativeRuleSet.COLOR_TARGET) && creativeRuleSet.COLOR_TARGET.map((fam:string)=>(
+                            <span key={fam} title="Colour palette the brief names — selection boosts matching frames and penalises the opposite palette (not a filter)."
+                              style={{background:T.raisedHover, borderRadius:'var(--r-sm)', padding:'1px 6px', fontWeight:600}}>
+                              {fam.split('/').pop()}
+                            </span>
+                          ))}
                           {Array.isArray(creativeRuleSet.BRIEF_KEYWORDS) && creativeRuleSet.BRIEF_KEYWORDS.slice(0,4).map((k:string)=>(
                             <span key={k} style={{background:T.raisedHover, borderRadius:'var(--r-sm)', padding:'1px 6px'}}>{k}</span>
                           ))}
@@ -525,6 +564,12 @@ export function CreativeDirector({
                           fewer than asked â“˜
                         </span>
                       )}
+                      {!creativeFallback && creativeDirectorNote && (
+                        <span style={{fontSize:'var(--text-xs)', color:T.ink2, cursor:'default'}}
+                          title={`Art direction ran — ${creativeDirectorNote}.`}>
+                          art-directed ⓘ
+                        </span>
+                      )}
                       {creativeFallback && (
                         <span style={{fontSize:'var(--text-xs)', color:T.gradeWeak, cursor:'default'}}
                           title={`No art direction ran — ${creativeFallback}. These are the highest-scoring frames in score order, not a curated sequence.`}>
@@ -533,6 +578,14 @@ export function CreativeDirector({
                       )}
                     </div>
                     <div style={{display:'flex', alignItems:'center', gap:8}}>
+                      {creativePinned.length > 0 && (
+                        <span style={{display:'flex', alignItems:'center', gap:5, fontSize:'var(--text-xs)', color:T.alarmWarn, fontWeight:600,
+                          border:`1px solid ${T.alarmWarn}`, borderRadius:'var(--r-md)', padding:'4px 10px'}}>
+                          <Pin size={10} fill={T.alarmWarn}/>{creativePinned.length} pinned
+                          <button onClick={()=>setCreativePinned([])} title="Clear all pins"
+                            style={{border:'none', background:'transparent', color:T.ink3, cursor:'pointer', padding:'0 2px', fontSize:'var(--text-xs)'}}>✕</button>
+                        </span>
+                      )}
                       {!creativeLoading && (
                         <button disabled={sequenceSaving} onClick={() => handleSaveSequence(ordered)}
                           style={{display:'flex', alignItems:'center', gap:5, fontSize:'var(--text-sm)', fontWeight:600, padding:'4px 12px', borderRadius:'var(--r-md)',
@@ -543,6 +596,18 @@ export function CreativeDirector({
                     </div>
                   </div>
 
+                  {creativeVerdict && (
+                    <div style={{margin:'0 20px 12px', padding:'10px 14px',
+                      background:T.raisedHover, borderRadius:'var(--r-md)', border:`1px solid ${T.lineStrong}`}}>
+                      <div style={{fontSize:'var(--text-xs)', color:T.ink3, marginBottom:4, fontWeight:600}}>JUDGE'S VERDICT</div>
+                      <div style={{fontSize:'var(--text-sm)', color:T.ink2, lineHeight:'var(--leading-body)'}}>{creativeVerdict}</div>
+                      {creativeJudgeMeta && (
+                        <div style={{fontSize:'var(--text-xs)', color:T.ink3, marginTop:6}}>
+                          {creativeJudgeMeta.model} | {creativeJudgeMeta.mode} protocol | every claim checked against measured spatial facts
+                        </div>
+                      )}
+                    </div>
+                  )}
                   {/* Sequence grid — landscape cards, 2–3 per row; drag a card
                       onto another (or use â€¹ â€º) to change the story order. */}
                   <div style={{flex:1, overflowY:'auto', padding:'18px 20px'}}>
@@ -551,6 +616,7 @@ export function CreativeDirector({
                         const slot  = r.slot ?? r.params?.role ?? `Frame ${i+1}`;
                         const sc    = slotColor(slot);
                         const fname = (r.source_path??'').split(/[\\/]/).pop()??'';
+                        const isPinned = !!r.source_path && creativePinned.includes(r.source_path);
                         const photoScore = photos.find((p:any)=>p.path===r.source_path)?.score;
                         return (
                           <div key={`${seqTab}-${r.source_path ?? i}`}
@@ -580,6 +646,11 @@ export function CreativeDirector({
                                 style={{width:'100%', height:'100%', objectFit:'cover', display:'block'}}/>
                               <div style={{position:'absolute', inset:0, pointerEvents:'none',
                                 background:`linear-gradient(to bottom, transparent 55%, ${T.scrim} 100%)`}}/>
+                              <button title={isPinned ? 'Unpin — free to rotate out next build' : 'Pin — keep this image in the next build'}
+                                onClick={(e)=>{ e.stopPropagation(); if (r.source_path) togglePin(r.source_path); }}
+                                style={{position:'absolute', top:8, left:8, background:T.scrim, backdropFilter:'blur(4px)', borderRadius:'var(--r-sm)', padding:'5px 7px', display:'flex', alignItems:'center', cursor:'pointer', border:`1px solid ${isPinned ? T.alarmWarn : 'transparent'}`, opacity:.9}}>
+                                <Pin size={9} color={isPinned ? T.alarmWarn : T.ink} fill={isPinned ? T.alarmWarn : 'none'}/>
+                              </button>
                               <a href={photoUrl(r.output_path ?? r.source_path)} download={fname} onClick={e=>e.stopPropagation()}
                                 style={{position:'absolute', top:8, right:8, background:T.scrim, backdropFilter:'blur(4px)', borderRadius:'var(--r-sm)', padding:'5px 8px', fontSize:'var(--text-xs)', color:T.ink, textDecoration:'none', display:'flex', alignItems:'center', gap:3, fontWeight:600, opacity:.85}}>
                                 <Download size={9}/>

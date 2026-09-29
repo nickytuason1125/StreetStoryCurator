@@ -37,7 +37,11 @@ export default class ErrorBoundary extends Component<Props, State> {
   reset = () => this.setState({ error: null, info: null })
 
   render() {
-    const { error, info, variant = 'overlay', label } = this.props
+    // error/info are STATE (set by getDerivedStateFromError/componentDidCatch);
+    // reading them from props meant a caught error was never shown — the
+    // boundary re-rendered the failing child instead of its fallback.
+    const { error, info } = this.state
+    const { variant = 'overlay', label } = this.props
     if (!error) return this.props.children
 
     // Per-view containment: one broken panel must not blank the whole app.

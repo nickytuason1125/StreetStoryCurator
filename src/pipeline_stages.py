@@ -240,6 +240,65 @@ def cluster_similar(embs, sim_thresh: float = 0.96) -> list:
     return cluster_ids
 
 
+# Bump whenever a change alters the score a photo receives (fusion formula,
+# gates, thresholds, models). Stored grades carry it in breakdown["_grade_sig"];
+# a stale version is re-graded on the next cull instead of served for ever.
+# Before 2026-09-28 ANY stored row with score >= 0.10 counted as "already
+# graded", so grader fixes never reached existing photos and Scan-quality
+# rows were served as final by later full-quality culls.
+GRADER_VERSION = "2026-09-28"
+
+
+def grade_mode(scan_mode: bool, deep_grade: bool) -> str:
+    return "scan" if scan_mode else ("deep" if deep_grade else "full")
+
+
+def grade_signature(scan_mode: bool, deep_grade: bool) -> str:
+    return f"{GRADER_VERSION}|{grade_mode(scan_mode, deep_grade)}"
+
+
+def row_is_reusable(row: dict, *, scan_mode: bool, deep_grade: bool) -> bool:
+    """May this stored grade be served instead of re-grading the photo?
+
+    Only if it was made by the CURRENT grader version, and in the mode this
+    run asks for — a full cull never serves a Scan grade (Scan skips the
+    image-quality stage, so its scores are systematically different). A Scan
+    the user explicitly asked for may reuse any current-version grade: a
+    richer grade is fine for a quick pass. Unsigned rows (written before
+    signatures existed) are never reusable — they are re-graded once.
+    """
+    bd = row.get("breakdown") or {}
+    sig = bd.get("_grade_sig") if isinstance(bd, dict) else None
+    if not isinstance(sig, str) or "|" not in sig:
+        return False
+    version, mode = sig.split("|", 1)
+    if version != GRADER_VERSION:
+        return False
+    if scan_mode:
+        return True
+    return mode == grade_mode(False, deep_grade)
+
+
+def soft_focus_gate(final_scores, raw_sims, stretched_sims, *, absolute: bool,
+                    raw_thresh: float) -> tuple:
+    """Step 5c — +0.15 for fine-art-like frames already scoring >= 0.50.
+
+    ``absolute`` (the calibrated Pro encoder) tests each photo's RAW cosine to
+    the fine-art anchor against one fixed threshold, so a photo's boost never
+    depends on which other photos share its batch. The legacy test on the
+    batch-stretched similarity (> 0.75) remains only for encoder tiers with no
+    rated photos to calibrate on. Returns (new scores, number boosted); the
+    input array is not modified.
+    """
+    import numpy as np
+    scores = np.array(final_scores, dtype=np.float64, copy=True)
+    signal = np.asarray(raw_sims if absolute else stretched_sims, dtype=np.float64)
+    fires = (signal >= raw_thresh) if absolute else (signal > 0.75)
+    hit = fires & (scores >= 0.50)
+    scores[hit] = np.clip(scores[hit] + 0.15, 0.0, 1.0)
+    return scores, int(hit.sum())
+
+
 def mark_duplicate_groups(cluster_ids: list, final_scores, paths: list) -> list:
     """Step 5b — label each near-duplicate cluster with a winner and its losers.
 

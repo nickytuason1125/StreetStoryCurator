@@ -489,7 +489,11 @@ def required_ram_gb(n_photos: int = 0, scan_mode: bool = False) -> float:
     small, large = _RAM_NEED_GB[draft_decode_enabled()]
     need = small if n_photos <= 300 else large
     if scan_mode:
-        need = min(need, 2.0)
+        # Re-measured 2026-09-28 (whole tree, same folders): Scan peaked only
+        # ~0.3 GB under full (2.47 vs 2.78 GB; 2.91 vs 3.20 GB). The 1.01 GB /
+        # "2.0 GB admitted" figure above predates today's pipeline and was what
+        # made a silent Scan downgrade look like a big saving.
+        need = need - 0.3
     try:
         override = float(os.environ.get("FIRSTCUT_MIN_RAM_GB", "") or 0)
     except ValueError:

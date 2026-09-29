@@ -1,8 +1,10 @@
-"""MemoryPlan unit tests — the OOM admission/degradation ladder.
+"""MemoryPlan unit tests — the OOM admission ladder.
 
-The ladder is the app's answer to "not enough RAM": degrade to a Scan
-(measured ~2.0 GB) instead of refusing, and refuse only when even a Scan
-cannot fit. These tests pin that behaviour so it cannot regress.
+The ladder is the app's answer to "not enough RAM": run the REQUESTED quality
+with a smaller encode batch instead of refusing, and refuse only when even
+that cannot fit. It never changes the quality mode (2026-09-28): the old
+silent Scan downgrade graded the same photo differently depending on free RAM
+while saving only ~0.3 GB. These tests pin that behaviour so it cannot regress.
 
 Run:  venv/Scripts/python.exe -m pytest tests/test_memory_plan.py -v
 """
@@ -34,10 +36,9 @@ def test_scan_needs_less_than_full():
     assert mp._need_scan_gb() < mp._need_full_gb(500)
 
 
-def test_scan_charge_is_the_measured_two_gb():
-    # The 2026-09-06 over-charge bug: scan was billed the IQA-inclusive 3.8 GB
-    # and a low-RAM machine was refused a scan it could actually run.
-    assert mp._need_scan_gb() == pytest.approx(2.0)
+def test_scan_charge_is_the_measured_figure():
+    # Re-measured 2026-09-28: Scan peaks only ~0.3 GB under full quality.
+    assert mp._need_scan_gb() == pytest.approx(mp._need_full_gb(10) - 0.3)
 
 
 def test_gate_override_does_not_touch_the_encoder_floor(monkeypatch):
@@ -60,19 +61,34 @@ def test_full_plan_when_ram_is_plenty(monkeypatch):
     assert plan["scan_mode"] is False
 
 
-def test_degrades_to_scan_when_tight(monkeypatch):
+@pytest.mark.parametrize("free_gb", [12.0, 3.0, 2.5, 2.0, 1.6])
+def test_quality_mode_never_depends_on_free_ram(monkeypatch, free_gb):
+    # THE reliability rule: the same photo must get the same grade whether the
+    # machine has 12 GB or 1.6 GB free. Only the encode batch may change.
+    _stub_floor(monkeypatch, 1.2)
+    monkeypatch.setattr(mp, "free_ram_gb", lambda: free_gb)
+    full = mp.plan_for(500, requested_scan=False)
+    scan = mp.plan_for(500, requested_scan=True)
+    assert full["scan_mode"] is False
+    assert scan["scan_mode"] is True
+
+
+def test_tight_ram_keeps_full_quality_with_reduced_batch(monkeypatch):
+    _stub_floor(monkeypatch, 1.2)
     monkeypatch.setattr(mp, "free_ram_gb", lambda: 2.5)
     plan = mp.plan_for(500, requested_scan=False)
-    assert plan["plan"] == "scan"
-    assert plan["scan_mode"] is True
+    assert plan["plan"] == "full+reduced-batch"
+    assert plan["scan_mode"] is False
+    assert plan["enc_batch"] == 2
     assert plan["degraded"] is True
     assert plan["note"]           # the UI is told what happened and why
 
 
-def test_scan_request_never_counts_as_degraded(monkeypatch):
-    monkeypatch.setattr(mp, "free_ram_gb", lambda: 2.5)
+def test_scan_request_with_room_is_not_degraded(monkeypatch):
+    monkeypatch.setattr(mp, "free_ram_gb", lambda: 8.0)
     plan = mp.plan_for(500, requested_scan=True)
     assert plan["plan"] == "scan" and plan["degraded"] is False
+    assert plan["enc_batch"] is None
 
 
 def test_refuses_when_even_reduced_scan_cannot_fit(monkeypatch):
@@ -82,16 +98,17 @@ def test_refuses_when_even_reduced_scan_cannot_fit(monkeypatch):
     assert mp.plan_for(10, requested_scan=True) is None
 
 
-def test_degrades_to_reduced_batch_scan_in_the_old_gate_band(monkeypatch):
+def test_reduced_batch_in_the_old_gate_band_does_not_leak_into_the_server(monkeypatch):
     # 1.4–2.0 GB was admitted by the OLD pre-spawn gate (floor + 0.2) — the
     # ladder must not be stricter than that. Stub floor 1.2 → rung at 1.5 GB.
     _stub_floor(monkeypatch, 1.2)
     monkeypatch.setattr(mp, "free_ram_gb", lambda: 1.55)
     monkeypatch.setenv("SIGLIP_ENC_BATCH", "8")
     plan = mp.plan_for(500, requested_scan=False)
-    assert plan["plan"] == "scan+reduced-batch"
-    assert plan["degraded"] is True and plan["scan_mode"] is True
-    assert os.environ.get("SIGLIP_ENC_BATCH") == "2"   # set for the runner child
+    assert plan["plan"] == "full+reduced-batch"
+    assert plan["degraded"] is True and plan["scan_mode"] is False
+    assert plan["enc_batch"] == 2                       # for THIS grade's subprocess
+    assert os.environ.get("SIGLIP_ENC_BATCH") == "8"    # server env untouched
 
 
 def test_unmeasurable_ram_fails_open_but_loud(monkeypatch):

@@ -44,6 +44,10 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp"} | _RAW_
 
 STRONG_THRESH = 0.60
 MID_THRESH    = 0.41
+# Soft-Focus Gate (Step 5c), Pro encoder only: RAW cosine to the fine-art
+# anchor. Fires on 9.3% of the photographer's 790 rated photos — the same share
+# the old batch-relative gate fired on (derivation: see the Step 5c note).
+_SOFT_FOCUS_RAW_THRESH_PRO = 0.10
 
 GRADE_STRONG = "Strong ✅"
 GRADE_MID    = "Mid ⚠️"
@@ -1018,6 +1022,27 @@ def _iqa_ckpt_clear(key: str) -> None:
         pass
 
 
+def _discover_images(folder: Path, explicit_paths: Optional[list] = None) -> list:
+    """Step 1's image list: every file in `folder`, or — when explicit_paths
+    is given (non-empty) — exactly those files instead.
+
+    Re-validates explicit_paths itself rather than trusting the caller: this
+    runs from the HTTP path (routers/grading.py already checked these resolve
+    inside folder_path) but ALSO from CLI/test entry points that skip that
+    check, so a path that doesn't exist, isn't a file, or belongs to a
+    different folder is silently dropped rather than trusted blind.
+    """
+    if explicit_paths:
+        return sorted(
+            str(p) for p in (Path(ep) for ep in explicit_paths)
+            if p.is_file() and p.parent == folder and p.suffix.lower() in IMAGE_EXTS
+        )
+    return sorted(
+        str(f) for f in folder.iterdir()
+        if f.is_file() and f.suffix.lower() in IMAGE_EXTS
+    )
+
+
 # ── Main pipeline ──────────────────────────────────────────────────────────────
 
 def run_v2(
@@ -1029,9 +1054,16 @@ def run_v2(
     scan_mode: bool = False,
     sample_limit: int = 0,
     deep_grade: bool = False,
+    explicit_paths: Optional[list] = None,
 ) -> dict:
     """
     Run the full V2 Vision Regression pipeline on `folder_path`.
+
+    explicit_paths: when given (non-empty), grades ONLY these files instead of
+    every image found in `folder_path` — the frontend's "check individual
+    photos" picker. Every downstream step (dedup cache, sampling, scoring)
+    is unchanged; this only narrows what Step 1 discovers. None/empty means
+    "grade the whole folder", the pre-existing behavior.
 
     Returns:
         gallery         list[dict]   per-photo result (V1-compatible keys + reasoning_log)
@@ -1093,12 +1125,12 @@ def run_v2(
         print(f"[v2] memory checkpoint failed (non-fatal): {_mp_exc}", flush=True)
 
     # ── Step 1: Discover images ───────────────────────────────────────────────
-    _p(0.01, "Scanning folder…")
     folder = Path(folder_path)
-    all_paths  = sorted(
-        str(f) for f in folder.iterdir()
-        if f.is_file() and f.suffix.lower() in IMAGE_EXTS
-    )
+    if explicit_paths:
+        _p(0.01, f"Using {len(explicit_paths)} selected photo(s)…")
+    else:
+        _p(0.01, "Scanning folder…")
+    all_paths = _discover_images(folder, explicit_paths)
     if not all_paths:
         return {"error": "No images found in folder.", "gallery": [], "total": 0}
 
@@ -1140,9 +1172,11 @@ def run_v2(
     print(f"[v2] LanceDB    path={_ls_diag._DB_DIR}  table={_ls_diag._TBL_NAME}")
 
     cached_rows: dict[str, dict] = {}
+    _stale_rows = 0
     if not force_rescan:
         try:
             import lance_store as _ls
+            from pipeline_stages import row_is_reusable as _row_is_reusable
             fp_str = str(Path(folder_path).resolve())
             for row in _ls.query_all(min_score=0.0):
                 rp = row.get("path", "")
@@ -1150,9 +1184,18 @@ def run_v2(
                 # forward-slash paths both map to the same key.
                 rp_norm = str(Path(rp)) if rp else ""
                 if rp_norm.startswith(fp_str) and float(row.get("score", 0)) >= 0.10:
-                    cached_rows[rp_norm] = row
+                    # Only a grade made by THIS grader version in THIS mode is
+                    # reused; anything else (older grader, Scan-quality, unsigned)
+                    # is re-graded — see pipeline_stages.row_is_reusable.
+                    if _row_is_reusable(row, scan_mode=scan_mode, deep_grade=deep_grade):
+                        cached_rows[rp_norm] = row
+                    else:
+                        _stale_rows += 1
         except Exception as _ce:
             print(f"[v2] LanceDB cache check failed: {_ce}")
+    if _stale_rows:
+        print(f"[v2] {_stale_rows} stored grade(s) are from an older grader or a "
+              f"different quality mode — re-grading them")
 
     paths = [p for p in all_paths if p not in cached_rows]
     n     = len(paths)
@@ -1297,6 +1340,15 @@ def run_v2(
                         g["grade"] = _g2
                         g["grade_margin"] = round(min(abs(float(_s2) - _c_strong_t),
                                                       abs(float(_s2) - _c_mid_t)), 3)
+                    # Rated photos show YOUR grade, not the ruler's bucket —
+                    # restore stars (this cached path never had them; see
+                    # ratings_store.grade_for_stars) and override per-photo.
+                    for g in gallery:
+                        _st_c = int(_stars_map.get(g["path"], 0) or 0)
+                        g["stars"] = _st_c
+                        _sg_c = _rs_thr.grade_for_stars(_st_c)
+                        if _sg_c:
+                            g["grade"] = _sg_c
                     grades = [g["grade"] for g in gallery]
                     print(f"[v2] cached-path rating-anchored re-bucket: "
                           f"strong ≥ {_c_strong_t:.2f} mid ≥ {_c_mid_t:.2f} — "
@@ -1346,7 +1398,7 @@ def run_v2(
             import traceback as _tb_cd
             try:
                 with open(_dbg_path, "a", encoding="utf-8") as _dbg:
-                    _dbg.write(f"marking FAILED: {_e_cached_dedud if False else _e_cached_dedup}\n")
+                    _dbg.write(f"marking FAILED: {_e_cached_dedup}\n")
             except Exception:
                 pass
             print(f"[v2] cached-path duplicate marking failed: {_e_cached_dedup}")
@@ -1453,6 +1505,21 @@ def run_v2(
                     _prompt_emb /= (np.linalg.norm(_prompt_emb) + 1e-9)
                     _prompt_emb  = _prompt_emb.astype(np.float32)
                     print(f"[v2] Brief ensemble ({len(_brief_variants)} variants): '{_brief_text[:60]}'")
+                    # Peg blend (2026-09-22): the uploaded reference photo now
+                    # steers the JUDGE anchor too, at the same 30% share the
+                    # books get. Books are already blended via the positive
+                    # rubric (~line 1630), so use_rag=False here — no double
+                    # count. No peg → _prompt_emb is byte-identical to before.
+                    try:
+                        import blend_anchor as _bl
+                        _peg_vec_l = _bl.resolve_peg_embedding()
+                        if _peg_vec_l is not None and _prompt_emb is not None:
+                            _prompt_emb, _bdiag = _bl.blend_query_vector(
+                                _prompt_emb, _brief_text, peg_vec=_peg_vec_l,
+                                use_rag=False)
+                            print(f"[v2] {_bl.blend_diag_line(_bdiag)}", flush=True)
+                    except Exception as _e_blend:
+                        print(f"[v2] peg blend skipped: {_e_blend}")
             except Exception as _e_brief:
                 print(f"[v2] Brief embedding skipped: {_e_brief}")
             embed_dim   = embs.shape[1] if embs is not None else _ENC_DIM
@@ -1845,6 +1912,18 @@ def run_v2(
                             _prompt_emb /= (np.linalg.norm(_prompt_emb) + 1e-9)
                             _prompt_emb  = _prompt_emb.astype(np.float32)
                             print(f"[v2] Brief ensemble ({len(_brief_variants)} variants): '{_brief_text[:60]}'")
+                            # Peg blend — same as the singleton-reuse path above;
+                            # books come via the positive rubric, not here.
+                            try:
+                                import blend_anchor as _bl
+                                _peg_vec_l = _bl.resolve_peg_embedding()
+                                if _peg_vec_l is not None:
+                                    _prompt_emb, _bdiag = _bl.blend_query_vector(
+                                        _prompt_emb, _brief_text, peg_vec=_peg_vec_l,
+                                        use_rag=False)
+                                    print(f"[v2] {_bl.blend_diag_line(_bdiag)}", flush=True)
+                            except Exception as _e_blend:
+                                print(f"[v2] peg blend skipped: {_e_blend}")
                     except Exception as _e_brief:
                         print(f"[v2] Brief embedding skipped: {_e_brief}")
 
@@ -2216,6 +2295,7 @@ def run_v2(
                 # Threshold is conservative: anything ≥ 0.30 still gets the
                 # full VLM look. Disable with FIRSTCUT_FUNNEL=0.
                 _funnel_results: dict = {}
+                _pre_res: list = []     # CLIP pre-scores; empty when the funnel is off
                 _vlm_paths = list(paths_to_rate)
                 import os as _os_fn
                 if _os_fn.environ.get("FIRSTCUT_FUNNEL", "1") != "0" and len(paths_to_rate) >= 8:
@@ -2270,8 +2350,12 @@ def run_v2(
                 # AND accurate" answer: full-folder Deep Grade on 2,754 photos
                 # is 60–90 min of VLM; the band is ~500 calls ≈ 20 min.
                 if _os_fn.environ.get("FIRSTCUT_DEEP_BAND", "").strip() == "1":
-                    _band = [p for p, idx in zip(paths_to_rate, to_rate_indices)
-                             if 0.53 <= float(scores_arr[idx]) <= 0.60]
+                    _band_scores = {getattr(r, "path", ""): float(getattr(r, "score", -1.0))
+                                    for r in _pre_res}
+                    # Photos the CLIP pass hasn't scored are treated as
+                    # ambiguous (kept for the VLM) rather than skipped.
+                    _band = [p for p in paths_to_rate
+                             if 0.53 <= _band_scores.get(p, 0.565) <= 0.60]
                     _band_set = set(_band)
                     _before = len(_vlm_paths)
                     _vlm_paths = [p for p in _vlm_paths if p in _band_set]
@@ -2705,6 +2789,9 @@ def run_v2(
     _fine_art_sims_all = np.zeros(n, dtype=np.float32)
     if _fine_art_anchor is not None:
         _fine_art_sims_all = (embs @ _fine_art_anchor).astype(np.float32)  # (n,) raw cosine
+    # Kept UNstretched for the Soft-Focus Gate (Step 5c): the stretch below is
+    # batch-relative, so gating on it boosted the top slice of EVERY folder.
+    _fine_art_raw_all = _fine_art_sims_all.copy()
 
     fine_art_scores_rated = np.full(len(paths_to_rate), 0.5, dtype=np.float32)
     if _fine_art_anchor is not None and len(to_rate_indices) > 0:
@@ -2972,10 +3059,20 @@ def run_v2(
     fused = np.clip(fused, 0.0, 1.0)
 
     # ── Route 1: Empty Scene override ────────────────────────────────────────
+    # Technical and Narrative count here too (2026-09-28). The override used to
+    # score a person-less frame on composition + aesthetic ALONE, discarding a
+    # sharp exposure and a strong story — a 0.83-Technical moonlit seascape
+    # landed Mid at 0.57. Validated offline on the photographer's star ratings
+    # (FIRSTCUT_FUSION_DUMP over 790 rated photos, 420 of them through this
+    # route; weights fixed before measuring): Spearman vs stars 0.734 -> 0.753,
+    # paired-bootstrap delta +0.019 [95% CI +0.013, +0.026]; on the no-person
+    # subset 0.719 -> 0.758; 3-star photos minted Strong 11.0% -> 5.8%.
     route1_dark = ~arr_has_person & (arr_is_chiaroscuro | (arr_lum < 80.0))
     route1_norm = ~arr_has_person & ~arr_is_chiaroscuro & (arr_lum >= 80.0)
-    fused_r1_dark = np.clip(arr_comp * 0.55 + arr_a * 0.45, 0.0, 1.0)
-    fused_r1_norm = np.clip(arr_comp * 0.40 + arr_light * 0.30 + arr_a * 0.30, 0.0, 1.0)
+    fused_r1_dark = np.clip(arr_comp * 0.40 + arr_a * 0.30
+                            + arr_tech * 0.15 + arr_narr * 0.15, 0.0, 1.0)
+    fused_r1_norm = np.clip(arr_comp * 0.30 + arr_light * 0.25 + arr_a * 0.25
+                            + arr_tech * 0.10 + arr_narr * 0.10, 0.0, 1.0)
     fused = np.where(route1_dark, fused_r1_dark, fused)
     fused = np.where(route1_norm, fused_r1_norm, fused)
 
@@ -3228,9 +3325,9 @@ def run_v2(
                     _has_p   = person_detected_dict.get(_path4e, True)
                     # Per-image top-3 RAG: dot product of this image's SigLIP embedding
                     # against all phrase embeddings; inject only the most relevant phrases.
-                    if _rag4e_embs is not None and embs is not None:
+                    if _rag4e_embs is not None and embs is not None:  # noqa: F821 — bound at L1614; ruff unbinds on the later `del embs`
                         try:
-                            _sims   = _rag4e_embs @ embs[idx]        # cosine sim (R,)
+                            _sims   = _rag4e_embs @ embs[idx]        # noqa: F821 — see above; cosine sim (R,)
                             _top3   = np.argsort(_sims)[-3:][::-1]
                             _rag_ctx = "\n".join(f"- {_rag4e[i]}" for i in _top3)
                         except Exception:
@@ -3573,18 +3670,34 @@ def run_v2(
     # Mid/borderline shots with merely incidental atmospheric resemblance from
     # being inflated into Strong. The +0.15 boost is reserved for shots that
     # already earned Mid on their own merit and have genuine fine-art character.
+    #
+    # ABSOLUTE on the Pro encoder (2026-09-28). The gate used to test the
+    # batch-STRETCHED similarity (Step 4c maps each folder's own min..max to
+    # 0..1), so it boosted the top slice of every folder regardless of how
+    # fine-art the photos were — grading on a curve: 0226-20 in "iao 02 2026"
+    # has a raw similarity of 0.129 but a stretched 0.811. Pro now compares
+    # the RAW cosine to one fixed threshold, set to fire on the same share of
+    # the photographer's 790 rated photos as the old gate (9.3%), so it was
+    # not tuned to the stars. Validated against them: ranking unchanged
+    # (Spearman delta +0.0002, 95% CI -0.006..+0.006), 3-star photos minted
+    # Strong 10.7% -> 9.7%, and a photo's verdict no longer depends on which
+    # folder it is graded with. Smaller encoder tiers keep the legacy stretched
+    # test: no rated photos exist in their embedding space to calibrate on
+    # (mid: 0, low: 124), and guessing a threshold would be worse.
     _sfpg_count = 0
     if _fine_art_anchor is not None:
-        for i in range(n):
-            _base_score = float(final_scores[i])
-            _fa_sim     = float(_fine_art_sims_all[i])
-            if _fa_sim > 0.75 and _base_score >= 0.50:
-                final_scores[i] = float(np.clip(_base_score + 0.15, 0.0, 1.0))
-                _sfpg_count += 1
+        from pipeline_stages import soft_focus_gate as _soft_focus_gate
+        _sf_absolute = int(_fine_art_anchor.shape[0]) == 1536
+        _sf_scores, _sfpg_count = _soft_focus_gate(
+            final_scores, _fine_art_raw_all, _fine_art_sims_all,
+            absolute=_sf_absolute, raw_thresh=_SOFT_FOCUS_RAW_THRESH_PRO)
+        final_scores = _sf_scores.astype(final_scores.dtype)
         if _sfpg_count:
+            _rule = (f"raw fine_art_sim ≥ {_SOFT_FOCUS_RAW_THRESH_PRO}" if _sf_absolute
+                     else "stretched fine_art_sim > 0.75, uncalibrated tier")
             print(
                 f"[v2] Soft-Focus Gate: {_sfpg_count} images boosted +0.15 "
-                f"(fine_art_sim > 0.75, base_score ≥ 0.50)"
+                f"({_rule}, base_score ≥ 0.50)"
             )
 
     # ── Step 5b: Duplicate sim-flag assignment based on final_scores ──────────
@@ -3663,11 +3776,16 @@ def run_v2(
         for _c0 in range(0, n, _LANCE_CHUNK):
             _c1 = min(_c0 + _LANCE_CHUNK, n)
             lance_records: list[dict] = []
+            from pipeline_stages import grade_signature as _grade_signature
             for i in range(_c0, _c1):
                 bd = {"aesthetic": round(float(scores_arr[i]), 3),
                       "personal":  round(float(pers[i]),       3)}
                 if per_photo_breakdowns[i]:
                     bd.update(_sanitize_bd(per_photo_breakdowns[i]))
+                # How this grade was ACTUALLY made — gates reuse. A Deep request
+                # that fell back to CLIP (Qwen absent) is a full-quality grade.
+                bd["_grade_sig"] = _grade_signature(
+                    scan_mode, deep_grade and bd.get("_grader") != "clip")
                 lance_records.append({
                     "path":           paths[i],
                     "embedding":      embs[i].tolist(),
@@ -3708,8 +3826,8 @@ def run_v2(
     _p(0.94, "Building your gallery…")
     # Restore the user's durable star ratings onto fresh gallery items so a
     # re-cull never wipes the taste baseline (the catalog defaults stars=0).
+    import ratings_store as _ratings_store
     try:
-        import ratings_store as _ratings_store
         _user_ratings = _ratings_store.load()
         if _user_ratings:
             print(f"[v2] Restoring {len(_user_ratings)} durable star ratings onto gallery")
@@ -3729,11 +3847,15 @@ def run_v2(
         if per_photo_breakdowns[i]:
             breakdown.update(_sanitize_bd(per_photo_breakdowns[i]))
         _fscore = round(float(final_scores[i]), 3)
+        _st_i   = int(_user_ratings.get(path, 0))
+        # Rated photos show YOUR grade, not the algorithm's bucket for the
+        # raw score — see ratings_store.grade_for_stars.
+        _grade_i = _ratings_store.grade_for_stars(_st_i) or grades[i]
         gallery.append({
             "id":              path,
             "path":            path,
             "filename":        fn,
-            "grade":           grades[i],
+            "grade":           _grade_i,
             "score":           _fscore,
             "overall_score":   _fscore,
             "rating":          _fscore,
@@ -3750,7 +3872,7 @@ def run_v2(
             "reasoning_log":   "",
             "is_verified":     False,
             "exif_ts":         float(timestamps[i]),
-            "stars":           int(_user_ratings.get(path, 0)),
+            "stars":           _st_i,
             "reject":          cluster_ids[i] >= 0 and not sim_flags[i].startswith("★"),
             "sim_flag":        sim_flags[i],
             "cluster_id":      int(cluster_ids[i]),

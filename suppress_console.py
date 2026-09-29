@@ -40,6 +40,7 @@ if sys.platform != "win32":
         pass
 else:
     import subprocess
+    import _winapi as _winapi_std
 
     _CREATE_NO_WINDOW: int = subprocess.CREATE_NO_WINDOW  # 0x08000000
 
@@ -47,6 +48,30 @@ else:
     # 1.  subprocess.Popen — force CREATE_NO_WINDOW + hidden STARTUPINFO
     # ─────────────────────────────────────────────────────────────────────────
     _orig_Popen_init = subprocess.Popen.__init__
+
+    def _std_handle_inheritable(std_id: int) -> bool:
+        """Can Popen duplicate this process's Win32 standard handle?
+
+        Runs the exact call Popen makes for a stream the caller left unset
+        (GetStdHandle -> DuplicateHandle). Checking `sys.stdin.fileno()`
+        instead was wrong: the detached backend starts with stdin = NUL, so
+        sys.stdin is a perfectly good file object, but _alloc_hidden_console
+        (layer 5) then swaps the process's STD_INPUT_HANDLE for the hidden
+        console's, which Windows refuses to duplicate — every jury critique
+        died with "[WinError 50] The request is not supported" (2026-09-28).
+        """
+        import _winapi
+        try:
+            h = _winapi.GetStdHandle(std_id)
+            if not h:
+                return False
+            cur = _winapi.GetCurrentProcess()
+            dup = _winapi.DuplicateHandle(cur, h, cur, 0, 1,
+                                          _winapi.DUPLICATE_SAME_ACCESS)
+            _winapi.CloseHandle(dup)
+            return True
+        except OSError:
+            return False
 
     def _silent_Popen(self: subprocess.Popen, args, **kwargs: object) -> None:
         # OR the flag in — don't use setdefault, which a caller can defeat by
@@ -72,20 +97,18 @@ else:
         # console handles to whatever it spawns, so testing that way cannot
         # see this at all.
         #
-        # Any stream the caller did not specify, and which we do not actually
-        # have, becomes DEVNULL. Streams the caller DID ask for (PIPE, a file,
-        # DEVNULL) are left exactly as given: this only fills in the ones that
-        # would otherwise try to inherit a handle that does not exist.
-        for _name, _stream in (("stdin", sys.stdin),
-                               ("stdout", sys.stdout),
-                               ("stderr", sys.stderr)):
+        # Any stream the caller did not specify, and whose Win32 handle Popen
+        # could not duplicate, becomes DEVNULL. Streams the caller DID ask for
+        # (PIPE, a file, DEVNULL) are left exactly as given: this only fills
+        # in the ones that would otherwise fail to inherit. asyncio's
+        # create_subprocess_exec funnels through here too (its Windows Popen
+        # subclasses subprocess.Popen), so both paths are covered.
+        for _name, _std_id in (("stdin", _winapi_std.STD_INPUT_HANDLE),
+                               ("stdout", _winapi_std.STD_OUTPUT_HANDLE),
+                               ("stderr", _winapi_std.STD_ERROR_HANDLE)):
             if kwargs.get(_name) is not None:
                 continue
-            try:
-                _usable = _stream is not None and _stream.fileno() >= 0
-            except Exception:
-                _usable = False          # detached, or a wrapper with no fd
-            if not _usable:
+            if not _std_handle_inheritable(_std_id):
                 kwargs[_name] = subprocess.DEVNULL
 
         _orig_Popen_init(self, args, **kwargs)  # type: ignore[arg-type]

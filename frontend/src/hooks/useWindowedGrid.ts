@@ -48,8 +48,12 @@ export function useWindowedGrid(opts: {
   /** Per-row height beyond the 3:2 image cell: rule + label strip + row gap. */
   rowExtra: number;
   overscanRows?: number;
+  /** Distance from the top of the scroll content to the grid, for sheets that
+   *  share their scroll container with content above them (the folder
+   *  browser's folder list). */
+  offsetTop?: number;
 }): WindowedGrid {
-  const { itemCount, minColWidth, gap, rowExtra, overscanRows = 3 } = opts;
+  const { itemCount, minColWidth, gap, rowExtra, overscanRows = 3, offsetTop = 0 } = opts;
   const nodeRef = useRef<HTMLDivElement | null>(null);
   const [width, setWidth] = useState(0);
   const [height, setHeight] = useState(0);
@@ -86,7 +90,7 @@ export function useWindowedGrid(opts: {
   const colWidth = width > 0 ? (width - (cols - 1) * gap) / cols : minColWidth;
   const rowHeight = colWidth / 1.5 + rowExtra;
   const totalRows = Math.ceil(itemCount / cols);
-  const startRow = Math.max(0, Math.floor(scrollTop / rowHeight) - overscanRows);
+  const startRow = Math.max(0, Math.floor((scrollTop - offsetTop) / rowHeight) - overscanRows);
   const visibleRows = Math.ceil(height / Math.max(1, rowHeight)) + overscanRows * 2;
   const endRow = Math.min(totalRows, startRow + visibleRows);
 

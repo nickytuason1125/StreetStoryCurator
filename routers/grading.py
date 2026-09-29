@@ -42,13 +42,13 @@ router = APIRouter()
 def _prewarm_folder_paths(folders: list) -> None:
     """Queue thumbnail generation for a graded folder's first screens.
 
-    Runs in a daemon thread AFTER a grade's stream ends. Reuses library's
-    prewarm pool and generator (same cache names as on-demand), honouring
-    its RAM gate and in-flight dedup. A failure here is invisible by design —
+    Runs in a daemon thread AFTER a grade's stream ends. Queues background
+    jobs on library's thumbnail queue (same cache as on-demand; on-screen
+    requests always run first). A failure here is invisible by design —
     it is a warmth optimisation, never a correctness path.
     """
     try:
-        from routers.library import _THUMB_PREWARM, _gen_one_thumb, _is_slow_volume
+        from routers.library import prewarm_thumbs
         cap = int(os.environ.get("FIRSTCUT_POSTGRADE_PREWARM", "300") or 300)
         for folder in folders:
             try:
@@ -61,11 +61,7 @@ def _prewarm_folder_paths(folders: list) -> None:
                                                         ".raf", ".dng", ".heic", ".heif"))
             except Exception:
                 continue
-            for p in paths[:max(cap, 0)]:
-                try:
-                    _THUMB_PREWARM.submit(_gen_one_thumb, p, True)
-                except Exception:
-                    break
+            prewarm_thumbs(paths[:max(cap, 0)])
     except Exception:
         pass
 
@@ -91,6 +87,57 @@ def _precull_ram_sweep() -> None:
     except Exception:
         pass
     _gc.collect()
+
+
+def _release_for_grade() -> None:
+    """Release everything this server process holds that a cull does not use.
+
+    Runs BEFORE RAM admission (2026-09-28). Admission used to measure first
+    and release after, so an idle server holding ~1.7 GB (niche-detector CLIP,
+    annotation model, preview caches) refused grades over memory it was about
+    to free — and named its own pythonw.exe as the app to close. Every step is
+    idempotent and also re-runs at grade start; each model reloads lazily.
+    """
+    try:
+        import psutil as _ps_rel
+        _me = _ps_rel.Process()
+        _rss0, _free0 = _me.memory_info().rss, _ps_rel.virtual_memory().available
+    except Exception:
+        _me = None
+    try:
+        import fast_niche_detector as _fnd
+        _fnd.release()
+    except Exception:
+        pass
+    try:
+        _release_annotation_model()
+    except Exception:
+        pass
+    try:
+        import sidecar_client as _sc
+        if _sc.read_marker():
+            _sc.evict()
+    except Exception:
+        pass
+    try:
+        # Best effort ONLY: this runs in the request handler, outside the
+        # stream generator's cleanup — an exception here must never escape
+        # (it would strand the single-flight flag and 409 every later grade).
+        _precull_ram_sweep()
+    except Exception as _e_sweep:
+        print(f"[server] pre-grade release: RAM sweep failed ({_e_sweep}) — continuing", flush=True)
+    try:
+        import server_impl as _si
+        _si._trim_server_working_set()   # idle pages back to the OS
+    except Exception:
+        pass
+    if _me is not None:
+        try:
+            print(f"[server] pre-grade release: server RSS {_rss0/1e9:.2f} -> "
+                  f"{_me.memory_info().rss/1e9:.2f} GB, system free {_free0/1e9:.2f} -> "
+                  f"{_ps_rel.virtual_memory().available/1e9:.2f} GB", flush=True)
+        except Exception:
+            pass
 
 
 def __getattr__(name):
@@ -298,6 +345,41 @@ async def _dir_ok(fp: str) -> bool:
     return False
 
 
+def _resolve_explicit_paths(raw: "dict[str, list[str]] | None",
+                            all_folders: list) -> "dict[str, list[str]]":
+    """Validate the client's explicit_paths against the folders this request
+    actually resolved — never trust it blind.
+
+    A key that isn't one of `all_folders` is dropped outright (no smuggling
+    in an unvalidated folder this way), and every path under a kept key must
+    resolve to a FILE directly inside that exact folder — rejects traversal
+    (../..) and paths naming a different directory entirely. A folder with no
+    surviving entries after this is simply absent from the result, which
+    grade_pipeline_v2._discover_images treats as "not narrowed" — the folder
+    grades in full, same as if explicit_paths had never mentioned it.
+    """
+    all_folders_set = set(all_folders)
+    kept: "dict[str, list[str]]" = {}
+    for raw_folder, raw_paths in (raw or {}).items():
+        try:
+            folder_resolved = str(Path(raw_folder).resolve())
+        except (ValueError, OSError):
+            continue
+        if folder_resolved not in all_folders_set:
+            continue
+        kept_paths = []
+        for rp in raw_paths:
+            try:
+                p_resolved = Path(rp).resolve()
+            except (ValueError, OSError):
+                continue
+            if str(p_resolved.parent) == folder_resolved and p_resolved.is_file():
+                kept_paths.append(str(p_resolved))
+        if kept_paths:
+            kept[folder_resolved] = kept_paths
+    return kept
+
+
 @router.post("/api/grade/v2/stream")
 async def grade_photos_v2_stream(req: GradeRequest):
     """
@@ -306,7 +388,6 @@ async def grade_photos_v2_stream(req: GradeRequest):
     Supports multi-folder: grades each folder, then runs MOGCO-II once across all.
     """
     import json as _json
-    from fastapi.responses import StreamingResponse
 
     # ── Single-flight guard ────────────────────────────────────────────────
     # The check runs here and _grading_active is SET just before the
@@ -363,6 +444,13 @@ async def grade_photos_v2_stream(req: GradeRequest):
         else:
             raise HTTPException(400, "No valid folder path provided")
 
+    explicit_paths = _resolve_explicit_paths(req.explicit_paths, all_folders)
+
+    # Measure AFTER the server gives back what it would free at grade start
+    # anyway — see _release_for_grade. Off the event loop: gc + trim can take
+    # a moment on a large heap.
+    await run_in_threadpool(_release_for_grade)
+
     # ── System RAM admission (single decision — see src/memory_plan.py) ─────
     # Deliberately AFTER folder resolution: what a cull costs depends on the
     # decode path and on how big the job is, so admission needs the job in
@@ -388,6 +476,11 @@ async def grade_photos_v2_stream(req: GradeRequest):
         _exts = (".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff",
                  ".rw2", ".raf", ".arw", ".cr2", ".cr3", ".nef", ".dng", ".orf")
         for _fp in all_folders:
+            if _fp in explicit_paths:
+                # Narrowed to specific files — count those, not the whole
+                # folder, so RAM admission sizes the job actually requested.
+                _n_photos += len(explicit_paths[_fp])
+                continue
             try:
                 _n_photos += sum(1 for _f in os.listdir(_fp)
                                  if _f.lower().endswith(_exts))
@@ -419,8 +512,8 @@ async def grade_photos_v2_stream(req: GradeRequest):
                 pass
             return JSONResponse(
                 status_code=503,
-                content={"error": f"Not enough RAM to grade safely — {_free_txt}, and even a "
-                         f"reduced-batch Scan (the lightest pass, ~{_mp.min_admission_gb():.1f} GB) does not "
+                content={"error": f"Not enough RAM to grade safely — {_free_txt}, and even the "
+                         f"lightest run (smaller encode batch, ~{_mp.min_admission_gb():.1f} GB) does not "
                          f"fit. Close a couple of apps and retry.{_hogs_note}{_pagefile_hint}",
                          "alternatives": {"close_apps": True, "smaller_selection": True}},
             )
@@ -497,14 +590,15 @@ async def grade_photos_v2_stream(req: GradeRequest):
             open(_prog_path, "w", encoding="utf-8").close()
             with open(_req_path, "w", encoding="utf-8") as _rf:
                 _json.dump({
-                    "folders":      all_folders,
-                    "preset":       req.preset,
-                    "force_rescan": req.force_rescan,
-                    "scan_mode":    _eff_scan,                 # honour a memory-plan downgrade
-                    "deep_grade":   req.deep_grade and not _eff_scan,
-                    "catalog_path": str(_CATALOG_PATH),
-                    "data_dir":     str(_DATA_DIR),
-                    "mogco_target": 0,   # cull only; Story sequencing is its own endpoint
+                    "folders":        all_folders,
+                    "explicit_paths": explicit_paths,
+                    "preset":         req.preset,
+                    "force_rescan":   req.force_rescan,
+                    "scan_mode":      _eff_scan,                 # honour a memory-plan downgrade
+                    "deep_grade":     req.deep_grade and not _eff_scan,
+                    "catalog_path":   str(_CATALOG_PATH),
+                    "data_dir":       str(_DATA_DIR),
+                    "mogco_target":   0,   # cull only; Story sequencing is its own endpoint
                 }, _rf)
 
             _runner = os.path.join(_UNIT_ROOT, "grade_runner.py")
@@ -531,21 +625,16 @@ async def grade_photos_v2_stream(req: GradeRequest):
                     yield f"data: {_json.dumps({'error': f'Refused: {_free_txt} RAM free and even a Scan (the lightest pass) does not fit any more — at this level the machine page-thrashes and the app freezes (measured). Close a few apps — a browser tab or two is usually enough — and retry.', 'alternatives': {'close_apps': True, 'smaller_selection': True}})}\n\n"
                     print(f"[server] Grade REFUSED pre-spawn: RAM shrank below the Scan floor", flush=True)
                     return
-                if _spawn_plan["degraded"] and not _eff_scan:
-                    with open(_req_path, "w", encoding="utf-8") as _rf2:
-                        _json.dump({
-                            "folders":      all_folders,
-                            "preset":       req.preset,
-                            "force_rescan": req.force_rescan,
-                            "scan_mode":    True,
-                            "deep_grade":   False,
-                            "catalog_path": str(_CATALOG_PATH),
-                            "data_dir":     str(_DATA_DIR),
-                            "mogco_target": 0,
-                        }, _rf2)
-                    import json as _sj
+                if _spawn_plan.get("enc_batch") and not (_plan or {}).get("enc_batch"):
+                    # RAM shrank since admission: run the SAME quality lighter.
+                    # (This used to rewrite the request to Scan — a different
+                    # grade for the same photo, depending on free RAM.)
                     yield f"data: {_json.dumps({'notice': _spawn_plan['note']})}\n\n"
-                    print(f"[server] Late downgrade to Scan at spawn: {_spawn_plan['free_gb']:.2f} GB free", flush=True)
+                    print(f"[server] Late switch to reduced encode batch at spawn: "
+                          f"{_spawn_plan['free_gb']:.2f} GB free", flush=True)
+                _enc_batch = _spawn_plan.get("enc_batch") or (_plan or {}).get("enc_batch")
+                if _enc_batch:
+                    _renv["SIGLIP_ENC_BATCH"] = str(_enc_batch)   # THIS grade only
                 _need = _spawn_plan["need_gb"]
                 _free_now = _spawn_plan["free_gb"]
                 if _need is not None and _free_now is not None and _free_now < _need + _mp_spawn.TIGHT_BAND_GB:
@@ -953,157 +1042,88 @@ async def personal_update(payload: dict):
 @router.post("/api/personal/star")
 async def personal_star(payload: dict):
     """
-    Train PersonalHead from a star rating on a single photo.
+    Record a star rating on a single photo.
 
-    Stars map to grade labels:
-        4-5 → Strong ✅   3 → Mid ⚠️   1-2 → Weak ❌   0 → skip
+    Stars map to grade labels (see ratings_store.grade_for_stars):
+        4-5 → Strong ✅   2-3 → Mid ⚠️   1 → Weak ❌   0 → clear rating
 
-    A contrastive photo with a different grade is pulled from LanceDB to form
-    a preference pair for MarginRankingLoss.  The DPO queue is also updated so
-    BackgroundDPOTrainer can fire once 20 events accumulate.
+    Product rule (2026-09-22): a star sets ground truth for THIS photo only —
+    it must never train or retrain the grading model, or another photo's
+    score would silently drift as a side effect of rating this one. This
+    endpoint writes ratings_store + patches this photo's catalog grade and
+    stops there. (PersonalHead/DPO/MasterJudge training still exist as
+    explicit, separately-triggered features elsewhere — just not from here.)
     """
-    import random as _random
     try:
         path  = str(payload.get("path", "")).strip()
         stars = int(payload.get("stars", 0))
-        if not path or stars == 0:
+        if not path:
             return JSONResponse({"ok": True, "skipped": True})
 
         # Persist to the durable ratings store FIRST — this is the taste
         # baseline and must survive re-culls/catalog rebuilds even if the
-        # PersonalHead training below fails.
+        # catalog patch below fails. stars==0 CLEARS the rating (set_rating's
+        # own semantics) — this used to early-return before ever reaching
+        # here, so "clear rating" silently did nothing durable (2026-09-22 fix).
+        import ratings_store as _rs
         try:
-            import ratings_store as _rs
             _rs.set_rating(path, stars)
         except Exception as _e_rs:
             print(f"[star] durable ratings_store write failed: {_e_rs}")
 
-        star_grade = "Strong ✅" if stars >= 4 else ("Mid ⚠️" if stars == 3 else "Weak ❌")
-        _RANK = {"Strong ✅": 2, "Mid ⚠️": 1, "Weak ❌": 0}
-        star_rank = _RANK[star_grade]
+        star_grade = _rs.grade_for_stars(stars)   # None when cleared (stars==0)
+        _final_grade = star_grade
 
-        import numpy as np
-        import personal_head as ph
-        import lance_store   as ls
-
-        rows = ls.query_by_paths([path])
-        if not rows:
-            return JSONResponse({"ok": False, "error": "path not found in LanceDB"})
-
-        this_row   = rows[0]
-        this_emb   = this_row["embedding"]
-        this_grade = this_row.get("grade") or "Mid ⚠️"
-
-        # Snapshot the machine score onto the rating now that we have it, so
-        # accuracy measurement survives a later re-grade/migration wiping this
-        # exact path out of LanceDB/catalog. The bare stars write above must
-        # stay first (and stay independent) — this is a best-effort enrichment.
+        # Patch catalog.json immediately — a rated photo shows YOUR grade
+        # right away, not whatever the algorithm gave it until the next
+        # grade/rebuild. A CLEARED rating reverts to the algorithm's own
+        # bucket for this photo's (unchanged) machine score instead of
+        # staying stuck on the last star-derived grade forever. Full-record
+        # replace via merge_write, so load the existing entry first rather
+        # than losing its other fields.
         try:
-            _rs.set_rating(path, stars, score=this_row.get("score"),
-                            personal_score=this_row.get("personal_score"))
+            import catalog_store as _cs_star
+            _cat_star = _cs_star.load(_CATALOG_PATH)
+            _ph_star = next((p for p in _cat_star.get("photos", [])
+                             if p.get("path") == path), None)
+            if _ph_star is not None:
+                _ph_star["stars"] = stars
+                if star_grade:
+                    _ph_star["grade"] = star_grade
+                else:
+                    try:
+                        from grade_pipeline_v2 import (
+                            STRONG_THRESH, MID_THRESH,
+                            GRADE_STRONG, GRADE_MID, GRADE_WEAK)
+                        _sc = float(_ph_star.get("score", 0.0) or 0.0)
+                        _ph_star["grade"] = (
+                            GRADE_STRONG if _sc >= STRONG_THRESH else
+                            GRADE_MID if _sc >= MID_THRESH else GRADE_WEAK)
+                    except Exception as _e_rev:
+                        print(f"[star] grade revert skipped: {_e_rev}")
+                _final_grade = _ph_star["grade"]
+                _cs_star.merge_write([_ph_star], path=_CATALOG_PATH)
+        except Exception as _e_cat:
+            print(f"[star] catalog patch skipped: {_e_cat}")
+
+        if stars == 0:
+            return JSONResponse({"ok": True, "stars": 0, "grade": _final_grade})
+
+        # Best-effort: snapshot the machine score onto the rating so
+        # accuracy measurement survives a later re-grade/migration wiping
+        # this exact path out of LanceDB/catalog. Read-only lookup — no
+        # training triggered from here (see the docstring above).
+        try:
+            import lance_store as ls
+            rows = ls.query_by_paths([path])
+            if rows:
+                _rs.set_rating(path, stars, score=rows[0].get("score"),
+                                personal_score=rows[0].get("personal_score"))
         except Exception as _e_snap:
             print(f"[star] score snapshot skipped: {_e_snap}")
 
-        # MasterJudge auto-refit: fires in a daemon thread once enough NEW
-        # ratings have banked since the last champion/challenger fit (see
-        # src/master_judge.maybe_autofit). A lost challenge only rewrites the
-        # record — grades are untouched — so this is always safe to fire.
-        # Never blocks this request.
-        try:
-            import master_judge as _mj
-            _mj.maybe_autofit()
-        except Exception as _e_mj:
-            print(f"[star] MasterJudge autofit check skipped: {_e_mj}")
-
-        # Queue DPO event: auto grade → user star grade
-        try:
-            import background_dpo_trainer as _dpo
-            _dpo.get_trainer().queue_event(path, this_grade, star_grade)
-        except Exception as _e_dpo:
-            print(f"[star] DPO queue skipped: {_e_dpo}")
-
-        # PersonalHead pair update: find a contrastive photo.
-        # Memory fix (2026-08-30): this used to run ls.query_all() — loading
-        # all 64k rows WITH embeddings (~400 MB of boxed floats) on every
-        # star — and then rewrote personal scores for the whole store, which
-        # OOM'd Lance's external sort under memory pressure. Now: a light scan
-        # picks a contrastive path, only that row's embedding is fetched, and
-        # the personal-score refresh covers just the two affected photos. Full
-        # propagation happens on the periodic retrain, which already rewrites
-        # all scores.
-        light_rows   = ls.query_light_all()
-        contrastive  = [r for r in light_rows
-                        if r.get("path") != path
-                        and _RANK.get(r.get("grade") or "Mid ⚠️", 1) != star_rank]
-
-        loss = 0.0
-        if contrastive:
-            other      = _random.choice(contrastive[:40])
-            other_rows = ls.query_by_paths([other["path"]])
-            other_emb  = other_rows[0]["embedding"] if other_rows else None
-
-            if other_emb is not None:
-                other_grade = other_rows[0].get("grade") or "Mid ⚠️"
-                loss = await run_in_threadpool(
-                    ph.update, this_emb, star_grade, other_emb, other_grade)
-
-                # Refresh personal scores for ONLY the two affected photos —
-                # the periodic retrain propagates the new head store-wide.
-                new_scores = {}
-                for emb_obj, pth in ((this_emb, path), (other_emb, other["path"])):
-                    try:
-                        new_scores[pth] = float(ph.score(
-                            np.asarray([emb_obj], dtype=np.float32))[0])
-                    except Exception:
-                        pass
-                if new_scores:
-                    ls.update_personal_scores(new_scores)
-
-        # Auto-retrain the whole baseline every _RETRAIN_EVERY new ratings —
-        # incremental pair-updates drift toward recent ratings; a periodic full
-        # fit on the durable store keeps the head representative as the baseline
-        # grows toward hundreds. Fire-and-forget so it never blocks the rating.
-        retrained = None
-        try:
-            global _ratings_since_retrain
-            _ratings_since_retrain += 1
-            if _ratings_since_retrain >= _RETRAIN_EVERY:
-                # L5: the old code discarded the task reference (failures
-                # surfaced only as "exception was never retrieved") and reset
-                # the counter BEFORE the retrain ran, so a failed retrain
-                # waited another 25 ratings to retry. The done-callback now
-                # logs the outcome and restores the counter on failure.
-                fired_at = _ratings_since_retrain
-                _ratings_since_retrain = 0
-                import asyncio as _aio
-
-                def _on_retrain_done(task: "_aio.Future") -> None:
-                    global _ratings_since_retrain
-                    try:
-                        if task.cancelled():
-                            _ratings_since_retrain = fired_at
-                            print("[star] auto-retrain cancelled — counter restored", flush=True)
-                            return
-                        exc = task.exception()
-                        if exc is not None:
-                            _ratings_since_retrain = fired_at
-                            print(f"[star] auto-retrain FAILED — counter restored to "
-                                  f"{fired_at}: {exc}", flush=True)
-                        else:
-                            print("[star] auto-retrain completed", flush=True)
-                    except Exception as _e_cb:
-                        print(f"[star] auto-retrain callback error: {_e_cb}", flush=True)
-
-                _task = _aio.create_task(run_in_threadpool(_retrain_personal_baseline))
-                _task.add_done_callback(_on_retrain_done)
-                _AUTO_RETRAIN_TASKS.add(_task)
-                _task.add_done_callback(_AUTO_RETRAIN_TASKS.discard)
-                retrained = "scheduled"
-        except Exception as _e_rt:
-            print(f"[star] auto-retrain schedule skipped: {_e_rt}")
-
-        return JSONResponse({"ok": True, "star_grade": star_grade,
-                             "loss": round(loss, 5), "retrain": retrained})
+        return JSONResponse({"ok": True, "stars": stars, "grade": star_grade,
+                             "star_grade": star_grade})
     except Exception as e:
         raise HTTPException(500, str(e))
 
