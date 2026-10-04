@@ -47,6 +47,7 @@ import { APP_VERSION } from "./lib/version";
 import { useGuardedInterval } from "./hooks/useGuardedInterval";
 import { useWindowedGrid } from "./hooks/useWindowedGrid";
 import { gc, ramReadiness, calibratedAspects } from "./lib/grading";
+import { cullEstimate } from "./lib/cullEstimate";
 
 /* The three hot views are memoized at the import boundary: during grading,
  * progress ticks re-render App, but with stable props these 60 KB+ subtrees
@@ -2781,6 +2782,22 @@ setCreativeDirectorNote('');
                     <div style={{ width:6, height:6, borderRadius:'var(--r-round)', background:row.col, flexShrink:0, marginTop:6 }}/>
                     <div style={{ flex:1, minWidth:0, fontSize:'var(--text-sm)', lineHeight:'var(--leading-body)',
                       color: r.level === 'clear' ? T.ink2 : row.col }}>{row.text}</div>
+                  </div>
+                );
+              })()}
+
+              {/* Estimated cull time — measured per-photo cost, doubled (and
+                  said so) when free memory will slow the encode down. */}
+              {(() => {
+                const free = (sysRam ?? graderStatus)?.ram_free_gb ?? null;
+                const est = cullEstimate(preGradeModal?.photoCount ?? 0, typeof free === 'number' ? free : null);
+                if (!est) return null;
+                return (
+                  <div style={{ display:'flex', gap:10, padding:'10px 0', borderBottom:`1px solid ${T.line}` }}>
+                    <div style={{ width:6, height:6, borderRadius:'var(--r-round)',
+                      background: est.slowedByRam ? T.alarmWarn : T.ink3, flexShrink:0, marginTop:6 }}/>
+                    <div style={{ flex:1, minWidth:0, fontSize:'var(--text-sm)', lineHeight:'var(--leading-body)',
+                      color: est.slowedByRam ? T.alarmWarn : T.ink2 }}>{est.text}</div>
                   </div>
                 );
               })()}

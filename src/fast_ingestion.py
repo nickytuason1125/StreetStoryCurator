@@ -129,6 +129,11 @@ def decode_one(
     change that moved grades across a threshold, so callers opt in and the drift
     is measured, not assumed. FIRSTCUT_DRAFT_DECODE=0 disables globally.
     """
+    try:
+        from work_counters import bump as _wc_bump
+        _wc_bump("decode.quality")
+    except Exception:
+        pass
     import os as _os_dd
     if draft_hint and _os_dd.environ.get("FIRSTCUT_DRAFT_DECODE", "1").strip() == "0":
         draft_hint = None

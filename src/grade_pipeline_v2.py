@@ -909,6 +909,122 @@ def _dedup_chunk_size(n: int) -> int:
 _IQA_WORKER = Path(__file__).resolve().parent / "iqa_worker.py"
 
 
+def _iqa_slice_size() -> int:
+    """IQA slice size — ONE definition, shared by _iqa_resumable and phase A
+    so both cut the photo list identically."""
+    try:
+        return int(os.environ.get("FIRSTCUT_IQA_SLICE", "1000"))
+    except ValueError:
+        return 1000
+
+
+def _planned_iqa_slices(paths: list) -> list:
+    """The slices _iqa_resumable will run for `paths` with no checkpoint."""
+    sz = _iqa_slice_size()
+    if sz <= 0 or len(paths) <= sz:
+        return [list(paths)]
+    return [list(paths[i:i + sz]) for i in range(0, len(paths), sz)]
+
+
+# ── Phase A: detection + subject sharpness during the GPU encode ────────────
+# (2026-10-04) See src/detect_worker.py. Results are keyed by the EXACT slice
+# path tuple; _iqa_via_subprocess hands them to iqa_worker only on an exact
+# match, so a resume, a dropped unreadable file or a phase-A failure all fall
+# back to computing them in iqa_worker as before. Grades are identical either
+# way — only the schedule changes.
+_PHASE_A: dict = {"proc": None, "in": None, "out": None, "results": None}
+
+
+def _phase_a_start(planned_paths: list) -> None:
+    _phase_a_reset()
+    if os.environ.get("FIRSTCUT_PHASE_A", "1").strip() == "0" or not planned_paths:
+        return
+    try:
+        import memory_plan as _mp_pa
+        _free = _mp_pa.free_ram_gb()
+        _need = float(os.environ.get("FIRSTCUT_PHASE_A_MIN_FREE_GB", "3.0"))
+        if _free is not None and _free < _need:
+            print(f"[v2] phase A skipped: {_free:.1f} GB free < {_need:.1f} GB "
+                  f"(detection runs after the encode instead)", flush=True)
+            return
+    except Exception:
+        pass
+    import json as _json, tempfile as _tf, sys as _sys
+    import win_job as _wj
+    _root = Path(__file__).resolve().parent.parent
+    _fd, in_json = _tf.mkstemp(suffix=".phasea.json"); os.close(_fd)
+    out_json = in_json + ".out.json"
+    with open(in_json, "w", encoding="utf-8") as _f:
+        _json.dump({"slices": _planned_iqa_slices(planned_paths)}, _f)
+    env = dict(os.environ); env.setdefault("PYTHONIOENCODING", "utf-8")
+    _log = open(_root / "crash.log", "a", encoding="utf-8", errors="replace")
+    try:
+        proc = _wj.popen([_sys.executable, str(Path(__file__).with_name("detect_worker.py")),
+                          in_json, out_json], env=env, cwd=str(_root),
+                         stdout=_log, stderr=_log)
+    except Exception as _e_pa:
+        print(f"[v2] phase A not started ({_e_pa})", flush=True)
+        _log.close()
+        return
+    _PHASE_A.update({"proc": proc, "in": in_json, "out": out_json, "log": _log})
+    print(f"[v2] phase A: detection + sharpness running alongside the encode "
+          f"({len(planned_paths)} photos)", flush=True)
+
+
+def _phase_a_collect(timeout_s: float = 3600.0) -> None:
+    """Wait for phase A and load its results (empty on any failure)."""
+    proc = _PHASE_A.get("proc")
+    if proc is None or _PHASE_A.get("results") is not None:
+        return
+    results: dict = {}
+    try:
+        rc = proc.wait(timeout=timeout_s)
+        if rc == 0 and os.path.exists(_PHASE_A["out"]):
+            import json as _json
+            with open(_PHASE_A["out"], encoding="utf-8") as _f:
+                for sl in _json.load(_f).get("slices", []):
+                    results[tuple(sl["paths"])] = {
+                        "person_detected":   sl["person_detected"],
+                        "subject_bboxes":    sl["subject_bboxes"],
+                        "subject_sharpness": sl["subject_sharpness"],
+                    }
+        else:
+            print(f"[v2] phase A failed (rc={rc}) — iqa_worker will detect itself", flush=True)
+    except Exception as _e_pc:
+        print(f"[v2] phase A unavailable ({_e_pc}) — iqa_worker will detect itself", flush=True)
+        try: proc.kill()
+        except Exception: pass
+    _PHASE_A["results"] = results
+
+
+def _phase_a_lookup(image_paths) -> "dict | None":
+    """Phase-A results for EXACTLY this slice, or None."""
+    if _PHASE_A.get("proc") is None:
+        return None
+    _phase_a_collect()
+    hit = (_PHASE_A.get("results") or {}).get(tuple(image_paths))
+    if hit is not None:
+        print(f"[v2] IQA reuses phase-A detection + sharpness ({len(image_paths)} photos)", flush=True)
+    return hit
+
+
+def _phase_a_reset() -> None:
+    proc = _PHASE_A.get("proc")
+    if proc is not None and proc.poll() is None:
+        try: proc.kill()
+        except Exception: pass
+    for k in ("in", "out"):
+        f = _PHASE_A.get(k)
+        if f:
+            try: os.unlink(f)
+            except Exception: pass
+    if _PHASE_A.get("log"):
+        try: _PHASE_A["log"].close()
+        except Exception: pass
+    _PHASE_A.clear()
+    _PHASE_A.update({"proc": None, "in": None, "out": None, "results": None})
+
+
 def _iqa_via_subprocess(
     image_paths, image_embeddings, prompt_embedding, clip_scores,
     genre_ref_embs, lum_stats, comp_eligible_paths, vlm_breakdowns,
@@ -940,6 +1056,7 @@ def _iqa_via_subprocess(
                 "lum_stats":           [list(t) for t in (lum_stats or [])],
                 "comp_eligible_paths": list(comp_eligible_paths or []),
                 "vlm_breakdowns":      vlm_breakdowns or [],
+                "precomputed":         _phase_a_lookup(image_paths),
             }, _f, default=lambda o: o.item() if hasattr(o, "item") else str(o))
         env = dict(os.environ); env.setdefault("PYTHONIOENCODING", "utf-8")
         # Retries: mirrors siglip2_encoder._run — the isolated GPU subprocesses
@@ -1013,10 +1130,7 @@ def _iqa_resumable(
     # reloads D-FINE + TOPIQ (~7-18 s). On 600 RAWs, 200 -> 1000 cut IQA
     # 147 -> 122 s with all 600 grades identical (score-identical by design,
     # see above); resume granularity is the only thing given up.
-    try:
-        _slice = int(os.environ.get("FIRSTCUT_IQA_SLICE", "1000"))
-    except ValueError:
-        _slice = 1000
+    _slice = _iqa_slice_size()
     if _slice <= 0 or n <= _slice:
         # Small job: one call, but still checkpoint it so a later stage crash
         # (fusion, LanceDB) does not throw the IQA work away.
@@ -1559,6 +1673,14 @@ def run_v2(
             _nima_prefetch = _prefetch_nima([p for p in paths if p not in _gate_out])
         except Exception as _e_np:
             print(f"[v2] NIMA prefetch not started ({_e_np})")
+
+    # Phase A: the IQA photo list is already known here (every photo the gate
+    # did not disqualify, in order) — run detection + sharpness on the GPU
+    # alongside the encode. scan_mode skips IQA entirely, so no phase A then.
+    if not scan_mode:
+        _gate_disq = (set(_gate.blur_disqualified) | set(_gate.yolo_disqualified)
+                      | set(_gate.technical_disq))
+        _phase_a_start([p for p in paths if p not in _gate_disq])
 
     # ── Step 2: Bulk encoding ─────────────────────────────────────────────────
     # Singleton path (repeat runs): reuse encoder already in VRAM — no reload.
@@ -2697,6 +2819,11 @@ def run_v2(
 
     def _lum_stats(path: str):
         try:
+            from work_counters import bump as _wc_bump
+            _wc_bump("decode.lum")
+        except Exception:
+            pass
+        try:
             from PIL import Image as _PILI
             img = None
             if _LUM_DRAFT:
@@ -2820,6 +2947,7 @@ def run_v2(
                     comp_eligible_paths = _comp_eligible,
                     vlm_breakdowns      = _vlm_bds,
                 )
+            _phase_a_reset()     # results consumed (or unused) — free temp files
 
             tech_scores_rated        = iqa_out["quality"]                      # (M,) UniQA technical
             aesthetic_scores_rated   = vlm_scores_rated                        # (M,) VLM aesthetic (Step 4a)

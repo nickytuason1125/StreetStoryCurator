@@ -47,6 +47,11 @@ def nima_scores(paths, progress=None, threads: int = 0) -> "object":
             # it never starves the encoder's decode/preprocess thread.
             _so.intra_op_num_threads = int(threads)
         sess = ort.InferenceSession(str(_ONNX_PATH), _so, providers=["CPUExecutionProvider"])
+        try:
+            from work_counters import bump as _wc_bump
+            _wc_bump("model_load.nima")
+        except Exception:
+            pass
     except Exception as e:
         print(f"[nima] ONNX session failed ({e}) — keeping CLIP aesthetic")
         return None
@@ -58,6 +63,11 @@ def nima_scores(paths, progress=None, threads: int = 0) -> "object":
         """One photo -> (3, 224, 224) float32, exactly as the serial loop did.
         Pure, so batches decode on a thread pool (2026-10-04: ~30 ms/photo
         serial was 18 s of a 600-RAW cull); map() keeps input order."""
+        try:
+            from work_counters import bump as _wc_bump
+            _wc_bump("decode.nima")
+        except Exception:
+            pass
         try:
             from raw_support import jpeg_preview
             img = jpeg_preview(p, 256)          # camera JPEG: built-in preview

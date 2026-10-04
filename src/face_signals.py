@@ -106,6 +106,11 @@ def _get_detector(w: int, h: int):
     if det is None:
         det = _tls.detector = cv2.FaceDetectorYN.create(
             _MODEL, "", (w, h), _CONF, _NMS, 5000)
+        try:
+            from work_counters import bump as _wc_bump
+            _wc_bump("model_load.yunet")
+        except Exception:
+            pass
         _tls.last_size = (w, h)
     elif _tls.last_size != (w, h):
         det.setInputSize((w, h))
@@ -243,6 +248,11 @@ def _load_small(path: str):
     domain — a 5168px frame becomes 1292px without ever materialising the full
     image. RAW goes through load_rgb, whose embedded preview is already small.
     """
+    try:
+        from work_counters import bump as _wc_bump
+        _wc_bump("decode.faces")
+    except Exception:
+        pass
     from PIL import Image
     from raw_support import RAW_EXTS, load_rgb
     if Path(path).suffix.lower() in RAW_EXTS:

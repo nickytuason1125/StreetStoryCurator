@@ -304,6 +304,11 @@ _LIVING = {"person", "cat", "dog", "bird", "horse", "cow", "sheep"}
 def _decode(path: str):
     """RGB uint8 at ~MEASURE_EDGE. RAW → embedded preview (raw_support, same
     path every other stage uses); others → PIL draft decode."""
+    try:
+        from work_counters import bump as _wc_bump
+        _wc_bump("decode.sharpness")
+    except Exception:
+        pass
     import os
     try:
         from raw_support import RAW_EXTS, load_rgb

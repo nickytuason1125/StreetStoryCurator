@@ -109,6 +109,11 @@ def _load():
             k for k, v in _model.config.id2label.items() if v.lower() == "person"
         )
         print(f"[dfine] D-FINE-nano loaded on {_device}, person label id={_person_id}")
+        try:
+            from work_counters import bump as _wc_bump
+            _wc_bump("model_load.dfine")
+        except Exception:
+            pass
     except Exception as e:
         print(f"[dfine] load failed: {e}")
         _model, _processor, _person_id = None, None, None
@@ -209,6 +214,11 @@ def _open_rgb(path: str):
     contained no people. raw_support.extract_embedded_preview is the same
     embedded-JPEG path encode_worker already uses (never demosaics, memory-safe).
     """
+    try:
+        from work_counters import bump as _wc_bump
+        _wc_bump("decode.dfine")
+    except Exception:
+        pass
     from PIL import Image
     import os as _os
     try:
@@ -310,6 +320,11 @@ def detect_subjects_from_arrays(items, conf: float = 0.5) -> dict:
             try:
                 wh = [(a.shape[1], a.shape[0]) for _, a in batch]
                 imgs = [_model_input(a) for _, a in batch]
+                try:
+                    from work_counters import bump as _wc_bump
+                    _wc_bump("dfine.images", len(imgs))
+                except Exception:
+                    pass
                 inputs = processor(images=imgs, return_tensors="pt").to(_device)
                 out = model(**inputs)
                 dets = processor.post_process_object_detection(
@@ -426,6 +441,11 @@ def _detect_persons_batched(paths, conf, result, model, processor, _detect_one):
                 if not imgs:
                     continue
                 batch_paths = batch_paths_ok
+                try:
+                    from work_counters import bump as _wc_bump
+                    _wc_bump("dfine.images", len(imgs))
+                except Exception:
+                    pass
                 inputs = processor(images=imgs, return_tensors="pt").to(_device)
                 # The decoded frames exist only to build `inputs` (the processor
                 # resizes to the model's fixed input size) and to read their

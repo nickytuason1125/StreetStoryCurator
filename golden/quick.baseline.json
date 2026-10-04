@@ -1,0 +1,1038 @@
+{
+ "commit": "2197895",
+ "counters": {
+  "decode.dfine": 52,
+  "decode.encode": 52,
+  "decode.faces": 2,
+  "decode.gate": 52,
+  "decode.lum": 52,
+  "decode.nima": 52,
+  "decode.quality": 52,
+  "decode.sharpness": 52,
+  "dfine.images": 104,
+  "model_load.dfine": 2,
+  "model_load.nima": 2,
+  "model_load.onnx_vision": 2,
+  "model_load.topiq": 2,
+  "model_load.yunet": 2,
+  "worker.detect": 2,
+  "worker.encode": 3,
+  "worker.iqa": 2
+ },
+ "grades": {
+  "C:\\Users\\Nicky Tuason\\Desktop\\StreetPhotoEditor\\Sample_Street\\street_1.jpg": {
+   "breakdown": {
+    "Aesthetic": 0.58,
+    "Composition": 0.727,
+    "Human/Culture": 0.317,
+    "Lighting": 0.61,
+    "Narrative": 0.399,
+    "Technical": 0.666,
+    "_bg_streak": 0.047,
+    "_grader": "clip",
+    "_living": 0.0,
+    "_nima": true,
+    "_subject_sharp": 0.727,
+    "_subject_streak": 0.073,
+    "aesthetic": 0.413
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.58
+  },
+  "C:\\Users\\Nicky Tuason\\Desktop\\StreetPhotoEditor\\Sample_Street\\street_10.jpg": {
+   "breakdown": {
+    "Aesthetic": 0.558,
+    "Composition": 0.806,
+    "Human/Culture": 0.518,
+    "Lighting": 0.686,
+    "Narrative": 0.671,
+    "Technical": 0.628,
+    "_bg_streak": 0.014,
+    "_grader": "clip",
+    "_living": 1.0,
+    "_nima": true,
+    "_subject_sharp": 0.76,
+    "_subject_streak": 0.022,
+    "aesthetic": 0.562
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.56
+  },
+  "C:\\Users\\Nicky Tuason\\Desktop\\StreetPhotoEditor\\Sample_Street\\street_11.jpg": {
+   "breakdown": {
+    "Aesthetic": 0.576,
+    "Composition": 0.603,
+    "Human/Culture": 0.245,
+    "Lighting": 0.58,
+    "Narrative": 0.598,
+    "Technical": 0.591,
+    "_grader": "clip",
+    "_living": 0.0,
+    "_nima": true,
+    "_subject_sharp": 0.801,
+    "_subject_streak": 0.055,
+    "aesthetic": 0.525
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.58
+  },
+  "C:\\Users\\Nicky Tuason\\Desktop\\StreetPhotoEditor\\Sample_Street\\street_12.jpg": {
+   "breakdown": {
+    "Aesthetic": 0.769,
+    "Composition": 0.844,
+    "Human/Culture": 0.267,
+    "Lighting": 0.871,
+    "Narrative": 0.678,
+    "Technical": 0.857,
+    "_grader": "clip",
+    "_living": 0.0,
+    "_nima": true,
+    "_subject_sharp": 0.778,
+    "_subject_streak": 0.083,
+    "aesthetic": 0.576
+   },
+   "grade": "Strong \u2705",
+   "score": 0.77
+  },
+  "C:\\Users\\Nicky Tuason\\Desktop\\StreetPhotoEditor\\Sample_Street\\street_2.jpg": {
+   "breakdown": {
+    "Aesthetic": 0.625,
+    "Composition": 0.658,
+    "Human/Culture": 0.231,
+    "Lighting": 0.558,
+    "Narrative": 0.82,
+    "Technical": 0.606,
+    "_grader": "clip",
+    "_living": 0.0,
+    "_nima": true,
+    "_subject_sharp": 0.842,
+    "_subject_streak": 0.02,
+    "aesthetic": 0.584
+   },
+   "grade": "Strong \u2705",
+   "score": 0.63
+  },
+  "C:\\Users\\Nicky Tuason\\Desktop\\StreetPhotoEditor\\Sample_Street\\street_3.jpg": {
+   "breakdown": {
+    "Aesthetic": 0.517,
+    "Composition": 0.604,
+    "Human/Culture": 0.29,
+    "Lighting": 0.522,
+    "Narrative": 0.499,
+    "Technical": 0.562,
+    "_grader": "clip",
+    "_living": 0.0,
+    "_nima": true,
+    "_subject_sharp": 0.819,
+    "_subject_streak": 0.025,
+    "aesthetic": 0.398
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.52
+  },
+  "C:\\Users\\Nicky Tuason\\Desktop\\StreetPhotoEditor\\Sample_Street\\street_4.jpg": {
+   "breakdown": {
+    "Aesthetic": 0.682,
+    "Composition": 0.88,
+    "Human/Culture": 0.405,
+    "Lighting": 0.618,
+    "Narrative": 0.533,
+    "Technical": 0.737,
+    "_bg_streak": 0.015,
+    "_grader": "clip",
+    "_living": 0.0,
+    "_nima": true,
+    "_subject_sharp": 0.814,
+    "_subject_streak": 0.008,
+    "aesthetic": 0.546
+   },
+   "grade": "Strong \u2705",
+   "score": 0.68
+  },
+  "C:\\Users\\Nicky Tuason\\Desktop\\StreetPhotoEditor\\Sample_Street\\street_5.jpg": {
+   "breakdown": {
+    "Aesthetic": 0.715,
+    "Composition": 0.95,
+    "Human/Culture": 0.228,
+    "Lighting": 0.631,
+    "Narrative": 0.82,
+    "Technical": 0.774,
+    "_bg_streak": 0.005,
+    "_grader": "clip",
+    "_living": 0.0,
+    "_nima": true,
+    "_subject_sharp": 0.761,
+    "_subject_streak": 0.005,
+    "aesthetic": 0.451
+   },
+   "grade": "Strong \u2705",
+   "score": 0.86
+  },
+  "C:\\Users\\Nicky Tuason\\Desktop\\StreetPhotoEditor\\Sample_Street\\street_6.jpg": {
+   "breakdown": {
+    "Aesthetic": 0.779,
+    "Composition": 0.802,
+    "Human/Culture": 0.121,
+    "Lighting": 0.809,
+    "Narrative": 0.714,
+    "Technical": 0.805,
+    "_bg_streak": 0.041,
+    "_grader": "clip",
+    "_living": 0.0,
+    "_nima": true,
+    "_subject_sharp": 0.712,
+    "_subject_streak": 0.032,
+    "aesthetic": 0.738
+   },
+   "grade": "Strong \u2705",
+   "score": 0.78
+  },
+  "C:\\Users\\Nicky Tuason\\Desktop\\StreetPhotoEditor\\Sample_Street\\street_7.jpg": {
+   "breakdown": {
+    "Aesthetic": 0.571,
+    "Composition": 0.613,
+    "Human/Culture": 0.356,
+    "Lighting": 0.643,
+    "Narrative": 0.556,
+    "Technical": 0.628,
+    "_grader": "clip",
+    "_living": 0.0,
+    "_nima": true,
+    "_subject_sharp": 0.86,
+    "_subject_streak": 0.014,
+    "aesthetic": 0.434
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.57
+  },
+  "C:\\Users\\Nicky Tuason\\Desktop\\StreetPhotoEditor\\Sample_Street\\street_8.jpg": {
+   "breakdown": {
+    "Aesthetic": 0.635,
+    "Composition": 0.68,
+    "Human/Culture": 0.43,
+    "Lighting": 0.824,
+    "Narrative": 0.8,
+    "Technical": 0.749,
+    "_grader": "clip",
+    "_living": 0.0,
+    "_nima": true,
+    "_subject_sharp": 0.645,
+    "_subject_streak": 0.048,
+    "aesthetic": 0.436
+   },
+   "grade": "Strong \u2705",
+   "score": 0.64
+  },
+  "C:\\Users\\Nicky Tuason\\Desktop\\StreetPhotoEditor\\Sample_Street\\street_9.jpg": {
+   "breakdown": {
+    "Aesthetic": 0.71,
+    "Composition": 0.854,
+    "Human/Culture": 0.121,
+    "Lighting": 0.61,
+    "Narrative": 0.738,
+    "Technical": 0.722,
+    "_grader": "clip",
+    "_living": 0.0,
+    "_nima": true,
+    "_subject_sharp": 0.901,
+    "_subject_streak": 0.009,
+    "aesthetic": 0.499
+   },
+   "grade": "Strong \u2705",
+   "score": 0.71
+  },
+  "D:\\2024\\2024-03-31\\DSC06082.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.491,
+    "Composition": 0.513,
+    "Human/Culture": 0.288,
+    "Lighting": 0.416,
+    "Narrative": 0.545,
+    "Technical": 0.462,
+    "_bg_streak": 0.151,
+    "_grader": "clip",
+    "_living": 0.0,
+    "_nima": true,
+    "_subject_sharp": 0.741,
+    "_subject_streak": 0.039,
+    "aesthetic": 0.529
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.49
+  },
+  "D:\\2024\\2024-03-31\\DSC06083.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.516,
+    "Composition": 0.584,
+    "Human/Culture": 0.285,
+    "Lighting": 0.374,
+    "Narrative": 0.533,
+    "Technical": 0.467,
+    "_grader": "clip",
+    "_living": 0.0,
+    "_nima": true,
+    "_subject_sharp": 0.714,
+    "_subject_streak": 0.091,
+    "aesthetic": 0.588
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.52
+  },
+  "D:\\2024\\2024-03-31\\DSC06084.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.521,
+    "Composition": 0.553,
+    "Human/Culture": 0.312,
+    "Lighting": 0.428,
+    "Narrative": 0.494,
+    "Technical": 0.487,
+    "_grader": "clip",
+    "_living": 0.0,
+    "_nima": true,
+    "_subject_sharp": 0.697,
+    "_subject_streak": 0.081,
+    "aesthetic": 0.599
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.52
+  },
+  "D:\\2024\\2024-03-31\\DSC06085.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.551,
+    "Composition": 0.579,
+    "Human/Culture": 0.295,
+    "Lighting": 0.507,
+    "Narrative": 0.497,
+    "Technical": 0.542,
+    "_grader": "clip",
+    "_living": 0.0,
+    "_nima": true,
+    "_subject_sharp": 0.705,
+    "_subject_streak": 0.093,
+    "aesthetic": 0.588
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.55
+  },
+  "D:\\2024\\2024-03-31\\DSC06086.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.539,
+    "Composition": 0.574,
+    "Human/Culture": 0.324,
+    "Lighting": 0.435,
+    "Narrative": 0.484,
+    "Technical": 0.5,
+    "_grader": "clip",
+    "_living": 0.0,
+    "_nima": true,
+    "_subject_sharp": 0.717,
+    "_subject_streak": 0.063,
+    "aesthetic": 0.638
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.54
+  },
+  "D:\\2024\\2024-03-31\\DSC06087.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.538,
+    "Composition": 0.572,
+    "Human/Culture": 0.308,
+    "Lighting": 0.466,
+    "Narrative": 0.505,
+    "Technical": 0.516,
+    "_grader": "clip",
+    "_living": 0.0,
+    "_nima": true,
+    "_subject_sharp": 0.709,
+    "_subject_streak": 0.055,
+    "aesthetic": 0.589
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.54
+  },
+  "D:\\2024\\2024-03-31\\DSC06088.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.529,
+    "Composition": 0.569,
+    "Human/Culture": 0.301,
+    "Lighting": 0.433,
+    "Narrative": 0.483,
+    "Technical": 0.496,
+    "_grader": "clip",
+    "_living": 0.0,
+    "_nima": true,
+    "_subject_sharp": 0.719,
+    "_subject_streak": 0.075,
+    "aesthetic": 0.608
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.53
+  },
+  "D:\\2024\\2024-03-31\\DSC06089.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.531,
+    "Composition": 0.574,
+    "Human/Culture": 0.314,
+    "Lighting": 0.42,
+    "Narrative": 0.483,
+    "Technical": 0.491,
+    "_grader": "clip",
+    "_living": 0.0,
+    "_nima": true,
+    "_subject_sharp": 0.726,
+    "_subject_streak": 0.066,
+    "aesthetic": 0.624
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.53
+  },
+  "D:\\2024\\2024-03-31\\DSC06090.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.448,
+    "Composition": 0.43,
+    "Human/Culture": 0.181,
+    "Lighting": 0.439,
+    "Narrative": 0.357,
+    "Technical": 0.434,
+    "_bg_streak": 0.091,
+    "_grader": "clip",
+    "_living": 0.0,
+    "_nima": true,
+    "_subject_sharp": 0.781,
+    "_subject_streak": 0.043,
+    "aesthetic": 0.521
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.45
+  },
+  "D:\\2024\\2024-03-31\\DSC06091.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.524,
+    "Composition": 0.589,
+    "Human/Culture": 0.24,
+    "Lighting": 0.442,
+    "Narrative": 0.495,
+    "Technical": 0.51,
+    "_bg_streak": 0.087,
+    "_grader": "clip",
+    "_living": 0.0,
+    "_nima": true,
+    "_subject_sharp": 0.77,
+    "_subject_streak": 0.034,
+    "aesthetic": 0.544
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.52
+  },
+  "D:\\2024\\2024-03-31\\DSC06092.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.511,
+    "Composition": 0.596,
+    "Human/Culture": 0.289,
+    "Lighting": 0.376,
+    "Narrative": 0.483,
+    "Technical": 0.473,
+    "_grader": "clip",
+    "_living": 0.0,
+    "_nima": true,
+    "_subject_sharp": 0.705,
+    "_subject_streak": 0.035,
+    "aesthetic": 0.57
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.51
+  },
+  "D:\\2024\\2024-03-31\\DSC06093.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.522,
+    "Composition": 0.602,
+    "Human/Culture": 0.309,
+    "Lighting": 0.381,
+    "Narrative": 0.516,
+    "Technical": 0.479,
+    "_grader": "clip",
+    "_living": 0.0,
+    "_nima": true,
+    "_subject_sharp": 0.707,
+    "_subject_streak": 0.044,
+    "aesthetic": 0.586
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.52
+  },
+  "D:\\2024\\2024-03-31\\DSC06094.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.539,
+    "Composition": 0.55,
+    "Human/Culture": 0.362,
+    "Lighting": 0.547,
+    "Narrative": 0.545,
+    "Technical": 0.548,
+    "_bg_streak": 0.063,
+    "_grader": "clip",
+    "_living": 1.0,
+    "_nima": true,
+    "_subject_sharp": 0.834,
+    "_subject_streak": 0.003,
+    "aesthetic": 0.511
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.54
+  },
+  "D:\\2024\\2024-03-31\\DSC06095.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.606,
+    "Composition": 0.525,
+    "Human/Culture": 0.412,
+    "Lighting": 0.697,
+    "Narrative": 0.533,
+    "Technical": 0.605,
+    "_bg_streak": 0.04,
+    "_grader": "clip",
+    "_living": 1.0,
+    "_nima": true,
+    "_subject_sharp": 0.833,
+    "_subject_streak": 0.014,
+    "aesthetic": 0.643
+   },
+   "grade": "Strong \u2705",
+   "score": 0.61
+  },
+  "D:\\2024\\2024-03-31\\DSC06096.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.582,
+    "Composition": 0.507,
+    "Human/Culture": 0.415,
+    "Lighting": 0.673,
+    "Narrative": 0.556,
+    "Technical": 0.584,
+    "_bg_streak": 0.022,
+    "_grader": "clip",
+    "_living": 1.0,
+    "_nima": true,
+    "_subject_sharp": 0.83,
+    "_subject_streak": 0.013,
+    "aesthetic": 0.592
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.58
+  },
+  "D:\\2024\\2024-03-31\\DSC06097.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.591,
+    "Composition": 0.515,
+    "Human/Culture": 0.422,
+    "Lighting": 0.684,
+    "Narrative": 0.562,
+    "Technical": 0.594,
+    "_grader": "clip",
+    "_living": 0.0,
+    "_nima": true,
+    "_subject_sharp": 0.828,
+    "_subject_streak": 0.012,
+    "aesthetic": 0.6
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.59
+  },
+  "D:\\2024\\2024-03-31\\DSC06098.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.587,
+    "Composition": 0.521,
+    "Human/Culture": 0.436,
+    "Lighting": 0.707,
+    "Narrative": 0.502,
+    "Technical": 0.607,
+    "_bg_streak": 0.03,
+    "_grader": "clip",
+    "_living": 1.0,
+    "_nima": true,
+    "_subject_sharp": 0.829,
+    "_subject_streak": 0.012,
+    "aesthetic": 0.572
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.59
+  },
+  "D:\\2024\\2024-03-31\\DSC06099.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.593,
+    "Composition": 0.513,
+    "Human/Culture": 0.431,
+    "Lighting": 0.716,
+    "Narrative": 0.543,
+    "Technical": 0.606,
+    "_bg_streak": 0.036,
+    "_grader": "clip",
+    "_living": 1.0,
+    "_nima": true,
+    "_subject_sharp": 0.836,
+    "_subject_streak": 0.01,
+    "aesthetic": 0.58
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.59
+  },
+  "D:\\2024\\2024-03-31\\DSC06100.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.448,
+    "Composition": 0.51,
+    "Human/Culture": 0.245,
+    "Lighting": 0.247,
+    "Narrative": 0.434,
+    "Technical": 0.355,
+    "_grader": "clip",
+    "_living": 0.0,
+    "_nima": true,
+    "_subject_sharp": 0.803,
+    "_subject_streak": 0.032,
+    "aesthetic": 0.617
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.45
+  },
+  "D:\\2024\\2024-03-31\\DSC06101.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.689,
+    "Composition": 0.587,
+    "Human/Culture": 0.423,
+    "Lighting": 0.839,
+    "Narrative": 0.653,
+    "Technical": 0.702,
+    "_grader": "clip",
+    "_living": 0.0,
+    "_nima": true,
+    "_subject_sharp": 0.824,
+    "_subject_streak": 0.007,
+    "aesthetic": 0.669
+   },
+   "grade": "Strong \u2705",
+   "score": 0.69
+  },
+  "D:\\2024\\2024-03-31\\DSC06102.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.702,
+    "Composition": 0.626,
+    "Human/Culture": 0.415,
+    "Lighting": 0.876,
+    "Narrative": 0.633,
+    "Technical": 0.741,
+    "_grader": "clip",
+    "_living": 0.0,
+    "_nima": true,
+    "_subject_sharp": 0.826,
+    "_subject_streak": 0.004,
+    "aesthetic": 0.631
+   },
+   "grade": "Strong \u2705",
+   "score": 0.7
+  },
+  "D:\\2024\\2024-03-31\\DSC06103.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.662,
+    "Composition": 0.643,
+    "Human/Culture": 0.421,
+    "Lighting": 0.753,
+    "Narrative": 0.551,
+    "Technical": 0.696,
+    "_grader": "clip",
+    "_living": 0.0,
+    "_nima": true,
+    "_subject_sharp": 0.819,
+    "_subject_streak": 0.007,
+    "aesthetic": 0.623
+   },
+   "grade": "Strong \u2705",
+   "score": 0.66
+  },
+  "D:\\2024\\2024-03-31\\DSC06104.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.677,
+    "Composition": 0.639,
+    "Human/Culture": 0.425,
+    "Lighting": 0.796,
+    "Narrative": 0.573,
+    "Technical": 0.713,
+    "_grader": "clip",
+    "_living": 0.0,
+    "_nima": true,
+    "_subject_sharp": 0.818,
+    "_subject_streak": 0.002,
+    "aesthetic": 0.633
+   },
+   "grade": "Strong \u2705",
+   "score": 0.68
+  },
+  "D:\\2024\\2024-03-31\\DSC06105.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.675,
+    "Composition": 0.679,
+    "Human/Culture": 0.458,
+    "Lighting": 0.643,
+    "Narrative": 0.606,
+    "Technical": 0.661,
+    "_bg_streak": 0.089,
+    "_grader": "clip",
+    "_living": 1.0,
+    "_nima": true,
+    "_smeared_subject": true,
+    "_subject_sharp": 0.325,
+    "_subject_streak": 0.07,
+    "aesthetic": 0.737
+   },
+   "grade": "Weak \u274c",
+   "score": 0.4
+  },
+  "D:\\2024\\2024-03-31\\DSC06106.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.706,
+    "Composition": 0.693,
+    "Human/Culture": 0.448,
+    "Lighting": 0.769,
+    "Narrative": 0.675,
+    "Technical": 0.73,
+    "_bg_streak": 0.029,
+    "_grader": "clip",
+    "_living": 1.0,
+    "_nima": true,
+    "_subject_sharp": 0.684,
+    "_subject_streak": 0.023,
+    "aesthetic": 0.663
+   },
+   "grade": "Strong \u2705",
+   "score": 0.71
+  },
+  "D:\\2024\\2024-03-31\\DSC06107.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.673,
+    "Composition": 0.661,
+    "Human/Culture": 0.474,
+    "Lighting": 0.712,
+    "Narrative": 0.628,
+    "Technical": 0.686,
+    "_bg_streak": 0.017,
+    "_grader": "clip",
+    "_living": 1.0,
+    "_nima": true,
+    "_subject_sharp": 0.652,
+    "_subject_streak": 0.007,
+    "aesthetic": 0.66
+   },
+   "grade": "Strong \u2705",
+   "score": 0.67
+  },
+  "D:\\2024\\2024-03-31\\DSC06108.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.747,
+    "Composition": 0.768,
+    "Human/Culture": 0.453,
+    "Lighting": 0.735,
+    "Narrative": 0.684,
+    "Technical": 0.751,
+    "_grader": "clip",
+    "_living": 1.0,
+    "_nima": true,
+    "_subject_sharp": 0.498,
+    "_subject_streak": 0.067,
+    "aesthetic": 0.759
+   },
+   "grade": "Strong \u2705",
+   "score": 0.75
+  },
+  "D:\\2024\\2024-03-31\\DSC06109.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.497,
+    "Composition": 0.536,
+    "Human/Culture": 0.365,
+    "Lighting": 0.446,
+    "Narrative": 0.327,
+    "Technical": 0.489,
+    "_bg_streak": 0.021,
+    "_grader": "clip",
+    "_living": 1.0,
+    "_nima": true,
+    "_subject_sharp": 0.424,
+    "_subject_streak": 0.08,
+    "aesthetic": 0.574
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.5
+  },
+  "D:\\2024\\2024-03-31\\DSC06110.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.511,
+    "Composition": 0.552,
+    "Human/Culture": 0.308,
+    "Lighting": 0.391,
+    "Narrative": 0.338,
+    "Technical": 0.465,
+    "_bg_streak": 0.05,
+    "_grader": "clip",
+    "_living": 1.0,
+    "_nima": true,
+    "_subject_sharp": 0.774,
+    "_subject_streak": 0.056,
+    "aesthetic": 0.669
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.51
+  },
+  "D:\\2024\\2024-03-31\\DSC06111.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.542,
+    "Composition": 0.613,
+    "Human/Culture": 0.396,
+    "Lighting": 0.457,
+    "Narrative": 0.291,
+    "Technical": 0.529,
+    "_bg_streak": 0.072,
+    "_grader": "clip",
+    "_living": 1.0,
+    "_nima": true,
+    "_subject_sharp": 0.701,
+    "_subject_streak": 0.098,
+    "aesthetic": 0.649
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.54
+  },
+  "D:\\2024\\2024-03-31\\DSC06112.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.543,
+    "Composition": 0.644,
+    "Human/Culture": 0.42,
+    "Lighting": 0.446,
+    "Narrative": 0.301,
+    "Technical": 0.536,
+    "_bg_streak": 0.094,
+    "_grader": "clip",
+    "_living": 0.0,
+    "_nima": true,
+    "_subject_sharp": 0.618,
+    "_subject_streak": 0.183,
+    "aesthetic": 0.618
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.54
+  },
+  "D:\\2024\\2024-03-31\\DSC06113.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.52,
+    "Composition": 0.611,
+    "Human/Culture": 0.383,
+    "Lighting": 0.39,
+    "Narrative": 0.283,
+    "Technical": 0.488,
+    "_bg_streak": 0.033,
+    "_grader": "clip",
+    "_living": 1.0,
+    "_nima": true,
+    "_subject_sharp": 0.712,
+    "_subject_streak": 0.11,
+    "aesthetic": 0.648
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.52
+  },
+  "D:\\2024\\2024-03-31\\DSC06114.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.632,
+    "Composition": 0.578,
+    "Human/Culture": 0.394,
+    "Lighting": 0.681,
+    "Narrative": 0.646,
+    "Technical": 0.627,
+    "_bg_streak": 0.046,
+    "_grader": "clip",
+    "_living": 1.0,
+    "_nima": true,
+    "_subject_sharp": 0.782,
+    "_subject_streak": 0.011,
+    "aesthetic": 0.644
+   },
+   "grade": "Strong \u2705",
+   "score": 0.63
+  },
+  "D:\\2024\\2024-03-31\\DSC06115.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.631,
+    "Composition": 0.59,
+    "Human/Culture": 0.398,
+    "Lighting": 0.673,
+    "Narrative": 0.648,
+    "Technical": 0.63,
+    "_bg_streak": 0.036,
+    "_grader": "clip",
+    "_living": 1.0,
+    "_nima": true,
+    "_subject_sharp": 0.792,
+    "_subject_streak": 0.005,
+    "aesthetic": 0.631
+   },
+   "grade": "Strong \u2705",
+   "score": 0.63
+  },
+  "D:\\2024\\2024-03-31\\DSC06116.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.461,
+    "Composition": 0.554,
+    "Human/Culture": 0.436,
+    "Lighting": 0.316,
+    "Narrative": 0.2,
+    "Technical": 0.418,
+    "_bg_streak": 0.075,
+    "_grader": "clip",
+    "_living": 1.0,
+    "_nima": true,
+    "_subject_sharp": 0.681,
+    "_subject_streak": 0.128,
+    "aesthetic": 0.615
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.46
+  },
+  "D:\\2024\\2024-03-31\\DSC06117.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.515,
+    "Composition": 0.607,
+    "Human/Culture": 0.371,
+    "Lighting": 0.442,
+    "Narrative": 0.218,
+    "Technical": 0.518,
+    "_bg_streak": 0.031,
+    "_grader": "clip",
+    "_living": 1.0,
+    "_nima": true,
+    "_subject_sharp": 0.735,
+    "_subject_streak": 0.075,
+    "aesthetic": 0.593
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.51
+  },
+  "D:\\2024\\2024-03-31\\DSC06118.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.401,
+    "Composition": 0.635,
+    "Human/Culture": 0.367,
+    "Lighting": 0.443,
+    "Narrative": 0.225,
+    "Technical": 0.252,
+    "_bg_streak": 0.02,
+    "_grader": "clip",
+    "_living": 1.0,
+    "_nima": true,
+    "_subject_sharp": 0.738,
+    "_subject_streak": 0.069,
+    "aesthetic": 0.61
+   },
+   "grade": "Weak \u274c",
+   "score": 0.4
+  },
+  "D:\\2024\\2024-03-31\\DSC06119.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.513,
+    "Composition": 0.595,
+    "Human/Culture": 0.355,
+    "Lighting": 0.455,
+    "Narrative": 0.24,
+    "Technical": 0.52,
+    "_bg_streak": 0.028,
+    "_grader": "clip",
+    "_living": 1.0,
+    "_nima": true,
+    "_subject_sharp": 0.713,
+    "_subject_streak": 0.108,
+    "aesthetic": 0.579
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.51
+  },
+  "D:\\2024\\2024-03-31\\DSC06120.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.518,
+    "Composition": 0.653,
+    "Human/Culture": 0.278,
+    "Lighting": 0.371,
+    "Narrative": 0.4,
+    "Technical": 0.492,
+    "_bg_streak": 0.033,
+    "_grader": "clip",
+    "_living": 1.0,
+    "_nima": true,
+    "_subject_sharp": 0.785,
+    "_subject_streak": 0.01,
+    "aesthetic": 0.562
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.52
+  },
+  "D:\\2024\\2024-03-31\\DSC06121.ARW": {
+   "breakdown": {
+    "Aesthetic": 0.475,
+    "Composition": 0.531,
+    "Human/Culture": 0.277,
+    "Lighting": 0.346,
+    "Narrative": 0.446,
+    "Technical": 0.429,
+    "_grader": "clip",
+    "_living": 0.0,
+    "_nima": true,
+    "_subject_sharp": 0.767,
+    "_subject_streak": 0.028,
+    "aesthetic": 0.568
+   },
+   "grade": "Mid \u26a0\ufe0f",
+   "score": 0.48
+  }
+ },
+ "recorded_at": "2026-10-04T19:55:58",
+ "set": "quick",
+ "timing": {
+  "median_wall_s": 60.95,
+  "runs": [
+   {
+    "cpu_mean": 22.4,
+    "free_min_gb": 1.79,
+    "free_start_gb": 5.78,
+    "wall_s": 60.2
+   },
+   {
+    "cpu_mean": 22.4,
+    "free_min_gb": 1.52,
+    "free_start_gb": 5.29,
+    "wall_s": 61.7
+   }
+  ]
+ },
+ "versions": {
+  "models": {
+   "cache/probe_embs.hash": "1ee44c96c5220419245fd5096fcf9384",
+   "models\\dfine_nano\\model.safetensors": "15278996:6150b2a7fde23f63",
+   "models\\face_detection_yunet_2023mar.onnx": "232589:52b8d89ab9022e96",
+   "models\\onnx\\nima.onnx": "8954725:cf1c59d104fa6f2f",
+   "models\\onnx\\text.onnx": "1416987039:8ee8068597cb4905",
+   "models\\onnx\\vision.onnx": "834104:8e7e9b535cd8fb53",
+   "pyiqa/cfanet_nr_koniq_res50-9a73138b.pth": "181196009:8edb2f347d0a0352",
+   "pyiqa/musiq_koniq_ckpt-e95806b9.pth": "108610983:13b1c921e0822a59",
+   "pyiqa/sac%2Blogos%2Bava1-l14-linearMSE.pth": "3714759:6853f953c4f438b0"
+  },
+  "packages": {
+   "cudnn": 90100,
+   "gpu": "NVIDIA GeForce RTX 3060 Laptop GPU, 616.92",
+   "numpy": "2.4.3",
+   "onnxruntime-gpu": "1.22.0",
+   "opencv-python": "4.13.0.92",
+   "opencv-python-headless": "4.13.0.92",
+   "pillow": "12.1.1",
+   "pyiqa": "0.1.15.post2",
+   "rawpy": "0.26.1",
+   "scikit-learn": "1.8.0",
+   "scipy": "1.17.1",
+   "timm": "1.0.26",
+   "torch": "2.5.1+cu121",
+   "torch.cuda": "12.1",
+   "transformers": "4.57.6"
+  }
+ }
+}

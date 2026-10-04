@@ -389,6 +389,11 @@ class UniQAHead:
                 if self._device == "cuda":
                     print(f"[uniqa_head] torch.compile skipped — Triton unavailable; running eager")
             print(f"[uniqa_head] {self._METRIC_NAME} loaded on {self._device}")
+            try:
+                from work_counters import bump as _wc_bump
+                _wc_bump("model_load.topiq")
+            except Exception:
+                pass
         else:
             print(f"[uniqa_head] {self._METRIC_NAME} unavailable")
 
@@ -872,9 +877,14 @@ def run_vision_heads(
     progress=None,
     comp_eligible_paths: Optional[set] = None,
     vlm_breakdowns:      Optional[List[dict]] = None,
+    precomputed_detections: Optional[tuple] = None,
 ) -> dict:
     """
     Run composition analysis then UniQAHead (single unified quality model).
+
+    precomputed_detections: (person_detected, subject_bboxes) produced by
+    detect_worker's _run_yolo_seg on EXACTLY these image_paths (the caller
+    guarantees the match) — reused instead of re-running detection.
 
     UniQA replaces TOPIQ NR, MUSIQ, and Aesthetic Predictor V2.5.
     YOLO11s-seg routing selects inference mode per image:
@@ -933,7 +943,14 @@ def run_vision_heads(
     _p(0.66, f"YOLO person detection — {n} images…")
     import time as _tvh
     _t_dfine0 = _tvh.monotonic()
-    person_detected_dict, subject_bboxes_dict = _run_yolo_seg(image_paths)
+    if precomputed_detections is not None:
+        import copy as _copy
+        person_detected_dict = dict(precomputed_detections[0])
+        subject_bboxes_dict  = _copy.deepcopy(precomputed_detections[1])  # mutated below
+        print(f"[vision_heads] person detection reused from detect_worker "
+              f"({sum(1 for v in person_detected_dict.values() if v)}/{n} with person)", flush=True)
+    else:
+        person_detected_dict, subject_bboxes_dict = _run_yolo_seg(image_paths)
     _t_dfine = _tvh.monotonic() - _t_dfine0
     print(f"[vision_heads] TIME  person detection {_t_dfine:6.1f}s "
           f"({_t_dfine/max(n,1)*1000:.0f} ms/img)", flush=True)

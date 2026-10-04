@@ -1,0 +1,10 @@
+{
+  "quick": {"parts": [
+    {"folder": "D:/2024/2024-03-31", "glob": "*.ARW", "start": 0, "count": 40},
+    {"folder": "C:/Users/Nicky Tuason/Desktop/StreetPhotoEditor/Sample_Street", "glob": "*.jpg", "start": 0, "count": 12}
+  ]},
+  "full": {"parts": [
+    {"folder": "D:/2024/2024-03-31", "glob": "*.ARW", "start": 0, "count": 600},
+    {"folder": "C:/Users/Nicky Tuason/Desktop/StreetPhotoEditor/Sample_Street", "glob": "*.jpg", "start": 0, "count": 12}
+  ]}
+}

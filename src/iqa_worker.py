@@ -42,6 +42,12 @@ def _json_default(o):
 
 
 def main():
+    try:
+        import work_counters as _wc
+        _wc.install_exit_flush("iqa")
+        _wc.bump("worker.iqa")
+    except Exception:
+        pass
     import traceback as _tb
     # Load the pyiqa CUDA model in the MAIN thread (see UniQAHead._timed_create):
     # creating it in a background thread and using it from the main thread faults
@@ -60,6 +66,8 @@ def main():
         _ce              = _j.get("comp_eligible_paths") or []
         comp_eligible    = set(_ce) if _ce else None
         vlm_breakdowns   = _j.get("vlm_breakdowns") or None
+        # Phase-A results from detect_worker (only sent on an exact path match).
+        _pre             = _j.get("precomputed") or None
 
         image_embeddings = _arr["image_embeddings"]
         clip_scores      = _arr["clip_scores"]
@@ -97,7 +105,8 @@ def main():
         # detector) — all CUDA stays on this main thread. Photos without cached
         # boxes are finished on the main thread below.
         import threading as _thr
-        _sharp_on = os.environ.get("FIRSTCUT_SUBJECT_SHARP", "1").strip() != "0"
+        _sharp_on = (os.environ.get("FIRSTCUT_SUBJECT_SHARP", "1").strip() != "0"
+                     and not (_pre and "subject_sharpness" in _pre))
         _vision_done = _thr.Event()
         _side = {"out": {}, "misses": list(image_paths), "err": None, "t": 0.0}
 
@@ -130,6 +139,8 @@ def main():
                 lum_stats           = lum_stats,
                 comp_eligible_paths = comp_eligible,
                 vlm_breakdowns      = vlm_breakdowns,
+                precomputed_detections = ((_pre["person_detected"], _pre["subject_bboxes"])
+                                          if _pre else None),
             )
         finally:
             _vision_done.set()
@@ -140,7 +151,11 @@ def main():
         # Strictly additive: any failure leaves the map empty and no photo is
         # capped. FIRSTCUT_SUBJECT_SHARP=0 disables it.
         subject_sharp = {}
-        if _sharp_on:
+        if _pre and "subject_sharpness" in _pre:
+            subject_sharp = dict(_pre["subject_sharpness"])
+            print(f"[iqa_worker] subject sharpness reused from detect_worker "
+                  f"({len(subject_sharp)} photos)", flush=True)
+        elif _sharp_on:
             try:
                 import time as _tss
                 _t0 = _tss.monotonic()

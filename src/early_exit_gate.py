@@ -122,6 +122,11 @@ def _technical_inspect(path: str) -> dict:
     Non-RAW formats (JPG/PNG/…) still get the full flat/void + blur inspection with a
     fast, thread-safe PIL decode — that's where the half-written / grey-square export
     race actually happens."""
+    try:
+        from work_counters import bump as _wc_bump
+        _wc_bump("decode.gate")
+    except Exception:
+        pass
     # Phase 1 — file readiness / lock / completeness (cheap, no image decode).
     if not _file_ready(path):
         return {"reason": "unreadable", "blur": 0.0}

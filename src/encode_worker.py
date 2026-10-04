@@ -165,6 +165,11 @@ def _free_vram_gb():
 def _onnx_session(graph: str = ""):
     """Create the CUDA session. torch ships the CUDA 12 DLLs onnxruntime needs
     but does not put them on the search path, so add them explicitly."""
+    try:
+        from work_counters import bump as _wc_bump
+        _wc_bump("model_load.onnx_" + ("text" if "text" in str(graph) else "vision"))
+    except Exception:
+        pass
     from pathlib import Path as _P
     _tl = _P(_ROOT) / "venv" / "Lib" / "site-packages" / "torch" / "lib"
     # ── cuDNN version preference (2026-09-16) ─────────────────────────────────
@@ -556,6 +561,11 @@ def _decode_chunk(chunk):
     timeout-guarded decode (already fast for compressed non-RAW formats, and
     unchanged behavior for them). Returns (pil_images, failed_local, first_err)
     in chunk order, same contract _iter_decoded_batches always had."""
+    try:
+        from work_counters import bump as _wc_bump
+        _wc_bump("decode.encode", len(chunk))
+    except Exception:
+        pass
     from PIL import Image
     from raw_support import RAW_EXTS
 
@@ -935,6 +945,12 @@ def serve():
     (see _serve_singleton_gate) — one warm worker per machine, no matter how
     many owners race a prewarm.
     """
+    try:
+        import work_counters as _wc
+        _wc.install_exit_flush("encode")
+        _wc.bump("worker.encode")
+    except Exception:
+        pass
     import json as _json
     import queue as _queue
     import threading as _threading
@@ -962,6 +978,13 @@ def serve():
         resp_path = job.get("resp") or ""
 
         def _respond(ok, error=""):
+            # Persist work counts BEFORE answering: a warm serve process is
+            # often terminated, not exited, so exit-time flushing loses them.
+            try:
+                import work_counters as _wc_s
+                _wc_s.flush("encode")
+            except Exception:
+                pass
             if resp_path:
                 try:
                     with open(resp_path, "w", encoding="utf-8") as f:
@@ -1050,6 +1073,12 @@ def serve():
 
 
 def main():
+    try:
+        import work_counters as _wc
+        _wc.install_exit_flush("encode")
+        _wc.bump("worker.encode")
+    except Exception:
+        pass
     # CRITICAL: ALL exit paths use os._exit (not normal Python shutdown).
     # PyTorch's atexit handler calls cuCtxDestroy/cudaDeviceReset on exit, which
     # triggers NVIDIA driver callbacks in the parent grade-worker process (which

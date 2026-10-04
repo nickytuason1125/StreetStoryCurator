@@ -1,0 +1,39 @@
+#!/bin/sh
+# Golden-grade guard (scripts/perf_guard.py) before pushing grading changes.
+# Blocks the push if any golden grade changes, a stage does more work, or the
+# cull got >15% slower under comparable conditions. Skips (with a warning) when
+# no grading file changed or the golden photo set is not reachable.
+# Bypass deliberately with: git push --no-verify
+PY=venv/Scripts/python.exe
+[ -f "$PY" ] || PY=python
+
+zero=0000000000000000000000000000000000000000
+changed=""
+while read local_ref local_sha remote_ref remote_sha; do
+    [ "$local_sha" = "$zero" ] && continue
+    if [ "$remote_sha" = "$zero" ]; then
+        range="$local_sha --not --remotes"
+        files=$(git rev-list $range | while read c; do git diff-tree --no-commit-id --name-only -r "$c"; done)
+    else
+        files=$(git diff --name-only "$remote_sha" "$local_sha")
+    fi
+    changed="$changed $files"
+done
+
+echo "$changed" | tr ' ' '\n' | grep -Eq '^(src/|grade_runner\.py|grade_worker\.py|config\.json|models/)' || {
+    echo "[pre-push] no grading files changed — golden check skipped"
+    exit 0
+}
+
+echo "[pre-push] grading code changed — running the golden-grade check (~1-2 min)…"
+PYTHONIOENCODING=utf-8 "$PY" scripts/perf_guard.py check --set quick
+rc=$?
+if [ $rc -eq 3 ]; then
+    echo "[pre-push] WARNING: golden photo set not reachable (drive unplugged?) — NOT verified, push allowed"
+    exit 0
+fi
+if [ $rc -ne 0 ]; then
+    echo "[pre-push] BLOCKED: golden check failed (see above). Fix it, or re-record the"
+    echo "           baseline on purpose: $PY scripts/perf_guard.py record --set quick"
+fi
+exit $rc

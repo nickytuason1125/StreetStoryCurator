@@ -16,6 +16,13 @@ from pathlib import Path
 
 _PATH   = Path(__file__).resolve().parent.parent / "cache" / "user_ratings.json"
 _BACKUP = Path(__file__).resolve().parent.parent / "cache" / "user_ratings.backup.json"
+# Golden-grade runs (scripts/perf_guard.py) point this at an empty file so the
+# taste loop — which is MEANT to move grades as you rate — cannot make the
+# grading-machinery check flap. Unset in normal use.
+import os as _os_rs
+if _os_rs.environ.get("FIRSTCUT_RATINGS_PATH", "").strip():
+    _PATH   = Path(_os_rs.environ["FIRSTCUT_RATINGS_PATH"])
+    _BACKUP = _PATH.with_name(_PATH.stem + ".backup.json")
 _lock   = threading.Lock()
 
 

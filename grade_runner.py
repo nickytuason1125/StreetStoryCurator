@@ -87,6 +87,11 @@ def main() -> None:
         pass
 
     req_path, prog_path = sys.argv[1], sys.argv[2]
+    try:
+        import work_counters as _wc
+        _wc.install_exit_flush("runner")
+    except Exception:
+        pass
     q = _FileQueue(prog_path)
     try:
         req = json.loads(Path(req_path).read_text(encoding="utf-8"))
