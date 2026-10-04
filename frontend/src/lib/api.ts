@@ -54,6 +54,11 @@ export const API = isTauri() || !window.location.origin.startsWith("http")
   : window.location.origin;
 export const thumbUrl = (p: string) => `${API}/api/thumb?path=${encodeURIComponent(p)}`;
 export const photoUrl = (p: string) => `${API}/api/photo?path=${encodeURIComponent(p)}`;
+/** The ORIGINAL file as an attachment — photoUrl serves a display preview. */
+export const downloadUrl = (p: string) => `${API}/api/download?path=${encodeURIComponent(p)}`;
+/** An archive made by /api/export/batch-zip (served from output/batch only). */
+export const zipUrl = (zipPath: string) =>
+  `${API}/api/export/zip-file?name=${encodeURIComponent(zipPath.split(/[\/]/).pop() || '')}`;
 
 /** Strip traversal sequences and normalise separators before sending paths to the API. */
 export const sanitizePath = (raw: string): string =>

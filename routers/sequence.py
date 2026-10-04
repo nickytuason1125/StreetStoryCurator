@@ -21,6 +21,8 @@ from server_impl import (  # shared state & helpers
     GLOBAL_CLUSTER_CACHE, LAST_SEQUENCE, MAX_HISTORY, Path, RECENTLY_GENERATED, _DATA_DIR, analyzer, asyncio, get_analyzer, time,
 )
 
+import numpy as np  # used by the similarity class below; server_impl has no np
+
 router = APIRouter()
 
 
@@ -43,7 +45,6 @@ async def detect_niches(payload: dict):
 @router.post("/api/niches/build-anchors")
 async def build_niche_anchors():
     """(Re)build NicheClassifier visual prototypes from the current cache."""
-    import asyncio
     loop = asyncio.get_running_loop()
     built = await loop.run_in_executor(None, get_analyzer()._build_niche_anchors)
     clf   = get_analyzer()._niche_clf
@@ -178,24 +179,38 @@ async def mogco_sequence_simple(payload: dict):
     Clean single-endpoint MOGCO sequencer for Tauri IPC and external callers.
 
     Payload fields (all optional):
-        vibe_prompt : str   – reserved for future text-to-vector vibe encoding
+        vibe_prompt : str   – free-text vibe; encoded with SigLIP-2 and
+                              blended with the session brief/peg/books
+                              (implemented 2026-09-22 — was a reserved no-op)
         target      : int   – frames to select (default 5)
         min_score   : float – quality floor for DuckDB query (default 0.45)
         beam_width  : int   – beam paths (default 4)
 
     Returns raw beam result: { paths, slots, global_score, beam_objectives }
     """
-    import asyncio
     try:
         target     = int(payload.get("target", 5))
         min_score  = float(payload.get("min_score", 0.45))
         beam_width = int(payload.get("beam_width", 4))
-        # vibe_prompt reserved — encode to vector here when text encoder is added
+        vibe_prompt = (payload.get("vibe_prompt") or "").strip()
+
+        vibe_vec = None
+        if vibe_prompt:
+            try:
+                import blend_anchor as _bl
+                vibe_vec, _bdiag = _bl.blend_query_vector(
+                    None, vibe_prompt, peg_vec=_bl.resolve_peg_embedding())
+                print(f"[blend] vibe_prompt: {_bl.blend_diag_line(_bdiag)}",
+                      flush=True)
+            except Exception as _e_vibe:
+                print(f"[blend] vibe_prompt encoding skipped: {_e_vibe}",
+                      flush=True)
+
         from mogco_sequencer import run_mogco_sequence
         result = await asyncio.get_running_loop().run_in_executor(
             None,
             lambda: run_mogco_sequence(
-                vibe_vec=None,
+                vibe_vec=vibe_vec,
                 target=target,
                 min_score=min_score,
                 beam_width=beam_width,
@@ -300,7 +315,6 @@ async def mogco_sequence_endpoint(payload: dict):
         beam_width    int   – parallel beam paths (default 4)
         min_score     float – hard quality floor for DB query (default 0.45)
     """
-    import asyncio
     import numpy as np
 
     try:

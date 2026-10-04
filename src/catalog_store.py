@@ -304,6 +304,11 @@ def rebuild_from_lance(path: Optional[Path] = None,
             s = stars.get(ph["path"])
             if s:
                 ph["stars"] = int(s); hit += 1
+                # Rated photos show YOUR grade, not the algorithm's bucket —
+                # see ratings_store.grade_for_stars.
+                _sg = ratings_store.grade_for_stars(s)
+                if _sg:
+                    ph["grade"] = _sg
         if hit:
             print(f"[catalog] restored {hit} star ratings")
     except Exception as exc:

@@ -13,8 +13,11 @@ set SIGLIP_TIER=low
 set FIRSTCUT_LITE=1
 
 echo [1/3] Clearing stale FirstCut processes...
-rem Kill our python processes EXCEPT the watchdog (which must survive to keep auditing)
-powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='python.exe' OR Name='pythonw.exe'\" | Where-Object { $_.CommandLine -notmatch 'run_watchdog' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+rem Kill our python processes EXCEPT the watchdog (which must survive to keep auditing).
+rem Also kills a stale curator-api.exe (the packaged/Tauri sidecar build) — it
+rem squats port 8000 exactly like a zombie dev backend but has no "python" in
+rem its name, so it silently blocked every relaunch until this was added (2026-09-22).
+powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='python.exe' OR Name='pythonw.exe' OR Name='curator-api.exe'\" | Where-Object { $_.CommandLine -notmatch 'run_watchdog' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
 timeout /t 2 /nobreak >nul
 
 echo [2/3] Starting the FirstCut backend (Lite mode)...

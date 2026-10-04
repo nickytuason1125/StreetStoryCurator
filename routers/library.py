@@ -197,6 +197,16 @@ async def people_search(path: str = Query(...), idx: int = Query(0)):
     return JSONResponse(data)
 
 
+@router.get("/api/download")
+async def download_original(path: str = Query(...)):
+    """The ORIGINAL file as a download. /api/photo serves a display preview
+    (a ~265 KB JPEG for a 40 MB ARW), so 'Download' used to hand back the
+    preview under the raw file's name (2026-10-04). Same path-safety check as
+    /api/photo: existing image files only, no traversal."""
+    p = _safe_image_path(path)
+    return FileResponse(str(p), filename=p.name, media_type="application/octet-stream")
+
+
 @router.get("/api/photo")
 async def serve_photo(path: str = Query(...), max: int = Query(0)):
     """Serve a photograph for loupe display.
@@ -367,7 +377,8 @@ def _read_exif(path: str) -> dict:
     return read_exif(path)
 
 
-_RAW_EXTS = {".arw", ".cr2", ".cr3", ".nef", ".orf", ".rw2", ".raf", ".dng", ".pef", ".srw"}
+from src.raw_support import RAW_EXTS as _SHARED_RAW_EXTS   # the ONE raw list — copies drifted (.crw)
+_RAW_EXTS = set(_SHARED_RAW_EXTS)
 
 _JPEG_EXTS = {".jpg", ".jpeg"}
 
@@ -405,7 +416,8 @@ def _open_preview(src: Path):
     suf = src.suffix.lower()
     if suf in _RAW_EXTS:
         import rawpy
-        with rawpy.imread(str(src)) as raw:
+        from src.raw_support import RAWPY_LOCK   # 6 queue workers: LibRaw is not thread-safe
+        with RAWPY_LOCK, rawpy.imread(str(src)) as raw:
             thumb = raw.extract_thumb()
         if thumb.format == rawpy.ThumbFormat.JPEG:
             return _PILImg.open(io.BytesIO(thumb.data))

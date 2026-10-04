@@ -502,7 +502,12 @@ def _kill_stray_backends() -> None:
         for p in _ps.process_iter(["pid", "name", "cmdline"]):
             try:
                 n = (p.info["name"] or "").lower()
-                if "python" not in n or p.info["pid"] == me:
+                # "curator-api" is the packaged (PyInstaller/Tauri sidecar) build's
+                # process name — a stale copy squats port 8000 exactly like a
+                # zombie dev backend but was invisible here (name has no "python"),
+                # so it silently blocked every dev relaunch until killed by hand
+                # (2026-09-22). Its cmdline still matches local_launcher below.
+                if not ("python" in n or "curator-api" in n) or p.info["pid"] == me:
                     continue
                 if p.info["pid"] == _my_ppid:
                     continue  # our own venv shim — killing it kills US (see docstring)
@@ -821,6 +826,9 @@ def main():
 
         import webview
         webview.settings['REMOTE_DEBUGGING_PORT'] = 9222
+        # pywebview ships with downloads OFF: every Download / Download-all
+        # click in the window was silently dropped (2026-10-04).
+        webview.settings['ALLOW_DOWNLOADS'] = True
 
         class FolderApi:
             def pick_folder(self):

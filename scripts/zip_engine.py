@@ -1,7 +1,7 @@
 """Package the PyInstaller engine into chunked zip resources.
 
 Why: tauri-build's resources glob stack-overflows on the 8k-file engine
-tree, AND NSIS (32-bit) cannot mmap files > 2 GB Ã¢â‚¬â€ so neither the loose
+tree, AND NSIS (32-bit) cannot mmap files > 2 GB ---- so neither the loose
 tree nor one big zip can ship. Chunked independent zips (~1.6 GB each)
 avoid both limits; the shell extracts every part on first launch
 (lib.rs start_sidecar) and NSIS recompresses for distribution.

@@ -3,7 +3,7 @@ import { Download } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { Modal } from '../ui/Modal';
 import { Thumb } from '../photo/Thumb';
-import { API, photoUrl } from '../../lib/api';
+import { API, downloadUrl, zipUrl } from '../../lib/api';
 
 /* ── Export Modal ────────────────────────────────────────────────── */
 /* Extracted verbatim from App.tsx during the views split. */
@@ -14,7 +14,7 @@ export function ExportModal({ photos, filterGrade, onClose }: { photos: any[]; f
 
   const handleDownload = (p: any) => {
     const a = document.createElement('a');
-    a.href = photoUrl(p.path); a.download = p.path.split(/[\\/]/).pop() || 'photo.jpg';
+    a.href = downloadUrl(p.path); a.download = p.path.split(/[\\/]/).pop() || 'photo.jpg';
     a.click();
   };
 
@@ -32,7 +32,7 @@ export function ExportModal({ photos, filterGrade, onClose }: { photos: any[]; f
       const data = await res.json();
       if (!data.zip) throw new Error('No archive returned');
       const a = document.createElement('a');
-      a.href = photoUrl(data.zip);
+      a.href = zipUrl(data.zip);
       a.download = data.zip.split(/[\\/]/).pop() || 'photos.zip';
       a.click();
       setZipState('idle');

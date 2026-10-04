@@ -430,10 +430,16 @@ def _decode_with_timeout(p, timeout_s=30):
             if os.path.splitext(p)[1].lower() in _RAW_EXTS:
                 result["img"] = _extract_preview(p, "RGB")
             else:
-                im = _Image.open(p)
-                try: im.draft("RGB", (512, 512))
-                except Exception: pass
-                result["img"] = im.convert("RGB")
+                # Camera JPEG → its MPF preview (61 MP Sony: ~28 ms vs ~100 ms
+                # drafted); otherwise a drafted decode.
+                from raw_support import jpeg_preview as _jpeg_preview
+                img = _jpeg_preview(p, 512)
+                if img is None:
+                    im = _Image.open(p)
+                    try: im.draft("RGB", (512, 512))
+                    except Exception: pass
+                    img = im.convert("RGB")
+                result["img"] = img
         except Exception as exc:
             result["img"] = None
             # Keep the reason — swallowed errors here produced the silent
@@ -585,7 +591,7 @@ def _decode_chunk(chunk):
     return pil, failed_local, first_err
 
 
-def _iter_decoded_batches(paths, batch):
+def _iter_decoded_batches(paths, batch, prep=None):
     """Yield (start_index, chunk_paths, pil_images, failed_local, first_err).
 
     PREFETCH PIPELINE (2026-09-11): the GPU used to sit idle while the NEXT
@@ -610,7 +616,12 @@ def _iter_decoded_batches(paths, batch):
         for i in range(0, len(paths), batch):
             chunk = paths[i:i + batch]
             pil, failed_local, first_err = _decode_chunk(chunk)
-            q.put((i, chunk, pil, failed_local, first_err))
+            if prep is not None:
+                # Preprocess here too (2026-10-04): on the GPU loop it cost
+                # 37 ms/img against an 87 ms forward pass, idling the GPU.
+                q.put((i, chunk, [prep(im) for im in pil], failed_local, first_err))
+            else:
+                q.put((i, chunk, pil, failed_local, first_err))
         q.put(_SENT)
 
     import threading as _th
@@ -692,7 +703,8 @@ def encode_images_onnx(sess, paths, batch=8):
     written = 0
     failed = []
     first_err = None
-    for i, chunk, pil, failed_local, batch_first_err in _iter_decoded_batches(paths, batch):
+    for i, chunk, arrs, failed_local, batch_first_err in _iter_decoded_batches(
+            paths, batch, prep=lambda im: _onnx_preprocess(im)):
         for j in failed_local:
             failed.append(i + j)
             if first_err is None:
@@ -700,9 +712,6 @@ def encode_images_onnx(sess, paths, batch=8):
                 print(f"[encode_worker] read error ({first_err or 'unknown'}), skipping: {chunk[j]}", flush=True)
             elif (i + j) % 500 == 0:
                 print(f"[encode_worker] read error #{i+j+1}: {chunk[j]}", flush=True)
-        arrs = []
-        for img in pil:
-            arrs.append(_onnx_preprocess(img))
         x = np.stack(arrs).astype(np.float16)
         try:
             e = sess.run(None, {"pixel_values": x})[0].astype(np.float32)
@@ -982,8 +991,7 @@ def serve():
                     state["onnx_sess"] = _onnx_session()
                 _mark_loaded()
                 embs = encode_images_onnx(state["onnx_sess"], items,
-                                          batch=max(1, int(os.environ.get(
-                                              "SIGLIP_ENC_BATCH", str(_default_batch())))))
+                                          batch=_rp.onnx_image_batch())
             else:
                 _ensure_loaded()
                 _mark_loaded()
@@ -1061,9 +1069,9 @@ def main():
 
         # ONNX fast path — images only, and only when explicitly enabled.
         if mode == "images" and _onnx_enabled():
-            _batch = max(1, int(os.environ.get("SIGLIP_ENC_BATCH",
-                                               str(_default_batch()))))
-            embs = encode_images_onnx(_onnx_session(), items, batch=_batch)
+            # Fixed per device — see run_profile.onnx_image_batch (grades must
+            # not depend on free RAM).
+            embs = encode_images_onnx(_onnx_session(), items, batch=_rp.onnx_image_batch())
             np.save(out_npy, embs.astype(np.float32))
             print(f"[encode_worker] images(onnx): {embs.shape} -> {out_npy}", flush=True)
             _shutdown_raw_pool()

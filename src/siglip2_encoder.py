@@ -88,6 +88,16 @@ _MODEL_TAG, EMBED_DIM, _CACHE_DIR_STR, _DEFAULT_MIN_RAM = _TIERS[_TIER]
 # profile, so there is one place to change when a tier is added.
 import run_profile as _rp                                     # noqa: E402
 _PROFILE = _rp.current()
+
+
+def _align_chunk(size: int, batch: int) -> int:
+    """Round an encode chunk DOWN to a whole number of batches (min one).
+
+    Every photo then sits in the same batch position however the RAM planner
+    chunks the job — the ONNX encoder is not batch-shape invariant (see
+    run_profile.onnx_image_batch)."""
+    batch = max(1, int(batch))
+    return max(batch, (int(size) // batch) * batch)
 EMBED_DIM = _PROFILE.embed_dim
 
 MODEL_CACHE_DIR = Path(_CACHE_DIR_STR)
@@ -236,8 +246,13 @@ def _default_ram_floor_gb() -> float:
     # against 2.70 GB for the PyTorch path. Keeping the PyTorch-era floor would
     # refuse grades the machine can now comfortably run — the guard would have
     # become the binding constraint instead of the memory.
+    # 2026-10-03: 2.0 (→ 2.3 GB admission) refused every cull on a 16 GB
+    # machine sitting at 2.1 GB free with 32 GB of commit headroom — the user
+    # saw "grading stopped early" and could not grade at all. 1.6 = measured
+    # 1.20 peak + 0.4 margin; the pagefile and the mid-encode OOM ride-out
+    # absorb transient dips.
     if _onnx_active():
-        return 2.0
+        return 1.6
     return _hf_floors()[1] if _hf_checkpoint_present() else 2.0
 
 
@@ -1220,8 +1235,13 @@ class SigLIP2Encoder:
                             _b = int(env.get("SIGLIP_ENC_BATCH", "0") or 0)
                         except (TypeError, ValueError):
                             _b = 0
+                        if _b <= 0:
+                            _b = _rp.onnx_image_batch()
                         if _b > 1:
                             env["SIGLIP_ENC_BATCH"] = str(max(1, _b // 2))
+                            # Emergency only: the ONNX batch otherwise never
+                            # moves (grades would drift in the last bits).
+                            env["FIRSTCUT_ONNX_ENC_BATCH"] = env["SIGLIP_ENC_BATCH"]
                             print(f"[siglip2] OOM response: encode batch {_b} -> "
                                   f"{env['SIGLIP_ENC_BATCH']} for the next attempt", flush=True)
                     # ── CUDA instability breaker (2026-09-15) ─────────────
@@ -1414,7 +1434,7 @@ class SigLIP2Encoder:
                 _chunk_size = _mp.bump_chunk_size(max(_plan, _chunk_size), _mp.free_ram_gb())
             except Exception:
                 _chunk_size = _plan
-            _CHUNK = max(1, _chunk_size)
+            _CHUNK = _align_chunk(max(1, _chunk_size), _rp.onnx_image_batch())
             _idx   = _todo[_pos:_pos + _CHUNK]
             _chunk = [paths[i] for i in _idx]
             if progress and n:

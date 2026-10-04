@@ -113,3 +113,19 @@ The sequencer employs a multi-objective optimization approach:
 ## Conclusion
 
 FirstCut's sequencing logic provides a sophisticated framework for visual storytelling that combines technical excellence with narrative structure. While it cannot fully replicate human intuition about story meaning, it offers a robust foundation for creating engaging photographic sequences that follow established editorial principles. The integration of enhanced models like YuNet and NIMA further improves the system's ability to identify compelling narrative elements and maintain visual coherence throughout the sequence.
+## Implementation reality check (2026-09-21)
+
+This document describes the narrative *framework*. The shipped implementation:
+
+- The production Story path lives in `src/creative_director.py` (brief-aware
+  scoring -> `src/story_selector.py` whole-library selection -> role/pacing via
+  `src/sequence_engine.py` -> agentic contact-sheet revision loop). Embeddings
+  are SigLIP2, not DINOv2; face signals come from the current face_signals
+  stack, not the YuNet-era description above.
+- `vision_story_mode.py` is the standalone vision-verified pipeline with a
+  fixed 4-slot structure (Opener / Subject-Interaction / Detail-Accent /
+  Closer-Resolution). It is prompt-conditioned as of the 2026-09-21 audit:
+  the user brief steers slot retrieval and is an approval condition in the
+  vision gate, not just verdict prose.
+- The 5-slot structure described below refers to the older sequencing draft;
+  treat the code as the source of truth.

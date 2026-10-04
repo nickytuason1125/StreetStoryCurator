@@ -34,6 +34,7 @@ import itertools
 import json
 import re
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -62,6 +63,10 @@ _CLIP_MODEL          = "openai/clip-vit-base-patch32"
 _QWEN_GGUF           = Path(__file__).parent / "models" / "qwen2.5-vl-2b-instruct-q4_k_m.gguf"
 _QWEN_MMPROJ         = Path(__file__).parent / "models" / "mmproj-qwen2.5-vl-2b-instruct-f16.gguf"
 _QWEN_MODEL          = "qwen2.5vl:3b"   # kept for reference / fallback label
+# Model choice is measured, not fashionable (F6): _ab_tournament.json
+# (2026-06-14) KEPT Qwen2.5-VL as judge -- SmolVLM2 collapsed to std=0.003
+# (mean 0.852 for everything) and Qwen3-VL-4B cost 10.9 s/img for std 0.076.
+# Do not "upgrade" this model without rerunning the tournament.
 _DIRECTOR_MODEL      = "deepseek-r1:8b"
 _OUTPUT_FILE         = "final_story_manifest.json"
 _CLIP_BATCH          = 16
@@ -73,12 +78,21 @@ _THRESHOLD_DEFAULTS: dict[str, float] = {
     "DOMINANT_AREA_PCT": 20.0,
     "H_CONTRAST_THRESH": 161.0,
     "OPENER_MAX_AREA":   30.0,
+    "LUM_RANGE_THRESH":  0.30,   # luminance range required for "drama" claims
+    "SLOT_BRIEF_WEIGHT": 0.35,   # user-brief weight in slot retrieval (F1)
+    "HONEST_SLOTS":      0.0,    # 1 = unapproved slots stay empty, no fallback
+    "CANDIDATES_PER_SLOT": 8.0,  # top-k CLIP candidates per vision gate
+    "GEN_SEED":          2026.0, # deterministic seed for every LLM call
+    "JUDGE_SAMPLES":     1.0,    # >1 = best-of-N structured verdicts (election)
+    "JUDGE_BREAKER_TRIPS": 3.0,  # consecutive failures before the breaker opens
+    "JUDGE_SLOW_S":      0.0,    # >0 = seconds after which a call counts slow
+    "REQUIRE_VISION_GATE": 0.0,  # 1 = hard-abort when gatekeeper GGUF missing
 }
 
 
 def _load_thresholds() -> dict[str, float]:
     try:
-        with open(_CONFIG_PATH, encoding="utf-8") as _f:
+        with open(_CONFIG_PATH, encoding="utf-8-sig") as _f:
             _raw = json.load(_f)
         return {
             **_THRESHOLD_DEFAULTS,
@@ -89,6 +103,24 @@ def _load_thresholds() -> dict[str, float]:
 
 
 _CFG: dict[str, float] = _load_thresholds()
+
+
+def _load_str_config() -> dict[str, str]:
+    """String-valued config keys (config.json), e.g. JUDGE_MODEL."""
+    try:
+        with open(_CONFIG_PATH, encoding="utf-8-sig") as _f:
+            _raw = json.load(_f)
+        return {k: str(v) for k, v in _raw.items() if isinstance(v, str)}
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+_STR_CFG: dict[str, str] = _load_str_config()
+# Judge-Verdict model, MEASURED (2026-09-21 tournament, _judge_ab_report.json):
+# phi4-mini scored grounding 1.000 across all 9 protocol packets vs the
+# deepseek-r1:8b-q3km baseline's 0.778 (3 FAILs, 9/9 over the 120-word cap,
+# 22.6 s vs 7.0 s). Override with config.json: "JUDGE_MODEL": "<tag>".
+_DIRECTOR_MODEL = _STR_CFG.get("JUDGE_MODEL", "phi4-mini:latest")
 
 # Story slots in pacing order
 _SLOT_NAMES = ["Opener", "Subject/Interaction", "Detail/Accent", "Closer/Resolution"]
@@ -279,6 +311,10 @@ class SlotResult:
     anchor_bbox:    list = field(default_factory=lambda: [0, 0, 1000, 1000])
     anchor_label:   str  = ""
     luminance:      float = 0.5   # mean frame luminance [0,1] computed during TSP
+    # How the slot was filled (F4): "vision_approved", "clip_fallback" (no
+    # candidate passed the vision gate) or "model_unavailable". Surfaced in
+    # the manifest instead of hidden inside a bool.
+    provenance:     str  = "vision_approved"
 
 
 # =============================================================================
@@ -287,9 +323,11 @@ class SlotResult:
 
 def clip_stage(
     image_dir: str,
-) -> tuple[list[str], list[list[float]], dict[str, list[float]]]:
+    style_prompt: str = "",
+) -> tuple[list[str], list[list[float]], dict[str, list[float]], Optional[list[float]]]:
     """
-    Encode all images (224x224 L -> RGB) and all slot query strings with CLIP.
+    Encode all images (color, aspect-preserving) and all text queries with CLIP,
+    including the user's style brief when provided.
 
     Image and slot-query embeddings are cached in LanceDB (clip_vec_store) under
     source "story_img"/"story_text", keyed by path/query. On a warm run every
@@ -302,6 +340,8 @@ def clip_stage(
         valid_paths : list of image paths that were successfully encoded/cached
         img_embs    : parallel list of 512-d float image embeddings
         text_embs   : dict mapping slot_name -> 512-d float text embedding
+        prompt_emb  : 512-d embedding of the user's style brief (or None) --
+                      blended into every slot query in _rank_for_slot (F1)
     """
     # Cache is optional -- mirror the from-src/bare import fallback used elsewhere
     # in this module, and degrade to no-cache if the store cannot be imported.
@@ -326,10 +366,13 @@ def clip_stage(
 
     # -- Cache lookup: images + the static slot-query text embeddings ----------
     slot_queries = [_SLOT_CLIP_QUERIES[s] for s in _SLOT_NAMES]
+    # F1: the user's brief becomes a retrieval signal, not just prose. It is
+    # embedded as one more text query, so a warm cache serves it for free.
+    brief_queries = [style_prompt] if style_prompt.strip() else []
     cached_imgs  = _cv_get(raw_paths, source="story_img")    if _cv_get else {}
-    cached_texts = _cv_get(slot_queries, source="story_text") if _cv_get else {}
+    cached_texts = _cv_get(slot_queries + brief_queries, source="story_text") if _cv_get else {}
     missing_imgs  = [p for p in raw_paths    if p not in cached_imgs]
-    missing_texts = [q for q in slot_queries if q not in cached_texts]
+    missing_texts = [q for q in slot_queries + brief_queries if q not in cached_texts]
     print(f"[clip] {len(cached_imgs)}/{len(raw_paths)} image vectors cached; "
           f"{len(missing_imgs)} to encode")
 
@@ -347,7 +390,7 @@ def clip_stage(
         model.eval()
 
         with torch.no_grad():
-            # Images (224x224 grayscale then RGB for CLIP's 3-channel input)
+                                    # Images (aspect-preserving thumbnail, full color)
             for i in range(0, len(missing_imgs), _CLIP_BATCH):
                 batch_paths = missing_imgs[i : i + _CLIP_BATCH]
                 pil_batch   = []
@@ -356,7 +399,13 @@ def clip_stage(
                     try:
                         with open(p, "rb") as fh:
                             stream = io.BytesIO(fh.read())
-                        img = Image.open(stream).resize((224, 224)).convert("L").convert("RGB")
+                        # Full color + aspect preserved (F9): grayscale
+                        # destroyed the tone signal (the story_selector
+                        # W_TONE lesson) and a square stretch corrupted
+                        # the geometry CLIP sees.
+                        img = Image.open(stream)
+                        img.thumbnail((224, 224))
+                        img = img.convert("RGB")
                         del stream
                         pil_batch.append(img)
                         ok_batch.append(p)
@@ -414,8 +463,13 @@ def clip_stage(
         if q in cached_texts
     }
 
+    prompt_emb: Optional[list[float]] = None
+    if brief_queries and style_prompt in cached_texts:
+        pe = cached_texts[style_prompt]
+        prompt_emb = pe.tolist() if hasattr(pe, "tolist") else list(pe)
+
     print(f"[clip] Done: {len(valid_paths)} images + {len(text_embs)} slot queries ready")
-    return valid_paths, img_embs, text_embs
+    return valid_paths, img_embs, text_embs, prompt_emb
 
 
 def _rank_for_slot(
@@ -425,9 +479,22 @@ def _rank_for_slot(
     text_embs:    dict[str, list[float]],
     already_used: set[str],
     top_k:        int = _CANDIDATES_PER_SLOT,
+    prompt_emb:   Optional[list[float]] = None,
 ) -> list[tuple[float, str]]:
-    """Rank unused images by cosine similarity to the slot's text embedding."""
+    """
+    Rank unused images by cosine similarity to the slot's text embedding,
+    blended with the user's style brief (F1). The brief now steers WHICH
+    frames compete for each slot, not only how the verdict describes them.
+    """
     query_vec = np.array(text_embs[slot_name], dtype=np.float32)
+    if prompt_emb is not None:
+        _w = float(min(max(_CFG.get("SLOT_BRIEF_WEIGHT", 0.35), 0.0), 1.0))
+        if _w > 0.0:
+            brief = np.asarray(prompt_emb, dtype=np.float32)
+            mixed = (1.0 - _w) * query_vec + _w * brief
+            n = float(np.linalg.norm(mixed))
+            if n > 1e-9:
+                query_vec = mixed / n
     embs_arr  = np.array(all_embs, dtype=np.float32)
     sims      = embs_arr @ query_vec
     ranked = sorted(
@@ -446,25 +513,77 @@ def _rank_for_slot(
 # Stage 2: Qwen 2.5-VL slot-specific gatekeeping
 # =============================================================================
 
-def _render_image_b64(image_path: str, size: int = 512) -> str:
+def _render_image_b64(image_path: str, size: int = 512) -> tuple[str, tuple[float, float, float, float]]:
     """
-    Load image -> resize to size x size -> JPEG bytes -> base64 string.
-    Returns empty string on failure. Caller must delete the return value after use.
+    Load image -> aspect-preserving letterbox into a size x size neutral-gray
+    canvas (NOT a square stretch) -> JPEG bytes -> base64 string.
+
+    Returns (b64, content_rect) where content_rect = (x0, y0, x1, y1) is the
+    region the photograph occupies, in 0-1000 coordinates of the SENT image.
+    Qwen reports bboxes in sent-image space, so every bbox must be mapped back
+    through _remap_bbox before it describes the real photograph. A square
+    stretch here used to corrupt every downstream spatial fact (h_gap,
+    subject_area_pct, left/right contrast claims) for non-square frames.
+
+    Returns ("", full-canvas rect) on failure. Caller deletes b64 after use.
     No raw pixels are retained after the function returns.
     """
     try:
         from PIL import Image
         with Image.open(image_path) as raw:
-            img = raw.convert("RGB").resize((size, size))
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=82)
+            src = raw.convert("RGB")
+        w, h = src.size
+        scale = size / max(w, h)
+        nw = max(1, min(size, int(round(w * scale))))
+        nh = max(1, min(size, int(round(h * scale))))
+        img = src.resize((nw, nh))
+        del src
+        canvas = Image.new("RGB", (size, size), (127, 127, 127))
+        x0 = (size - nw) // 2
+        y0 = (size - nh) // 2
+        canvas.paste(img, (x0, y0))
         del img
+        buf = io.BytesIO()
+        canvas.save(buf, format="JPEG", quality=82)
+        del canvas
         b64 = base64.b64encode(buf.getvalue()).decode()
         del buf
-        return b64
+        rect = (
+            x0 * 1000.0 / size,
+            y0 * 1000.0 / size,
+            (x0 + nw) * 1000.0 / size,
+            (y0 + nh) * 1000.0 / size,
+        )
+        return b64, rect
     except Exception as exc:
         print(f"[qwen]   render failed {Path(image_path).name}: {exc}")
-        return ""
+        return "", (0.0, 0.0, 1000.0, 1000.0)
+
+
+def _remap_bbox(
+    bbox: list,
+    rect: tuple[float, float, float, float],
+) -> list[int]:
+    """
+    Map a [ymin, xmin, ymax, xmax] box from sent-image (padded canvas) 0-1000
+    coordinates back to true-photograph 0-1000 coordinates. rect is the
+    content_rect produced by _render_image_b64. Values are clamped to 0-1000.
+    """
+    x0r, y0r, x1r, y1r = rect
+
+    def _axis(v: float, a0: float, a1: float) -> int:
+        if a1 - a0 < 1e-6:
+            return 0
+        return int(round(min(1000.0, max(0.0, (v - a0) / (a1 - a0) * 1000.0))))
+
+    try:
+        ymin, xmin, ymax, xmax = (float(v) for v in bbox)
+    except Exception:
+        return [0, 0, 1000, 1000]
+    return [
+        _axis(ymin, y0r, y1r), _axis(xmin, x0r, x1r),
+        _axis(ymax, y0r, y1r), _axis(xmax, x0r, x1r),
+    ]
 
 
 def _sanitize_bbox(raw_val: object, fallback: list[int]) -> list[int]:
@@ -483,19 +602,54 @@ def _sanitize_bbox(raw_val: object, fallback: list[int]) -> list[int]:
     return fallback
 
 
+def _strip_trailing_commas(txt: str) -> str:
+    """Drop commas immediately followed by whitespace and } or ] (F5 repair)."""
+    bs = chr(92)
+    out: list[str] = []
+    i = 0
+    n = len(txt)
+    while i < n:
+        ch = txt[i]
+        if ch == bs and i + 1 < n:      # keep escape pairs untouched
+            out.append(ch); out.append(txt[i + 1]); i += 2; continue
+        if ch == ",":
+            j = i + 1
+            while j < n and txt[j].isspace():
+                j += 1
+            if j < n and txt[j] in "})":
+                i += 1
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _parse_slot_json(raw: str, slot_name: str) -> Optional[dict]:
     """
     Strip <think> blocks, extract JSON, validate required fields.
+    F5: the parser tries the whole text, then the brace-delimited slice, and
+    repairs markdown fences / trailing commas before giving up. One seeded
+    re-ask happens upstream in _qwen_evaluate on total parse failure.
     Extracts spatial bounding boxes when present; falls back gracefully.
     """
-    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+    raw = re.sub("<[^>]*>", "", raw).strip()
+    candidates_txt: list[str] = [raw]
     start = raw.find("{")
     end   = raw.rfind("}") + 1
-    if start < 0 or end <= start:
-        return None
-    try:
-        obj = json.loads(raw[start:end])
-    except json.JSONDecodeError:
+    if start >= 0 and end > start:
+        candidates_txt.append(raw[start:end])
+    # F5: tolerate the two common near-misses -- markdown fences and trailing
+    # commas -- before giving up. Upstream, one seeded re-ask also runs.
+    obj = None
+    for txt in candidates_txt:
+        txt = txt.replace("`" * 3 + "json", "").replace("`" * 3, "").strip()
+        txt = _strip_trailing_commas(txt)
+        try:
+            obj = json.loads(txt)
+            break
+        except (json.JSONDecodeError, ValueError):
+            continue
+    if obj is None or not isinstance(obj, dict):
         return None
     required = {"approved_for_essay", "assigned_slot", "curator_justification"}
     if not required.issubset(obj):
@@ -520,20 +674,39 @@ def _parse_slot_json(raw: str, slot_name: str) -> Optional[dict]:
     }
 
 
-def _qwen_evaluate(image_path: str, slot_name: str, llm: object) -> Optional[dict]:
+def _qwen_evaluate(image_path: str, slot_name: str, llm: object,
+                   style_prompt: str = "") -> Optional[dict]:
     """
-    Evaluate one image for one slot via the pre-loaded llama-cpp Qwen 2.5-VL instance.
-    Base64 is deleted immediately after the call.
-    Returns parsed dict or None.
+    Evaluate one image for one slot via the pre-loaded llama-cpp Qwen instance.
+    Base64 is deleted immediately after the call. Returns parsed dict or None.
+
+    F1: the system prompt carries the user's brief as an approval condition --
+    a frame that does not read as part of one set shot to that brief is
+    rejected even if the slot criteria pass.
+    F2: bboxes are mapped from the padded-canvas space back to true-image
+    coordinates before they are used anywhere downstream.
+    F5: calls are seeded and one deterministic re-ask runs on parse failure.
     """
-    b64 = _render_image_b64(image_path)
+    b64, rect = _render_image_b64(image_path)
     if not b64:
         return None
 
-    result = None
-    try:
+    system_prompt = _SLOT_SYSTEM_PROMPTS[slot_name]
+    if style_prompt.strip():
+        system_prompt += (
+            "\n\n=== SET BRIEF (approval condition) ===\n"
+            "This image is a candidate for a coherent documentary set shot to "
+            "this brief:\n"
+            f"'{style_prompt[:200]}'\n"
+            "If its subject, mood, or palette is inconsistent with the brief, "
+            "reject it (approved_for_essay=false) even if the slot criteria pass."
+        )
+
+    _base_seed = int(_CFG.get("GEN_SEED", 2026))
+
+    def _ask(user_text: str, seed: int) -> str:
         messages = [
-            {"role": "system", "content": _SLOT_SYSTEM_PROMPTS[slot_name]},
+            {"role": "system", "content": system_prompt},
             {
                 "role": "user",
                 "content": [
@@ -541,7 +714,7 @@ def _qwen_evaluate(image_path: str, slot_name: str, llm: object) -> Optional[dic
                         "type": "image_url",
                         "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
                     },
-                    {"type": "text", "text": _EVAL_PROMPT},
+                    {"type": "text", "text": user_text},
                 ],
             },
         ]
@@ -549,22 +722,46 @@ def _qwen_evaluate(image_path: str, slot_name: str, llm: object) -> Optional[dic
             messages=messages,
             temperature=0.0,
             max_tokens=500,
+            seed=_base_seed + seed,
         )
-        raw    = resp["choices"][0]["message"]["content"].strip()
-        result = _parse_slot_json(raw, slot_name)
-    except Exception as exc:
-        print(f"[qwen/{slot_name}] {type(exc).__name__}: {exc}")
+        return resp["choices"][0]["message"]["content"].strip()
+
+    result = None
+    try:
+        try:
+            result = _parse_slot_json(_ask(_EVAL_PROMPT, 0), slot_name)
+        except Exception as exc:
+            print(f"[qwen/{slot_name}] {type(exc).__name__}: {exc}")
+        if result is None:
+            # F5: one bounded deterministic re-ask -- an invalid reply gets a
+            # second chance instead of silently dropping to the CLIP fallback.
+            try:
+                result = _parse_slot_json(
+                    _ask(_EVAL_PROMPT + (
+                        "\n\nIMPORTANT: your previous reply was not a single "
+                        "valid JSON object. Output ONLY the JSON object -- no "
+                        "prose, no markdown, no reasoning blocks."
+                    ), 1),
+                    slot_name,
+                )
+            except Exception as exc:
+                print(f"[qwen/{slot_name}] retry {type(exc).__name__}: {exc}")
+        if result is not None:
+            result["subject_bbox"] = _remap_bbox(result["subject_bbox"], rect)
+            result["anchor_bbox"]  = _remap_bbox(result["anchor_bbox"],  rect)
     finally:
-        del b64
+        b64 = None          # drop the base64 frame (closure-safe; was `del b64`)
         gc.collect()
 
     return result
 
 
 def qwen_stage(
-    all_paths:  list[str],
-    all_embs:   list[list[float]],
-    text_embs:  dict[str, list[float]],
+    all_paths:    list[str],
+    all_embs:     list[list[float]],
+    text_embs:    dict[str, list[float]],
+    style_prompt: str = "",
+    prompt_emb:   Optional[list[float]] = None,
 ) -> list[SlotResult]:
     """
     For each story slot:
@@ -573,7 +770,9 @@ def qwen_stage(
       3. If none approved, use the highest CLIP-scored candidate as fallback.
 
     The Qwen GGUF model is loaded once, used for all slots, then unloaded with purge_vram().
-    Returns one SlotResult per slot, in _SLOT_NAMES order.
+    Returns one SlotResult per slot, in _SLOT_NAMES order. Slot provenance
+    (vision_approved / clip_fallback / model_unavailable) is recorded per
+    result so the manifest can surface how every slot was actually filled.
     """
     from llama_cpp import Llama
     try:
@@ -608,13 +807,15 @@ def qwen_stage(
 
     results:      list[SlotResult] = []
     already_used: set[str]         = set()
+    _eval_cache:  dict[tuple[str, str], Optional[dict]] = {}
+    top_k = int(_CFG.get("CANDIDATES_PER_SLOT", _CANDIDATES_PER_SLOT))
 
     try:
       for slot_name in _SLOT_NAMES:
         print(f"\n[stage2] --- Slot: {slot_name} ---")
         candidates = _rank_for_slot(
             slot_name, all_paths, all_embs, text_embs, already_used,
-            top_k=_CANDIDATES_PER_SLOT,
+            top_k=top_k, prompt_emb=prompt_emb,
         )
         if not candidates:
             print(f"[stage2] WARNING: no candidates left for {slot_name}")
@@ -626,7 +827,10 @@ def qwen_stage(
 
         for clip_score, path in candidates:
             print(f"  [qwen] {Path(path).name} (clip={clip_score:+.4f}) ...", end=" ", flush=True)
-            qr = _qwen_evaluate(path, slot_name, _llm)
+            _key = (path, slot_name)
+            if _key not in _eval_cache:     # F8: one evaluation per (image, slot)
+                _eval_cache[_key] = _qwen_evaluate(path, slot_name, _llm, style_prompt)
+            qr = _eval_cache[_key]
 
             if qr is not None:
                 icon = "APPROVED" if qr["approved_for_essay"] else "REJECTED"
@@ -658,11 +862,16 @@ def qwen_stage(
         }
 
         already_used.add(chosen["_path"])
+        _prov = ("vision_approved" if chosen.get("approved_for_essay")
+                 else "model_unavailable"
+                 if "unavailable" in chosen.get("curator_justification", "").lower()
+                 else "clip_fallback")
         results.append(SlotResult(
             slot_name             = slot_name,
             image_path            = chosen["_path"],
             clip_score            = chosen["_clip_score"],
             approved_by_vision    = bool(chosen["approved_for_essay"]),
+            provenance            = _prov,
             assigned_slot         = slot_name if chosen["approved_for_essay"] else "Snapshot",
             curator_justification = chosen["curator_justification"],
             subject_bbox          = chosen.get("subject_bbox",  [0, 0, 1000, 1000]),
@@ -838,9 +1047,219 @@ def _derive_spatial_facts(r: SlotResult) -> dict:
     }
 
 
+_JUDGE_BREAKER: dict = {"fail": 0}
+
+
+def _judge_breaker_open() -> bool:
+    return _JUDGE_BREAKER["fail"] >= int(_CFG.get("JUDGE_BREAKER_TRIPS", 3))
+
+
+def _judge_breaker_record(ok: bool, elapsed: float = 0.0) -> None:
+    """Success resets the breaker; a failure OR an over-slow call trips it."""
+    slow_limit = float(_CFG.get("JUDGE_SLOW_S", 0.0))
+    slow = slow_limit > 0.0 and elapsed > slow_limit
+    if ok and not slow:
+        _JUDGE_BREAKER["fail"] = 0
+        return
+    _JUDGE_BREAKER["fail"] += 1
+    if _judge_breaker_open():
+        print(f"[verdict] circuit breaker OPEN after "
+              f"{_JUDGE_BREAKER['fail']} consecutive failures/slow calls -- "
+              "structured judging disabled for the rest of this run")
+
+
+def _check_gatekeeper() -> Optional[list[str]]:
+    """Loud, early check that the vision gatekeeper model files exist."""
+    missing = [str(p) for p in (_QWEN_GGUF, _QWEN_MMPROJ) if not p.exists()]
+    return missing or None
+
+
+def _judge_mode() -> str:
+    """"structured" (2026 protocol) or "prose" (legacy). config: JUDGE_MODE."""
+    return _STR_CFG.get("JUDGE_MODE", "prose")
+
+
+def _fact_registry(slot_results: list[SlotResult]) -> dict[str, tuple[float, float]]:
+    """
+    fact_id -> (numeric value, tolerance). The 2026 grounding contract: a
+    claim is grounded iff its fact_ref resolves here AND its value equals the
+    packet number within tolerance -- programmatic equality, not keywords.
+    """
+    reg: dict[str, tuple[float, float]] = {}
+    for i, r in enumerate(slot_results):
+        f = _derive_spatial_facts(r)
+        reg[f"S{i + 1}_lum"] = (round(r.luminance, 3), 0.01)
+        if f["horizontal_contrast"]:
+            reg[f"S{i + 1}_hgap"] = (int(abs(f["h_gap"])), 1.0)
+        if f["subject_dominant"]:
+            reg[f"S{i + 1}_area"] = (float(f["subject_area_pct"]), 0.5)
+    return reg
+
+
+def _build_structured_verdict(
+    obj: object,
+    registry: dict[str, tuple[float, float]],
+) -> Optional[str]:
+    """
+    Validate a schema-decoded judge response against the fact registry and
+    assemble the verdict text. Claims with an unknown fact_ref, a value that
+    does not EQUAL the fact's number (within tolerance), or empty text are
+    dropped. Word cap is enforced by assembly, never by trusting the model.
+    Returns None when nothing survives validation.
+    """
+    if not isinstance(obj, dict):
+        return None
+    summary = str(obj.get("summary", "")).strip()
+    grounded_parts: list[str] = []
+    # a present-but-null claims key must not crash the run (reliability suite)
+    claims = obj.get("claims")
+    if not isinstance(claims, list):
+        claims = []
+    for c in claims:
+        if not isinstance(c, dict):
+            continue
+        ref = str(c.get("fact_ref", "")).strip()
+        if ref not in registry:
+            continue
+        expected, tol = registry[ref]
+        try:
+            val = float(c.get("value"))
+        except (TypeError, ValueError):
+            continue
+        if abs(val - expected) > tol:
+            continue
+        txt = str(c.get("text", "")).strip().rstrip(".")
+        if txt:
+            grounded_parts.append(f"{txt} (fact {ref} = {expected})")
+    if not grounded_parts:
+        return None
+    parts = ([summary] if summary else []) + grounded_parts[:4]
+    verdict = " ".join(parts).strip()
+    # Hard word cap by construction: drop whole claims, never trust obedience.
+    while len(verdict.split()) > 120 and len(parts) > 2:
+        parts.pop()
+        verdict = " ".join(parts).strip()
+    return verdict or None
+
+
+def _structured_verdict(
+    slot_results: list[SlotResult],
+    style_prompt: str,
+    extra_constraints: str = "",
+) -> Optional[str]:
+    """
+    Reliability wrapper around _structured_call: a circuit breaker opens after
+    JUDGE_BREAKER_TRIPS consecutive failures or over-JUDGE_SLOW_S slow calls,
+    so a sick Ollama degrades to prose FAST for the rest of the run instead of
+    stalling every remaining slot behind 3x timeouts.
+    """
+    if _judge_breaker_open():
+        print("[verdict] breaker open -- structured judging skipped this call")
+        return None
+    t0 = time.perf_counter()
+    verdict = _structured_call(slot_results, style_prompt, extra_constraints)
+    _judge_breaker_record(verdict is not None, time.perf_counter() - t0)
+    return verdict
+
+
+def _structured_call(
+    slot_results: list[SlotResult],
+    style_prompt: str,
+    extra_constraints: str = "",
+) -> Optional[str]:
+    """
+    2026-standard judge call: schema-constrained JSON via Ollama `format`,
+    temperature 0 + fixed seed. Every claim carries a fact_ref that must
+    resolve to a packet fact with the packet's exact number. Returns the
+    assembled verdict text, or None (caller falls back to prose mode).
+    """
+    import urllib.request
+
+    registry = _fact_registry(slot_results)
+    if not registry:
+        return None
+    packet = []
+    for i, r in enumerate(slot_results):
+        facts = _derive_spatial_facts(r)
+        packet.append({
+            "sequence_position":  i + 1,
+            "slot":               r.slot_name,
+            "filename":           Path(r.image_path).name,
+            "vision_approved":    r.approved_by_vision,
+            "qwen_justification": r.curator_justification,
+            "subject_label":      r.subject_label,
+            "anchor_label":       r.anchor_label,
+            "luminance":          round(r.luminance, 3),
+            **facts,
+        })
+    schema = {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string"},
+            "claims": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "fact_ref": {"type": "string", "enum": sorted(registry)},
+                        "text":     {"type": "string"},
+                        "value":    {"type": "number"},
+                    },
+                    "required": ["fact_ref", "text", "value"],
+                },
+            },
+        },
+        "required": ["summary", "claims"],
+    }
+    prompt = (
+        "You are a documentary photography curator. Write a verdict using "
+        "ONLY the fact registry and spatial packet below. "
+        "summary: at most 60 words, weaves in the style brief. "
+        "claims: 2 to 4 entries; each references ONE registry fact id as "
+        "fact_ref, states it in words as text, and repeats its exact number "
+        "as value. "
+        f"Style brief: '{style_prompt[:150]}'\n"
+        + (f"{extra_constraints}\n" if extra_constraints else "")
+        + "Fact registry (id -> number):\n"
+        + "\n".join(f"  {k} = {v}" for k, (v, _t) in sorted(registry.items()))
+        + "\n\nSpatial data packet:\n"
+        + json.dumps(packet, indent=2)
+    )
+    payload = json.dumps({
+        "model":   _DIRECTOR_MODEL,
+        "prompt":  prompt,
+        "stream":  False,
+        "format":  schema,
+        "options": {"temperature": 0.0, "num_predict": 400,
+                    "seed": int(_CFG.get("GEN_SEED", 2026))},
+    }).encode()
+    data = None
+    for _attempt in range(3):
+        try:
+            req = urllib.request.Request(
+                _OLLAMA_GEN_URL, data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=180) as resp:
+                data = json.loads(resp.read())
+            break
+        except Exception:
+            if _attempt == 2:
+                return None
+            time.sleep(2.0 * (_attempt + 1))
+    if not data:
+        return None
+    try:
+        obj = json.loads(data.get("response", "{}"))
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return _build_structured_verdict(obj, registry)
+
+
 def generate_judges_verdict(
     slot_results: list[SlotResult],
     style_prompt: str,
+    extra_constraints: str = "",
 ) -> str:
     """
     Generate the Judge's Verdict via DeepSeek-R1:8b (Ollama).
@@ -896,6 +1315,7 @@ def generate_judges_verdict(
         + "  - 'draws the eye' (only permitted if you cite specific coordinate evidence)"
     )
 
+    _extra = (extra_constraints + "\n\n") if extra_constraints else ""
     prompt = (
         "=== COORDINATE-GROUNDED NARRATIVE PROTOCOL ===\n"
         "You are a documentary photography curator. "
@@ -913,12 +1333,35 @@ def generate_judges_verdict(
         f"5. If subject_area_pct > {int(_CFG['DOMINANT_AREA_PCT'])} for any slot, "
         "you MUST describe subject presence or frame dominance.\n\n"
         f"Style brief: '{style_prompt[:150]}'\n\n"
+        f"{_extra}"
         "Spatial data packet (Qwen-extracted bboxes, format [ymin,xmin,ymax,xmax] 0-1000):\n"
         f"{json.dumps(packet, indent=2)}\n\n"
         "Write 2-3 sentences. Use <think> to verify each claim against the data. "
         "After </think>, write only the final verdict. Keep verdict under 120 words."
     )
 
+    if _judge_mode() == "structured":
+        # Best-of-N election: self-consistency by measured selection, not by
+        # hoping a single sample is good. Ties keep the first.
+        _n = max(1, int(_CFG.get("JUDGE_SAMPLES", 1)))
+        _sv, _best = None, (-1, -1)
+        for _i in range(_n):
+            _cand = _structured_verdict(slot_results, style_prompt, extra_constraints)
+            if _cand is None:
+                if _judge_breaker_open():
+                    break
+                continue
+            _passed = validate_narrative(_cand, slot_results)["passed"]
+            # primary: grounding checks passed; tie-break: how many grounded
+            # fact claims the verdict actually cites (richer > sparser)
+            _score = (_passed, _cand.count("(fact "))
+            if _score > _best:
+                _sv, _best = _cand, _score
+        if _sv:
+            print(f"[verdict] structured ({len(_sv.split())} words, "
+                  f"grounded claims, best of {_n})")
+            return _sv
+        print("[verdict] structured mode failed -- falling back to prose")
     try:
         payload = json.dumps({
             "model":   _DIRECTOR_MODEL,
@@ -930,8 +1373,16 @@ def generate_judges_verdict(
             _OLLAMA_GEN_URL, data=payload,
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            data = json.loads(resp.read())
+        data = None
+        for _attempt in range(3):
+            try:
+                with urllib.request.urlopen(req, timeout=120) as resp:
+                    data = json.loads(resp.read())
+                break
+            except Exception:
+                if _attempt == 2:
+                    raise
+                time.sleep(2.0 * (_attempt + 1))
         raw = data.get("response", "").strip()
 
         m = re.search(r"</think>\s*(.*)", raw, re.DOTALL)
@@ -1015,17 +1466,18 @@ def validate_narrative(
             details.append("[PASS] 'leading lines' not used")
 
     # ── Check 3: luminance claims require evidence ────────────────────────────
+    _lum_thresh = float(_CFG.get("LUM_RANGE_THRESH", 0.30))
     drama_words = any(w in vl for w in ("dynamic lighting", "dramatic lighting",
                                         "chiaroscuro", "dramatic contrast"))
-    if drama_words and not (lum_range > 0.30):
+    if drama_words and not (lum_range > _lum_thresh):
         checks["luminance_claim_grounded"] = False
         details.append(
             f"[FAIL] Lighting drama claimed but luminance range={lum_range:.3f} "
-            f"is below threshold 0.30"
+            f"is below threshold {_lum_thresh:.2f}"
         )
     else:
         checks["luminance_claim_grounded"] = True
-        msg = f"(lum_range={lum_range:.3f}, threshold=0.30)"
+        msg = f"(lum_range={lum_range:.3f}, threshold={_lum_thresh:.2f})"
         details.append(
             f"[PASS] Luminance claim check {msg}: "
             + ("drama words present with sufficient range" if drama_words
@@ -1065,13 +1517,15 @@ def validate_narrative(
         slot_names = [r.slot_name for r in dominant_slots]
         details.append(
             f"[{'PASS' if dom_terms else 'FAIL'}] Dominance check "
-            f"(slots with area>35%: {slot_names}): "
+            f"(slots with area>{int(_CFG['DOMINANT_AREA_PCT'])}%: {slot_names}): "
             + ("dominance language present" if dom_terms
                else "MISSING -- verdict must acknowledge subject frame dominance")
         )
     else:
         checks["dominance_language"] = True
-        details.append("[PASS] Dominance check: no slots with subject_area_pct>35% -- not required")
+        details.append(
+            "[PASS] Dominance check: no slots with subject_area_pct>"
+            f"{int(_CFG['DOMINANT_AREA_PCT'])}% -- not required")
 
     # ── Check 6: at least one positional anchor term ──────────────────────────
     any_pos = any(w in vl for w in
@@ -1099,6 +1553,17 @@ def validate_narrative(
 
 
 # =============================================================================
+def _apply_honest_mode(slot_results: list[SlotResult]) -> list[SlotResult]:
+    """
+    F4: drop slots that were not vision-approved. tsp_luminance_reorder
+    fixes first/last position by slot_name, so an honest subset still
+    sequences correctly: the Opener (if it survived) stays first, the
+    Closer last.
+    """
+    return [r for r in slot_results if r.approved_by_vision]
+
+
+# =====================================================================
 # Main pipeline orchestrator
 # =============================================================================
 
@@ -1125,13 +1590,44 @@ def run_vision_story_mode(
     # ── Stage 1: CLIP ─────────────────────────────────────────────────────────
     print("\n>> Stage 1: CLIP In-Memory Embedding")
     print("-" * 50)
-    valid_paths, img_embs, text_embs = clip_stage(image_dir)
+    _JUDGE_BREAKER["fail"] = 0   # breaker is per-run state
+
+    # Fail LOUDLY when the vision gatekeeper is missing instead of silently
+    # degrading every slot to CLIP-only ranking.
+    _missing_gguf = _check_gatekeeper()
+    if _missing_gguf:
+        if float(_CFG.get("REQUIRE_VISION_GATE", 0.0)) > 0.5:
+            print("[error] Vision gatekeeper missing and REQUIRE_VISION_GATE=1 -- aborting:")
+            for _m in _missing_gguf:
+                print(f"  missing: {_m}")
+            return []
+        print("!" * 64)
+        print("!! WARNING: vision gatekeeper model files are MISSING:")
+        for _m in _missing_gguf:
+            print(f"!!   {_m}")
+        print("!! Every slot will fall back to CLIP-only ranking (weaker gate).")
+        print("!! Set REQUIRE_VISION_GATE=1 in config.json to hard-abort instead.")
+        print("!" * 64)
+
+    valid_paths, img_embs, text_embs, prompt_emb = clip_stage(image_dir, style_prompt)
     print(f"[stage1] {len(valid_paths)} images ready for slot matching")
 
     # ── Stage 2: Qwen per-slot gatekeeping ────────────────────────────────────
     print("\n>> Stage 2: Qwen 2.5-VL Slot-Specific Gatekeeping  (temperature=0.0)")
     print("-" * 50)
-    slot_results = qwen_stage(valid_paths, img_embs, text_embs)
+    slot_results = qwen_stage(valid_paths, img_embs, text_embs,
+                              style_prompt=style_prompt, prompt_emb=prompt_emb)
+
+    # F4 honest mode (opt in via config.json: HONEST_SLOTS = 1): a slot the
+    # vision gate could not fill is reported as empty instead of padded
+    # with a CLIP-ranked guess. Four honest photographs beat five and a lie.
+    if float(_CFG.get("HONEST_SLOTS", 0.0)) > 0.5:
+        _kept = _apply_honest_mode(slot_results)
+        print(f"[honest] {len(_kept)}/{len(slot_results)} slots kept")
+        slot_results = _kept
+        if not slot_results:
+            print("[error] Honest mode emptied the story -- aborting.")
+            return []
 
     if not slot_results:
         print("[error] No slot results -- aborting.")
@@ -1158,7 +1654,27 @@ def run_vision_story_mode(
     # ── Stage 3c: Validation loop ─────────────────────────────────────────────
     print(">> Stage 3c: Narrative Grounding Validation")
     print("-" * 50)
-    validation = validate_narrative(verdict, slot_results)
+    _fallback_verdict = not bool(verdict)
+    validation = validate_narrative(verdict if verdict else " ", slot_results)
+    # F7: a grounding FAIL on a REAL verdict gets ONE bounded regeneration
+    # pass with the failing checks injected as hard constraints. Best of
+    # the two wins; the loop never runs away.
+    if not _fallback_verdict and validation["grade"] == "FAIL":
+        _fails = "\n".join(d for d in validation["details"] if d.startswith("[FAIL]"))
+        print("[verdict] grounding FAIL -- one bounded regeneration pass ...")
+        _retry = generate_judges_verdict(
+            slot_results, style_prompt,
+            extra_constraints=(
+                "PRIOR ATTEMPT FAILED THESE GROUNDING CHECKS -- every one "
+                "must be satisfied in the rewrite:\n" + _fails
+            ),
+        )
+        if _retry:
+            _v2 = validate_narrative(_retry, slot_results)
+            if _v2["passed"] > validation["passed"]:
+                verdict, validation = _retry, _v2
+                print(f"[verdict] regenerated verdict adopted "
+                      f"({_v2['passed']}/{_v2['total']} checks)")
     for line in validation["details"]:
         print(f"  {line}")
     grade_line = (
@@ -1193,6 +1709,7 @@ def run_vision_story_mode(
             "image_path":            r.image_path,
             "assigned_slot":         r.assigned_slot,
             "approved_by_vision":    r.approved_by_vision,
+            "provenance":            r.provenance,
             "curator_justification": r.curator_justification,
             "subject_bbox":          r.subject_bbox,
             "subject_label":         r.subject_label,
@@ -1209,6 +1726,10 @@ def run_vision_story_mode(
         {
             "style_prompt":    style_prompt,
             "judges_verdict":  verdict,
+            "slot_provenance": {
+                "vision_approved":  sum(1 for r in slot_results if r.approved_by_vision),
+                "fallback":         sum(1 for r in slot_results if not r.approved_by_vision),
+            },
             "validation":      {
                 "grade":   validation["grade"],
                 "passed":  validation["passed"],

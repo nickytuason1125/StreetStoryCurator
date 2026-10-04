@@ -395,7 +395,7 @@ async def _scan_folder_for_data(all_folders: list, preset: str, sample_limit: in
             "preset":       preset or "Classic Street",
             "force_rescan": False,
             "scan_mode":    True,     # fast CLIP pass — no IQA, no Ollama gate
-            "catalog_path": str(_CATALOG_PATH),
+            "catalog_path": str(__import__("server_impl")._CATALOG_PATH),  # bare name would NameError (see batch-zip)
             "data_dir":     str(_DATA_DIR),
             "mogco_target": 0,
             "sample_limit": sample_limit,     # cap to a representative subset → ~seconds
@@ -694,7 +694,11 @@ async def export_batch_zip(payload: dict):
     if not srcs:
         raise HTTPException(400, "None of the provided photos could be found")
 
-    out_dir = _OUTPUT_DIR_ZIP / "batch"
+    # Read at call time from server_impl. The module __getattr__ (PEP 562) only
+    # serves attribute access FROM OUTSIDE this module, never a bare name inside
+    # it — that NameError broke every zip download (2026-10-04).
+    import server_impl as _si
+    out_dir = _si._OUTPUT_DIR_ZIP / "batch"
     out_dir.mkdir(parents=True, exist_ok=True)
     zip_path = out_dir / f"batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
 
@@ -717,6 +721,31 @@ async def export_batch_zip(payload: dict):
     return JSONResponse({"zip": zip_str, "count": len(srcs), "skipped": len(raw_paths) - len(srcs)})
 
 
+@router.get("/api/export/zip-file")
+async def download_zip(name: str = Query(...)):
+    """Serve an export archive. `name` is a bare zip name in output/batch
+    (batch-zip) or a path to a zip anywhere INSIDE the app's output folder
+    (the story-carousel export writes output/editorial/<ts>/...). Anything
+    that resolves outside output/, or is not a .zip file, is refused. The app
+    used to fetch these through /api/photo, which refuses non-images (400)."""
+    import server_impl as _si
+    root = Path(_si._OUTPUT_DIR_ZIP).resolve()
+    if not name.lower().endswith(".zip"):
+        raise HTTPException(400, "Not an export archive")
+    cand = Path(name)
+    if not cand.is_absolute():
+        # bare name -> output/batch; "output/..." -> relative to the app folder
+        cand = (root.parent / cand) if cand.parts[:1] == ("output",) else (root / "batch" / cand)
+    p = cand.resolve()
+    try:
+        p.relative_to(root)
+    except ValueError:
+        raise HTTPException(400, "Archive is outside the export folder")
+    if not p.is_file():
+        raise HTTPException(404, "Archive not found")
+    return FileResponse(str(p), filename=p.name, media_type="application/zip")
+
+
 # ---------------------------------------------------------------------------
 # Native folder picker (used by Edge app mode — no pywebview js_api available)
 # ---------------------------------------------------------------------------
@@ -724,7 +753,7 @@ async def export_batch_zip(payload: dict):
 @router.get("/api/pick-folder")
 async def pick_folder_dialog():
     """Opens a native OS folder-picker dialog and returns the chosen path."""
-    import asyncio, subprocess, sys, os, tempfile, ctypes
+    import asyncio, subprocess, os, tempfile, ctypes
 
     # Use ctypes to call Windows API directly - no subprocess needed
     def _show_dialog():
@@ -859,6 +888,6 @@ async def export_metadata_endpoint(payload: dict):
 # Incremental folder watch
 # ---------------------------------------------------------------------------
 
-_folder_watcher: "FolderWatcher | None" = None   # type: ignore[name-defined]
+_folder_watcher: "FolderWatcher | None" = None   # type: ignore[name-defined]  # noqa: F821 — quoted annotation, lazy import at use
 _watched_folder: str = ""
 

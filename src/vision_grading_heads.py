@@ -512,7 +512,7 @@ class UniQAHead:
                     del batch_t
                 except Exception as e:
                     print(f"[uniqa_head] Std batch failed ({e}) — per-image fallback")
-                    del batch_t
+                    del batch_t  # noqa: F821 — bound unconditionally at L503 before the try
                     for pos in b_pos:
                         try:
                             inp = TF.resize(c_tensors[pos], [S, S], antialias=True).unsqueeze(0).to(device)

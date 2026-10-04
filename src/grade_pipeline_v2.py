@@ -755,28 +755,75 @@ def _vram_clear():
 # never reaches it, so it never overshoots the real milestone the caller emits on
 # completion, and the periodic emits keep the SSE stream alive.
 class _ProgressTicker:
+    """Keeps the bar moving through a blocking phase WITHOUT hiding real progress.
+
+    Pass `ticker.progress` (not the raw callback) to the blocking call. Until
+    the call reports anything, the ticker creeps start→end on `tau`. Once it
+    reports real fractions, the ticker creeps from the LATEST real value toward
+    the next expected one (last real step × 0.9) and repeats the real
+    description, so chunk counts and ETAs stay on screen. 2026-10-04: with a
+    fixed 30 s tau over the whole span, a 4300-photo encode hit ~0.455 within
+    two minutes, the monotonic clamp then swallowed every real chunk emit, and
+    the bar sat at 46 % for 13 minutes ("the 46 % stall").
+    """
+
     def __init__(self, progress, start: float, end: float, label: str,
                  tau: float = 30.0, interval: float = 1.5):
         self._p        = progress or (lambda f, d: None)
         self._start    = float(start)
         self._end      = float(end)
         self._label    = label
-        self._tau      = max(1.0, float(tau))
-        self._interval = max(0.2, float(interval))
+        self._tau      = max(0.01, float(tau))
+        self._interval = max(0.01, float(interval))
         self._stop     = threading.Event()
+        self._lock     = threading.Lock()
         self._thread: Optional[threading.Thread] = None
+        self._real: Optional[float] = None      # latest real fraction
+        self._real_t   = 0.0                    # when it arrived
+        self._step: Optional[float] = None      # last real increment
+        self._step_dur = 0.0                    # how long that increment took
+
+    def progress(self, frac: float, desc: str = "") -> None:
+        """Real progress from the wrapped call: forward it and rebase the creep."""
+        import time as _time
+        f = float(frac)
+        with self._lock:
+            now = _time.monotonic()
+            if self._real is not None and f > self._real:
+                self._step, self._step_dur = f - self._real, now - self._real_t
+            if self._real is None or f > self._real:
+                self._real, self._real_t = f, now
+            if desc:
+                self._label = desc
+        self._p(frac, desc)
+
+    def _tick_value(self, now: float, t0: float) -> float:
+        import math as _math
+        with self._lock:
+            real, real_t, step, step_dur = self._real, self._real_t, self._step, self._step_dur
+        if real is None or real < self._start:
+            base, target, tau, dt = self._start, self._end, self._tau, now - t0
+        elif step:
+            base, target, dt = real, min(self._end, real + 0.9 * step), now - real_t
+            tau = max(0.01, step_dur / 2.0)
+        else:
+            base, target, tau, dt = real, real + (self._end - real) * 0.15, self._tau, now - real_t
+        frac = base + (target - base) * (1.0 - _math.exp(-dt / tau))
+        return min(frac, self._end - 0.001)
 
     def __enter__(self) -> "_ProgressTicker":
-        import time as _time, math as _math
+        import time as _time
 
         def _run() -> None:
             t0 = _time.monotonic()
+            shown = self._start
             # Wait first so we never fight the caller's own start-of-phase emit.
             while not self._stop.wait(self._interval):
-                el   = _time.monotonic() - t0
-                frac = self._start + (self._end - self._start) * (1.0 - _math.exp(-el / self._tau))
+                shown = max(shown, self._tick_value(_time.monotonic(), t0))
+                with self._lock:
+                    label = self._label
                 try:
-                    self._p(round(frac, 3), self._label)
+                    self._p(round(shown, 3), label)
                 except Exception:
                     pass  # progress reporting must never break the grade
 
@@ -789,6 +836,46 @@ class _ProgressTicker:
         if self._thread is not None:
             self._thread.join(timeout=2.0)
         return False
+
+
+def _pair_twins(paths: list) -> tuple:
+    """Grade each camera RAW+JPEG pair ONCE (2026-10-04).
+
+    Returns (paths_to_grade, twins) where twins maps a kept RAW path to the
+    JPEG written alongside it; the JPEG is dropped from grading and takes the
+    RAW's result at the output stage (LanceDB write + gallery). Both files show
+    the same in-camera render — the analysis decodes already read the JPEG's
+    MPF preview, the same pixels as the ARW's embedded preview — so grading
+    both only doubled every stage. Pair rule matches the thumbnail queue: same
+    folder and stem, written within 2 s (a JPEG exported later next to its RAW
+    is a different picture). FIRSTCUT_GRADE_PAIRS_ONCE=0 disables.
+    """
+    if os.environ.get("FIRSTCUT_GRADE_PAIRS_ONCE", "1").strip() == "0":
+        return list(paths), {}
+    try:
+        from raw_support import RAW_EXTS as _RAW
+    except Exception:
+        return list(paths), {}
+    _JPG = {".jpg", ".jpeg"}
+    by_stem: dict = {}
+    for p in paths:
+        root, ext = os.path.splitext(p)
+        ext = ext.lower()
+        kind = "raw" if ext in _RAW else "jpg" if ext in _JPG else None
+        if kind:
+            by_stem.setdefault(os.path.normcase(root), {})[kind] = p
+    twins: dict = {}
+    for pair in by_stem.values():
+        raw, jpg = pair.get("raw"), pair.get("jpg")
+        if not (raw and jpg):
+            continue
+        try:
+            if abs(os.path.getmtime(raw) - os.path.getmtime(jpg)) <= 2.0:
+                twins[raw] = jpg
+        except OSError:
+            continue
+    dropped = set(twins.values())
+    return [p for p in paths if p not in dropped], twins
 
 
 def _dedup_chunk_size(n: int) -> int:
@@ -886,6 +973,7 @@ def _iqa_via_subprocess(
             "chiaroscuro_flags":     _pl.get("chiaroscuro_flags", {}),
             "person_detected":       _pl.get("person_detected", {}),
             "subject_bboxes":        _pl.get("subject_bboxes", {}),
+            "subject_sharpness":     _pl.get("subject_sharpness", {}),
         }
     finally:
         for _tmp in (in_json, in_npz, out_npz, out_json):
@@ -921,10 +1009,14 @@ def _iqa_resumable(
                                    clip_scores, genre_ref_embs, lum_stats,
                                    comp_eligible_paths, vlm_breakdowns)
 
+    # 1000 (was 200), 2026-10-04: every slice is a fresh subprocess that
+    # reloads D-FINE + TOPIQ (~7-18 s). On 600 RAWs, 200 -> 1000 cut IQA
+    # 147 -> 122 s with all 600 grades identical (score-identical by design,
+    # see above); resume granularity is the only thing given up.
     try:
-        _slice = int(os.environ.get("FIRSTCUT_IQA_SLICE", "200"))
+        _slice = int(os.environ.get("FIRSTCUT_IQA_SLICE", "1000"))
     except ValueError:
-        _slice = 400
+        _slice = 1000
     if _slice <= 0 or n <= _slice:
         # Small job: one call, but still checkpoint it so a later stage crash
         # (fusion, LanceDB) does not throw the IQA work away.
@@ -943,7 +1035,8 @@ def _iqa_resumable(
     for s0 in range(0, len(todo), _slice):
         idx = todo[s0:s0 + _slice]
         sl_paths = [image_paths[i] for i in idx]
-        _p(0.66, f"Scoring image quality — {n - len(todo) + s0}/{n} photos…")
+        _p(0.66 + 0.17 * (n - len(todo) + s0) / max(n, 1),
+           f"Scoring image quality — {n - len(todo) + s0}/{n} photos…")
         part = _iqa_via_subprocess(
             image_paths         = sl_paths,
             image_embeddings    = np.asarray(image_embeddings)[np.asarray(idx, dtype=np.intp)],
@@ -961,9 +1054,10 @@ def _iqa_resumable(
     quality = np.array([float(done.get(p, {}).get("q", 0.5)) for p in image_paths],
                        dtype=np.float32)
     breakdowns = [dict(done.get(p, {}).get("bd", {})) for p in image_paths]
-    comp, chi, per, bbox = {}, {}, {}, {}
+    comp, chi, per, bbox, sharp = {}, {}, {}, {}, {}
     for p in image_paths:
         e = done.get(p, {})
+        if e.get("ss"):             sharp[p] = e["ss"]
         if e.get("co") is not None: comp[p] = e["co"]
         if e.get("ch") is not None: chi[p] = e["ch"]
         if e.get("pd") is not None: per[p] = e["pd"]
@@ -971,7 +1065,7 @@ def _iqa_resumable(
     return {"quality": quality, "tech": quality, "aesthetic": quality,
             "breakdowns": breakdowns, "composition_overrides": comp,
             "chiaroscuro_flags": chi, "person_detected": per,
-            "subject_bboxes": bbox}
+            "subject_bboxes": bbox, "subject_sharpness": sharp}
 
 
 def _iqa_ckpt_path(key: str) -> Path:
@@ -1001,11 +1095,13 @@ def _iqa_ckpt_save(key: str, paths, out: dict) -> None:
         ch = out.get("chiaroscuro_flags", {}) or {}
         pd = out.get("person_detected", {}) or {}
         bb = out.get("subject_bboxes", {}) or {}
+        ss = out.get("subject_sharpness", {}) or {}
         for i, p in enumerate(paths):
             cur[p] = {
                 "q":  float(q[i]) if i < len(q) else 0.5,
                 "bd": _sanitize_bd(bd[i]) if i < len(bd) and isinstance(bd[i], dict) else {},
                 "co": co.get(p), "ch": ch.get(p), "pd": pd.get(p), "bb": bb.get(p),
+                "ss": ss.get(p),
             }
         f = _iqa_ckpt_path(key)
         tmp = f.with_suffix(".json.tmp")
@@ -1198,8 +1294,10 @@ def run_v2(
               f"different quality mode — re-grading them")
 
     paths = [p for p in all_paths if p not in cached_rows]
+    paths, _twins = _pair_twins(paths)
     n     = len(paths)
-    print(f"[v2] Images     total={len(all_paths)}  cached(skipped)={len(cached_rows)}  to_grade={n}")
+    print(f"[v2] Images     total={len(all_paths)}  cached(skipped)={len(cached_rows)}  to_grade={n}"
+          + (f"  (+{len(_twins)} JPEG twins take their RAW's grade)" if _twins else ""))
 
     # Slim-by-construction (2026-09-07): gallery dicts carry NO embedding in
     # cull mode (mogco_target<=0). The embedding is the single fattest field —
@@ -1424,6 +1522,22 @@ def run_v2(
     # models see only the survivors, eliminating wasted compute.
     from pipeline_stages import run_gate_stage as _run_gate_stage
     _gate = _run_gate_stage(paths, _p)
+    # A kept RAW the gate could not read (or found blank) cannot speak for its
+    # JPEG twin: put the JPEG back and gate it on its own, so it is graded
+    # independently instead of vanishing with its RAW.
+    _bad_twins = [r for r in list(_twins) if r in _gate.technical_disq]
+    if _bad_twins:
+        _back = [_twins.pop(r) for r in _bad_twins]
+        _g2 = _run_gate_stage(_back, _p)
+        _gate.survivors.extend(_g2.survivors)
+        _gate.blur_disqualified.update(_g2.blur_disqualified)
+        _gate.yolo_disqualified.update(_g2.yolo_disqualified)
+        _gate.yolo_soft_penalized.update(_g2.yolo_soft_penalized)
+        _gate.technical_disq.update(_g2.technical_disq)
+        paths = paths + _back
+        n = len(paths)
+        print(f"[v2] {len(_back)} RAW(s) unreadable at the gate — grading their "
+              f"JPEG twin(s) individually")
     _blur_disqualified   = _gate.blur_disqualified
     _yolo_disqualified   = _gate.yolo_disqualified
     _yolo_soft_penalized = _gate.yolo_soft_penalized
@@ -1435,6 +1549,16 @@ def run_v2(
     # won't re-enter the processing queue on the next run.
     from pipeline_stages import flush_gate_failures as _flush_gate_failures
     _flush_gate_failures(_gate, _ENC_DIM, GRADE_WEAK, _p)
+
+    # NIMA in the GPU encode's shadow (see nima_scorer.prefetch_nima).
+    _nima_prefetch = None
+    if os.environ.get("FIRSTCUT_NIMA_OVERLAP", "1").strip() != "0":
+        try:
+            from nima_scorer import prefetch_nima as _prefetch_nima
+            _gate_out = set(_gate.technical_disq) | set(_gate.blur_disqualified)
+            _nima_prefetch = _prefetch_nima([p for p in paths if p not in _gate_out])
+        except Exception as _e_np:
+            print(f"[v2] NIMA prefetch not started ({_e_np})")
 
     # ── Step 2: Bulk encoding ─────────────────────────────────────────────────
     # Singleton path (repeat runs): reuse encoder already in VRAM — no reload.
@@ -1483,8 +1607,9 @@ def run_v2(
         _p(0.03, "Analyzing images…")
         try:
             with _mp.encode_memory_watch(_p), \
-                 _ProgressTicker(_p, 0.07, 0.46, f"Analyzing {len(paths)} photos…"):
-                embs = _enc_singleton.encode_images(paths, progress=_p)
+                 _ProgressTicker(_p, 0.07, 0.46, f"Analyzing {len(paths)} photos…",
+                                 tau=max(30.0, 0.1 * len(paths))) as _tk:
+                embs = _enc_singleton.encode_images(paths, progress=_tk.progress)
             if _text_emb_cache:
                 _pos_text_embs  = _text_emb_cache["pos"]
                 _neg_text_embs  = _text_emb_cache["neg"]
@@ -1629,8 +1754,9 @@ def run_v2(
                     enc  = SigLIP2Encoder(**_kwargs, progress=_p)
                     _te_init = _t_enc.monotonic() - _te0
                     _te0 = _t_enc.monotonic()
-                    with _ProgressTicker(_p, 0.07, 0.46, f"Analyzing {len(_paths_to_encode)} photos…"):
-                        _new_embs = enc.encode_images(_paths_to_encode, progress=_p)
+                    with _ProgressTicker(_p, 0.07, 0.46, f"Analyzing {len(_paths_to_encode)} photos…",
+                                         tau=max(30.0, 0.1 * len(_paths_to_encode))) as _tk:
+                        _new_embs = enc.encode_images(_paths_to_encode, progress=_tk.progress)
                     _te_encode = _t_enc.monotonic() - _te0
                     _te0 = _t_enc.monotonic()
                     _new_emb_map = dict(zip(_paths_to_encode, _new_embs))
@@ -2113,6 +2239,17 @@ def run_v2(
             "pipeline": "v2_cached",
         }
 
+    if _twins:
+        _alive = set(paths)
+        _lost = [_twins.pop(r) for r in list(_twins) if r not in _alive]
+        if _lost:
+            # Passed the gate, failed the encoder (rare: a transient read). The
+            # twin was never encoded; it stays out of LanceDB, so the next cull
+            # grades it. Said out loud rather than vanishing.
+            print(f"[v2] WARNING: {len(_lost)} JPEG twin(s) not graded this run — "
+                  f"their RAW failed to encode; they will grade on the next cull: "
+                  + ", ".join(Path(x).name for x in _lost[:10]), flush=True)
+
     _p(0.50, "Finding near-duplicate shots…")
     cluster_ids:     list[int] = [-1] * n
     sim_flags:       list[str] = [""] * n
@@ -2121,44 +2258,18 @@ def run_v2(
 
     if siglip_ok and n >= 2:
         try:
-            from collections import defaultdict as _dd
-            norms  = np.linalg.norm(embs, axis=1, keepdims=True)
-            normed = (embs / (norms + 1e-9)).astype(np.float32)
-
             SIM_THRESH = 0.96   # true burst duplicates only (same frame ±ms)
 
-            parent = list(range(n))
-            def _find(x):
-                while parent[x] != x:
-                    parent[x] = parent[parent[x]]
-                    x = parent[x]
-                return x
-
-            # Row-blocked instead of one full n×n allocation — keeps peak
-            # memory O(chunk×n) so very large imports can't spike RAM here.
-            _chunk = _dedup_chunk_size(n)
-            for r0 in range(0, n, _chunk):
-                r1 = min(r0 + _chunk, n)
-                block_sims = normed[r0:r1] @ normed.T                 # (r1-r0, n)
-                # Keep only the strict upper triangle (j > i). Doing it by
-                # writing -1.0 over the j<=i entries IN PLACE is equivalent to
-                # the old `(sims > THRESH) & (col_idx > row_idx)` — -1.0 can
-                # never exceed a positive threshold — but avoids materialising
-                # three extra (chunk, n) arrays (the broadcast index compare, the
-                # threshold compare, and their AND) on top of block_sims itself.
-                for _li in range(r1 - r0):
-                    block_sims[_li, : r0 + _li + 1] = -1.0
-                dup_i, dup_j = np.where(block_sims > SIM_THRESH)
-                del block_sims
-                for li, j in zip(dup_i.tolist(), dup_j.tolist()):
-                    i = r0 + li
-                    ri, rj = _find(i), _find(j)
-                    if ri != rj:
-                        parent[ri] = rj
-
-            groups_d: dict = _dd(list)
+            # Complete linkage, shared with the all-cached fast path (see
+            # pipeline_stages.duplicate_groups — single-linkage union-find here
+            # chained a whole harbour walk into one 207-photo group).
+            from pipeline_stages import duplicate_groups as _duplicate_groups
+            _grouped = _duplicate_groups(embs, SIM_THRESH, chunk=_dedup_chunk_size(n))
+            groups_d: dict = {g[0]: g for g in _grouped}
+            _in_group = {i for g in _grouped for i in g}
             for i in range(n):
-                groups_d[_find(i)].append(i)
+                if i not in _in_group:
+                    groups_d[i] = [i]
 
             # Populate cluster_ids for all photos in duplicate groups (size >= 2)
             _comp_eligible: set[str] = set()
@@ -2587,11 +2698,16 @@ def run_v2(
     def _lum_stats(path: str):
         try:
             from PIL import Image as _PILI
-            with _PILI.open(path) as _raw:
-                if _LUM_DRAFT:
-                    try: _raw.draft("RGB", (256, 256))
-                    except Exception: pass
-                img = _raw.convert("RGB")
+            img = None
+            if _LUM_DRAFT:
+                from raw_support import jpeg_preview as _jpv
+                img = _jpv(path, 256)              # camera JPEG: built-in preview
+            if img is None:
+                with _PILI.open(path) as _raw:
+                    if _LUM_DRAFT:
+                        try: _raw.draft("RGB", (256, 256))
+                        except Exception: pass
+                    img = _raw.convert("RGB")
             img.thumbnail((128, 128), _PILI.LANCZOS)   # 10-100× faster; lum stats are invariant to scale
             _arr = np.array(img, dtype=np.float32)
             _Y   = 0.299 * _arr[:, :, 0] + 0.587 * _arr[:, :, 1] + 0.114 * _arr[:, :, 2]
@@ -2626,6 +2742,7 @@ def run_v2(
     chiaroscuro_flags:     dict[str, bool]  = {}
     person_detected_dict:  dict[str, bool]  = {}
     _subject_bboxes_dict:  dict             = {}   # set in the IQA block below; scan_mode skips it
+    _subject_sharp_dict:   dict             = {}   # path -> subject_sharpness.measure(); IQA block only
 
     if scan_mode:
         _p(0.84, "Quick scan complete…")
@@ -2689,10 +2806,11 @@ def run_v2(
             # ISOLATED subprocess — the grade worker never loads the IQA GPU model
             # itself (see _iqa_via_subprocess / iqa_worker.py). This removes the last
             # in-worker GPU load and with it the 0xC0000005 windowed-crash class.
-            with _ProgressTicker(_p, 0.66, 0.83, f"Scoring image quality — {len(paths_to_rate)} photos…"):
+            with _ProgressTicker(_p, 0.66, 0.83, f"Scoring image quality — {len(paths_to_rate)} photos…",
+                                 tau=max(30.0, 0.1 * len(paths_to_rate))) as _tk:
                 iqa_out = _iqa_resumable(
                     ckpt_key            = _iqa_key,
-                    progress            = _p,
+                    progress            = _tk.progress,
                     image_paths         = paths_to_rate,
                     image_embeddings    = iqa_embs,
                     prompt_embedding    = _prompt_emb,
@@ -2710,6 +2828,7 @@ def run_v2(
             chiaroscuro_flags        = iqa_out.get("chiaroscuro_flags",      {})
             person_detected_dict     = iqa_out.get("person_detected",        {})
             _subject_bboxes_dict     = iqa_out.get("subject_bboxes",       {})
+            _subject_sharp_dict      = iqa_out.get("subject_sharpness",    {}) or {}
 
             for local_i, idx in enumerate(_full_idx):
                 per_photo_breakdowns[idx].update(iqa_breakdowns[local_i])
@@ -2759,10 +2878,20 @@ def run_v2(
     # Degradation: model absent/broken → CLIP aesthetic stays, cull unaffected.
     try:
         from nima_scorer import nima_scores as _nima_scores
-        _nima_rated = _nima_scores(
-            paths_to_rate,
-            progress=(lambda f, d: _p(0.45, d)) if _p else None,
-        )
+        _nima_map = _nima_prefetch.result() if _nima_prefetch is not None else {}
+        _nima_missing = [p for p in paths_to_rate if p not in _nima_map]
+        if _nima_map and len(_nima_missing) < len(paths_to_rate):
+            if _nima_missing:
+                _extra = _nima_scores(_nima_missing)
+                if _extra is not None:
+                    _nima_map.update(zip(_nima_missing, (float(v) for v in _extra)))
+            _nima_rated = (np.asarray([_nima_map[p] for p in paths_to_rate], dtype=np.float32)
+                           if all(p in _nima_map for p in paths_to_rate) else None)
+        else:
+            _nima_rated = _nima_scores(
+                paths_to_rate,
+                progress=(lambda f, d: _p(0.45, d)) if _p else None,
+            )
         if _nima_rated is not None and len(to_rate_indices) > 0:
             for _li, idx in enumerate(to_rate_indices):
                 per_photo_breakdowns[idx]["aesthetic"] = round(float(_nima_rated[_li]), 3)
@@ -3734,6 +3863,44 @@ def run_v2(
                   f"mid ≥ {_mid_t:.2f}  ({_anchor_info})")
     except Exception as _e_thr:
         print(f"[v2] rating-anchored thresholds unavailable ({_e_thr}) — defaults")
+    # ── Step 6b: Pan boost + smeared-subject cap (2026-10-03) ────────────────
+    # A clean pan (sharp subject, background streaked one way) earns
+    # +PAN_BOOST — additive, like the Soft-Focus Gate, never a floor.
+    # A photo whose SUBJECT is smeared (motion blur / missed focus) is Weak,
+    # however good its composition or mood. Subject sharpness is measured
+    # inside the D-FINE subject boxes, so pans (sharp subject, streaked
+    # background) and shallow focus (sharp subject, soft background) are never
+    # touched. Absolute threshold — see subject_sharpness.SMEARED_BELOW.
+    # Applied AFTER every blend and gate and keyed to the live Weak line, so no
+    # later step can lift a smeared photo back out of Weak.
+    if _subject_sharp_dict:
+        import subject_sharpness as _ssh
+        _cap = min(_ssh.SMEARED_CAP, _mid_t - 0.01)
+        _n_cap = _n_pan = 0
+        for i in range(n):
+            _m = _subject_sharp_dict.get(paths[i])
+            if not _m or _m.get("subject") is None:
+                continue
+            per_photo_breakdowns[i]["_subject_sharp"] = round(float(_m["subject"]), 3)
+            # Taste-learner inputs (master_judge.EXTRA) — recorded, not graded on.
+            if _m.get("subject_streak") is not None:
+                per_photo_breakdowns[i]["_subject_streak"] = round(float(_m["subject_streak"]), 3)
+            if _m.get("living") is not None:
+                per_photo_breakdowns[i]["_living"] = 1.0 if _m["living"] else 0.0
+            if _m.get("streak") is not None:
+                per_photo_breakdowns[i]["_bg_streak"] = round(float(_m["streak"]), 3)
+            if _ssh.is_pan(_m) and np.isfinite(final_scores[i]):
+                final_scores[i] = min(1.0, final_scores[i] + _ssh.PAN_BOOST)
+                per_photo_breakdowns[i]["_pan"] = True
+                _n_pan += 1
+            if _ssh.is_smeared(_m) and np.isfinite(final_scores[i]) and final_scores[i] > _cap:
+                final_scores[i] = _cap
+                per_photo_breakdowns[i]["_smeared_subject"] = True
+                _n_cap += 1
+        print(f"[v2] Smeared-subject cap: {_n_cap}/{n} photos capped to Weak "
+              f"(subject sharpness < {_ssh.SMEARED_BELOW}); pan boost "
+              f"+{_ssh.PAN_BOOST}: {_n_pan} photos")
+
     from pipeline_stages import assign_grades as _assign_grades
     final_scores, grades = _assign_grades(
         final_scores, paths, np,
@@ -3796,6 +3963,8 @@ def run_v2(
                     "breakdown":      bd,
                     "exif_ts":        timestamps[i],
                 })
+                if paths[i] in _twins:
+                    lance_records.append({**lance_records[-1], "path": _twins[paths[i]]})
             ls.upsert_batch(lance_records)
             _written += len(lance_records)
             del lance_records          # free this slice's boxed floats immediately
@@ -3828,7 +3997,9 @@ def run_v2(
     # re-cull never wipes the taste baseline (the catalog defaults stars=0).
     import ratings_store as _ratings_store
     try:
-        _user_ratings = _ratings_store.load()
+        # Path first, then content fingerprint: a rating made on the SD card
+        # still applies after the photo is copied off it or renamed.
+        _user_ratings = _ratings_store.stars_for_paths(list(paths))
         if _user_ratings:
             print(f"[v2] Restoring {len(_user_ratings)} durable star ratings onto gallery")
     except Exception as _e_rs:
@@ -3892,10 +4063,25 @@ def run_v2(
     from pipeline_stages import attach_face_signals as _attach_face_signals
     _attach_face_signals(gallery, person_detected_dict)
 
+    # JPEG twins take their RAW's finished result (see _pair_twins); a star
+    # rating on the JPEG itself still sets that file's grade.
+    if _twins:
+        for _g in list(gallery):
+            _tw = _twins.get(_g["path"])
+            if not _tw:
+                continue
+            _tst = int(_user_ratings.get(_tw, 0))
+            gallery.append({**_g, "id": _tw, "path": _tw, "filename": Path(_tw).name,
+                            "stars": _tst,
+                            "grade": _ratings_store.grade_for_stars(_tst) or _g["grade"]})
+
     # Capture the run's embeddings for the preference stage (Step 8a, below)
     # BEFORE releasing the array — the stage references them by path and dies
     # with a silent NameError if `embs` is gone. Same objects, no copy.
     _pref_embs = {paths[i]: embs[i] for i in range(n)}
+    for _rp, _tw in _twins.items():
+        if _rp in _pref_embs:
+            _pref_embs[_tw] = _pref_embs[_rp]
 
     # embs used for last time above (embedding tolist); release before catalog write
     del embs

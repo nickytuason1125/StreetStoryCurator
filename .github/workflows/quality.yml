@@ -43,6 +43,17 @@ jobs:
       - name: Lint (ruff)
         run: ruff check src/ server.py
 
+      - name: Undefined-name sweep (F821/F811)
+        # The 2026-09 '_p is not defined' class: a progress callback defined
+        # as `p` but called as `_p` shipped to users because nothing ran this
+        # rule set over routers/ (the split's newest code).
+        run: ruff check src/ routers/ --select F821,F811 --no-cache
+
+      - name: Encoding integrity
+        # The 2026-09 encoding incidents: cp1252 saves corrupted source
+        # silently; BOMs broke ast.parse()-based tests.
+        run: python scripts/check_encoding.py
+
       - name: Vulnerability scan (safety)
         run: safety check -r requirements.txt --short-report
 
@@ -83,9 +94,13 @@ jobs:
         working-directory: frontend
         run: npm ci
 
-      - name: Type-check
+      - name: Build (lint:tokens + lint:tdz + vitest + tsc + vite)
+        # The full gate, not just tsc: lint:tokens rejects class names that
+        # resolve to nothing (the py-0.5 class), lint:tdz rejects forward
+        # references in hook deps, and the build catches encoding-damaged
+        # string literals that type-check fine but render garbage.
         working-directory: frontend
-        run: npx tsc --noEmit
+        run: npm run build
 
       - name: NPM audit
         working-directory: frontend

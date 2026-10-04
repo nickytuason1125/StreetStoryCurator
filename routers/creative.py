@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field, field_validator, validator, model_validat
 
 from server_impl import (  # shared state & helpers
     Path, _BG_EXECUTOR, _CATALOG_PATH, _DATA_DIR, _load_used_cd_paths,
-    _save_used_cd_paths, asyncio,
+    _load_used_cd_paths_ordered, _save_used_cd_paths, asyncio,
 )
 import json
 import os
@@ -117,8 +117,7 @@ async def creative_direction_stream(payload: dict):
         style_prompt str  – style brief for the DeepSeek-R1 Agent Rule Set
         n_target     int  – target sequence length (5–10, default 7)
     """
-    import asyncio, json, numpy as _np
-    from fastapi.responses import StreamingResponse
+    import json, numpy as _np
 
     anchor_path     = (payload.get("anchor_path") or "").strip()
     folder_path     = (payload.get("folder_path") or "").strip()
@@ -127,6 +126,12 @@ async def creative_direction_stream(payload: dict):
     n_target        = max(3, min(10, n_target))
     peg_image_hash  = (payload.get("peg_image_hash") or "").strip() or None
     mode            = (payload.get("mode") or "story").strip().lower()
+    # Pinned images (2026-09-22): frames the user locked from the previous
+    # build. They MUST reappear in this run, so they are stripped from the
+    # avoid set (used-history + no-immediate-repeat would otherwise block
+    # every pinned frame — they were auto-marked used last run).
+    pinned_paths    = [p.strip() for p in (payload.get("pinned_paths") or [])
+                       if isinstance(p, str) and p.strip()]
     if mode == "auto":
         try:
             from creative_director_agent import classify_mode
@@ -139,6 +144,24 @@ async def creative_direction_stream(payload: dict):
 
     queue = asyncio.Queue()
     loop  = asyncio.get_running_loop()
+
+    # Session context for EVERY other pipeline (2026-09-22): the brief and peg
+    # this run received are stored so the JUDGE grading anchor, the mogco
+    # story sequencer and vibe search reuse them. set_cd_brief() existed in
+    # specvlm_pipeline since the beginning but was never called by anyone —
+    # _CD_BRIEF was always "" and the brief silently never reached grading.
+    try:
+        import specvlm_pipeline as _spec
+        _spec.set_cd_brief(style_prompt)
+    except Exception as _e_spec:
+        print(f"[blend] set_cd_brief skipped: {_e_spec}", flush=True)
+    try:
+        import blend_anchor as _bl
+        _bl.set_session_context(style_prompt, peg_image_hash or "")
+        print(f"[blend] session context set: brief='{style_prompt[:60]}' "
+              f"peg={'yes' if peg_image_hash else 'no'}", flush=True)
+    except Exception as _e_bl:
+        print(f"[blend] session context set skipped: {_e_bl}", flush=True)
 
     def _push(msg: dict):
         loop.call_soon_threadsafe(queue.put_nowait, msg)
@@ -322,7 +345,20 @@ async def creative_direction_stream(payload: dict):
             # ── Run pipeline ──────────────────────────────────────────────────
             from creative_director import run_creative_direction
 
-            avoid_paths = sorted(_load_used_cd_paths())
+            # The most recent generation's photos are NEVER eligible in the
+            # next run — even if FIFO rotation would otherwise retire them —
+            # so the sequence the user just downloaded cannot reappear in the
+            # very next story.
+            from server_impl import LAST_SEQUENCE as _last_seq
+            print(f"[cd] no-immediate-repeat: LAST_SEQUENCE has "
+                  f"{len(_last_seq)} path(s)", flush=True)
+            avoid_paths = sorted(_load_used_cd_paths() | set(_last_seq))
+            _pinned_res = {str(Path(p).resolve()) for p in pinned_paths}
+            if _pinned_res:
+                avoid_paths = [p for p in avoid_paths
+                               if str(Path(p).resolve()) not in _pinned_res]
+                print(f"[cd] pinned: {len(_pinned_res)} image(s) kept eligible: "
+                      f"{[Path(p).name for p in pinned_paths]}", flush=True)
 
             result = run_creative_direction(
                 strong_paths      = strong_paths,
@@ -336,9 +372,11 @@ async def creative_direction_stream(payload: dict):
                 style_prompt      = style_prompt,
                 n_target          = n_target,
                 avoid_paths       = avoid_paths,
+                recent_paths      = sorted(_last_seq),
                 progress          = _progress,
                 peg_image_hash    = peg_image_hash,
                 mode              = mode,
+                pinned_paths      = pinned_paths,
             )
 
             # Auto-mark generated images as used so next generation picks different ones.
@@ -349,18 +387,54 @@ async def creative_direction_stream(payload: dict):
                     if o.get("success") and o.get("source_path")
                 }
                 if new_used:
-                    updated = _load_used_cd_paths() | new_used
+                    # FIFO append with timestamps: the pool retires OLDEST
+                    # used frames first when it starves, so a saved story
+                    # only returns after every other frame has had a turn.
+                    from time import time as _now
+                    entries = _load_used_cd_paths_ordered()
+                    have = {e["path"] for e in entries}
+                    entries += [{"path": p, "ts": _now()} for p in new_used if p not in have]
                     # Reset only when every currently-graded image has been
                     # used — comparing against the run's own pool size used
                     # to wipe history prematurely.
-                    if set(strong_paths) and set(strong_paths) <= updated:
-                        updated = new_used
-                    _save_used_cd_paths(updated)
+                    if set(strong_paths) and set(strong_paths) <= have | set(new_used):
+                        entries = [{"path": p, "ts": _now()} for p in new_used]
+                    _save_used_cd_paths(entries)
+                    # Publish as the "most recent generation" for the
+                    # no-immediate-repeat guard at the top of this handler.
+                    import server_impl as _si
+                    _si.LAST_SEQUENCE = sorted(new_used)
+
+            # Rotation status for the UI: how many photos are set aside, how
+            # many the no-immediate-repeat guard excludes, and how many were
+            # actually eligible in this build's pool.
+            try:
+                import server_impl as _si_rot
+                _sel = result.get("selection") or {}
+                result["rotation"] = {
+                    "used_total":         len(_load_used_cd_paths()),
+                    "last_sequence":      len(_si_rot.LAST_SEQUENCE),
+                    "pool_eligible":      _sel.get("pool_eligible"),
+                    "pool_total":         _sel.get("pool_total_before_filter"),
+                    "recent_dup_dropped": _sel.get("recent_dup_dropped", 0),
+                    "used_paths":         sorted(_load_used_cd_paths()),
+                    "last_paths":         sorted(_si_rot.LAST_SEQUENCE),
+                }
+            except Exception as _e_rot:
+                print(f"[cd] rotation status attach skipped: {_e_rot}", flush=True)
 
             _push({"done": True, "data": result})
 
         except Exception as exc:
-            _push({"error": str(exc)})
+            # A raw str(exc) ("name '_p' is not defined") is developer
+            # detail, not a user message. Log the full traceback server-
+            # side; push a readable line to the stream.
+            import traceback as _tb
+            _tb.print_exc()
+            kind = type(exc).__name__
+            _push({"error": f"The styling run crashed unexpectedly "
+                            f"({kind}). The full traceback is in the "
+                            f"server log."})
         finally:
             import gc as _gc
             # Release the run's resident models (CPU text encoder, vision
@@ -567,15 +641,22 @@ async def save_cd_sequence(payload: dict):
 
     # Mark source paths as used
     source_paths = {o["source_path"] for o in successes if o.get("source_path")}
-    used = _load_used_cd_paths() | source_paths
-    _save_used_cd_paths(used)
+    from time import time as _now
+    entries = _load_used_cd_paths_ordered()
+    have = {e["path"] for e in entries}
+    entries += [{"path": p, "ts": _now()} for p in source_paths if p not in have]
+    _save_used_cd_paths(entries)
+    # Save counts as "this story was just consumed" — the same no-immediate-
+    # repeat guard as the generation endpoint covers the download path.
+    import server_impl as _si
+    _si.LAST_SEQUENCE = sorted(source_paths)
 
     return JSONResponse({
         "ok":        True,
         "story_dir": str(story_dir),
         "zip_path":  str(zip_path) if zip_path else None,
         "count":     len(manifest),
-        "used_total": len(used),
+        "used_total": len(entries),
     })
 
 
@@ -584,6 +665,19 @@ async def clear_used_cd_paths():
     """Reset the used-image history so all photos are eligible again."""
     _save_used_cd_paths(set())
     return JSONResponse({"ok": True, "used_total": 0})
+
+
+@router.get("/api/creative-direction/rotation-status")
+async def rotation_status():
+    """Rotation state for the Creative Director sidebar: used-history size,
+    how many photos the no-immediate-repeat guard excludes, and the actual
+    path lists so the picker can badge set-aside / just-used photos."""
+    import server_impl as _si
+    return JSONResponse({
+        "used_total":    len(_load_used_cd_paths()),
+        "used_paths":    sorted(_load_used_cd_paths()),
+        "last_paths":    sorted(_si.LAST_SEQUENCE),
+    })
 
 
 @router.get("/api/creative-direction/used-count")

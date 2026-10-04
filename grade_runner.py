@@ -17,8 +17,9 @@ Contract
 --------
     python grade_runner.py <request_json> <progress_jsonl>
 
-request_json : {folders, preset, force_rescan, scan_mode, deep_grade,
-                mogco_target, sample_limit, detect_only, catalog_path, data_dir}
+request_json : {folders, explicit_paths, preset, force_rescan, scan_mode,
+                deep_grade, mogco_target, sample_limit, detect_only,
+                catalog_path, data_dir}
 progress_jsonl: this process APPENDS one JSON object per line:
                 {"progress": float, "desc": str}         progress ticks
                 {"done": true, "total": int, ...}        final gallery result
@@ -64,6 +65,14 @@ class _FileQueue:
             pass   # never let progress reporting crash the grade
 
 
+# transformers imports TensorFlow whenever it is installed (it is — for the
+# offline NIMA export script only). Nothing in a cull uses it, and loading it
+# cost ~3.5 s per worker start plus its RAM (measured 2026-10-04). setdefault:
+# an explicit environment still wins; child processes inherit it.
+os.environ.setdefault("USE_TF", "0")
+os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
+
+
 def main() -> None:
     _src = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src")
     if _src not in sys.path:
@@ -94,6 +103,7 @@ def main() -> None:
             sample_limit=req.get("sample_limit", 0),
             detect_only=req.get("detect_only", False),
             deep_grade=req.get("deep_grade", False),
+            explicit_paths=req.get("explicit_paths") or {},
         )
     except BaseException as exc:
         # Surface any top-level failure to the server as a normal error line so the

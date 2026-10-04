@@ -32,11 +32,18 @@ _OLLAMA_MARKERS = ("11434", "ollama")
 
 # Opt-in only. Step 4e is gated on FIRSTCUT_STEP4E, which defaults to "0", and
 # critique_engine keeps the helpers that pass reaches for.
-_ALLOWED = {"qwen_vlm_grader.py", "critique_engine.py", "grade_pipeline_v2.py"}
+_ALLOWLED_OPTIN = {"qwen_vlm_grader.py", "critique_engine.py", "grade_pipeline_v2.py"}
+
+# Sanctioned Ollama client. 2026-09-17: text generation became Ollama-first —
+# Ollama runs on localhost, so it is a local runtime, not the external service
+# this test was written to keep off the default paths. local_llm.py documents
+# the decision in its generate() docstring.
+_ALLOWED = _ALLOWLED_OPTIN | {"local_llm.py"}
 
 
 def _sources():
-    """Every module on a default path, minus the opt-in Step 4e machinery."""
+    """Every module on a default path, minus the opt-in Step 4e machinery
+    and the sanctioned local Ollama client."""
     for f in sorted(SRC.glob("*.py")):
         if f.name not in _ALLOWED:
             yield f
@@ -131,24 +138,39 @@ def test_local_llm_degrades_instead_of_raising():
     original = local_llm.model_path
     try:
         local_llm.model_path = lambda: Path("does") / "not" / "exist.gguf"
-        local_llm._llm = None
         local_llm._load_attempted = False
         assert local_llm.available() is False
         assert local_llm.generate("anything") is None
     finally:
         local_llm.model_path = original
-        local_llm._llm = None
         local_llm._load_attempted = False
 
 
 def test_local_llm_never_touches_torch_cuda_to_pick_a_device():
-    """It runs in the server process, the ancestor of the CUDA grade subprocess."""
+    """It runs in the server process, the ancestor of the CUDA grade subprocess.
+
+    Sidecar era (2026-09): local_llm holds no model at all — text inference
+    lives in the disposable sidecar process / Ollama. The server-process rule
+    therefore tightens from "_load must not use torch" to "the module must
+    never import or touch torch at all".
+    """
     src = (SRC / "local_llm.py").read_text(encoding="utf-8")
-    body = src.split("def _load(")[1].split("\ndef ")[0]
-    assert "torch" not in body, (
-        "local_llm._load must ask tier_select.has_gpu() — a cached subprocess "
-        "probe — not torch.cuda, which initialises a context in the parent and "
-        "makes it fault 0xC0000005 when a GPU child exits"
+    import ast
+    tree = ast.parse(src, str(SRC / "local_llm.py"))
+    touches = [
+        f"line {n.lineno}: {'import ' + getattr(n, 'module', getattr(n, 'name', '?')) if isinstance(n, (ast.Import, ast.ImportFrom)) else 'torch attribute'}"
+        for n in ast.walk(tree)
+        if isinstance(n, (ast.Import, ast.ImportFrom))
+        and "torch" in (getattr(n, "module", "") or "")
+        or isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)
+        and n.value.id == "torch"
+    ]
+    assert not touches, (
+        "local_llm runs in the server process whose documented fate "
+        "(vram_manager.purge_vram note, 0xC0000005 incidents) is to fault "
+        "CUDA subprocesses at teardown if the parent initialises a CUDA "
+        "context. The sidecar/Ollama do the model work; local_llm must stay "
+        "torch-free. Offenders: " + "; ".join(touches)
     )
 
 

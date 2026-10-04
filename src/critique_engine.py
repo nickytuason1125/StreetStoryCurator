@@ -1,4 +1,4 @@
-﻿"""
+"""
 Critique Engine — Qwen2.5-VL-2B Visual Judge
 
 Two public functions called by the server subprocess and the annotation queue:
@@ -526,6 +526,16 @@ def run_jury_critique(image_hash: str) -> dict:
             "critique": "", "think": "", "bbox_factors": []}
 
 
+def _sess_peg_clause() -> str:
+    """Session peg clause for critique prompts (empty when no peg)."""
+    try:
+        from blend_anchor import context_line
+        line = context_line()
+        return f"Session context: {line}." if line else ""
+    except Exception:
+        return ""
+
+
 def run_contact_sheet_critique(
     sheet_path: str,
     slot_summaries: list[dict],
@@ -554,7 +564,11 @@ def run_contact_sheet_critique(
         "You are a photo editor reviewing a curated street-photo sequence, shown "
         "as a numbered contact sheet (each cell labeled with its role and slot "
         f"number). Style brief: '{style_prompt[:150]}'. "
-        f"Per-slot data: {json.dumps(slot_summaries, separators=(',', ':'))[:600]}. "
+        # Session context (2026-09-22): when a reference peg is set the critic
+        # judges against the same anchor the vector math used. Empty when no
+        # peg — the prompt is then byte-identical to before.
+        + (_sess_peg_clause() + " " if _sess_peg_clause() else "")
+        + f"Per-slot data: {json.dumps(slot_summaries, separators=(',', ':'))[:600]}. "
         "If every slot fits its role and the sequence flows well, respond ACCEPT. "
         "If exactly one slot clearly doesn't belong (wrong mood, weak composition, "
         "breaks pacing), respond SWAP with that slot number (0-indexed) and cite the "

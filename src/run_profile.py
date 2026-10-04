@@ -381,6 +381,25 @@ def _env_key() -> tuple:
             _lt.get() or "")
 
 
+def onnx_image_batch() -> int:
+    """Batch for the ONNX IMAGE encoder — fixed per device, never per RAM.
+
+    The ONNX graph is NOT batch-shape invariant (measured 2026-10-04: batch 6
+    or 2 vs 8 moved embedding values by up to 5e-3; batch 8 twice was
+    bit-identical), and the RAM planner rewrites SIGLIP_ENC_BATCH under
+    pressure — so two identical culls at different free RAM disagreed on 5 of
+    600 grade buckets. Only FIRSTCUT_ONNX_ENC_BATCH (explicit, or the
+    siglip2_encoder GPU-OOM retry) overrides it.
+    """
+    try:
+        forced = int(os.environ.get("FIRSTCUT_ONNX_ENC_BATCH", "0") or 0)
+    except ValueError:
+        forced = 0
+    if forced > 0:
+        return forced
+    return 8 if current().gpu else 16
+
+
 def current(*, refresh: bool = False) -> RunProfile:
     """The profile for THIS process, derived from the environment.
 

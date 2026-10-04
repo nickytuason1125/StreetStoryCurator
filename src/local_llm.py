@@ -1,4 +1,4 @@
-﻿"""
+"""
 local_llm.py — the one text-LLM runtime, offline, via the disposable sidecar.
 
 Why this module exists

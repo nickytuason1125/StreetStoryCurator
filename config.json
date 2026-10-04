@@ -1,5 +1,11 @@
 {
   "DOMINANT_AREA_PCT": 18.3,
   "H_CONTRAST_THRESH": 161.0,
-  "OPENER_MAX_AREA": 30.0
+  "OPENER_MAX_AREA": 30.0,
+  "JUDGE_MODEL": "deepseek-r1:8b-q3km",
+  "JUDGE_MODE": "structured",
+  "JUDGE_SLOW_S": 90.0,
+  "JUDGE_BREAKER_TRIPS": 3.0,
+  "JUDGE_SAMPLES": 1.0,
+  "REQUIRE_VISION_GATE": 0.0
 }

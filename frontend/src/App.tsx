@@ -91,27 +91,27 @@ const photoId = (path: string): string => {
 /* gLow() mapped each grade to a 14% tinted badge background. Deleted: the
  * machine's verdict is a 2px rule under the frame, not a filled badge behind
  * text. gl() was a duplicate of gradeLabel() in theme/tokens.ts. */
-// gIcon() lived here — it mapped grades to âœ… / âš ï¸ / âŒ. It had no callers left,
+// gIcon() lived here — it mapped grades to ✅ / ⚠️ / ❌. It had no callers left,
 // and emoji-as-status is the clearest "generated interface" tell there is. The
 // grade is carried by the rule under each frame instead. Do not reintroduce it.
 
 const _SLOGANS: Array<[RegExp, string]> = [
   // Patterns match the backend's (model-agnostic) progress wording. Never put a
   // model name in the SLOGAN text — these strings are shown to the user.
-  [/scanning folder|found \d+|already graded/i, "Pulling the contact sheetâ€¦"],
-  [/checking image files|unusable images/i,     "Culling the camera-shake casualtiesâ€¦"],
-  [/analyz|image analysis/i,                    "Reading the light in every frameâ€¦"],
-  [/near-duplicate|marking duplicates/i,        "Picking the best frame from each burstâ€¦"],
-  [/preparing deep analysis/i,                  "The photo editor is pulling up a chairâ€¦"],
-  [/judging each photo|deep analysis ready/i,   "Studying composition, moment, and storyâ€¦"],
-  [/scoring image quality|quality scoring/i,    "Running the darkroom technical checkâ€¦"],
-  [/light and contrast/i,                       "Measuring the exposureâ€¦"],
-  [/style reference|creative brief/i,           "Comparing against the reference portfolioâ€¦"],
-  [/taste profile/i,                            "Recalling your editorial eyeâ€¦"],
-  [/refining composition/i,                     "Second shooter weighing inâ€¦"],
-  [/sequenc|assigning grades|building your gallery/i, "Building the selectsâ€¦"],
-  [/combining scores/i,                         "Matching each frame to its genreâ€¦"],
-  [/saving results|photo details/i,             "Filing the contact sheetâ€¦"],
+  [/scanning folder|found \d+|already graded/i, "Pulling the contact sheet…"],
+  [/checking image files|unusable images/i,     "Culling the camera-shake casualties…"],
+  [/analyz|image analysis/i,                    "Reading the light in every frame…"],
+  [/near-duplicate|marking duplicates/i,        "Picking the best frame from each burst…"],
+  [/preparing deep analysis/i,                  "The photo editor is pulling up a chair…"],
+  [/judging each photo|deep analysis ready/i,   "Studying composition, moment, and story…"],
+  [/scoring image quality|quality scoring/i,    "Running the darkroom technical check…"],
+  [/light and contrast/i,                       "Measuring the exposure…"],
+  [/style reference|creative brief/i,           "Comparing against the reference portfolio…"],
+  [/taste profile/i,                            "Recalling your editorial eye…"],
+  [/refining composition/i,                     "Second shooter weighing in…"],
+  [/sequenc|assigning grades|building your gallery/i, "Building the selects…"],
+  [/combining scores/i,                         "Matching each frame to its genre…"],
+  [/saving results|photo details/i,             "Filing the contact sheet…"],
 ];
 function toSlogan(desc: string): string {
   if (!desc) return '';
@@ -148,7 +148,7 @@ function SortableItem({ id, children }: { id: string; children: React.ReactNode 
 
 /* GridView moved to components/views/GridView.tsx. */
 
-/* â”€â”€ Critique trigger parser â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* ── Critique trigger parser ────────────────────────────────────── */
 // Parses <trigger type="blur|heatmap|grid">text</trigger> tags emitted by the
 // jury LLM into hoverable inline spans that drive the image overlay state.
 // Falls back to plain text if the LLM produces no tags.
@@ -259,7 +259,7 @@ function buildReasoningFromBreakdown(score: number, grade: string, breakdown: Re
 
 /* Aspect -> canonical dimension classifier moved to lib/aspects.ts - shared by App and the analysis panel. */
 
-/* â”€â”€ Factor Annotations overlay â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* ── Factor Annotations overlay ────────────────────────────────── */
 const REGION_BOX: Record<string, [number,number,number,number]> = {
   'top-third':    [0,      0,      1,    0.33],
   'center':       [0.2,    0.2,    0.6,  0.6],
@@ -315,7 +315,7 @@ function FactorAnnotations({ factors }: { factors: any[] }) {
 
         const impactAbs = Math.round(Math.abs(f.impact ?? 0) * 100);
         const badge = isStrength ? `[+${impactAbs}]` : isWeakness ? `[-${impactAbs}]` : null;
-        const glyph = isStrength ? 'â—' : isWeakness ? 'âœ•' : 'â—‹';
+        const glyph = isStrength ? '●' : isWeakness ? '✕' : '○';
 
         return (
           <g key={i}>
@@ -378,7 +378,7 @@ function FactorAnnotations({ factors }: { factors: any[] }) {
   );
 }
 
-/* â”€â”€ Analysis HUD — pen-notation corner annotation on the image â”€â”€â”€â”€ */
+/* ── Analysis HUD — pen-notation corner annotation on the image ──── */
 function AnalysisHUD({ grade, score, breakdown }: { grade: string; score: number; breakdown: Record<string,number> }) {
   const ASPECT_KEYS = ['Technical','Composition','Lighting','Narrative','Human/Culture'];
   const aspects = ASPECT_KEYS.map(k => [k, (breakdown[k] ?? 0)] as [string,number]);
@@ -425,7 +425,7 @@ function AnalysisHUD({ grade, score, breakdown }: { grade: string; score: number
   );
 }
 
-/* â”€â”€ Niche registry (mirrors src/niche_registry.py) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* ── Niche registry (mirrors src/niche_registry.py) ─────────────── */
 const NICHE_GROUPS = [
   { category: "Street & Documentary", niches: [
     { key: "classic_street",  label: "Classic Street" },
@@ -459,7 +459,7 @@ const NICHE_GROUPS = [
   ]},
 ];
 
-/* â”€â”€ App â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* ── App ────────────────────────────────────────────────────────── */
 export default function App() {
   const [folder,     setFolder]     = useState("");
   const [preset,     setPreset]     = useState("classic_street");
@@ -493,9 +493,12 @@ export default function App() {
   const [scanMode,   setScanMode]   = useState(false);
   const [deepGrade,  setDeepGrade]  = useState(false);   // OFF = fast SigLIP zero-shot; ON = Qwen VLM (slower, GPU)
   const [graderUsed, setGraderUsed] = useState<'fast'|'deep'|'scan'|null>(null);  // which grader actually ran (transparency badge)
+  // How often Strong/Mid/Weak matched the photographer's ratings on shoots the
+  // grader was not trained on (GET /api/accuracy) — null until measured.
+  const [matchRate, setMatchRate] = useState<number | null>(null);
   const [mainTab,    setMainTab]    = useState<"gallery"|"duplicates"|"creative">("gallery");
   /* Duplicates view: groups render incrementally (4 at a time via a scroll
-   * sentinel) so 119 groups Ã— ~150 thumbs never mount at once. */
+   * sentinel) so 119 groups × ~150 thumbs never mount at once. */
   const [dupGroupsShown, setDupGroupsShown] = useState(4);
   useEffect(() => { setDupGroupsShown(4); }, [mainTab]);
   const revealMoreDupGroups = useCallback(() => setDupGroupsShown(n => n + 4), []);
@@ -610,16 +613,16 @@ const [staleBundle,    setStaleBundle]    = useState(false);
   // build; sent with every creative-direction run so they reappear.
   const [creativePinned, setCreativePinned] = useState<string[]>([]);
   const [pegLoading,     setPegLoading]     = useState(false);
-  // â”€â”€ Semantic search state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Semantic search state ─────────────────────────────────────────────────
   const [searchQuery,    setSearchQuery]    = useState("");
   const [searchResults,  setSearchResults]  = useState<Set<string> | null>(null); // Set of paths
   const [searchLoading,  setSearchLoading]  = useState(false);
-  // â”€â”€ Jury critique state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Jury critique state ───────────────────────────────────────────────────
   const [juryLoading,    setJuryLoading]    = useState(false);
   const [juryCritique,   setJuryCritique]   = useState<string | null>(null);
   const [juryThink,      setJuryThink]      = useState<string | null>(null);
   const [juryCritPath,   setJuryCritPath]   = useState<string | null>(null);
-  // â”€â”€ Engine health state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Engine health state ───────────────────────────────────────────────────
   const [engineHealth,        setEngineHealth]        = useState<{ status: "checking"|"online"|"offline"; missing: string[] }>({ status: "checking", missing: [] });
   /* ollamaPs state removed 2026-08-30: polled every 15 s, never rendered anywhere. */
   const [bannerDismissed,     setBannerDismissed]     = useState(false);
@@ -628,7 +631,7 @@ const [staleBundle,    setStaleBundle]    = useState(false);
   const [currentDownloadModel,setCurrentDownloadModel]= useState("");
   const [downloadError,       setDownloadError]       = useState<string | null>(null);
   const [updateRequired,      setUpdateRequired]      = useState(false);
-  // â”€â”€ Creative Direction state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Creative Direction state ──────────────────────────────────────────────
   const [creativeAnchor,   setCreativeAnchor]   = useState<string | null>(null);
   const [creativeResultsB, setCreativeResultsB] = useState<any[]>([]);
   const [creativePrompt,   setCreativePrompt]   = useState("");
@@ -658,10 +661,10 @@ const [creativeRotation,    setCreativeRotation]    = useState<{ used_total?: nu
   const [creativeShowOriginal,setCreativeShowOriginal]= useState(false);
   const [usedCount,           setUsedCount]           = useState(0);
   const [sequenceSaving,      setSequenceSaving]      = useState(false);
-  // â”€â”€ PDF RAG state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── PDF RAG state ─────────────────────────────────────────────────────────
   const [ragPdfs,       setRagPdfs]       = useState<{name:string,pages:number,phrases:number}[]>([]);
   const [ragUploading,  setRagUploading]  = useState(false);
-  // â”€â”€ Auditor / XAI overlay state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Auditor / XAI overlay state ───────────────────────────────────────────
   const [isAuditModeActive,     setIsAuditModeActive]     = useState(false);
   const [reasoningOverlayUrl,   setReasoningOverlayUrl]   = useState<string | null>(null);
   const [reasoningOverlayPath,  setReasoningOverlayPath]  = useState<string | null>(null);
@@ -774,7 +777,7 @@ const [creativeRotation,    setCreativeRotation]    = useState<{ used_total?: nu
       fetch(`${API}/`)
         .then(r => {
           // Retry on ANY non-ready outcome — a non-OK response used to stop the
-          // loop silently and leave the app on "Startingâ€¦" forever.
+          // loop silently and leave the app on "Starting…" forever.
           if (r.ok && !cancelled) setBackendReady(true);
           else if (!cancelled && attempts <= 100) timerId = setTimeout(check, 600);
         })
@@ -806,7 +809,7 @@ const [creativeRotation,    setCreativeRotation]    = useState<{ used_total?: nu
         // `npm run build`, then reload.
         setStaleBundle(d.bundle_stale === true);
         // change-guard: a new object identity every poll re-rendered the whole
-        // tree 6Ã—/min even when nothing changed. Identity moves on real change.
+        // tree 6×/min even when nothing changed. Identity moves on real change.
         setEngineHealth(prev => {
           const missing = d.missing_models ?? [];
           const same = prev.status === status &&
@@ -1085,7 +1088,7 @@ const [creativeRotation,    setCreativeRotation]    = useState<{ used_total?: nu
 
   /* keyboard nav — full culling flow, no mouse required.
    *
-   *   â†/→ or h/l   move selection          g / e   grid â‡„ loupe
+   *   ←/→ or h/l   move selection          g / e   grid ⇄ loupe
    *   1–5          star (repeat = clear)   0       clear stars
    *   x            toggle "used" (persisted to photo_flags.json)
    *
@@ -1466,7 +1469,7 @@ setCreativeDirectorNote('');
     const ps = data.photos.map((p: any) => ({ ...p, id: photoId(p.path) }));
     // Apply same auto-redact logic as grading so duplicates are hidden in the gallery
     const autoRedacted = new Set<string>(
-      ps.filter((p: any) => p.cluster_id >= 0 && !(p.sim_flag || '').startsWith('â˜…'))
+      ps.filter((p: any) => p.cluster_id >= 0 && !(p.sim_flag || '').includes('Best'))
         .map((p: any) => p.path)
     );
     const firstVisible =
@@ -1493,7 +1496,7 @@ setCreativeDirectorNote('');
     } catch { notify('Failed to resume session', 'error'); }
   }, [notify, applyCatalog]);
 
-  /* â”€â”€ Backend build handshake (2026-09-14) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  /* ── Backend build handshake (2026-09-14) ────────────────────────────────
    * The UI must never be glued to a stale backend: if the server process is
    * restarted with newer code (or at all), its build stamp changes, and the
    * UI hard-reloads ONCE so state, catalog and SSE all come from the same
@@ -1543,7 +1546,7 @@ setCreativeDirectorNote('');
     return () => { cancelled = true; document.removeEventListener('visibilitychange', onVis); clearInterval(id); };
   }, []);
 
-  /* â”€â”€ Background-grade reattach + push sync (2026-09-14) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  /* ── Background-grade reattach + push sync (2026-09-14) ───────────────────
    * A grade outlives its SSE stream (window close / reload / dropped
    * connection) — the runner keeps going and commits the catalog itself.
    * PRIMARY transport: the /api/events push channel — the server volunteers
@@ -1554,7 +1557,7 @@ setCreativeDirectorNote('');
   const bgGradeDoneRef = useRef<number>(0);
   const lastRevRef = useRef<number>(0);
   const applyGradeState = useCallback(async (d: any) => {
-    // Stale lock â‰  running grade: a lock whose pid has no live process is
+    // Stale lock ≠ running grade: a lock whose pid has no live process is
     // a leftover file (grade_in_progress sweeps on read, but between sweeps
     // the UI must not show a phantom grade). Only verifiable liveness counts.
     const lockDead = d.foreign_lock && d.lock_alive === false;
@@ -1605,7 +1608,7 @@ setCreativeDirectorNote('');
     }
   }, [applyCatalog, notify]);
 
-  // â”€â”€ PRIMARY: the push channel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── PRIMARY: the push channel ──────────────────────────────────────────────
   useEffect(() => {
     let closed = false;
     let es: EventSource | null = null;
@@ -1635,7 +1638,7 @@ setCreativeDirectorNote('');
     return () => { closed = true; es?.close(); };
   }, [applyGradeState]);
 
-  // â”€â”€ FALLBACK: slow snapshot poll, in case the push channel is down â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── FALLBACK: slow snapshot poll, in case the push channel is down ────────
   useEffect(() => {
     let stop = false;
     const tick = async () => {
@@ -1652,7 +1655,7 @@ setCreativeDirectorNote('');
     return () => { stop = true; clearInterval(id); };
   }, [applyGradeState]);
 
-  // â”€â”€ Cull smoothness: preload the neighbours' loupe images â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Cull smoothness: preload the neighbours' loupe images ─────────────────
   // Arrow-key culling felt jerky because each step waited on a fresh
   // multi-megapixel decode (the server was mid-decode while the UI already
   // showed the crossfade thumb). Decoding the previous/next frame in the
@@ -1838,8 +1841,18 @@ setCreativeDirectorNote('');
         body: JSON.stringify({ folder_path: allFolderPaths[0], folder_paths: allFolderPaths, explicit_paths: explicitPaths, preset, scan_mode: scanMode, deep_grade: deepGrade, force_rescan: forceRescan, mogco_target: mogcoTarget }),
       });
       if (!resp.ok) {
-        try { const d = await resp.json(); throw new Error(d.error ?? `Server error ${resp.status}`); }
-        catch (e: any) { if (e.message && !e.message.startsWith('{')) throw e; throw new Error(`Server error ${resp.status}`); }
+        // The server REFUSED to start (RAM gate 503, already-running 409, bad
+        // folder 400). Nothing ran, so this must never fall through to the
+        // checkpoint-recovery path below — that reloaded the old catalog and
+        // told the user "Grading stopped early", hiding the actual reason.
+        let reason = `Server error ${resp.status}`;
+        try {
+          const d = await resp.json();
+          reason = d.error ?? (typeof d.detail === 'string' ? d.detail : reason);
+        } catch { /* non-JSON body — keep the status text */ }
+        const refusal: any = new Error(reason);
+        refusal.refused = true;
+        throw refusal;
       }
       const reader = resp.body!.getReader();
       const decoder = new TextDecoder();
@@ -1894,13 +1907,13 @@ setCreativeDirectorNote('');
             if (q) setGradeQuality(q[1].trim()); else setGradeDesc(msg.desc);
           }
           if (msg.quality) setGradeQuality(String(msg.quality));
-          if (msg.error) throw new Error(msg.error);
+          if (msg.error) throw Object.assign(new Error(msg.error), { reported: true });
           if (msg.done) {
             sawDone = true;
             const ps = msg.data.map((p: any) => ({ ...p, id: photoId(p.path) }));
             setPhotos(ps);
             setRedacted(new Set<string>(
-              ps.filter((p: any) => p.cluster_id >= 0 && !(p.sim_flag || '').startsWith('â˜…'))
+              ps.filter((p: any) => p.cluster_id >= 0 && !(p.sim_flag || '').includes('Best'))
                 .map((p: any) => p.path)
             ));
             const firstVisible = ps.find((p: any) => !((p.grade as string)?.includes('Weak')))
@@ -1926,6 +1939,7 @@ setCreativeDirectorNote('');
               ? ` · Sequence: ${msg.mogco_error}`
               : '';
             if (msg.mogco_error) notify(`${msg.mogco_error}`, 'error');
+            if (msg.empty_folders_msg) notify(msg.empty_folders_msg, 'error');
             // Transparency: report which grader actually ran, and warn (don't hide)
             // when Deep Grade was requested but silently fell back to Fast (SigLIP)
             // because there wasn't enough free RAM to load the vision model.
@@ -1962,7 +1976,7 @@ setCreativeDirectorNote('');
           } catch { /* server busy — the read timeout still guards us */ }
         }
       }
-      // â”€â”€ Stream ended WITHOUT a done event â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      // ── Stream ended WITHOUT a done event ─────────────────────────────────
       // The runner is durable: on a dropped connection it detaches and
       // finishes in the background, then commits the catalog. Silence here
       // read as "grading stopped early" (2026-09-11: a finished 2,754-photo
@@ -1975,9 +1989,9 @@ setCreativeDirectorNote('');
         // first tick sees grading:false and loads the gallery with the
         // success toast in ~5 s.
         if (!quietFinished) {
-          notify('Connection dropped — the cull keeps running in the background. Loading your results when it finishesâ€¦', 'info');
+          notify('Connection dropped — the cull keeps running in the background. Loading your results when it finishes…', 'info');
         }
-        setGradeDesc('Finishing in the backgroundâ€¦');
+        setGradeDesc('Finishing in the background…');
         await waitAndLoadBackground();
       }
     } catch (err: any) {
@@ -1989,12 +2003,23 @@ setCreativeDirectorNote('');
       // actually saw. Only when the runner is genuinely idle do we fall back
       // to checkpoint recovery.
       const msg = err?.message || 'Failed';
+      if (err?.refused) {
+        notify(`Grading didn't start: ${msg}`, 'error');
+        return;
+      }
+      if (err?.reported) {
+        // The grader said exactly what went wrong — show THAT, not the generic
+        // "stopped early — recovered N" line, then load whatever was saved.
+        notify(`Grading failed: ${msg}`, 'error');
+        try { applyCatalog((await axios.get(`${API}/api/catalog?t=` + Date.now())).data); } catch { /* nothing saved */ }
+        return;
+      }
       const isStall = /No response from server/i.test(msg);
       let stillRunning = false;
       try { stillRunning = (await axios.get(`${API}/api/grading/status`)).data.grading; } catch { /* assume not */ }
       if (stillRunning) {
-        notify('Connection dropped — the cull keeps running in the background. Loading your results when it finishesâ€¦', 'info');
-        setGradeDesc('Finishing in the backgroundâ€¦');
+        notify('Connection dropped — the cull keeps running in the background. Loading your results when it finishes…', 'info');
+        setGradeDesc('Finishing in the background…');
         await waitAndLoadBackground();
         return;
       }
@@ -2028,7 +2053,7 @@ setCreativeDirectorNote('');
     const pool = photos
       .filter(p => p.grade !== 'Pending')
       .filter(p => seqMinStars === 0 || (p.stars ?? 0) >= seqMinStars);
-    const filterNote = seqMinStars > 0 ? ` rated ${seqMinStars}â˜…+` : '';
+    const filterNote = seqMinStars > 0 ? ` rated ${seqMinStars}★+` : '';
     if (pool.length < 5) { notify(`A sequence needs at least 5 graded photos${filterNote}. Grade more, or clear the filter.`, 'error'); return; }
     setLoading(true);
     try {
@@ -2050,7 +2075,7 @@ setCreativeDirectorNote('');
         excluded_paths: [],
       });
       const zip = r.data[0]?.zip;
-      if (zip) { const a = document.createElement('a'); a.href = photoUrl(zip); a.download = 'Editorial_Carousel.zip'; a.click(); }
+      if (zip) { const a = document.createElement('a'); a.href = `${API}/api/export/zip-file?name=${encodeURIComponent(zip)}`; a.download = 'Editorial_Carousel.zip'; a.click(); }
     } catch { notify('Export failed', 'error'); }
   };
 
@@ -2072,7 +2097,7 @@ setCreativeDirectorNote('');
     if (photos.length === 0) { notify('No photos loaded.', 'error'); return; }
     setCreativeLoading(true);
     setCreativeProgress(0);
-    setCreativeStage('Initialisingâ€¦');
+    setCreativeStage('Initialising…');
     setCreativeResults([]);
     setCreativeResultsB([]);
     setCreativeRuleSet(null);
@@ -2098,7 +2123,7 @@ setCreativeDirectorNote('');
       // Stall guard: the server sends ": ping" heartbeat comments every 10s,
       // so a healthy stream always delivers bytes. If nothing arrives within
       // 45s the connection is wedged — surface the error instead of spinning
-      // on "Initialisingâ€¦" forever.
+      // on "Initialising…" forever.
       const CREATIVE_READ_TIMEOUT_MS = 45_000;
       const _readWithTimeout = (): Promise<ReadableStreamReadResult<Uint8Array>> =>
         new Promise((resolve, reject) => {
@@ -2337,6 +2362,13 @@ setCreativeDirectorNote('');
 
   const isGrading = loading;
   const isDone    = !loading && photos.length > 0 && photos.some(p => p.grade !== 'Pending');
+  // Refresh the "Matches you" badge whenever a graded gallery appears.
+  useEffect(() => {
+    if (!isDone) return;
+    axios.get(`${API}/api/accuracy`)
+      .then(r => setMatchRate(typeof r.data?.agree === 'number' ? r.data.agree : null))
+      .catch(() => {});
+  }, [isDone]);
   // Stable handlers for the memoized hot views — without these, inline closures
   // would defeat React.memo on every App render.
   const handleGridSelect = useCallback((id: string) => {
@@ -2371,7 +2403,7 @@ setCreativeDirectorNote('');
   const handleFindPerson = async (tokens: string[]) => {
     if (!tokens.length) return;
     const [path, idxStr] = tokens[0].split('|');
-    notify('Finding similar facesâ€¦');
+    notify('Finding similar faces…');
     try {
       const r = await fetch(`${API}/api/people-search?path=${encodeURIComponent(path)}&idx=${idxStr}`);
       const d = await r.json();
@@ -2385,7 +2417,7 @@ setCreativeDirectorNote('');
       setMainTab('gallery');
       // Honest semantics: SigLIP-2 is an appearance encoder, not a biometric
       // one — the matches are similar-looking faces, best first (measured
-      // 2026-09: same-appearance â‰ˆ0.70–0.80 L2, everything else 0.80–0.97).
+      // 2026-09: same-appearance ≈0.70–0.80 L2, everything else 0.80–0.97).
       notify(`Found ${matches.length} frame${matches.length !== 1 ? 's' : ''} with a similar-looking face — best first`, 'success');
     } catch {
       notify('People search failed — check the server log.', 'error');
@@ -2459,7 +2491,7 @@ setCreativeDirectorNote('');
         {backendError ? (
           <>
             {/* An error explains what happened and what to do next. The previous
-                version showed a âš ï¸ over "Make sure the app is running correctly",
+                version showed a ⚠️ over "Make sure the app is running correctly",
                 which tells someone staring at a stopped app precisely nothing. */}
             <p className="t-label !text-alarm-crit">Not connected</p>
             <p className="max-w-[38ch] text-center text-sm text-ink">
@@ -2477,7 +2509,7 @@ setCreativeDirectorNote('');
         ) : (
           <>
             <div style={{ width:40, height:40, border:`3px solid ${T.raisedHover}`, borderTopColor:T.ink3, borderRadius:'var(--r-round)', animation:'spin .8s linear infinite' }}/>
-            <span style={{ fontSize:'var(--text-sm)', color:T.ink2, letterSpacing:'var(--track-body)' }}>Starting FirstCutâ€¦</span>
+            <span style={{ fontSize:'var(--text-sm)', color:T.ink2, letterSpacing:'var(--track-body)' }}>Starting FirstCut…</span>
           </>
         )}
       </div>
@@ -2588,7 +2620,7 @@ setCreativeDirectorNote('');
                 {/* Generic error */}
                 {downloadError && !isDownloading && (
                   <span style={{ fontSize:'var(--text-xs)', color:T.alarmCrit, fontWeight:600, flex:1, minWidth:0 }}>
-                    âœ• {downloadError}
+                    ✕ {downloadError}
                   </span>
                 )}
                 {/* Download / Retry button */}
@@ -2621,7 +2653,7 @@ setCreativeDirectorNote('');
                         border: `1px solid ${isCpu ? T.alarmWarn : T.lineStrong}`,
                         color: isGpu ? T.ink2 : isCpu ? T.alarmWarn : T.ink3,
                       }}>
-                      {chip.display} {isGpu ? 'âœ“ GPU' : isCpu ? 'âš¡ CPU' : '—'}
+                      {chip.display} {isGpu ? '✓ GPU' : isCpu ? '⚡ CPU' : '—'}
                     </span>
                   );
                 })}
@@ -2646,7 +2678,7 @@ setCreativeDirectorNote('');
                 title="Dismiss"
                 style={{ marginLeft:'auto', flexShrink:0, background:'none', border:'none', cursor:'pointer',
                   color: isOffline ? T.well : T.ink3, fontSize:'var(--text-md)', lineHeight:'var(--leading-none)', padding:'2px 4px' }}>
-                âœ•
+                ✕
               </button>
             )}
           </div>
@@ -2700,7 +2732,7 @@ setCreativeDirectorNote('');
                           style={{ display:'block', marginTop:8, padding:'6px 14px', cursor: isDownloading ? 'default' : 'pointer',
                             background:'transparent', color:T.ink, border:`1px solid ${T.lineStrong}`,
                             borderRadius:'var(--r-sm)', fontSize:'var(--text-xs)' }}>
-                          {isDownloading ? 'Downloadingâ€¦' : 'Download now (about 6 GB)'}
+                          {isDownloading ? 'Downloading…' : 'Download now (about 6 GB)'}
                         </button>
                       )}
                     </div>
@@ -2718,7 +2750,7 @@ setCreativeDirectorNote('');
                 <div style={{ display:'flex', gap:10, padding:'10px 0', borderBottom:`1px solid ${T.line}` }}>
                   <div style={{ width:9, height:9, borderRadius:'var(--r-round)', border:`2px solid ${T.ink3}`, borderTopColor:'transparent', animation:'spin .8s linear infinite', flexShrink:0, marginTop:4 }}/>
                   <div style={{ flex:1, minWidth:0 }}>
-                    <div style={{ fontSize:'var(--text-sm)', color:T.ink }}>Loading Vision Engineâ€¦</div>
+                    <div style={{ fontSize:'var(--text-sm)', color:T.ink }}>Loading Vision Engine…</div>
                     <div style={{ fontSize:'var(--text-xs)', color:T.ink3, lineHeight:'var(--leading-body)', marginTop:2 }}>~30–60 seconds — Start Culling unlocks automatically.</div>
                   </div>
                 </div>
@@ -2772,7 +2804,7 @@ setCreativeDirectorNote('');
                 <div style={{ display:'flex', gap:10, padding:'10px 0', borderBottom:`1px solid ${T.line}` }}>
                   <div style={{ width:9, height:9, borderRadius:'var(--r-round)', border:`2px solid ${T.ink3}`, borderTopColor:'transparent', animation:'spin .8s linear infinite', flexShrink:0, marginTop:4 }}/>
                   <div style={{ flex:1, minWidth:0 }}>
-                    <div style={{ fontSize:'var(--text-sm)', color:T.ink }}>Calibrating pipelineâ€¦</div>
+                    <div style={{ fontSize:'var(--text-sm)', color:T.ink }}>Calibrating pipeline…</div>
                     <div style={{ fontSize:'var(--text-xs)', color:T.ink3, lineHeight:'var(--leading-body)', marginTop:2 }}>Warming CUDA kernels on your best photos — Start Culling unlocks when done.</div>
                   </div>
                 </div>
@@ -2814,7 +2846,7 @@ setCreativeDirectorNote('');
                   {nicheDetecting && (
                     <span className="flex items-center gap-1 normal-case tracking-normal text-ink-3" style={{ marginLeft:'auto' }}>
                       <span style={{ width:9, height:9, borderRadius:'var(--r-round)', border:'2px solid currentColor', borderTopColor:'transparent', animation:'spin .8s linear infinite' }}/>
-                      Detecting ideal nicheâ€¦
+                      Detecting ideal niche…
                     </span>
                   )}
                   {!nicheDetecting && nicheRec?.detected && nicheRec?.preset === preset && (
@@ -2875,7 +2907,7 @@ setCreativeDirectorNote('');
                     icon={(graderStatus?.qwen_loading || graderStatus?.warmup_running)
                       ? <span style={{ width:10, height:10, borderRadius:'var(--r-round)', border:'2px solid currentColor', borderTopColor:'transparent', animation:'spin .8s linear infinite' }}/>
                       : undefined}>
-                    {graderStatus?.qwen_loading ? 'Loading Engineâ€¦' : graderStatus?.warmup_running ? 'Calibratingâ€¦' : 'Start Culling'}
+                    {graderStatus?.qwen_loading ? 'Loading Engine…' : graderStatus?.warmup_running ? 'Calibrating…' : 'Start Culling'}
                   </Button>
                 </div>
               );
@@ -2932,7 +2964,7 @@ setCreativeDirectorNote('');
         />
       )}
 
-      {/* â”€â”€ Header â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {/* ── Header ─────────────────────────────────────────────── */}
       {/* overflow-x-auto keeps the toolbar's minimum width from stretching the
           whole app: on a narrow window the bar scrolls internally instead of
           pushing every full-width section (sheet, count, panels) past the
@@ -3030,7 +3062,7 @@ setCreativeDirectorNote('');
         {/* GPU / CPU compute chip */}
         {graderStatus && (() => {
           const dev = graderStatus.compute_device;
-          if (!dev || dev === 'unknown') return null;   // unknown â‰  CPU — don't warn on missing data
+          if (!dev || dev === 'unknown') return null;   // unknown ≠ CPU — don't warn on missing data
           const isGpu  = dev === 'gpu';
           const free   = graderStatus.vram_free_gb;
           const total  = graderStatus.vram_total_gb;
@@ -3112,6 +3144,13 @@ setCreativeDirectorNote('');
               { value: 'Mid',    label: 'Mid',    count: mids,    dot: T.ink4 },
               { value: 'Weak',   label: 'Weak',   count: rejects, dot: T.gradeWeak },
             ]}
+          />
+        )}
+
+        {isDone && matchRate !== null && (
+          <Chip
+            label={`Matches you ${Math.round(matchRate * 100)}%`}
+            title="How often Strong / Mid / Weak matched your own ratings on shoots the grader was not trained on. Rate photos (Teach) to raise it."
           />
         )}
 
@@ -3206,16 +3245,43 @@ setCreativeDirectorNote('');
 
         {/* Scan mode. Active state is a luminance step, not a hue — the warm
             colour belongs to the photographer's marks. */}
+        {/* A MODE SWITCH, not an action. It used to be labelled "Scan" while
+            the run button beside it also read "Scan" in this mode — two
+            identical buttons doing different things (2026-10-03). */}
         {!isGrading && mainTab !== 'creative' && (
           <Button
             variant={scanMode ? 'solid' : 'quiet'}
             onClick={() => setScanMode(v => !v)}
+            aria-pressed={scanMode}
             title={scanMode
-              ? 'Scan pass: a quick look at every frame, technical scoring skipped. Click for the full grade.'
-              : 'Full grade: quality scoring on every frame. Click for the faster scan pass.'}
+              ? 'Quick pass is ON: a fast look at every frame. Skips image-quality scoring, including the blur and pan checks, so grades are rougher. Click to switch back to the full grade.'
+              : 'Quick pass is OFF: full grade with quality, blur and pan checks. Click to switch to the faster, rougher quick pass.'}
             icon={<Zap size={11} fill={scanMode ? 'currentColor' : 'none'}/>}
           >
-            Scan
+            Quick pass
+          </Button>
+        )}
+
+        {/* Teach: 50 unrated photos spread from best to worst, rated with the
+            Strong / Mid / Weak pills — one short session gives the taste
+            learner the Mid and Weak examples it never had (2026-10-03). */}
+        {!isGrading && isDone && mainTab !== 'creative' && (
+          <Button variant={searchResults !== null ? 'solid' : 'quiet'}
+            title={searchResults !== null
+              ? 'Leave the rating set and show every photo again.'
+              : 'Show 50 unrated photos spread from best to worst. Click Strong / Mid / Weak on each — one short session teaches the grader your taste.'}
+            onClick={async () => {
+              if (searchResults !== null) { setSearchResults(null); return; }
+              try {
+                const r = await axios.get(`${API}/api/teach/sample`, { params: { n: 50 } });
+                const paths: string[] = r.data.paths || [];
+                if (!paths.length) { notify('Nothing left to rate here — every visible photo already has your rating.', 'info'); return; }
+                setSearchResults(new Set(paths));
+                setMainTab('gallery');
+                notify(`${paths.length} photos to rate. Use Strong / Mid / Weak on each.`, 'info');
+              } catch { notify('Could not build the rating set — is the server running?', 'error'); }
+            }}>
+            {searchResults !== null ? 'Show all photos' : 'Teach (50)'}
           </Button>
         )}
 
@@ -3247,7 +3313,7 @@ setCreativeDirectorNote('');
             title="Grade every image, replacing existing scores"
             icon={scanMode ? <Zap size={12} fill="currentColor"/> : <Sparkles size={12}/>}
           >
-            {isDone ? (scanMode ? 'Re-scan' : 'Re-grade') : (scanMode ? 'Scan' : 'Grade')}
+            {isDone ? (scanMode ? 'Quick re-grade' : 'Re-grade') : (scanMode ? 'Quick grade' : 'Grade')}
           </Button>
         ) : null}
         </div>
@@ -3306,8 +3372,8 @@ setCreativeDirectorNote('');
             which has its own slogan above. */}
         {!isGrading && (() => {
           const warmMsg =
-            listLoading ? 'Generating fast-scroll thumbnailsâ€¦' :
-            (graderStatus?.qwen_loading || graderStatus?.warmup_running) ? 'Waking up modelsâ€¦' :
+            listLoading ? 'Generating fast-scroll thumbnails…' :
+            (graderStatus?.qwen_loading || graderStatus?.warmup_running) ? 'Waking up models…' :
             null;
           if (!warmMsg) return null;
           return (
@@ -3319,7 +3385,7 @@ setCreativeDirectorNote('');
         })()}
       </div>
 
-      {/* â”€â”€ Rating filter â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+      {/* ── Rating filter ──────────────────────────────────────────
        * Star ratings are the photographer's own judgement, so this is one of
        * the few bars allowed to show the warm mark colour. */}
       {mainTab === 'gallery' && isDone && (
@@ -3387,7 +3453,7 @@ setCreativeDirectorNote('');
         </div>
       )}
 
-      {/* â”€â”€ Body â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {/* ── Body ───────────────────────────────────────────────── */}
       {mainTab === 'gallery' ? (
         <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden', minHeight:0 }}>
 
@@ -3492,7 +3558,7 @@ setCreativeDirectorNote('');
             </>)}
           </div>
 
-          {/* â”€â”€ Filmstrip (loupe mode only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+          {/* ── Filmstrip (loupe mode only) ─────────────────────── */}
           {loupeMode === 'loupe' && photos.length > 0 && (
           <div style={{ flexShrink:0, background:T.surface, borderTop:`1px solid ${T.line}`, display:'flex', flexDirection:'column' }}>
             <div style={{ height:20, flexShrink:0, display:'flex', alignItems:'center', justifyContent:'space-between', padding:'0 12px', borderBottom:`1px solid ${T.line}` }}>
@@ -3541,7 +3607,7 @@ setCreativeDirectorNote('');
         </div>
 
       ) : mainTab === 'duplicates' ? (
-        /* â”€â”€ Duplicates grid view — see components/views/SimilarShots.tsx â”€â”€ */
+        /* ── Duplicates grid view — see components/views/SimilarShots.tsx ── */
         <ErrorBoundary variant="inline" label="Duplicates">
         <SimilarShots
           groups={dupStats.groups}
@@ -3554,7 +3620,7 @@ setCreativeDirectorNote('');
         </ErrorBoundary>
 
       ) : mainTab === 'creative' ? (
-        /* â”€â”€ Creative Direction view â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+        /* ── Creative Direction view ───────────────────────────── */
         <ErrorBoundary variant="inline" label="Creative Director">
         <CreativeDirector
           photos={photos} creativeResults={creativeResults} creativeLoading={creativeLoading}
@@ -3582,21 +3648,21 @@ setCreativeDirectorNote('');
         </ErrorBoundary>
       ) : null}
 
-      {/* â”€â”€ Status bar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {/* ── Status bar ─────────────────────────────────────────── */}
       <div className="flex h-6 shrink-0 items-center gap-4 border-t border-line bg-surface px-3">
         <span className="t-num flex-1 truncate text-xs text-ink-2">
           {sel ? sel.path.split(/[\\/]/).pop() : 'Open a folder to begin'}
         </span>
         <div className="flex shrink-0 gap-3">
-          {[['âŒ˜K','Commands'],['â† →','Navigate'],['1–5','Rate'],['0','Clear'],['X','Used'],['G','Grid'],['E','Loupe']].map(([k, a]) => (
+          {[['⌘K','Commands'],['← →','Navigate'],['1–5','Rate'],['0','Clear'],['X','Used'],['G','Grid'],['E','Loupe']].map(([k, a]) => (
             <KbdHint key={k} keys={k} label={a}/>
           ))}
         </div>
       </div>
 
-      {/* â”€â”€ Folder browser modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
-      {/* â”€â”€ Command palette (âŒ˜K / Ctrl-K) — the keyboard's complete control
-              surface. Self-registering listener; App only supplies actions. â”€â”€ */}
+      {/* ── Folder browser modal ────────────────────────────────── */}
+      {/* ── Command palette (⌘K / Ctrl-K) — the keyboard's complete control
+              surface. Self-registering listener; App only supplies actions. ── */}
       <CommandPalette actions={[
         { id: 'grade',    label: 'Grade folder',     group: 'Grade', hint: 'run the grader',                 run: () => { void handleGrade(); } },
         { id: 'loupe',    label: 'Open loupe',       group: 'View',  kbd: 'E', hint: 'view current',         run: () => setLoupeMode('loupe') },
@@ -3604,10 +3670,10 @@ setCreativeDirectorNote('');
         { id: 'gallery',  label: 'Gallery view',     group: 'View',                                          run: () => setMainTab('gallery') },
         { id: 'dupes',    label: 'Duplicates view',  group: 'View',  hint: 'similar shots',                  run: () => setMainTab('duplicates') },
         { id: 'creative', label: 'Creative Director', group: 'View', hint: 'sequence builder',               run: () => setMainTab('creative') },
-        { id: 'open',     label: 'Open folderâ€¦',     group: 'Library', hint: 'browse',                       run: () => openBrowser() },
-        { id: 'add',      label: 'Add folderâ€¦',      group: 'Library',                                       run: () => openAddFolder() },
+        { id: 'open',     label: 'Open folder…',     group: 'Library', hint: 'browse',                       run: () => openBrowser() },
+        { id: 'add',      label: 'Add folder…',      group: 'Library',                                       run: () => openAddFolder() },
         { id: 'clear',    label: 'Clear used marks', group: 'Library',                                       run: () => handleClearUsed() },
-        { id: 'export',   label: 'Export sequenceâ€¦', group: 'Export', hint: `${carousel.length} in sequence`, run: () => setExportModal(true) },
+        { id: 'export',   label: 'Export sequence…', group: 'Export', hint: `${carousel.length} in sequence`, run: () => setExportModal(true) },
       ]}/>
 
       {showBrowser && (

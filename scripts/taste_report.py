@@ -9,7 +9,8 @@ re-grades that wipe or reshuffle live LanceDB rows.
 Metrics
 -------
 1. Machine agreement    — bucket(machine score) vs bucket(your stars)
-                          (4-5★ Strong / 3★ Mid / 1-2★ Weak; score >=0.60 /
+                          (4-5★ Strong / 2-3★ Mid / 1★ Weak, per
+                          ratings_store.grade_for_stars; score >=0.60 /
                            0.41-0.60 / <0.41), with the confusion matrix.
 2. Taste discrimination — AUC over all (high=4-5★, low=1-2★) pairs: the
                           fraction where personal_score(high) > personal_
@@ -43,11 +44,10 @@ def bucket_score(s: float) -> str:
 
 
 def bucket_stars(stars: int) -> str:
-    if stars >= 4:
-        return "Strong"
-    if stars == 3:
-        return "Mid"
-    return "Weak"
+    """Delegates to the live grading mapping so this report can never drift
+    from what the app actually shows — see ratings_store.grade_for_stars."""
+    g = ratings_store.grade_for_stars(stars)
+    return g.split()[0] if g else "Weak"
 
 
 def mean(xs):

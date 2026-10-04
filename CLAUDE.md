@@ -175,9 +175,30 @@ Runtime enforcement (`src/frontier_config.py`):
 
 Tests: `tests/test_frontier_lock.py` covers all enforcement paths.
 
-## Ratings Are Never Ground Truth (2026-08-30)
+## Ratings ARE Ground Truth — the taste loop (revised 2026-10-03)
 
-**Product rule: star ratings must never change how any image is graded —
+**Superseded rule:** the 2026-08-30 contract below ("ratings must never
+change how any image is graded") was reversed by the photographer on
+2026-10-03: *"The star ratings are legit trained."* Current contract:
+
+- A star sets the grade of THAT photo immediately (ratings_store.grade_for_stars).
+- Every rating also stores its grade-time features and a content
+  fingerprint (ratings_store.attach_features / photo_identity), so the
+  learner survives cleared caches and files moved off the card.
+- Every 25 new ratings `master_judge.maybe_autofit()` refits in the
+  background — no opt-in flag. The new judge grades OTHER photos only if it
+  beats the current grader on **held-out shoots** (whole folders) with the
+  bootstrap CI of the 3-class agreement gain above zero (`agree_ci[0] > 0`).
+  A lost challenge is recorded and changes nothing.
+- The header badge "Matches you NN%" (GET /api/accuracy) is that held-out
+  agreement. Baseline before this loop: 0.60 on 826 ratings.
+- Kill switch unchanged: `FIRSTCUT_MASTER_JUDGE_OFF=1`.
+- Measure with `scripts/accuracy_report.py`; collect Mid/Weak examples with
+  the "Teach (50)" button.
+
+### Historical contract (2026-08-30, superseded)
+
+**Former product rule: star ratings must never change how any image is graded —
 for anyone.** The 794-photo rating baseline (LX3/TPE, tagged `tpe_master`
 in `cache/user_ratings.json`) was explicitly PLACEHOLDER data. Ratings are
 collected in `ratings_store` purely as *measurement and learning data*;

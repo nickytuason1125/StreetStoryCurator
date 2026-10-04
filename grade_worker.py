@@ -45,6 +45,7 @@ def grade_worker_main(
     sample_limit:     int = 0,
     detect_only:      bool = False,
     deep_grade:       bool = False,
+    explicit_paths:   "dict | None" = None,   # folder_path -> [file paths]; narrows that folder only
 ) -> None:
     """
     Entry point called in the subprocess.  Progress and results are sent
@@ -114,6 +115,7 @@ def grade_worker_main(
         from grade_pipeline_v2 import run_v2
         n = len(all_folders)
         combined_gallery: list = []
+        empty_folders: list = []     # folders with no photo the app can read
 
         # NOTE: catalog.json is intentionally NOT deleted here. It used to be
         # unlinked upfront ("clear stale state"), but _write_catalog() below
@@ -124,7 +126,7 @@ def grade_worker_main(
         # user's whole graded catalog instead of just leaving the previous
         # (still-valid) one in place until fresh data replaces it.
 
-        def _grade_folder_with_oom_resume(progress_fn, folder_path):
+        def _grade_folder_with_oom_resume(progress_fn, folder_path, folder_explicit_paths=None):
             """run_v2 with an automatic wait-and-resume on a recoverable OOM.
 
             memory_plan raises a checkpointed MemoryError when free RAM stays
@@ -161,13 +163,14 @@ def grade_worker_main(
                 try:
                     return run_v2(
                         folder_path,
-                        preset       = preset,
-                        force_rescan = force_rescan,
-                        progress     = progress_fn,
-                        mogco_target = 0,
-                        scan_mode    = scan_mode,
-                        sample_limit = sample_limit,
-                        deep_grade   = deep_grade,
+                        preset         = preset,
+                        force_rescan   = force_rescan,
+                        progress       = progress_fn,
+                        mogco_target   = 0,
+                        scan_mode      = scan_mode,
+                        sample_limit   = sample_limit,
+                        deep_grade     = deep_grade,
+                        explicit_paths = folder_explicit_paths,
                     )
                 except MemoryError as _me:
                     _msg = str(_me)
@@ -183,9 +186,9 @@ def grade_worker_main(
                           f"to recover before resuming from the checkpoint "
                           f"(attempt {_attempt}/{_MAX_RETRIES})…", flush=True)
                     progress_fn(0.0, "Low memory — waiting for RAM, grading will resume automatically…")
-                    _deadline = _t_.monotonic() + _MAX_WAIT_S
-                    while _t_.monotonic() < _deadline:
-                        _t_.sleep(10)
+                    _deadline = _t_oom.monotonic() + _MAX_WAIT_S
+                    while _t_oom.monotonic() < _deadline:
+                        _t_oom.sleep(10)
                         _f = _free()
                         if _f is not None and _f >= _floor():
                             break
@@ -207,10 +210,17 @@ def grade_worker_main(
             def _fp(frac: float, desc: str = "", _s=p_start, _e=p_end) -> None:
                 _progress(_s + frac * (_e - _s), desc)
 
+            _folder_explicit = (explicit_paths or {}).get(fp)
             if n > 1:
-                _fp(0.0, f"Grading folder {i+1}/{n}: {Path(fp).name}")
+                _fp(0.0, f"Grading folder {i+1}/{n}: {Path(fp).name}"
+                         + (f" ({len(_folder_explicit)} selected)" if _folder_explicit else ""))
 
-            result = _grade_folder_with_oom_resume(_fp, fp)
+            result = _grade_folder_with_oom_resume(_fp, fp, _folder_explicit)
+            if result.get("error") and not result.get("gallery"):
+                # Was silently dropped: a folder of unsupported files (e.g.
+                # Canon .CRW before 2026-10-03) "graded" as nothing, no message.
+                empty_folders.append(fp)
+                print(f"[grade_worker] {fp}: {result['error']}", flush=True)
             # Slim PER FOLDER (2026-09-07 SD-upload OOM). Each entry's
             # "embedding" is a 1536-element Python-float list (~49 KB); slimming
             # only AFTER the loop kept every folder's embeddings resident
@@ -342,6 +352,17 @@ def grade_worker_main(
         else:
             print("[grade_worker] Story sequencing skipped (cull mode, mogco_target<=0)")
 
+        _empty_msg = ""
+        if empty_folders:
+            _names = ", ".join(Path(f).name for f in empty_folders[:5]) + (
+                f" and {len(empty_folders) - 5} more" if len(empty_folders) > 5 else "")
+            _empty_msg = (f"No photos the app can read in: {_names}. Supported: JPG, PNG, "
+                          f"TIFF, WebP and camera RAW (ARW, CR2, CR3, CRW, NEF, RAF, RW2, ORF, "
+                          f"DNG and more). Subfolders are not searched.")
+            if not combined_gallery:
+                q.put({"error": _empty_msg})
+                return
+
         strong = sum(1 for g in combined_gallery if "Strong" in g.get("grade", ""))
         mid    = sum(1 for g in combined_gallery if "Mid"    in g.get("grade", ""))
         weak   = sum(1 for g in combined_gallery if "Weak"   in g.get("grade", ""))
@@ -359,6 +380,7 @@ def grade_worker_main(
             "data":           gallery_slim,
             "mogco_sequence": mogco_sequence,
             "mogco_error":    mogco_error_msg,
+            "empty_folders_msg": _empty_msg,
             "pipeline":       "v2",
         })
 
@@ -435,6 +457,7 @@ def grade_worker_loop(req_q, resp_q) -> None:
                 sample_limit=req.get("sample_limit", 0),
                 detect_only=req.get("detect_only", False),
                 deep_grade=req.get("deep_grade", False),
+                explicit_paths=req.get("explicit_paths") or {},
             )
         except BaseException as _e_run:   # incl. MemoryError — keep the loop alive
             import traceback as _tb_run

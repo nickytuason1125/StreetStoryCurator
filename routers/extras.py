@@ -705,9 +705,37 @@ async def health_engine():
             from __version__ import __version__ as _v
         except Exception:
             _v = "unknown"
+        # Bundle staleness: the mirror of the version handshake above. The
+        # version check catches a stale BACKEND behind a fresh UI; this
+        # catches a stale UI BUNDLE behind fresh source — the 2026-09-19
+        # failure mode where source fixes were invisible because the app
+        # serves the last built dist/ until someone remembers to rebuild.
+        # Source newer than the bundle (beyond a small settle margin) means
+        # the UI on screen is not the code in the repo.
+        _bundle_stale = False
+        try:
+            from pathlib import Path as _Path
+            _fe = _Path(__file__).resolve().parent.parent / "frontend"
+            _src_dir, _dist = _fe / "src", _fe / "dist"
+            if _src_dir.is_dir() and _dist.is_dir():
+                _src_new = max(
+                    (f.stat().st_mtime for f in _src_dir.rglob("*")
+                     if f.suffix in (".ts", ".tsx", ".css") and f.is_file()),
+                    default=0.0,
+                )
+                _dist_new = max(
+                    (f.stat().st_mtime for f in _dist.rglob("*") if f.is_file()),
+                    default=0.0,
+                )
+                # 30 s settle margin: a build that started right after a save
+                # may legitimately still be running.
+                _bundle_stale = (_src_new - _dist_new) > 30.0
+        except Exception:
+            _bundle_stale = False
         return {"status": "online" if present else "offline",
                 "missing_models": missing,
-                "version": _v}
+                "version": _v,
+                "bundle_stale": _bundle_stale}
 
     result = await asyncio.get_running_loop().run_in_executor(None, _check_sync)
     return JSONResponse(result)

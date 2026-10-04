@@ -66,12 +66,35 @@ _NEG_SPACE_THRESH  = 0.70   # sim_to_centroid â‰¤ this → qualifies as nega
 _DUP_SIM_THRESH    = 0.88   # cosine sim > this → near-duplicate; penalise / swap
 _LUM_SMOOTH_THRESH = 0.25   # max allowed mean-brightness diff between adjacent images
 _POOL_DEDUP_THRESH = 0.92   # pre-selection pool dedup: hard-drop near-identical shots
+_RECENT_DUP_SIM    = 0.90   # near-twin of the PREVIOUS run's picks: suppressed
 
 # â”€â”€ Empty-brief filtering â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-_EMPTY_BRIEF_KEYWORDS = {"empty", "liminal", "desert", "void", "abandoned", "desolate"}
+# NOTE: keep in sync with creative_director_agent._EMPTY_KW (keyword path).
+# Includes literal no-people phrasings so briefs like "no people" trigger the
+# empty-scene gates even before the LLM rule-set refinement runs.
+_EMPTY_BRIEF_KEYWORDS = {
+    "empty", "liminal", "desert", "void", "abandoned", "desolate",
+    "no people", "no person", "no persons", "nobody", "no one", "no-one",
+    "people-free", "people free", "without people", "without anyone",
+    "no humans", "no human", "human-free", "no pedestrians", "empty of people",
+}
 _PEOPLE_SIM_THRESHOLD = 0.40   # SigLIP-2 cosine sim to "people" concept → hard penalty
 _PEOPLE_PENALTY       = 0.10   # score multiplier when triggered
 _HUMAN_CULTURE_THRESH = 0.55    # Human/Culture aspect fallback threshold
+
+# ── Generic brief-exclusion enforcement (any "no X / without X" criterion) ──
+# SigLIP-2 image↔text cosine sims for a true match typically land 0.25-0.40;
+# the hard band is where the concept is unmistakably present.
+_EXCL_HARD_SIM      = 0.32   # ≥ → near-disqualify (score × _EXCL_HARD_PENALTY)
+_EXCL_SOFT_SIM      = 0.24   # ≥ → strong penalty (score × _EXCL_SOFT_PENALTY)
+_EXCL_HARD_PENALTY  = 0.05
+_EXCL_SOFT_PENALTY  = 0.50
+# Concepts already enforced by the D-FINE kill switch + people-embedding gate —
+# never double-penalize them in the generic pass.
+_PEOPLE_TERMS = {
+    "people", "person", "persons", "humans", "human", "anyone", "somebody",
+    "pedestrians", "crowd", "crowds", "strangers", "figures", "faces",
+}
 
 _YOLO_PERSON_CONF     = 0.35    # YOLO26-nano strict detection threshold (auditor guardrail)
 _YOLO_MIN_AREA_FRAC   = 0.0005  # ignore detections < 0.05% of canvas (distant background figures)
@@ -79,7 +102,7 @@ _YOLO_MIN_AREA_FRAC   = 0.0005  # ignore detections < 0.05% of canvas (distant b
 
 # CPU-side text encoder cache — loaded lazily on first semantic search when the
 # grading singleton (GPU) is unavailable.  Avoids reloading 3.7 GB on every query.
-_text_enc_cpu: Optional["SigLIP2Encoder"] = None  # type: ignore[name-defined]
+_text_enc_cpu: Optional["SigLIP2Encoder"] = None  # type: ignore[name-defined]  # noqa: F821 — quoted annotation, lazy import at use
 
 
 def release_creative_models() -> None:
@@ -207,20 +230,14 @@ from photo_brief import REQUIRED_DONE_KEYS
 def _peg_stem_match(stem: str, image_hash: str) -> bool:
     """Exact/boundary peg match — never a blind substring.
 
+    Canonical implementation lives in blend_anchor (shared with the grading
+    and vibe-search pipelines); this alias keeps creative_director's existing
+    call sites and tests working unchanged.
     'TPE26-1' must match 'TPE26-1' or 'TPE26-1_xyz' but NOT 'TPE26-105'
     (substring matching silently picked the wrong reference photo).
     """
-    if stem == image_hash:
-        return True
-    # The hash may sit mid-stem after a folder prefix (carousel_01_TPE26-1).
-    tail = stem.rsplit("_", 1)[-1]
-    if tail == image_hash:
-        return True
-    if tail.startswith(image_hash):
-        rest = tail[len(image_hash):]
-        # Only accept if what follows is not more of the same number.
-        return not (rest and rest[0].isdigit())
-    return False
+    from blend_anchor import peg_stem_match
+    return peg_stem_match(stem, image_hash)
 
 
 def generate_jury_critique(image_hash: str) -> dict:
@@ -516,6 +533,12 @@ def _focus_pool(paths, embeddings, scores, aspects, style_prompt="", k=12,
             keep_aspects if keep_aspects is not None else aspects)
 
 
+# Informational note from the most recent director call (e.g. "the model chose
+# 5 of 6; the rest were filled by visual diversity"). None when the model made
+# a full clean pick. Deliberately NOT the fallback signal — art direction ran.
+LAST_DIRECTOR_NOTE: "Optional[str]" = None
+
+
 def ask_local_art_director(
     system_prompt: str,
     candidate_pool: list[dict],
@@ -542,6 +565,8 @@ def ask_local_art_director(
     `model_name` is a label for logging only — there is one local model, not a
     menu of Ollama tags.
     """
+    global LAST_DIRECTOR_NOTE
+    LAST_DIRECTOR_NOTE = None
     reason: Optional[str] = None
     try:
         import local_llm
@@ -583,10 +608,38 @@ def ask_local_art_director(
         if m:
             raw = m.group(1).strip()
 
+        # Hardened ID extraction (2026-09-21). Live logs show small models
+        # wrapping the array in prose ("Extra data: line 1 column 12"), emitting
+        # multiple bracket blocks, or appending commentary after the list —
+        # a bare json.loads on [first-bracket … last-bracket] fails on all of
+        # these and the run silently lost its art direction to the score sort.
+        # Recovery chain: full slice → innermost bracket blocks → raw integers.
+        def _extract_id_list(_raw: str) -> list:
+            s = _raw.find("[")
+            e = _raw.rfind("]") + 1
+            if s < 0:
+                return []
+            # Closed chunk preferred; an unclosed array (max_tokens cut
+            # mid-list) still deserves the bare-int recovery.
+            chunk = _raw[s:e] if e > s else _raw[s:]
+            try:
+                return json.loads(chunk)
+            except Exception:
+                pass
+            for blk in re.findall(r"\[[^\[\]]*\]", chunk):
+                try:
+                    return json.loads(blk)
+                except Exception:
+                    continue
+            try:
+                return [int(x) for x in re.findall(r"\d+", chunk)]
+            except Exception:
+                return []
+
         start = raw.find("[")
         end   = raw.rfind("]") + 1
         if start >= 0 and end > start:
-            ids = json.loads(raw[start:end])
+            ids = _extract_id_list(raw)
             selected: list[str] = []
             for id_val in ids:
                 try:
@@ -612,7 +665,11 @@ def ask_local_art_director(
                     reason = (f"the model chose {n_model} of {limit}; the rest "
                               f"were filled by visual diversity")
                     print(f"[cd] {model_name}: {reason}")
-                    return selected[:limit], reason
+                    # Art direction DID run — this is an informational note,
+                    # NOT a fallback. Reporting it as one made the UI claim
+                    # "no art direction ran" for a model-curated sequence.
+                    LAST_DIRECTOR_NOTE = reason
+                    return selected[:limit], None
                 print(f"[cd] {model_name}: selected {len(selected)} images")
                 return selected[:limit], None
 
@@ -629,6 +686,229 @@ def ask_local_art_director(
         for c in sorted(candidate_pool, key=lambda x: -float(x.get("score", 0)))[:limit]
         if c.get("path")
     ], (reason or "the local text model was unavailable")
+
+
+def _starvation_retire(
+    used_entries: list,
+    avoid_res: set,
+    all_paths: list,
+    eligible_idx: list,
+    cap: int,
+) -> tuple:
+    """
+    Early-avoid starvation rescue (pure function). Retire the OLDEST used
+    entries (ts-ordered FIFO) whose paths sit in the avoid set until the
+    eligible pool meets `cap`. Entries whose path is NOT in the avoid set
+    free nothing — they were never excluded. Returns
+    (addback indices into all_paths, evicted resolved paths, remaining
+    history) so the caller can widen the eligible set and rewrite the
+    used-history file.
+    """
+    evicted: set = set()
+    need = max(0, cap - len(eligible_idx))
+    ordered = sorted(used_entries,
+                     key=lambda e: (e.get("ts", 0) if isinstance(e, dict) else 0,
+                                    e.get("path", "") if isinstance(e, dict) else str(e)))
+    for entry in ordered:
+        if need <= 0:
+            break
+        path = entry.get("path", "") if isinstance(entry, dict) else str(entry)
+        res = str(Path(path).resolve())
+        if res in avoid_res and res not in evicted:
+            evicted.add(res)
+            need -= 1
+    if not evicted:
+        return [], set(), list(used_entries)
+    addback = [i for i, p in enumerate(all_paths)
+               if str(Path(p).resolve()) in evicted]
+    remaining = [e for e in used_entries
+                 if str(Path(e.get("path", "") if isinstance(e, dict)
+                             else str(e)).resolve()) not in evicted]
+    return addback, evicted, remaining
+
+
+def _post_kill_replenish(
+    original_used_entries: list,
+    early_evicted_res: set,
+    avoid_res: set,
+    snap_paths: list,
+    snap_embs: list,
+    need: int,
+    pool_embs: list,
+) -> tuple:
+    """
+    Retire the NEXT-oldest used entries (skip the ones the early guard
+    already retired) until `need` frames are gathered from the pre-filter
+    snapshot, then drop near-duplicates of the surviving pool (cos > 0.92).
+    Pure: no I/O, no model calls — the caller owns the person kill and the
+    history write. Returns (retire_res, addback snapshot-indices).
+    """
+    snap_index = {str(Path(p).resolve()): i for i, p in enumerate(snap_paths)}
+    retire_res: list[str] = []
+    ordered = sorted(
+        original_used_entries,
+        key=lambda e: (e.get("ts", 0) if isinstance(e, dict) else 0,
+                       e.get("path", "") if isinstance(e, dict) else str(e)))
+    for entry in ordered:
+        if need <= 0:
+            break
+        ep = entry.get("path", "") if isinstance(entry, dict) else str(entry)
+        eres = str(Path(ep).resolve())
+        if (eres in avoid_res and eres not in early_evicted_res
+                and eres not in retire_res and eres in snap_index):
+            retire_res.append(eres)
+            need -= 1
+    if not retire_res:
+        return [], []
+    stk_pool = None
+    if pool_embs:
+        stk_pool = np.stack([np.asarray(e, dtype=np.float32) for e in pool_embs])
+        stk_pool /= np.linalg.norm(stk_pool, axis=1, keepdims=True) + 1e-9
+    addback_idx: list[int] = []
+    for res in retire_res:
+        j = snap_index[res]
+        emb = np.asarray(snap_embs[j], dtype=np.float32)
+        emb /= np.linalg.norm(emb) + 1e-9
+        if stk_pool is not None and float((stk_pool @ emb).max()) > 0.92:
+            continue          # burst twin of an already-surviving frame
+        addback_idx.append(j)
+    return retire_res, addback_idx
+
+
+def _fifo_evict_used(
+    used_entries: list,
+    eligible_idx: list[int],
+    min_pool: int,
+    filtered_paths: list[str],
+) -> tuple[list, list, list[int]]:
+    """
+    Retire the OLDEST used ENTRIES (ordered by save timestamp) until the
+    eligible pool can meet the request. Pure function: (history, pool) in,
+    (evicted_entries, remaining_history, new_pool) out. Used paths that are
+    no longer candidates (deleted, filtered out) are left marked -- they
+    free nothing.
+    """
+    evicted: list = []
+    # Order by ts inside the helper too: never trust the caller's ordering.
+    ordered = sorted(used_entries,
+                     key=lambda e: (e.get("ts", 0) if isinstance(e, dict) else 0,
+                                    e.get("path", "") if isinstance(e, dict) else str(e)))
+    remaining = list(ordered)
+    pool = list(eligible_idx)
+    index_of = {p: i for i, p in enumerate(filtered_paths)}
+    for entry in list(ordered):
+        if len(pool) >= min_pool:
+            break
+        path = entry.get("path", "") if isinstance(entry, dict) else str(entry)
+        i = index_of.get(path)
+        if i is None or i in pool:
+            continue
+        pool.append(i)
+        evicted.append(entry)
+        remaining.remove(entry)
+    return evicted, remaining, pool
+
+
+import time as _t_boot
+print(f"[creative_director] MODULE LOAD {_t_boot.strftime('%H:%M:%S')} — "
+      f"pinned-splice build (2026-09-22) from {__file__}", flush=True)
+
+
+def _splice_pinned(
+    seq_paths: list, seq_embs: list, seq_scores: list, seq_aspects: list,
+    pinned_paths: Optional[list[str]], n_target: int,
+    lookup_sources: tuple,
+    log: Optional[Callable[[str], None]] = None,
+) -> int:
+    """Force user-pinned frames into the final sequence (2026-09-22).
+
+    Rotation, the people gate and the Art Director may all have dropped a
+    pinned frame this run — but the user explicitly asked for it back, so
+    their choice wins. Every pinned path is looked up across the surviving
+    pool AND the pre-filter snapshot, then swapped in for the LOWEST-scored
+    non-pinned pick (or appended when the run came back short of target).
+    Roles are assigned after this runs, so cinematic pacing still adapts.
+    Mutates the four parallel seq_* lists in place; returns how many
+    pinned frames were restored.
+    """
+    pinned = [str(p) for p in (pinned_paths or []) if p]
+    if not pinned:
+        return 0
+    # seq_aspects can legitimately be shorter than seq_paths (the greedy
+    # branch leaves it empty when no aspect data exists) — pad first so the
+    # four lists stay index-parallel after the splice.
+    while len(seq_aspects) < len(seq_paths):
+        seq_aspects.append({})
+    pin_res = {str(Path(p).resolve()) for p in pinned}
+    lookup: dict = {}
+    for paths, embs, scores, aspects in lookup_sources:
+        if not paths:
+            continue
+        for i, p in enumerate(paths):
+            r = str(Path(p).resolve())
+            if r in pin_res and r not in lookup:
+                emb = (np.asarray(embs[i], dtype=np.float32)
+                       if embs is not None and i < len(embs)
+                       else np.zeros(1536, dtype=np.float32))
+                sc  = (float(scores[i])
+                       if scores is not None and i < len(scores) else 0.5)
+                asp = (aspects[i]
+                       if aspects is not None and i < len(aspects) else {})
+                lookup[r] = (p, emb, sc, asp)
+    have = {str(Path(p).resolve()) for p in seq_paths}
+    missing = list(dict.fromkeys(
+        r for r in (str(Path(p).resolve()) for p in pinned)
+        if r in lookup and r not in have))
+    restored = 0
+    for r in missing:
+        path, emb, sc, asp = lookup[r]
+        cand = [k for k in range(len(seq_paths))
+                if str(Path(seq_paths[k]).resolve()) not in pin_res]
+        if len(seq_paths) < n_target or not cand:
+            # Sequence short of target (or all-pinned): extend, don't evict.
+            k = len(seq_paths)
+            seq_paths.append(path)
+            seq_embs.append(emb)
+            seq_scores.append(sc)
+            seq_aspects.append(asp)
+        else:
+            k = min(cand, key=lambda kk: seq_scores[kk]
+                    if kk < len(seq_scores) else 0.0)
+            seq_paths[k] = path
+            seq_embs[k] = emb
+            seq_scores[k] = sc
+            seq_aspects[k] = asp
+        restored += 1
+        if log:
+            log(f"Pinned image restored: {Path(path).name}")
+    if restored:
+        print(f"[cd] PINNED: {len(pinned)} pinned path(s) — restored "
+              f"{restored} after selection", flush=True)
+    return restored
+
+
+def _select_manifest(pool_sc: np.ndarray, top_n: int, seed=None) -> list[int]:
+    """Pick the Art-Director manifest indices: score-weighted, per-run varied.
+
+    A pure argsort hands the director the same ranked manifest every run, so
+    identical briefs converge on identical stories. Instead: take the top
+    2x band by score, then sample the final manifest from that band weighted
+    by score. Strong candidates only (nothing low-quality leaks in), but the
+    mix differs run to run — same mechanism as an editor whose picks vary
+    between issues while never leaving the shortlist.
+
+    seed=None derives from the clock (fresh each run); tests pass explicit
+    seeds. Pure function: (scores, size, seed) -> indices, sorted ascending.
+    """
+    from time import time as _t
+    seed = (int(_t() * 1000) & 0x7FFFFFFF) if seed is None else int(seed)
+    rank = np.argsort(-pool_sc)
+    band = rank[: min(rank.size, max(top_n, 1) * 2)]
+    w = pool_sc[band].astype(np.float64)
+    w = w - w.min() + 0.05                      # strictly positive, score-weighted
+    rng = np.random.default_rng(seed)
+    pick = rng.choice(band, size=min(top_n, band.size), replace=False, p=w / w.sum())
+    return sorted(int(i) for i in pick)
 
 
 def _diversity_fill(selected: list[str], candidate_pool: list[dict], limit: int) -> None:
@@ -676,7 +956,10 @@ def _diversity_fill(selected: list[str], candidate_pool: list[dict], limit: int)
 
 def _empty_brief_detected(style_prompt: str) -> bool:
     text = style_prompt.lower()
-    return any(kw in text for kw in _EMPTY_BRIEF_KEYWORDS)
+    # Word-boundary match — plain substring matching made "avoid" match "void"
+    # (and "a lone figure" match "one"), falsely firing the empty-scene gates.
+    import re as _re
+    return any(_re.search(rf"\b{_re.escape(kw)}\b", text) for kw in _EMPTY_BRIEF_KEYWORDS)
 
 
 # â”€â”€ Step 1: Diptych Engine — OpenCV HSV histogram matcher â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -760,14 +1043,20 @@ def _apply_brief_constraints(
     scores: list[float],
     aspect_scores_list: "Optional[list[dict]]",
     style_prompt: str,
+    hard_filter_people: "Optional[bool]" = None,
 ) -> tuple[list[float], list[str]]:
     """
     Subject Intrusion penalty for empty-brief sessions.
 
     SigLIP-2 people_sim > 0.40  OR  Human/Culture aspect > 0.55 → score Ã— 0.10.
     Returns (adjusted_scores, disqualification_notes).
+
+    hard_filter_people: the rule set's decision (single source of truth).
+    None → fall back to the keyword matcher for legacy callers.
     """
-    if not _empty_brief_detected(style_prompt):
+    if hard_filter_people is None:
+        hard_filter_people = _empty_brief_detected(style_prompt)
+    if not hard_filter_people:
         return list(scores), [""] * len(scores)
 
     # Pass the live embedding width so a vector from another quality tier is
@@ -810,7 +1099,64 @@ def _apply_brief_constraints(
     return adjusted, notes
 
 
-def person_kill_switch(paths: list[str], style_prompt: str) -> set[str]:
+def _apply_exclusion_constraints(
+    paths: list[str],
+    embeddings: list[np.ndarray],
+    scores: list[float],
+    exclusions: list[str],
+) -> tuple[list[float], list[str]]:
+    """
+    Generic brief-criterion enforcement for ANY excluded concept.
+
+    For each exclusion phrase (e.g. "cars", "neon", "reflections" from a brief
+    saying "no cars, avoid neon"), encode the concept with SigLIP-2's text
+    tower and measure image↔text similarity. Hard band (≥ _EXCL_HARD_SIM)
+    → near-disqualify; soft band (≥ _EXCL_SOFT_SIM) → strong penalty.
+    Returns (adjusted_scores, notes) aligned with the input paths.
+    """
+    if not exclusions or not paths:
+        return list(scores), [""] * len(paths)
+
+    try:
+        concept_embs = _embed_texts([f"a photo of {e}" for e in exclusions])
+        concept_embs = concept_embs / (np.linalg.norm(concept_embs, axis=1, keepdims=True) + 1e-9)
+    except Exception as e:
+        print(f"[cd] exclusion constraints skipped — text encoder unavailable: {e}")
+        return list(scores), [""] * len(paths)
+
+    adjusted = list(scores)
+    notes: list[str] = [""] * len(paths)
+    n_hard = n_soft = 0
+
+    for i, (path, emb) in enumerate(zip(paths, embeddings)):
+        try:
+            e = np.asarray(emb, dtype=np.float32)
+            e = e / (np.linalg.norm(e) + 1e-9)
+            sims = concept_embs @ e                       # (n_exclusions,)
+        except Exception:
+            continue
+        j = int(np.argmax(sims))
+        sim = float(sims[j])
+        if sim >= _EXCL_HARD_SIM:
+            adjusted[i] = scores[i] * _EXCL_HARD_PENALTY
+            notes[i] = (f"exclusion: '{exclusions[j]}' present (sim={sim:.3f} "
+                        f"≥ {_EXCL_HARD_SIM}) — score × {_EXCL_HARD_PENALTY}")
+            print(f"[cd] Exclusion (hard): {Path(path).name}  {notes[i]}")
+            n_hard += 1
+        elif sim >= _EXCL_SOFT_SIM:
+            adjusted[i] = scores[i] * _EXCL_SOFT_PENALTY
+            notes[i] = (f"exclusion: '{exclusions[j]}' likely present (sim={sim:.3f} "
+                        f"≥ {_EXCL_SOFT_SIM}) — score × {_EXCL_SOFT_PENALTY}")
+            n_soft += 1
+
+    if n_hard or n_soft:
+        print(f"[cd] exclusion constraints: {n_hard} hard / {n_soft} soft of "
+              f"{len(paths)} images — concepts: {exclusions}")
+    return adjusted, notes
+
+
+def person_kill_switch(paths: list[str], style_prompt: str,
+                       hard_filter_people: "Optional[bool]" = None) -> set[str]:
     """
     D-FINE-nano Auditor Guardrail — CPU.
 
@@ -818,8 +1164,14 @@ def person_kill_switch(paths: list[str], style_prompt: str) -> set[str]:
     D-FINE-nano scans ALL candidates at conf â‰¥ 0.35. Any image where
     class:person is detected is DISQUALIFIED from the Story Sequence.
     This is an absolute Boolean Constraint — no score adjustment, no clean-up.
+
+    hard_filter_people: the rule set's decision (single source of truth).
+    None → fall back to the keyword matcher for legacy callers.
     """
-    if not _empty_brief_detected(style_prompt):
+    if hard_filter_people is None:
+        hard_filter_people = _empty_brief_detected(style_prompt)
+    if not hard_filter_people:
+        print("[cd] person_kill_switch: skipped (brief is not a no-people brief)")
         return set()
 
     blocked: set[str] = set()
@@ -1381,6 +1733,8 @@ def run_creative_direction(
     progress: Optional[Callable[[float, str], None]] = None,
     peg_image_hash:    Optional[str] = None,
     mode:              str = "story",
+    recent_paths:      Optional[list[str]] = None,
+    pinned_paths:      Optional[list[str]] = None,
 ) -> dict:
     """
     Purist Creative Direction pipeline.
@@ -1397,10 +1751,9 @@ def run_creative_direction(
       6. Originals copied to output_dir/Final_Portfolio/.
     """
     from creative_director_agent import generate_rule_set, generate_director_brief
-    from photo_brief import REQUIRED_DONE_KEYS
     from stage_runner import StageTimer
 
-    p = progress or (lambda f, d: None)
+    _p = progress or (lambda f, d: None)
     timer = StageTimer()
     timer.mark("load_enrich")
 
@@ -1414,6 +1767,137 @@ def run_creative_direction(
 
     if not strong_paths:
         return {"error": "No images to curate.", "outputs": [], "total": 0}
+
+    # ── Early avoid filter (2026-09-21) ──────────────────────────────────────
+    # The used-history / last-sequence exclusion used to run only at the LLM
+    # manifest step — AFTER _focus_pool had already narrowed 135 photos to
+    # 12. With a saturated history, 6 of those 12 were used, the pool starved
+    # to exactly 6, FIFO retired them, and every run selected the same batch.
+    # Filter FIRST, so focusing, the subject filter and the peg ranking all
+    # see only photos that are actually eligible. The late avoid filter
+    # below remains as a safety net.
+    # Pre-filter snapshot (2026-09-22): the post-kill-switch replenish below
+    # needs the FULL library (paths/embeddings/scores/aspects) and the
+    # ORIGINAL used entries. The early starvation guard rewrites the
+    # used-history file and shrinks strong_paths, so after the YOLO person
+    # kill disqualifies the retired frames, a starved pool can no longer see
+    # them — the snapshot is what lets Step 4a retire the NEXT-oldest batch.
+    _pre_avoid_paths   = list(strong_paths)
+    _pre_avoid_embs    = list(embeddings)
+    _pre_avoid_scores  = list(scores) if scores else None
+    _pre_avoid_aspects = (list(aspect_scores_list) if aspect_scores_list else None)
+    _original_used_entries: list = []
+    _early_evicted_res: set = set()
+    # Pinned frames (2026-09-22): the router already stripped them from
+    # avoid_paths, but the near-duplicate twin drop below would still kill
+    # them — a pinned frame IS a near-twin of last run's picks, by design.
+    _pinned_res = {str(Path(p).resolve()) for p in (pinned_paths or []) if p}
+
+    if avoid_paths and strong_paths:
+        try:
+            # Near-duplicate twins of the PREVIOUS story's picks must go too:
+            # the user chose those photos, and a burst frame that looks
+            # virtually identical "popping up" again is still a repeat.
+            # Twins are caught by embedding similarity (their own paths are
+            # already excluded via avoid_paths — this catches their siblings).
+            _recent_res = ({str(Path(p).resolve()) for p in recent_paths}
+                           if recent_paths else set())
+            _recent_embs = ([
+                np.asarray(embeddings[i], dtype=np.float32)
+                for i, p in enumerate(strong_paths)
+                if str(Path(p).resolve()) in _recent_res
+            ] if _recent_res else [])
+
+            _avoid_res = {str(Path(p).resolve()) for p in avoid_paths}
+            # NOTE str() is load-bearing: a Path object compared against a
+            # set of strings is ALWAYS unequal (hash mismatch), which is
+            # exactly the silent no-op that made every build repeat.
+            _akeep = [i for i, p in enumerate(strong_paths)
+                      if str(Path(p).resolve()) not in _avoid_res
+                      or str(Path(p).resolve()) in _pinned_res]
+            if _recent_embs and _akeep:
+                _rm  = np.stack(_recent_embs)
+                _rm /= np.linalg.norm(_rm, axis=1, keepdims=True) + 1e-9
+                _sm  = np.stack([np.asarray(embeddings[i], dtype=np.float32)
+                                 for i in _akeep])
+                _sm /= np.linalg.norm(_sm, axis=1, keepdims=True) + 1e-9
+                _max_sim = (_sm @ _rm.T).max(axis=1)
+                _pre_twin = len(_akeep)
+                _akeep = [i for i, s in zip(_akeep, _max_sim)
+                          if float(s) <= _RECENT_DUP_SIM
+                          or str(Path(strong_paths[i]).resolve()) in _pinned_res]
+                _selection_diag["recent_dup_dropped"] = _pre_twin - len(_akeep)
+            # ── Starvation guard (2026-09-22) ────────────────────────────────
+            # With a saturated used-history this filter can leave fewer
+            # eligible photos than the Art-Director manifest needs (real log:
+            # pool=135 avoid=129 kept=4 for a 6-photo story). Retire the
+            # OLDEST used entries (same FIFO policy as the Step-4a safety
+            # net) right here, so focusing, the peg rank and the subject
+            # filter all see the replenished pool instead of a 4-photo
+            # corner of the library.
+            _head = _director_pool_size(n_target, len(strong_paths))
+            _cap = min(_head, len(strong_paths))
+            if len(_akeep) < _cap:
+                _used_file = (Path(__file__).resolve().parent.parent /
+                              "cache" / "used_cd_paths.json")
+                try:
+                    from server_impl import _load_used_cd_paths_ordered as _lord_e
+                    _used_entries = _lord_e()
+                except Exception:
+                    try:
+                        _used_entries = [{"path": str(p), "ts": 0} for p in
+                                         json.loads(_used_file.read_text(encoding="utf-8"))]
+                    except Exception:
+                        _used_entries = []
+                _need = _cap - len(_akeep)
+                _original_used_entries = list(_used_entries)   # pre-rewrite copy
+                _addback, _evicted_res, _remaining_entries = _starvation_retire(
+                    _used_entries, _avoid_res, strong_paths, _akeep, _cap)
+                _early_evicted_res = set(_evicted_res)
+                _ = _need  # the helper owns the eviction loop
+                if _evicted_res:
+                    _pre_starve = len(_akeep)
+                    _akeep = sorted(set(_akeep) | set(_addback))
+                    try:
+                        _used_file.parent.mkdir(parents=True, exist_ok=True)
+                        _used_file.write_text(json.dumps(_remaining_entries, indent=2),
+                                              encoding="utf-8")
+                    except Exception as _e_w2:
+                        print(f"[cd] FIFO history write skipped: {_e_w2}", flush=True)
+                    print(f"[cd] EARLY AVOID STARVED: eligible={_pre_starve} "
+                          f"< headroom={_cap} — FIFO-retired {len(_addback)} oldest "
+                          f"used frame(s): "
+                          f"{[Path(strong_paths[i]).name for i in _addback]}", flush=True)
+                    _p(0.01, f"Library rotation: {_pre_starve} unused photos left — "
+                             f"retired {len(_addback)} oldest used frame(s) to keep "
+                             f"the pool varied")
+            # LOG-LEVEL diagnostics (print → crash.log): the SSE-only _p()
+            # messages were invisible when this filter silently did nothing,
+            # which cost four debugging rounds. Never go quiet again.
+            _exact_hits = sum(1 for p in strong_paths
+                              if str(Path(p).resolve()) in _avoid_res)
+            print(f"[cd] EARLY AVOID: pool={len(strong_paths)} avoid={len(avoid_paths)} "
+                  f"resolve-matches={_exact_hits} twins={len(_recent_embs)} "
+                  f"kept={len(_akeep)}", flush=True)
+            if len(_akeep) != len(strong_paths):
+                _skipped = len(strong_paths) - len(_akeep)
+                strong_paths       = [strong_paths[i] for i in _akeep]
+                embeddings         = [embeddings[i] for i in _akeep]
+                scores             = ([scores[i] for i in _akeep] if scores else scores)
+                aspect_scores_list = ([aspect_scores_list[i] for i in _akeep]
+                                      if aspect_scores_list else aspect_scores_list)
+                _selection_diag["pool_eligible"] = len(_akeep)
+                _selection_diag["pool_total_before_filter"] = len(_akeep) + _skipped
+                _p(0.01, f"Used-photo filter: {_skipped} skipped, "
+                         f"{len(_akeep)} eligible before focusing")
+            else:
+                _selection_diag["pool_eligible"] = len(strong_paths)
+                _selection_diag["pool_total_before_filter"] = len(strong_paths)
+        except Exception as _e_avoid:
+            import traceback as _tb_a
+            print(f"[cd] EARLY AVOID CRASHED: {_e_avoid!r}", flush=True)
+            _tb_a.print_exc()
+            _p(0.01, f"Early avoid filter skipped ({_e_avoid})")
 
     # â”€â”€ Step 3: Peg override / global-best anchor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # If peg_image_hash is set, pull the top-40 nearest neighbors in LanceDB to
@@ -1477,6 +1961,25 @@ def run_creative_direction(
     elif _subject:
         _p(0.05, f"Subject filter '{_subject[0]} only' skipped — no embeddings for the pool")
 
+    if anchor_path:
+        # The anchor/reference photo the user picked defines the story but is
+        # not itself a candidate — exclude it before anything else sees the
+        # pool (extends the peg-exclusion fix, which only covered the peg).
+        try:
+            _anchor_res = str(Path(anchor_path).resolve())
+            _akeep = [i for i, p in enumerate(strong_paths)
+                      if Path(p).resolve() != _anchor_res]
+            if len(_akeep) != len(strong_paths):
+                strong_paths       = [strong_paths[i] for i in _akeep]
+                embeddings         = [embeddings[i] for i in _akeep]
+                scores             = ([scores[i] for i in _akeep] if scores else scores)
+                aspect_scores_list = ([aspect_scores_list[i] for i in _akeep]
+                                      if aspect_scores_list else aspect_scores_list)
+                _p(0.01, f"Anchor photo excluded from candidates "
+                         f"({len(_akeep)} remain)")
+        except Exception as _e_anchor:
+            _p(0.01, f"Anchor exclusion skipped ({_e_anchor})")
+
     if peg_image_hash:
         try:
             import lance_store as _ls
@@ -1485,19 +1988,31 @@ def run_creative_direction(
                 (r for r in all_rows if _peg_stem_match(Path(r["path"]).stem, peg_image_hash)),
                 None,
             )
-            if peg_row is not None:
+            if peg_row is not None and strong_paths and embeddings:
+                # 2026-09-21: the peg used to REPLACE the pool with its top-40
+                # neighbors. With a 130-photo library that hid ~100 photos from
+                # both the director and the used-rotation — once those 39 were
+                # all used, every run starved and recycled the same batches
+                # (user-visible as "the same pictures repeat, no variety").
+                # The peg now RANKS the full library instead: a peg-similarity
+                # bonus is blended into the aesthetic score (same 60/40
+                # pattern as the text-semantic rerank below), so peg-matching
+                # photos dominate the choice while rotation walks everything.
                 peg_emb  = np.array(peg_row["embedding"], dtype=np.float32)
                 peg_emb /= np.linalg.norm(peg_emb) + 1e-9
-                neighbors = _ls.vector_search(peg_emb, top_k=40)
-                if neighbors:
-                    strong_paths       = [r["path"]                                  for r in neighbors]
-                    embeddings         = [np.array(r["embedding"], dtype=np.float32) for r in neighbors]
-                    scores             = [float(r.get("score", 0.5))                 for r in neighbors]
-                    aspect_scores_list = [
-                        r["breakdown"] if isinstance(r.get("breakdown"), dict) else {}
-                        for r in neighbors
-                    ]
-                    _p(0.01, f"Peg anchor: {len(strong_paths)} neighbors from '{Path(peg_row['path']).name}'")
+                _stk = np.stack([np.asarray(e, dtype=np.float32) for e in embeddings])
+                _stk /= np.linalg.norm(_stk, axis=1, keepdims=True) + 1e-9
+                _peg_sims = (_stk @ peg_emb).clip(-1.0, 1.0)
+                _sc_arr   = np.array(scores or [0.5] * len(strong_paths), dtype=np.float32)
+                _blended  = 0.60 * _sc_arr + 0.40 * ((_peg_sims + 1.0) / 2.0)
+                _order    = np.argsort(-_blended).tolist()
+                strong_paths       = [strong_paths[i] for i in _order]
+                embeddings         = [embeddings[i] for i in _order]
+                scores             = [float(_blended[i]) for i in _order]
+                aspect_scores_list = ([aspect_scores_list[i] for i in _order]
+                                      if aspect_scores_list else aspect_scores_list)
+                _p(0.01, f"Peg anchor '{Path(peg_row['path']).name}': full library "
+                         f"({len(strong_paths)} photos) ranked by peg similarity")
             else:
                 _p(0.01, f"Peg hash '{peg_image_hash}' not found in LanceDB — using original pool")
         except Exception as _e_peg:
@@ -1511,7 +2026,85 @@ def run_creative_direction(
                 out=_selection_diag)
             _p(0.01, f"Pool focused to {len(strong_paths)} across the whole library")
 
-    # â”€â”€ Text-semantic pool rerank â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Step 3d: Colour preference — boost + anti-palette penalty ────────────
+    # (2026-09-22 v2) v1 was a weak ×1.15 nudge applied AFTER the rerank: at
+    # real-world SigLIP sims (~0.06-0.13) it could not flip a 17-point score
+    # gap, so two black-and-white frames outranked the requested orange/yellow
+    # palette on raw grade. Three changes:
+    #   * runs BEFORE the text-semantic rerank, so the 60/40 score+sim blend
+    #     carries the palette preference instead of fighting it
+    #   * stronger curve: ×1.0-1.6 positive boost (0.6 × sim mapped to [0,1])
+    #   * DIRECTIONAL: when vibrant colour is requested, monochrome frames
+    #     are penalised (and vice versa). Not a filter — off-palette frames
+    #     stay eligible so the sequencer can still build contrast.
+    try:
+        from creative_director_agent import extract_color_terms as _ect
+        _color_fams = _ect(style_prompt)
+        if _color_fams and strong_paths and embeddings:
+            _COLOR_CONCEPT = {
+                "warm/red-orange": "a street photograph with strong red and orange colors",
+                "black and white": "a black and white photograph",
+                "warm/golden":     "a photograph with warm golden light",
+                "cool/blue":       "a photograph with cool blue tones",
+                "neon/saturated":  "a photograph with vivid saturated neon colors",
+            }
+            _stk_cb = np.stack([np.asarray(e, dtype=np.float32) for e in embeddings])
+            _stk_cb /= np.linalg.norm(_stk_cb, axis=1, keepdims=True) + 1e-9
+
+            def _cached_color_vec(concept: str, key: str):
+                vec = _BRIEF_VECS.get(key)
+                if vec is None:
+                    vec = embed_text_query(concept)
+                    _BRIEF_VECS[key] = vec
+                return np.asarray(vec, dtype=np.float32)
+
+            _cmax = np.full(len(strong_paths), -1.0, dtype=np.float32)
+            for _fam in _color_fams:
+                _cvec = _cached_color_vec(_COLOR_CONCEPT.get(_fam, _fam),
+                                          f"__color__{_fam}")
+                _cmax = np.maximum(
+                    _cmax,
+                    (_stk_cb @ _cvec).clip(-1.0, 1.0))
+            # Positive: 0.6 × sim mapped to [0,1] — at the observed ~0.10 sims
+            # this is ≈ ×1.33, enough to flip a 17-point score gap; a strong
+            # match (0.5+) approaches ×1.6 without saturating.
+            _c01 = ((_cmax + 1.0) / 2.0).clip(0.0, 1.0)
+            _cboost = 1.0 + 0.60 * _c01
+            # Anti-palette: a colour request pushes monochrome frames down;
+            # a monochrome request pushes saturated colour frames down.
+            _wants_colour = any(f != "black and white" for f in _color_fams)
+            _wants_mono = "black and white" in _color_fams
+            _pen_mult = np.ones(len(strong_paths), dtype=np.float32)
+            if _wants_colour and not _wants_mono:
+                _avec = _cached_color_vec(
+                    "a black and white photograph with desaturated gray tones",
+                    "__color__anti_mono")
+                _a01 = (((_stk_cb @ _avec).clip(-1.0, 1.0)) + 1.0) / 2.0
+                _pen_mult = 1.0 - 0.55 * _a01          # [0.45, 1.0]
+            elif _wants_mono:
+                _avec = _cached_color_vec(
+                    "a vibrant colorful photograph with saturated colors",
+                    "__color__anti_colour")
+                _a01 = (((_stk_cb @ _avec).clip(-1.0, 1.0)) + 1.0) / 2.0
+                _pen_mult = 1.0 - 0.55 * _a01
+            _sc_cb = np.asarray(scores or [0.5] * len(strong_paths), dtype=np.float32)
+            _sc_cb = _sc_cb * _cboost * _pen_mult
+            _order_cb = np.argsort(-_sc_cb).tolist()
+            strong_paths = [strong_paths[i] for i in _order_cb]
+            embeddings   = [embeddings[i]   for i in _order_cb]
+            scores       = [float(_sc_cb[i]) for i in _order_cb]
+            if aspect_scores_list and len(aspect_scores_list) == len(_order_cb):
+                aspect_scores_list = [aspect_scores_list[i] for i in _order_cb]
+            print(f"[cd] color boost v2: families={_color_fams} "
+                  f"top_sim={float(_cmax[_order_cb[0]]):.3f} "
+                  f"max_boost={float(_cboost.max()):.2f} "
+                  f"anti_palette={'mono' if _wants_colour and not _wants_mono else ('colour' if _wants_mono else 'none')} "
+                  f"brief='{style_prompt[:60]}'", flush=True)
+            _p(0.015, f"Colour preference applied: {_color_fams}")
+    except Exception as _e_cb:
+        print(f"[cd] color boost skipped: {_e_cb}")
+
+    # ── Text-semantic pool rerank ─────────────────────────────────────────────
     # Embed the style brief with SigLIP-2's text tower and re-rank the candidate
     # pool so that semantically matching images (e.g. "black and white", "rain")
     # rise to the top *before* the LLM sees the manifest.
@@ -1635,7 +2228,8 @@ def run_creative_direction(
         _p(0.06, f"Rule Set informed by {len(_rag_selected)} book concepts")
     _p(0.06, f"Rule Set: HARD_FILTER_PEOPLE={rule_set['HARD_FILTER_PEOPLE']}  "
              f"GEOMETRIC={rule_set['GEOMETRIC_PRIORITY']}  "
-             f"MOOD={rule_set['LIGHTING_MOOD']}")
+             f"MOOD={rule_set['LIGHTING_MOOD']}  "
+             f"EXCLUDE={rule_set.get('EXCLUDE') or 'none'}")
     # Sync the Brief with the (possibly GGUF-refined) rule set so every later
     # consumer — prompts, return payload, display — reads the refined values.
     brief.mood = rule_set["LIGHTING_MOOD"]
@@ -1668,7 +2262,8 @@ def run_creative_direction(
     yolo_blocked: set[str] = set()
     if rule_set["HARD_FILTER_PEOPLE"]:
         _p(0.08, f"person_kill_switch: scanning {len(strong_paths)} images (D-FINE, confâ‰¥0.35)â€¦")
-        yolo_blocked = person_kill_switch(strong_paths, style_prompt)
+        yolo_blocked = person_kill_switch(strong_paths, style_prompt,
+                                          hard_filter_people=True)
         if yolo_blocked:
             _p(0.14, f"person_kill_switch: {len(yolo_blocked)} images DISQUALIFIED")
 
@@ -1711,7 +2306,22 @@ def run_creative_direction(
         filtered_paths, filtered_embs, filtered_scores,
         aspect_scores_list=filtered_aspects,
         style_prompt=style_prompt,
+        hard_filter_people=bool(rule_set["HARD_FILTER_PEOPLE"]),
     )
+
+    # ── Step 3c: Generic brief-exclusion enforcement (any "no X" criterion) ──
+    # People exclusions are already enforced by the D-FINE kill switch and the
+    # people-embedding gate above; everything else is enforced semantically.
+    _excl = [e for e in (rule_set.get("EXCLUDE") or [])
+             if e.strip() and e.strip() not in _PEOPLE_TERMS]
+    if _excl:
+        _p(0.17, f"Enforcing brief exclusions: {_excl}")
+        adjusted_scores, ex_notes = _apply_exclusion_constraints(
+            filtered_paths, filtered_embs, adjusted_scores, _excl,
+        )
+        disq_notes = [
+            a or b for a, b in zip(disq_notes, ex_notes)
+        ] if any(disq_notes) else ex_notes
 
     # â”€â”€ Step 3b: Brief-aware aspect re-scoring â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     # Maps brief keywords → aspect weights and blends them with the existing
@@ -1754,6 +2364,145 @@ def run_creative_direction(
     if _leaked_after:
         print(f"[cd] dedup: STILL present after filter: {_leaked_after[:2]}", flush=True)
     pool_idx = [i for i, p in enumerate(filtered_paths) if p not in avoid]
+    # FIFO rotation BEFORE starving: the old code reused the pool only when
+    # completely empty, so a saturated used-history starved a 6-image request
+    # down to 1. And a naive recycle RESHOWED recently-saved stories. The
+    # correct policy: retire the OLDEST used entries (FIFO) until the pool
+    # can meet the request — repeats only ever come from the oldest cycle.
+    #
+    # Retiring exactly n_target was not enough, though: with a peg anchor the
+    # pool is ~39 photos and once all are used, retiring exactly 7 leaves the
+    # director a 7-candidate manifest — no freedom, so it re-picks the same 7
+    # every run and the sequence ping-pongs between two batches. Retire until
+    # the pool has the full LLM-manifest headroom instead: the director then
+    # chooses from ~25 candidates and the rotation walks through the whole
+    # pool before repeating.
+    _min_pool = min(
+        len(filtered_paths),
+        max(_director_pool_size(n_target, len(filtered_paths)), n_target),
+    )
+    # ── Post-kill-switch replenish (2026-09-22) ──────────────────────────────
+    # Observed live: 'orange and reds' → HARD_FILTER_PEOPLE=true → the early
+    # starvation guard FIFO-retired the 10 OLDEST used frames → the D-FINE
+    # person kill disqualified 11 of those 12 → a 1-photo sequence. The
+    # used-history file had already been rewritten, so the FIFO below had
+    # nothing left to retire: rotation and the people gate each worked but
+    # never re-negotiated after colliding. Fix: retire the NEXT-oldest batch
+    # from the ORIGINAL (pre-rewrite) used entries, re-run the person kill on
+    # just those frames, and admit survivors. Hard constraints stay hard.
+    if pool_idx and len(pool_idx) < min(_min_pool, max(n_target, 4)) \
+            and _original_used_entries and _pre_avoid_paths:
+        try:
+            _avoid_res_full = {str(Path(p).resolve()) for p in (avoid_paths or [])}
+            _replenish_cap = min(
+                max(_director_pool_size(n_target, len(_pre_avoid_paths)), n_target),
+                len(_pre_avoid_paths))
+            _retire_res, _ab_all = _post_kill_replenish(
+                _original_used_entries, _early_evicted_res, _avoid_res_full,
+                _pre_avoid_paths, _pre_avoid_embs,
+                need=_replenish_cap - len(pool_idx),
+                pool_embs=[filtered_embs[i] for i in pool_idx])
+            _ab_paths = [_pre_avoid_paths[j] for j in _ab_all]
+            _ab_blocked: set = set()
+            if _ab_paths and rule_set["HARD_FILTER_PEOPLE"]:
+                _ab_blocked = person_kill_switch(
+                    _ab_paths, style_prompt, hard_filter_people=True)
+                if _ab_blocked:
+                    print(f"[cd] replenish person kill: "
+                          f"{len(_ab_blocked)}/{len(_ab_paths)} addback "
+                          f"frame(s) DISQUALIFIED", flush=True)
+            _admitted = [j for j, p in zip(_ab_all, _ab_paths)
+                         if p not in _ab_blocked]
+        except Exception as _e_rep:
+            import traceback as _tb_rep
+            print(f"[cd] POST-KILL REPLENISH CRASHED: {_e_rep!r}", flush=True)
+            _tb_rep.print_exc()
+            _admitted, _retire_res = [], []
+        if _admitted:
+            try:
+
+                _ab_embs  = [_pre_avoid_embs[j] for j in _admitted]
+                _ab_scores = ([_pre_avoid_scores[_pre_avoid_paths.index(p)]
+                               for p in _ab_paths]
+                              if _pre_avoid_scores else [0.5] * len(_ab_paths))
+                _ab_aspects = ([_pre_avoid_aspects[_pre_avoid_paths.index(p)]
+                                for p in _ab_paths]
+                               if _pre_avoid_aspects else None)
+                _new_start = len(filtered_paths)
+                for _j, _p_ab in enumerate(_ab_paths):
+                    filtered_paths.append(_p_ab)
+                    filtered_embs.append(_ab_embs[_j])
+                    filtered_scores.append(_ab_scores[_j])
+                    if filtered_aspects is not None and _ab_aspects is not None:
+                        filtered_aspects.append(_ab_aspects[_j])
+                    adjusted_scores.append(float(_ab_scores[_j]))
+                    pool_idx.append(len(filtered_paths) - 1)
+                # Same brief-constraint scoring as the main pool, so the
+                # subject-intrusion / people penalties apply to addbacks too.
+                _ab_range = list(range(_new_start, len(filtered_paths)))
+                try:
+                    _ab_adj, _ = _apply_brief_constraints(
+                        [filtered_paths[i] for i in _ab_range],
+                        [filtered_embs[i] for i in _ab_range],
+                        [adjusted_scores[i] for i in _ab_range],
+                        aspect_scores_list=(
+                            [filtered_aspects[i] for i in _ab_range]
+                            if filtered_aspects else None),
+                        style_prompt=style_prompt,
+                        hard_filter_people=bool(rule_set["HARD_FILTER_PEOPLE"]),
+                    )
+                    for _k, _i in enumerate(_ab_range):
+                        adjusted_scores[_i] = float(_ab_adj[_k])
+                except Exception as _e_ab:
+                    print(f"[cd] replenish rescoring skipped: {_e_ab}", flush=True)
+                _used_file = (Path(__file__).resolve().parent.parent /
+                              "cache" / "used_cd_paths.json")
+                try:
+                    _file_entries = json.loads(
+                        _used_file.read_text(encoding="utf-8"))
+                    _remaining2 = [
+                        e for e in _file_entries
+                        if str(Path(e.get("path", "") if isinstance(e, dict)
+                                    else str(e)).resolve()) not in set(_retire_res)]
+                    _used_file.parent.mkdir(parents=True, exist_ok=True)
+                    _used_file.write_text(json.dumps(_remaining2, indent=2),
+                                          encoding="utf-8")
+                except Exception as _e_w3:
+                    print(f"[cd] FIFO history write skipped: {_e_w3}", flush=True)
+                print(f"[cd] POST-KILL REPLENISH: pool={len(pool_idx)} — retired "
+                      f"{len(_retire_res)} next-oldest used frame(s), admitted "
+                      f"{len(_admitted)} after person-kill + dup guard: "
+                      f"{[Path(p).name for p in _ab_paths]}", flush=True)
+                _p(0.16, f"Rotation dig: {len(_admitted)} older frame(s) "
+                         f"re-admitted after the people filter")
+            except Exception as _e_rep2:
+                import traceback as _tb_rep2
+                print(f"[cd] POST-KILL REPLENISH CRASHED (admit): {_e_rep2!r}",
+                      flush=True)
+                _tb_rep2.print_exc()
+
+
+    if len(pool_idx) < _min_pool:
+        _used_file = Path(__file__).resolve().parent.parent / "cache" / "used_cd_paths.json"
+        try:
+            from server_impl import _load_used_cd_paths_ordered as _lord
+            _used_entries = _lord()
+        except Exception:
+            try:
+                _used_entries = [{"path": str(p), "ts": 0}
+                                 for p in json.loads(_used_file.read_text(encoding="utf-8"))]
+            except Exception:
+                _used_entries = []
+        _evicted, _remaining, pool_idx = _fifo_evict_used(
+            _used_entries, pool_idx, _min_pool, filtered_paths)
+        if _evicted:
+            print(f"[cd] pool starved ({len(pool_idx) - len(_evicted)} eligible "
+                  f"< {_min_pool}) -- FIFO-retiring {len(_evicted)} oldest "
+                  f"used frame(s): {[Path(e['path']).name for e in _evicted]}", flush=True)
+            try:
+                _used_file.write_text(json.dumps(_remaining, indent=2), encoding="utf-8")
+            except Exception as _e_w:
+                print(f"[cd] FIFO history write skipped: {_e_w}", flush=True)
     if not pool_idx:
         pool_idx = list(range(len(filtered_paths)))
         _p(0.20, "Every focused candidate is already marked used — reusing the "
@@ -1763,7 +2512,7 @@ def run_creative_direction(
     # Give the LLM at least 4Ã— headroom: e.g. n_target=8 → manifest of 32 candidates.
     # Floor at 25 so short sequences still get a meaningful pool for the MoE.
     top_n   = _director_pool_size(n_target, len(pool_idx))
-    top_idx = np.argsort(-pool_sc)[:top_n].tolist()
+    top_idx = _select_manifest(pool_sc, top_n)
 
     # Build candidate pool with path + score + breakdown + semantic profile
     # Last-resort profile source: the grader's reasoning_log from LanceDB (one
@@ -1919,6 +2668,21 @@ def run_creative_direction(
                 path_set = {p: filtered_aspects[i] for i, p in enumerate(filtered_paths)}
                 seq_aspects = [path_set.get(p, {}) for p in seq_paths]
             _p(0.30, f"Greedy selected {len(seq_paths)} images")
+
+    # ── Pinned splice (2026-09-22) ──────────────────────────────────────────
+    # The user's pinned frames MUST be in the sequence no matter what the
+    # rotation filters or the Art Director decided this run.
+    _splice_pinned(
+        seq_paths, seq_embs, seq_scores, seq_aspects,
+        pinned_paths, n_target,
+        lookup_sources=(
+            (filtered_paths, filtered_embs, adjusted_scores,
+             (filtered_aspects if filtered_aspects else None)),
+            (_pre_avoid_paths, _pre_avoid_embs, _pre_avoid_scores,
+             _pre_avoid_aspects),
+        ),
+        log=lambda m: _p(0.31, m),
+    )
 
     n = len(seq_paths)
     _p(0.30, f"Selected {n} images for Story Sequence")
@@ -2199,6 +2963,13 @@ def run_creative_direction(
         print(f"[cd] alternate sequence skipped: {_e_alt_all}")
 
     timings = timer.snapshot()
+    # Judge provenance for the frontend: what produced the verdict text and
+    # under which measured protocol (config.json is the single source).
+    try:
+        _jcfg = json.loads((Path(__file__).resolve().parent.parent / "config.json")
+                           .read_text(encoding="utf-8-sig"))
+    except Exception:
+        _jcfg = {}
     _done = {
         "outputs":     outputs,
         "output_dir":  str(out_dir),
@@ -2210,6 +2981,10 @@ def run_creative_direction(
         # None when the Art Director actually chose. A sentence when this is a
         # score sort wearing a story's clothes.
         "director_fallback": director_fallback,
+        # Informational (NOT a fallback): e.g. "the model chose 5 of 6; the rest
+        # were filled by visual diversity" — art direction ran, one slot was
+        # completed by the diversity guard.
+        "director_note": LAST_DIRECTOR_NOTE,
         "selection": _selection_diag,
         # Variant B: greedy max-dissimilarity picks preferring frames the
         # primary did not use — for the approve-between-two UI.
@@ -2221,6 +2996,15 @@ def run_creative_direction(
         "brief": brief.to_dict(),
         # Per-stage timing profile (see stage_runner.StageTimer).
         "timings": timings,
+        # First-class Judge's Verdict + provenance (was buried per-photo in
+        # reasoning_log only; the frontend renders a verdict panel from these).
+        "judges_verdict": seq_narrative,
+        "judge_meta": {
+            "model": _jcfg.get("JUDGE_MODEL", "deepseek-r1:8b-q3km"),
+            "mode": _jcfg.get("JUDGE_MODE", "structured"),
+            "protocol": "2026 structured fact-ID grounding (validate_narrative)",
+            "verdict_generated": bool(seq_narrative),
+        },
     }
     # SSE done-payload contract (photo_brief.REQUIRED_DONE_KEYS): the frontend
     # renders from these keys. A missing key = silent UI breakage, so fail loud.

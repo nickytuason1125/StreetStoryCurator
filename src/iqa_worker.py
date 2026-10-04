@@ -16,6 +16,18 @@ out_npz : quality (M,) float32
 out_json: breakdowns, composition_overrides, chiaroscuro_flags, person_detected, subject_bboxes
 """
 import sys, os, json
+# transformers imports TensorFlow whenever it is installed (it is — for the
+# offline NIMA export script only). Nothing in a cull uses it, and loading it
+# cost ~3.5 s per worker start plus its RAM (measured 2026-10-04). setdefault:
+# an explicit environment still wins; child processes inherit it.
+os.environ.setdefault("USE_TF", "0")
+os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
+# Offline, like encode_worker (2026-10-04): TOPIQ's timm backbone asked
+# huggingface.co to revalidate an already-cached resnet50; on a flaky network
+# the SSL retries crashed the worker twice and the grade degraded to CLIP
+# technical scores — 42% of a 600-photo test cull changed bucket. Verified
+# topiq_nr loads from the local cache with this set. CLAUDE.md rule 5.
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
 import numpy as np
 
 
@@ -77,20 +89,80 @@ def main():
                     break   # optional/absent dep → let run_vision_heads handle it
 
         from vision_grading_heads import run_vision_heads
+
+        # Subject sharpness OVERLAPS the quality model (2026-10-04). It only
+        # needs the person pass's boxes, which exist before TOPIQ even loads;
+        # run serially it added ~27 s per 600 RAWs of CPU work with the GPU
+        # idle. The side thread is CPU-only (score_paths_cached never calls the
+        # detector) — all CUDA stays on this main thread. Photos without cached
+        # boxes are finished on the main thread below.
+        import threading as _thr
+        _sharp_on = os.environ.get("FIRSTCUT_SUBJECT_SHARP", "1").strip() != "0"
+        _vision_done = _thr.Event()
+        _side = {"out": {}, "misses": list(image_paths), "err": None, "t": 0.0}
+
+        def _sharp_side():
+            import time as _ts
+            try:
+                import dfine_detector as _dd
+                while not (_dd.PERSON_PASS_DONE.wait(0.5) or _vision_done.is_set()):
+                    pass
+                _t0 = _ts.monotonic()
+                from subject_sharpness import score_paths_cached
+                _side["out"], _side["misses"] = score_paths_cached(image_paths)
+                _side["t"] = _ts.monotonic() - _t0
+            except Exception as _e_side:
+                _side["err"] = _e_side
+
+        _side_thread = None
+        if _sharp_on:
+            _side_thread = _thr.Thread(target=_sharp_side, daemon=True, name="sharp-overlap")
+            _side_thread.start()
+
         print(f"[iqa_worker] run_vision_heads on {len(image_paths)} images", flush=True)
-        out = run_vision_heads(
-            image_paths         = image_paths,
-            image_embeddings    = image_embeddings,
-            prompt_embedding    = prompt_embedding,
-            clip_scores         = clip_scores,
-            genre_ref_embs      = genre_ref_embs,
-            lum_stats           = lum_stats,
-            comp_eligible_paths = comp_eligible,
-            vlm_breakdowns      = vlm_breakdowns,
-        )
+        try:
+            out = run_vision_heads(
+                image_paths         = image_paths,
+                image_embeddings    = image_embeddings,
+                prompt_embedding    = prompt_embedding,
+                clip_scores         = clip_scores,
+                genre_ref_embs      = genre_ref_embs,
+                lum_stats           = lum_stats,
+                comp_eligible_paths = comp_eligible,
+                vlm_breakdowns      = vlm_breakdowns,
+            )
+        finally:
+            _vision_done.set()
+
+        # Subject sharpness (2026-10-03): smeared subjects graded Mid because
+        # nothing measured whether the SUBJECT is sharp. Runs here because it
+        # needs D-FINE (GPU) — the grade worker itself must never touch CUDA.
+        # Strictly additive: any failure leaves the map empty and no photo is
+        # capped. FIRSTCUT_SUBJECT_SHARP=0 disables it.
+        subject_sharp = {}
+        if _sharp_on:
+            try:
+                import time as _tss
+                _t0 = _tss.monotonic()
+                _side_thread.join()
+                if _side["err"] is not None:
+                    print(f"[iqa_worker] sharpness overlap failed ({_side['err']}) — "
+                          f"measuring on the main thread", flush=True)
+                subject_sharp = dict(_side["out"])
+                _misses = _side["misses"] if _side["err"] is None else list(image_paths)
+                if _misses:
+                    from subject_sharpness import score_paths
+                    subject_sharp.update(score_paths(_misses))
+                print(f"[iqa_worker] subject sharpness {_side['t']:.1f}s overlapped "
+                      f"+ {_tss.monotonic() - _t0:.1f}s after ({len(_misses)} on main thread)",
+                      flush=True)
+            except Exception as _sse:
+                print(f"[iqa_worker] subject sharpness skipped: {_sse}", flush=True)
+                subject_sharp = {}
 
         np.savez(out_npz, quality=np.asarray(out.get("quality"), dtype=np.float32))
         payload = {
+            "subject_sharpness":     subject_sharp,
             "breakdowns":            out.get("breakdowns", []),
             "composition_overrides": out.get("composition_overrides", {}),
             "chiaroscuro_flags":     out.get("chiaroscuro_flags", {}),

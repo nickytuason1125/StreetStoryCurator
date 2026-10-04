@@ -46,10 +46,10 @@ creativeVerdict: string | null; creativeJudgeMeta: any;
   creativePinned: string[]; setCreativePinned: (v: any) => void;
   notify: (msg: string, type?: "success" | "error" | "info", ms?: number) => void;
 }) {
-  /* â”€â”€ Two-sequence approval + manual reorder (2026-09-16) â”€â”€
+  /* ── Two-sequence approval + manual reorder (2026-09-16) ──
      seqTab picks which candidate is displayed; orderA/orderB hold the
      user's manual ordering as indices into the base list (empty = native
-     order). Cards reorder by drag-and-drop or the â€¹ â€º buttons. */
+     order). Cards reorder by drag-and-drop or the ‹ › buttons. */
   const [seqTab, setSeqTab] = useState<'a' | 'b'>('a');
   const [orderA, setOrderA] = useState<number[]>([]);
   const [orderB, setOrderB] = useState<number[]>([]);
@@ -128,7 +128,7 @@ creativeVerdict: string | null; creativeJudgeMeta: any;
           return (
           <div className="flex flex-1 overflow-hidden bg-ground">
 
-            {/* â”€â”€ Left config panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+            {/* ── Left config panel ───────────────────────────────── */}
             <div className="flex w-panel shrink-0 flex-col overflow-hidden border-r border-line bg-surface">
 
               <div className="shrink-0 border-b border-line px-4 py-3">
@@ -288,7 +288,7 @@ creativeVerdict: string | null; creativeJudgeMeta: any;
                       : 'cursor-pointer border-line-strong text-ink-3 hover:border-ink-4 hover:text-ink-2',
                   )}>
                     <Upload size={13} strokeWidth={1.5}/>
-                    <span>{ragUploading ? 'Reading the bookâ€¦' : 'Add a reference PDF'}</span>
+                    <span>{ragUploading ? 'Reading the book…' : 'Add a reference PDF'}</span>
                     <input type="file" accept="application/pdf" className="hidden" disabled={ragUploading}
                       onChange={e => { const f = e.target.files?.[0]; if (f) handleRagUpload(f); e.target.value = ''; }}
                     />
@@ -347,7 +347,7 @@ creativeVerdict: string | null; creativeJudgeMeta: any;
                       onClick={()=>setCreativeAnchor(null)} title="Click to remove">
                       <Thumb path={creativeAnchor} eager style={{ width:'100%', aspectRatio:'3/2', objectFit:'cover', display:'block' }}/>
                       <div className="t-label absolute left-1 top-1 rounded-sm px-1" style={{ background:T.mark, color:T.well }}>ANCHOR</div>
-                      <div style={{ position:'absolute', top:6, right:6, background:T.scrim, backdropFilter:'blur(4px)', borderRadius:'var(--r-sm)', padding:'3px 8px', fontSize:'var(--text-xs)', color:T.ink, fontWeight:600 }}>âœ• remove</div>
+                      <div style={{ position:'absolute', top:6, right:6, background:T.scrim, backdropFilter:'blur(4px)', borderRadius:'var(--r-sm)', padding:'3px 8px', fontSize:'var(--text-xs)', color:T.ink, fontWeight:600 }}>✕ remove</div>
                     </div>
                   ) : (
                     <button
@@ -417,7 +417,7 @@ creativeVerdict: string | null; creativeJudgeMeta: any;
                   icon={creativeLoading ? undefined : <Wand2 size={13}/>}
                 >
                   {creativeLoading
-                    ? 'Choosing photosâ€¦'
+                    ? 'Choosing photos…'
                     : hasResults ? 'Build it again'
                     : seqMode === 'competition' ? 'Pick my strongest'
                     : seqMode === 'auto' ? 'Build a set'
@@ -449,7 +449,7 @@ creativeVerdict: string | null; creativeJudgeMeta: any;
               </div>
             </div>
 
-            {/* â”€â”€ Right results panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+            {/* ── Right results panel ──────────────────────────────── */}
             <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
 
               {/* Progress bar (only while loading) */}
@@ -457,7 +457,7 @@ creativeVerdict: string | null; creativeJudgeMeta: any;
                 <div style={{ flexShrink:0, padding:'12px 20px', borderBottom:`1px solid ${T.line}`, background:T.surface }}>
                   <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:8 }}>
                     <div style={{width:11,height:11,border:`2px solid ${T.ink3}`,borderTopColor:'transparent',borderRadius:'var(--r-round)',animation:'spin .8s linear infinite',flexShrink:0}}/>
-                    <span style={{fontSize:'var(--text-sm)',color:T.ink2,fontWeight:500}}>{creativeStage||'Building sequenceâ€¦'}</span>
+                    <span style={{fontSize:'var(--text-sm)',color:T.ink2,fontWeight:500}}>{creativeStage||'Building sequence…'}</span>
                     <span style={{marginLeft:'auto',fontSize:'var(--text-sm)',color:T.ink3,fontVariantNumeric:'tabular-nums'}}>{Math.round(creativeProgress*100)}%</span>
                   </div>
                   <div style={{height:3,background:T.lineStrong,borderRadius:'var(--r-sm)',overflow:'hidden'}}>
@@ -494,7 +494,7 @@ creativeVerdict: string | null; creativeJudgeMeta: any;
                       {seqTab==='a' && creativeResults.some((r:any)=>!r.success) && (
                         <span style={{fontSize:'var(--text-xs)', color:T.gradeWeak, cursor:'default'}}
                           title={creativeResults.filter((r:any)=>!r.success).map((r:any)=>`${(r.source_path??'').split(/[\\/]/).pop()}: ${r.error??'failed'}`).join('\n')}>
-                          {creativeResults.filter((r:any)=>!r.success).length} failed â“˜
+                          {creativeResults.filter((r:any)=>!r.success).length} failed ⓘ
                         </span>
                       )}
                       {seqTab==='a' && creativeRuleSet && (
@@ -555,13 +555,13 @@ creativeVerdict: string | null; creativeJudgeMeta: any;
                             + `(lowest ${Number(creativeSelection.cohesion_min ?? 0).toFixed(2)}). `
                             + `Higher means the set hangs together more tightly; `
                             + `too high and it is repetitive.`}>
-                          cohesion {Number(creativeSelection.cohesion_mean).toFixed(2)} â“˜
+                          cohesion {Number(creativeSelection.cohesion_mean).toFixed(2)} ⓘ
                         </span>
                       )}
                       {creativeSelection?.reason && (
                         <span style={{fontSize:'var(--text-xs)', color:T.gradeWeak, cursor:'default'}}
                           title={String(creativeSelection.reason)}>
-                          fewer than asked â“˜
+                          fewer than asked ⓘ
                         </span>
                       )}
                       {!creativeFallback && creativeDirectorNote && (
@@ -573,7 +573,7 @@ creativeVerdict: string | null; creativeJudgeMeta: any;
                       {creativeFallback && (
                         <span style={{fontSize:'var(--text-xs)', color:T.gradeWeak, cursor:'default'}}
                           title={`No art direction ran — ${creativeFallback}. These are the highest-scoring frames in score order, not a curated sequence.`}>
-                          sorted by score â“˜
+                          sorted by score ⓘ
                         </span>
                       )}
                     </div>
@@ -590,7 +590,7 @@ creativeVerdict: string | null; creativeJudgeMeta: any;
                         <button disabled={sequenceSaving} onClick={() => handleSaveSequence(ordered)}
                           style={{display:'flex', alignItems:'center', gap:5, fontSize:'var(--text-sm)', fontWeight:600, padding:'4px 12px', borderRadius:'var(--r-md)',
                             cursor:sequenceSaving?'wait':'pointer', background:'transparent', border:`1px solid ${T.lineStrong}`, color:T.ink2, transition:'all .15s'}}>
-                          <Download size={11}/>{sequenceSaving?'Savingâ€¦':'Save Sequence'}
+                          <Download size={11}/>{sequenceSaving?'Saving…':'Save Sequence'}
                         </button>
                       )}
                     </div>
@@ -609,7 +609,7 @@ creativeVerdict: string | null; creativeJudgeMeta: any;
                     </div>
                   )}
                   {/* Sequence grid — landscape cards, 2–3 per row; drag a card
-                      onto another (or use â€¹ â€º) to change the story order. */}
+                      onto another (or use ‹ ›) to change the story order. */}
                   <div style={{flex:1, overflowY:'auto', padding:'18px 20px'}}>
                     <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(240px, 1fr))', gap:14}}>
                       {ordered.map((r:any, i:number) => {

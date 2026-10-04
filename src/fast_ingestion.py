@@ -66,10 +66,9 @@ _tj = None   # singleton TurboJPEG instance (thread-safe after init)
 
 # rawpy/libraw is NOT thread-safe. decode_one is called from ThreadPoolExecutors
 # (e.g. vision_grading_heads._load_images_parallel, 8 workers); concurrent libraw
-# calls fault the process with 0xC0000005. This lock serialises every RAW decode so
-# only one libraw call runs at a time (JPEG/PNG stay fully parallel).
-import threading as _threading
-_RAW_LOCK = _threading.Lock()
+# calls fault the process with 0xC0000005. The guard lives in raw_support
+# (RAWPY_LOCK, held around every LibRaw call in the process) — this module no
+# longer needs its own lock (2026-10-04).
 
 
 def _get_tj():
@@ -136,7 +135,13 @@ def decode_one(
 
     ext = Path(path).suffix.lower()
     try:
-        if ext in _JPEG_EXTS:
+        _pv = None
+        if ext in _JPEG_EXTS and draft_hint:
+            from raw_support import jpeg_preview
+            _pv = jpeg_preview(path, draft_hint)   # camera JPEG: built-in preview
+        if _pv is not None:
+            rgb = np.array(_pv, dtype=np.uint8)
+        elif ext in _JPEG_EXTS:
             tj = _get_tj()
             if tj is not None:
                 with open(path, "rb") as fh:
@@ -173,15 +178,18 @@ def decode_one(
             # (~5.5 MB) instead of a full demosaic (~100 MB) — the 1920px preview is
             # ample for TOPIQ, which downsamples to 512. Falls back to full demosaic
             # only when a RAW has no embedded preview (rare).
+            # No outer lock (2026-10-04): raw_support holds RAWPY_LOCK around
+            # every LibRaw call itself, so only the libraw read is serialised
+            # and the preview's JPEG decode runs in parallel. The old outer
+            # _RAW_LOCK serialised the whole decode (~26 ms/img on 600 RAWs).
             from raw_support import extract_embedded_preview, _rawpy_decode
-            with _RAW_LOCK:
-                _prev = extract_embedded_preview(path, "RGB")
-                # np.array (NOT np.asarray) — PIL's buffer is read-only; the caller
-                # does an in-place torch .div_(), and writing to a non-writable
-                # numpy-backed tensor is undefined behavior → 0xC0000005. Copy to a
-                # writable, contiguous array like the JPEG/PIL paths do.
-                rgb = (np.array(_prev, dtype=np.uint8)
-                       if _prev is not None else _rawpy_decode(path))
+            _prev = extract_embedded_preview(path, "RGB")
+            # np.array (NOT np.asarray) — PIL's buffer is read-only; the caller
+            # does an in-place torch .div_(), and writing to a non-writable
+            # numpy-backed tensor is undefined behavior → 0xC0000005. Copy to a
+            # writable, contiguous array like the JPEG/PIL paths do.
+            rgb = (np.array(_prev, dtype=np.uint8)
+                   if _prev is not None else _rawpy_decode(path))
         else:
             from PIL import Image
             rgb = np.array(Image.open(path).convert("RGB"), dtype=np.uint8)

@@ -145,6 +145,60 @@ def _draft_enabled() -> bool:
     return _os.environ.get("FIRSTCUT_DFINE_DRAFT", "1").strip() != "0"
 
 
+# ── One detector pass per photo (2026-10-04) ─────────────────────────────────
+# detect_persons (routing) and subject_sharpness ran D-FINE TWICE on the same
+# photos in the same IQA worker. The person pass now keeps every class at the
+# subject threshold here, and subject_sharpness reuses it. Boxes only — tiny.
+_SUBJECT_CONF = 0.5
+_SUBJECT_CACHE: dict = {}
+_SUBJECT_CACHE_MAX = 50_000
+
+# Set when a detect_persons pass finishes (success or not), so iqa_worker can
+# start CPU-only subject-sharpness work while the quality model runs.
+import threading as _thr_ev
+PERSON_PASS_DONE = _thr_ev.Event()
+
+
+def cached_subjects(path: str):
+    """All-class detections (conf >= 0.5) from this process's person pass, or None."""
+    return _SUBJECT_CACHE.get(path)
+
+
+def _model_input(img):
+    """Shrink to the model's fixed 640x640 input BEFORE the processor.
+
+    The processor resizes every frame to 640x640 anyway; handing it a 1616 px
+    preview cost ~33 ms/img in its resize against ~7 ms for a 640 px one. Same
+    BILINEAR target, so the network sees (to rounding) the same pixels — but
+    not bit-identical ones: it flipped 1-2 of 600 detections, so it is OFF by
+    default (grades must not drift for speed). FIRSTCUT_DFINE_PRESHRINK=1 enables."""
+    import os as _os
+    if _os.environ.get("FIRSTCUT_DFINE_PRESHRINK", "0").strip() != "1":
+        return img
+    from PIL import Image
+    if isinstance(img, Image.Image):
+        if img.size != (640, 640) and max(img.size) > 640:
+            return img.resize((640, 640), Image.BILINEAR)
+        return img
+    import numpy as _np
+    a = _np.asarray(img)
+    if a.ndim == 3 and max(a.shape[:2]) > 640:
+        return _np.asarray(Image.fromarray(a).resize((640, 640), Image.BILINEAR))
+    return img
+
+
+def decode_threads() -> int:
+    """Threads for decoding a detection chunk. PIL and rawpy release the GIL
+    while decoding, and decode — not the ~19 ms/img forward pass — is what
+    the detector paths spend their time on (61 MP JPEG: 100-270 ms each)."""
+    import os as _os
+    try:
+        n = int(_os.environ.get("FIRSTCUT_DECODE_THREADS", "0") or 0)
+    except ValueError:
+        n = 0
+    return max(1, n or min(8, (_os.cpu_count() or 4)))
+
+
 def _open_rgb(path: str):
     """Decode ANY supported file to RGB, RAW included.
 
@@ -173,6 +227,11 @@ def _open_rgb(path: str):
         if img is None:
             print(f"[dfine] unreadable RAW, skipping: {_os.path.basename(path)}")
         return img
+    if _draft_enabled():
+        from raw_support import jpeg_preview
+        pv = jpeg_preview(path, 640)       # camera JPEG: built-in preview
+        if pv is not None:
+            return pv
     src = Image.open(path)
     if _draft_enabled():
         try: src.draft("RGB", (640, 640))
@@ -230,6 +289,45 @@ def detect_persons_from_arrays(items, conf: float = 0.35) -> dict:
     return result
 
 
+def detect_subjects_from_arrays(items, conf: float = 0.5) -> dict:
+    """Every COCO class, not just people: [(key, HWC uint8 array), ...] →
+    key -> [{"bbox": [x1n, y1n, x2n, y2n], "conf": float, "label": str}].
+
+    For subject_sharpness: on a harbour card the subject is a boat, a cat, a
+    bike — a person-only detector leaves those frames with no subject at all.
+    Same fixed chunking as the person path (determinism, see _chunk_size).
+    """
+    import torch
+    result: dict = {k: [] for k, _ in items}
+    model, processor = _load()
+    if model is None or not items:
+        return result
+    labels = model.config.id2label
+    chunk = _chunk_size(len(items))
+    with torch.inference_mode():
+        for start in range(0, len(items), chunk):
+            batch = items[start:start + chunk]
+            try:
+                wh = [(a.shape[1], a.shape[0]) for _, a in batch]
+                imgs = [_model_input(a) for _, a in batch]
+                inputs = processor(images=imgs, return_tensors="pt").to(_device)
+                out = model(**inputs)
+                dets = processor.post_process_object_detection(
+                    out, target_sizes=torch.tensor([[h, w] for (w, h) in wh]), threshold=conf)
+                for (key, _), (iw, ih), det in zip(batch, wh, dets):
+                    result[key] = [
+                        {"bbox": [x1 / iw, y1 / ih, x2 / iw, y2 / ih],
+                         "conf": float(score), "label": str(labels[int(label)])}
+                        for (x1, y1, x2, y2), score, label in
+                        ((b.tolist(), s, l) for b, s, l in
+                         zip(det["boxes"], det["scores"], det["labels"]))
+                    ]
+                del inputs, out, dets
+            except Exception as e:
+                print(f"[dfine] subject batch failed ({e}) — chunk left empty")
+    return result
+
+
 def detect_persons(paths: list[str], conf: float = 0.35) -> dict[str, list[dict]]:
     """
     Returns path -> list of {"bbox": [x1n, y1n, x2n, y2n] (normalised [0,1]),
@@ -248,6 +346,7 @@ def detect_persons(paths: list[str], conf: float = 0.35) -> dict[str, list[dict]
     result: dict[str, list[dict]] = {p: [] for p in paths}
     model, processor = _load()
     if model is None:
+        PERSON_PASS_DONE.set()
         return result
 
     def _detect_one(p: str) -> list[dict]:
@@ -280,24 +379,53 @@ def detect_persons(paths: list[str], conf: float = 0.35) -> dict[str, list[dict]
             print(f"[dfine] inference failed for {Path(p).name}: {e}")
             return []
 
+    try:
+        return _detect_persons_batched(paths, conf, result, model, processor, _detect_one)
+    finally:
+        PERSON_PASS_DONE.set()
+
+
+def _detect_persons_batched(paths, conf, result, model, processor, _detect_one):
+    import torch
     _chunk = _chunk_size(len(paths))
     print(f"[dfine] detecting over {len(paths)} images, chunk={_chunk}")
-    with torch.inference_mode():
-        for start in range(0, len(paths), _chunk):
-            batch_paths = paths[start:start + _chunk]
+
+    def _open_safe(p):
+        try:
+            im = _open_rgb(p)              # handles RAW + draft decode
+            if im is None:
+                return None
+            return _model_input(im), im.size   # boxes normalise by the ORIGINAL size
+        except Exception as e:
+            print(f"[dfine] decode failed for {Path(p).name}: {e}")
+            return None
+    _labels = getattr(getattr(model, "config", None), "id2label", None) or {}
+    _thr = min(conf, _SUBJECT_CONF)
+    if len(_SUBJECT_CACHE) > _SUBJECT_CACHE_MAX:
+        _SUBJECT_CACHE.clear()
+
+    # Chunk decode on a thread pool, in input order (identical batches to the
+    # old serial loop, which spent ~130 of every ~150 ms/img here).
+    from concurrent.futures import ThreadPoolExecutor
+    _pool = ThreadPoolExecutor(max_workers=decode_threads(), thread_name_prefix="dfine-decode")
+    # Decode the NEXT chunk while the model runs on this one (2026-10-04) —
+    # the GPU used to wait for every chunk's decode. Results are consumed in
+    # input order, so batches are unchanged.
+    _chunks = [paths[i:i + _chunk] for i in range(0, len(paths), _chunk)]
+    with _pool, torch.inference_mode():
+        _next = [_pool.submit(_open_safe, p) for p in _chunks[0]] if _chunks else []
+        for _ci, batch_paths in enumerate(_chunks):
+            _futs = _next
+            _next = ([_pool.submit(_open_safe, p) for p in _chunks[_ci + 1]]
+                     if _ci + 1 < len(_chunks) else [])
             try:
-                # `with Image.open(...)` closes the file handle as soon as the
-                # RGB copy exists — the old `Image.open(p).convert("RGB")` left
-                # one dangling handle per image until GC.
-                imgs, batch_paths_ok = [], []
-                for p in batch_paths:
-                    im = _open_rgb(p)          # handles RAW + draft decode
-                    if im is not None:
-                        imgs.append(im); batch_paths_ok.append(p)
+                imgs, batch_paths_ok, wh = [], [], []
+                for p, got in zip(batch_paths, (f.result() for f in _futs)):
+                    if got is not None:
+                        imgs.append(got[0]); wh.append(got[1]); batch_paths_ok.append(p)
                 if not imgs:
                     continue
                 batch_paths = batch_paths_ok
-                wh = [im.size for im in imgs]      # (w, h) — needed after imgs is freed
                 inputs = processor(images=imgs, return_tensors="pt").to(_device)
                 # The decoded frames exist only to build `inputs` (the processor
                 # resizes to the model's fixed input size) and to read their
@@ -311,19 +439,22 @@ def detect_persons(paths: list[str], conf: float = 0.35) -> dict[str, list[dict]
                 out = model(**inputs)
                 sizes = torch.tensor([[h, w] for (w, h) in wh])
                 dets = processor.post_process_object_detection(
-                    out, target_sizes=sizes, threshold=conf,
+                    out, target_sizes=sizes, threshold=_thr,
                 )
                 for p, (iw, ih), det in zip(batch_paths, wh, dets):
                     boxes: list[dict] = []
+                    subjects: list[dict] = []
                     for box, score, label in zip(det["boxes"], det["scores"], det["labels"]):
-                        if int(label) != _person_id:
-                            continue
                         x1, y1, x2, y2 = box.tolist()
-                        boxes.append({
-                            "bbox": [x1 / iw, y1 / ih, x2 / iw, y2 / ih],
-                            "conf": float(score),
-                        })
+                        bb = [x1 / iw, y1 / ih, x2 / iw, y2 / ih]
+                        sc = float(score)
+                        if sc >= _SUBJECT_CONF:
+                            subjects.append({"bbox": bb, "conf": sc,
+                                             "label": str(_labels.get(int(label), int(label)))})
+                        if int(label) == _person_id and sc >= conf:
+                            boxes.append({"bbox": bb, "conf": sc})
                     result[p] = boxes
+                    _SUBJECT_CACHE[p] = subjects
                 # Drop this chunk's tensors before the next window is decoded,
                 # so peak stays O(chunk) rather than creeping across chunks.
                 del inputs, out, dets, sizes, wh

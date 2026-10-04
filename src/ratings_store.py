@@ -150,6 +150,23 @@ def set_rating(path: str, stars: int, score: float | None = None,
             final_source = source if source is not None else prior_source
             if final_source:
                 entry["source"] = final_source
+            # Content fingerprint: the rating follows the photo when it is
+            # copied off the card or renamed (stars_for_paths falls back to it).
+            try:
+                from photo_identity import fingerprint as _fp
+                fp = _fp(path) or (existing.get("fp") if isinstance(existing, dict) else None)
+            except Exception:
+                fp = None
+            if fp:
+                entry["fp"] = fp
+                try:
+                    entry["size"] = os.path.getsize(path)
+                except OSError:
+                    if isinstance(existing, dict) and existing.get("size"):
+                        entry["size"] = existing["size"]
+            # Re-rating keeps the stored grade-time features (attach_features).
+            if isinstance(existing, dict) and "features" in existing:
+                entry["features"] = existing["features"]
             cur[path] = entry
         else:
             cur.pop(path, None)
@@ -158,3 +175,123 @@ def set_rating(path: str, stars: int, score: float | None = None,
             _atomic_write(_BACKUP, cur)   # keep the mirror current
         except Exception:
             pass
+
+
+def slim_features(bd: dict) -> dict:
+    """The breakdown values the taste learner can use: numeric/bool scalars and
+    the archetype weights. Strings, nested logs and the grade signature are
+    dropped — they are not features and would bloat the store."""
+    out: dict = {}
+    for k, v in (bd or {}).items():
+        if k == "_grade_sig":
+            continue
+        if isinstance(v, (bool, int, float)):
+            out[k] = v
+        elif k == "_arch_w" and isinstance(v, dict):
+            out[k] = {a: float(x) for a, x in v.items() if isinstance(x, (int, float))}
+    return out
+
+
+def attach_features(path: str, features: dict, score: float | None = None) -> bool:
+    """Store the grade-time features (and optionally the machine score) on an
+    EXISTING rating without touching stars, rated_at or source — so the taste
+    learner can retrain after the catalog is cleared or the file moves.
+    Returns False when the path is not rated: features never create a rating."""
+    with _lock:
+        cur = _read_raw()
+        e = cur.get(path)
+        if e is None:
+            return False
+        if not isinstance(e, dict):
+            e = {"stars": int(e)}
+        e["features"] = slim_features(features)
+        if score is not None:
+            # NOT "score": that is the rating-time snapshot the grade
+            # thresholds are fitted from (rating_calibration). Overwriting it
+            # moved the Strong line 0.58 -> 0.52 (2026-10-04).
+            e["score_current"] = float(score)
+        cur[path] = e
+        _atomic_write(_PATH, cur)
+        try:
+            _atomic_write(_BACKUP, cur)
+        except Exception:
+            pass
+        return True
+
+
+def stars_for_paths(paths: list) -> dict:
+    """{path: stars} for every RATED photo among `paths` — exact path first,
+    then content fingerprint, so a rating made on the SD card still applies
+    after the photo is copied to the laptop or renamed."""
+    raw = _read_raw()
+    out, misses = {}, []
+    for p in paths:
+        s = _stars_of(raw.get(p))
+        if s > 0:
+            out[p] = s
+        else:
+            misses.append(p)
+    if misses:
+        fp_entries = [v for v in raw.values()
+                      if isinstance(v, dict) and v.get("fp") and _stars_of(v) > 0]
+        by_fp = {v["fp"]: _stars_of(v) for v in fp_entries}
+        # Size pre-check: a copy has the same size, so only photos whose size
+        # matches a rated photo need their first 64 KB read. Without it every
+        # unrated photo in a cull was read (~320 MB on a 5,000-photo card).
+        # Entries from before sizes were stored disable the shortcut.
+        sizes = ({v["size"] for v in fp_entries}
+                 if fp_entries and all(v.get("size") for v in fp_entries) else None)
+        if by_fp:
+            import photo_identity
+            for p in misses:
+                if sizes is not None:
+                    try:
+                        if os.path.getsize(p) not in sizes:
+                            continue
+                    except OSError:
+                        continue
+                fp = photo_identity.fingerprint(p)
+                if fp and fp in by_fp:
+                    out[p] = by_fp[fp]
+    return out
+
+
+def get_current_score(path: str) -> float | None:
+    """The machine score that goes WITH the stored features (attach_features)."""
+    v = _read_raw().get(path)
+    s = v.get("score_current") if isinstance(v, dict) else None
+    return float(s) if isinstance(s, (int, float)) else None
+
+
+def get_features(path: str) -> dict | None:
+    v = _read_raw().get(path)
+    return v.get("features") if isinstance(v, dict) else None
+
+
+# --- Star -> grade bucket -----------------------------------------------
+# Product rule (2026-09-22): a rated photo shows the grade YOUR stars imply,
+# not the algorithm's bucket for its raw score — no threshold math, and no
+# exception for any rating's source tag (LX3/tpe_master included; see memory
+# feedback_all_star_ratings_are_ground_truth). Centralised here so every
+# place that finalises a displayed grade uses the identical mapping.
+#
+# Split (recalibrated 2026-09-22, photographer's own boundaries): Mid's
+# borderline is 2★ and Strong's borderline is 4★ — i.e. 2★ is the LOWEST
+# star count that still counts as Mid (not Weak), and 4★ is the LOWEST that
+# counts as Strong. Only 1★ is Weak.
+_STAR_GRADE = {
+    5: "Strong ✅", 4: "Strong ✅",
+    3: "Mid ⚠️", 2: "Mid ⚠️",
+    1: "Weak ❌",
+}
+
+
+def grade_for_stars(stars) -> str | None:
+    """The grade bucket the user's stars imply, or None when unrated
+    (0/None/invalid) — callers fall back to the algorithm's grade in that
+    case. This is meant to OVERRIDE the machine grade wherever a photo's
+    grade is finalised for display, for any photo that has a rating."""
+    try:
+        return _STAR_GRADE.get(int(stars))
+    except (TypeError, ValueError):
+        return None

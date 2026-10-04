@@ -182,6 +182,64 @@ def write_catalog(gallery: list) -> None:
         traceback.print_exc()
 
 
+def duplicate_groups(embs, sim_thresh: float = 0.96, chunk: int = 512) -> list:
+    """Near-duplicate groups (lists of indices, size >= 2) — COMPLETE linkage.
+
+    Every pair inside a group is >= sim_thresh. The old union-find was single
+    linkage: A~B and B~C put A and C together however different they were, and
+    a walk along one harbour chained into ONE 207-photo "duplicate" group whose
+    least-similar pair was 0.75 (2026-10-03, 445-photo SD card). Every non-best
+    member of a group is hidden in the gallery, so chaining hid 380 of 445
+    photos. Complete linkage keeps real bursts together and stops the chain.
+
+    Pairs are merged strongest-first with a deterministic tie-break, so the
+    same embeddings always give the same groups. Memory stays O(chunk x n).
+    """
+    import numpy as np
+    n = len(embs) if embs is not None else 0
+    if embs is None or n < 2:
+        return []
+    norms = np.linalg.norm(embs, axis=1, keepdims=True)
+    normed = (embs / (norms + 1e-9)).astype(np.float32)
+
+    # Candidate pairs as compact arrays (12 bytes/pair), not Python tuples —
+    # a folder of near-identical frames yields O(n^2) pairs.
+    ps, pi, pj = [], [], []
+    for r0 in range(0, n, chunk):
+        r1 = min(r0 + chunk, n)
+        block = normed[r0:r1] @ normed.T
+        for li in range(r1 - r0):
+            block[li, : r0 + li + 1] = -1.0
+        bi, bj = np.nonzero(block > sim_thresh)
+        ps.append(block[bi, bj].astype(np.float32))
+        pi.append((bi + r0).astype(np.int32))
+        pj.append(bj.astype(np.int32))
+        del block
+    if not ps:
+        return []
+    s_all, i_all, j_all = np.concatenate(ps), np.concatenate(pi), np.concatenate(pj)
+    del ps, pi, pj
+    order = np.lexsort((j_all, i_all, -s_all))      # strongest first, index tie-break
+
+    gid = list(range(n))
+    members = {i: [i] for i in range(n)}
+    for i, j in zip(i_all[order].tolist(), j_all[order].tolist()):
+        gi, gj = gid[i], gid[j]
+        if gi == gj:
+            continue
+        a, b = members[gi], members[gj]
+        if len(a) * len(b) > 1:
+            if float((normed[a] @ normed[b].T).min()) <= sim_thresh:
+                continue
+        if len(a) < len(b):
+            gi, gj, a, b = gj, gi, b, a
+        a.extend(b)
+        for k in b:
+            gid[k] = gi
+        del members[gj]
+    return [sorted(m) for m in members.values() if len(m) >= 2]
+
+
 def cluster_similar(embs, sim_thresh: float = 0.96) -> list:
     """Cluster embeddings into near-duplicate groups; returns per-item cluster ids.
 
@@ -202,37 +260,9 @@ def cluster_similar(embs, sim_thresh: float = 0.96) -> list:
     if embs is None or n < 2:
         return cluster_ids
     try:
-        norms = np.linalg.norm(embs, axis=1, keepdims=True)
-        normed = (embs / (norms + 1e-9)).astype(np.float32)
-        parent = list(range(n))
-
-        def _find(x):
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            return x
-
-        _chunk = 512
-        for r0 in range(0, n, _chunk):
-            r1 = min(r0 + _chunk, n)
-            block_sims = normed[r0:r1] @ normed.T
-            for _li in range(r1 - r0):
-                block_sims[_li, : r0 + _li + 1] = -1.0
-            dup_i, dup_j = np.where(block_sims > sim_thresh)
-            del block_sims
-            for li, j in zip(dup_i.tolist(), dup_j.tolist()):
-                ri, rj = _find(r0 + li), _find(j)
-                if ri != rj:
-                    parent[ri] = rj
-
-        from collections import defaultdict as _dd
-        groups_d: dict = _dd(list)
-        for i in range(n):
-            groups_d[_find(i)].append(i)
-        for root, members in groups_d.items():
-            if len(members) >= 2:
-                for i in members:
-                    cluster_ids[i] = root
+        for members in duplicate_groups(np.asarray(embs), sim_thresh):
+            for i in members:
+                cluster_ids[i] = members[0]
     except Exception as err:
         import traceback
         print(f"[stages] cluster_similar failed: {err}")
@@ -246,7 +276,7 @@ def cluster_similar(embs, sim_thresh: float = 0.96) -> list:
 # Before 2026-09-28 ANY stored row with score >= 0.10 counted as "already
 # graded", so grader fixes never reached existing photos and Scan-quality
 # rows were served as final by later full-quality culls.
-GRADER_VERSION = "2026-09-28"
+GRADER_VERSION = "2026-10-04b"  # camera JPEGs analysed from their MPF preview; RAW+JPEG pairs graded once. Was 04a: shake rule (directional smear >= 0.20 -> Weak); thresholds back on rating-time scores
 
 
 def grade_mode(scan_mode: bool, deep_grade: bool) -> str:
@@ -450,26 +480,57 @@ def attach_face_signals(gallery: list, person_detected: dict) -> int:
     if not face_signals.available():
         return 0
 
-    n = 0
-    for entry in gallery:
-        if not person_detected.get(entry["path"], False):
-            continue
+    # Decode AND detect on a thread pool (2026-10-04). One photo at a time this
+    # cost ~90 ms each — ~20 s for 218 photos in a 600-RAW cull. face_signals
+    # keeps one YuNet detector per thread, so concurrent detection is safe;
+    # map() keeps order. Same functions, same model: identical results.
+    todo = [e for e in gallery if person_detected.get(e["path"], False)]
+
+    def _load(path):
         try:
-            metrics = face_signals.metrics_for_path(entry["path"])
+            return face_signals._load_small(path)
         except Exception:
-            continue
-        if metrics.get("faces_detected"):
-            entry["face"] = {k: v for k, v in metrics.items() if k != "faces"}
-            # Persist normalized boxes (grade-time path) — the Close-Ups panel
-            # recomputes crops on demand via /api/photo-faces for rows graded
-            # before this field existed, but fresh grades carry geometry so
-            # face filters and any future offline UI work without re-detect.
-            boxes = [{"norm": f.get("norm"), "confidence": round(f["confidence"], 3),
-                      "area_frac": round(f["area_frac"], 5)}
-                     for f in (metrics.get("faces") or [])[:12] if f.get("norm")]
-            if boxes:
-                entry["face"]["boxes"] = boxes
-            n += 1
+            return None, "unreadable"
+
+    def _metrics(loaded):
+        img, _src = loaded
+        if img is None:
+            out = dict(face_signals.face_metrics(None))
+            out["unreadable"] = True
+            return out
+        return face_signals.face_metrics(img)
+
+    from concurrent.futures import ThreadPoolExecutor
+    import os as _os_fs
+    n = 0
+    with ThreadPoolExecutor(max_workers=min(8, _os_fs.cpu_count() or 4),
+                            thread_name_prefix="face-decode") as _pool:
+        def _one(e):
+            try:
+                return _metrics(_load(e["path"]))
+            except Exception:
+                return None
+
+        for entry, metrics in zip(todo, _pool.map(_one, todo)):
+            if metrics is None:
+                continue
+            _attach_one_face(entry, metrics)
+            n += 1 if entry.get("face") else 0
     if n:
         print(f"[v2] Face/focus signals computed for {n} photos")
     return n
+
+
+def _attach_one_face(entry: dict, metrics: dict) -> None:
+    """Copy one photo's face metrics (and normalized boxes) onto its entry."""
+    if metrics.get("faces_detected"):
+        entry["face"] = {k: v for k, v in metrics.items() if k != "faces"}
+        # Persist normalized boxes (grade-time path) — the Close-Ups panel
+        # recomputes crops on demand via /api/photo-faces for rows graded
+        # before this field existed, but fresh grades carry geometry so
+        # face filters and any future offline UI work without re-detect.
+        boxes = [{"norm": f.get("norm"), "confidence": round(f["confidence"], 3),
+                  "area_frac": round(f["area_frac"], 5)}
+                 for f in (metrics.get("faces") or [])[:12] if f.get("norm")]
+        if boxes:
+            entry["face"]["boxes"] = boxes

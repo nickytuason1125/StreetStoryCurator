@@ -1,4 +1,4 @@
-﻿import os, time
+import os, time
 for cand in ['src/routers', 'routers']:
     p = os.path.join('.', cand)
     print(cand, 'exists:', os.path.isdir(p))

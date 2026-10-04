@@ -6,7 +6,7 @@ import { Thumb } from '../photo/Thumb';
 import { API } from '../../lib/api';
 import { useWindowedGrid } from '../../hooks/useWindowedGrid';
 
-/* â”€â”€ Folder browser modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* ── Folder browser modal ───────────────────────────────────────── */
 /* Native-feeling explorer for picking the working folder. Extracted
  * verbatim from App.tsx during the views split; all state stays owned
  * by App and arrives through props. */
@@ -32,7 +32,7 @@ export function FolderBrowser({ mode, bPath, setBPath, bFolders, bImages, bSelFo
   /* Roots come from the SERVER, which is the side that can actually see the
    * disk. These used to be five hardcoded literals pointing at one developer's
    * user profile, so on any other machine every shortcut was a dead link. And
-   * no drive was listed at all â€” the browser only ever lists a directory you
+   * no drive was listed at all — the browser only ever lists a directory you
    * have already named, so a library on D:/ or E:/ simply could not be reached
    * without typing the path by hand. /api/places answers both. */
   const [places, setPlaces] = useState<{ label: string; path: string }[]>([]);
@@ -156,7 +156,7 @@ export function FolderBrowser({ mode, bPath, setBPath, bFolders, bImages, bSelFo
             <div ref={wg.ref} onScroll={wg.onScroll} className="relative flex-1 overflow-y-auto p-4">
               {loading ? (
                 <div className="flex h-full items-center justify-center text-ink-3">
-                  <span className="text-sm">Reading folderâ€¦</span>
+                  <span className="text-sm">Reading folder…</span>
                 </div>
               ) : bFolders.length===0 && bImages.length===0 ? (
                 <div className="flex h-full flex-col items-center justify-center gap-2 text-ink-3">

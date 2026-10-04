@@ -13,11 +13,11 @@ import { regionGuide, tierColor, tierIcon, tierHeat } from '../../lib/regions';
 import type { RegionTier } from '../../lib/regions';
 import { aspectDim } from '../../lib/aspects';
 
-/* â”€â”€ AnalysisPanel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+/* ── AnalysisPanel ────────────────────────────────────────────────
  * The loupe's right rail: thumbnail header with grade pill, rating +
  * telemetry, the vision-critique stack (jury / VLM / deep critique,
  * evidence checklist, spatial anchors) and the EXIF block. Extracted
- * verbatim from App.tsx during the views split â€” props carry the same
+ * verbatim from App.tsx during the views split — props carry the same
  * names as the App state they wrap, so the JSX is untouched. */
 export function AnalysisPanel({
   sel, selId, setSelId, photos, rightW, isGraded, isDone,
@@ -150,7 +150,8 @@ export function AnalysisPanel({
                   <div style={{ marginTop: 8 }}>
                     <StarRating stars={sel.stars ?? 0} size={22} onSet={n => handleSetStars(sel.id, n)}/>
                   </div>
-                  {/* Grade display — read-only */}
+                  {/* Grade pills — one click rates the photo (Strong 5★, Mid 3★,
+                      Weak 1★): the fast way to teach the grader your taste. */}
                   {isDone && (
                     <div style={{ display:'flex', gap:4, marginTop:8 }}>
                       {(['Strong','Mid','Weak'] as const).map(g => {
@@ -160,15 +161,18 @@ export function AnalysisPanel({
                         // disagree with the verdict badge right above it.
                         const isActive = gradeKey(g) === gradeKey(sel.grade ?? '');
                         const col = g.includes('Strong') ? T.gradeStrong : g.includes('Mid') ? T.ink2 : T.gradeWeak;
+                        const stars = g === 'Strong' ? 5 : g === 'Mid' ? 3 : 1;
                         return (
-                          <div key={g}
+                          <button key={g} type="button"
+                            title={`Rate as ${gradeLabel(g)} (${stars}★) — teaches the grader your taste`}
+                            onClick={() => handleSetStars(sel.id, stars)}
                             style={{ flex:1, padding:'3px 0', borderRadius:'var(--r-sm)', fontSize:'var(--text-xs)', fontWeight:600,
-                              textAlign:'center', userSelect:'none', pointerEvents:'none',
+                              textAlign:'center', userSelect:'none', cursor:'pointer',
                               background: isActive ? T.raisedHover : 'transparent',
                               border: `1px solid ${isActive ? col : T.lineStrong}`,
                               color: isActive ? col : T.ink3 }}>
                             {gradeLabel(g)}
-                          </div>
+                          </button>
                         );
                       })}
                     </div>

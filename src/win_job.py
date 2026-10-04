@@ -118,6 +118,13 @@ def _assign(pid: int) -> None:
         print(f"[win_job] Could not assign pid {pid} to job (non-fatal): {e}")
 
 
+def assign(pid: int) -> None:
+    """Public entry point for tying an already-spawned process (one this
+    module did not itself Popen — e.g. a ProcessPoolExecutor worker) to this
+    process's job object. Same best-effort contract as everything else here."""
+    _assign(pid)
+
+
 def run(args, **kwargs) -> subprocess.CompletedProcess:
     """Drop-in replacement for subprocess.run() that additionally ties the
     child's lifetime to this process's, on Windows. Identical behavior and

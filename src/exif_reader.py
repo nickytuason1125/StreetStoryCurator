@@ -289,11 +289,20 @@ def _dims(w: Optional[int], h: Optional[int]) -> dict:
     return {"dimensions": f"{w} x {h}", "megapixels": f"{(w * h) / 1e6:.1f} MP"}
 
 
+def _rawpy_lock():
+    """The process-wide LibRaw lock (LibRaw is not thread-safe)."""
+    try:
+        from raw_support import RAWPY_LOCK
+    except ImportError:
+        from src.raw_support import RAWPY_LOCK
+    return RAWPY_LOCK
+
+
 def _from_rawpy(p: Path) -> dict:
     """Last resort. LibRaw exposes about seven fields and no lens model."""
     import rawpy
 
-    with rawpy.imread(str(p)) as r:
+    with _rawpy_lock(), rawpy.imread(str(p)) as r:
         o = r.other
         return {
             "camera":   _camera(_s(getattr(o, "make", None)), _s(getattr(o, "model", None))),
@@ -315,7 +324,7 @@ def _file_facts(p: Path) -> dict:
     if p.suffix.lower() in RAW_EXTS:
         try:
             import rawpy
-            with rawpy.imread(str(p)) as r:
+            with _rawpy_lock(), rawpy.imread(str(p)) as r:
                 h, w = r.sizes.height, r.sizes.width
         except Exception:
             log.debug("rawpy could not size %s", p.name, exc_info=True)

@@ -1,4 +1,4 @@
-﻿"""AdaptivePermits: the live-retunable concurrency gate behind the thumbnail
+"""AdaptivePermits: the live-retunable concurrency gate behind the thumbnail
 pool (src/adaptive_permits.py, 2026-09-14). The failure class this prevents:
 a pool frozen at a boot-RAM snapshot stays narrow for ever even after the
 machine frees up - the slow-grid incident of 2026-09-14."""

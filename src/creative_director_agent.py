@@ -57,9 +57,23 @@ def _load_rule_set_grammar():
         _rule_set_grammar = None
     return _rule_set_grammar
 
-# ── Keyword tables (mirror creative_director.py's existing heuristics) ───────
+# ── Keyword tables (mirror creative_director.py's _EMPTY_BRIEF_KEYWORDS) ──────
+# Includes literal no-people phrasings so "no people" briefs match on the fast
+# keyword path; keep in sync with creative_director.py (see note there).
 
-_EMPTY_KW = {"empty", "liminal", "desert", "void", "abandoned", "desolate"}
+_EMPTY_KW = {
+    "empty", "liminal", "desert", "void", "abandoned", "desolate",
+    "no people", "no person", "no persons", "nobody", "no one", "no-one",
+    "people-free", "people free", "without people", "without anyone",
+    "no humans", "no human", "human-free", "no pedestrians", "empty of people",
+}
+
+# Exclusion phrases that mean "people" — handled by the D-FINE kill switch and
+# the dedicated people-embedding gate, not the generic semantic exclusion pass.
+_PEOPLE_TERMS = {
+    "people", "person", "persons", "humans", "human", "anyone", "somebody",
+    "pedestrians", "crowd", "crowds", "strangers", "figures", "faces",
+}
 _GEO_KW   = {"geometry", "geometric", "architecture", "architectural", "pattern",
              "lines", "symmetry", "abstract", "structure", "grid", "form",
              "minimal", "minimalist"}
@@ -82,11 +96,38 @@ _NICHE_KW: dict[str, set[str]] = {
     "minimalist":   {"minimal", "minimalist", "negative space", "empty", "void"},
 }
 _COLOR_KW: dict[str, set[str]] = {
+    # Red/orange family added 2026-09-22: "orange and reds" previously matched
+    # nothing and fell through to "natural" — the brief's colours never
+    # influenced selection. Longest/most-specific families first.
+    "warm/red-orange": {"orange", "oranges", "reds", "red", "crimson", "scarlet",
+                        "ruby", "vermilion", "terracotta", "amber", "rust",
+                        "ochre", "tangerine", "burnt orange"},
     "black and white": {"black and white", "b&w", "monochrome", "grayscale"},
     "warm/golden":     {"warm", "golden", "sunset", "sunrise"},
-    "cool/blue":       {"cool", "blue", "night", "rain", "wet"},
+    "cool/blue":       {"cool", "blue", "blues", "night", "rain", "wet"},
     "neon/saturated":  {"neon", "vibrant", "saturated"},
 }
+
+# Word-boundary matcher: "red" must not match inside "hundred" or
+# "colored" (same class of substring bug as the "avoid"→"void" fix).
+_COLOR_RE: dict[str, "re.Pattern[str]"] = {
+    name: re.compile(r"\b(?:" + "|".join(sorted(
+        (re.escape(k) for k in kws), key=len, reverse=True)) + r")\b")
+    for name, kws in _COLOR_KW.items()
+}
+
+
+def extract_color_terms(style_prompt: str) -> list[str]:
+    """ALL colour families the brief names (not first-match-wins).
+
+    "orange and reds" → ["warm/red-orange"]. A brief naming several families
+    ("blues and warm oranges") gets every one of them, so the positive
+    preference boost in creative_director can honour the whole request.
+    """
+    text = (style_prompt or "").lower()
+    if not text.strip():
+        return []
+    return [name for name, rx in _COLOR_RE.items() if rx.search(text)]
 
 
 @dataclass
@@ -153,11 +194,36 @@ def _extract_json_obj(raw: str) -> Optional[dict]:
 def _keyword_rule_set(style_prompt: str) -> dict:
     text = (style_prompt or "").lower()
     matched_kw = [kw for kw in (_EMPTY_KW | _GEO_KW) if kw in text]
+    # Word-boundary matching — plain substrings made "avoid" match "void".
+    import re as _re
+    def _kw_hit(kw: str) -> bool:
+        return bool(_re.search(rf"\b{_re.escape(kw)}\b", text))
+    # Generic negative-constraint extraction: "no cars", "without people",
+    # "avoid neon", "exclude bicycles", "free of reflections" → EXCLUDE terms.
+    # These are enforced semantically downstream (SigLIP text↔image similarity),
+    # not just for people.
+    exclusions: list[str] = []
+    for m in _re.finditer(
+            r"\b(?:no|without|avoid|exclude|free of|zero|don't show|do not show)\s+"
+            r"([a-z][a-z ]{2,30}?)(?=[,.;]|$|\band\b)", text):
+        phrase = m.group(1).strip()
+        # strip trailing filler and collapse whitespace
+        phrase = _re.sub(r"\s+", " ", phrase)
+        if phrase and phrase not in exclusions:
+            exclusions.append(phrase)
     return {
-        "HARD_FILTER_PEOPLE": any(kw in text for kw in _EMPTY_KW),
+        "HARD_FILTER_PEOPLE": any(_kw_hit(kw) for kw in _EMPTY_KW)
+                              or any(e in _PEOPLE_TERMS for e in exclusions),
         "GEOMETRIC_PRIORITY": "High" if any(kw in text for kw in _GEO_KW) else "Normal",
         "LIGHTING_MOOD": next((label for label, kws in _MOOD_KW if any(kw in text for kw in kws)), "neutral"),
+        # Colour families the brief names (2026-09-22): travels in the rule set
+        # so the UI "brief read as" chips agree with what selection actually
+        # applied (the Step-3d boost + anti-palette penalty read the same
+        # extraction). Previously colour lived only in DirectorBrief and the
+        # UI claimed "neutral" for an orange/yellow brief.
+        "COLOR_TARGET": extract_color_terms(style_prompt),
         "BRIEF_KEYWORDS": matched_kw,
+        "EXCLUDE": exclusions,
     }
 
 
@@ -199,14 +265,17 @@ def _gguf_refine_rule_set(style_prompt: str,
     prompt += (
         '{"HARD_FILTER_PEOPLE": true|false, '
         '"GEOMETRIC_PRIORITY": "High"|"Normal", '
-        '"LIGHTING_MOOD": "<=3 words"}' + nl
+        '"LIGHTING_MOOD": "<=3 words", '
+        '"EXCLUDE": ["concepts the brief says to exclude"]}' + nl
         + "JSON:"
     )
     raw = local_llm.generate(
         prompt,
         system="You answer with compact JSON and nothing else.",
         max_tokens=120,
-        temperature=0.1,
+        temperature=0.3,   # 0.1 gave near-identical rule sets every run; 0.3
+                           # varies brief interpretation subtly without
+                           # hallucination risk (output is schema-parsed)
     )
     if not raw:
         return None
@@ -225,6 +294,8 @@ def _parse_rule_set_output(raw: str) -> Optional[dict]:
         "HARD_FILTER_PEOPLE": bool(obj.get("HARD_FILTER_PEOPLE", False)),
         "GEOMETRIC_PRIORITY": obj.get("GEOMETRIC_PRIORITY", "Normal") if obj.get("GEOMETRIC_PRIORITY") in ("High", "Normal") else "Normal",
         "LIGHTING_MOOD": str(obj.get("LIGHTING_MOOD", "neutral"))[:40],
+        "EXCLUDE": [str(e).strip().lower()[:40] for e in (obj.get("EXCLUDE") or [])
+                    if str(e).strip()][:8],
     }
 
 
@@ -249,7 +320,17 @@ def generate_rule_set(style_prompt: str,
     if not rule_set["BRIEF_KEYWORDS"] and style_prompt.strip():
         refined = _gguf_refine_rule_set(style_prompt, rag_phrases=rag_phrases)
         if refined:
+            # Union the exclusion lists — the keyword regex and the LLM may each
+            # catch constraints the other misses; never let one clobber the other.
+            merged = list(dict.fromkeys(
+                rule_set.get("EXCLUDE", []) + refined.get("EXCLUDE", [])))
+            _kw_color = rule_set.get("COLOR_TARGET") or []
             rule_set.update(refined)
+            rule_set["EXCLUDE"] = merged[:10]
+            # The GGUF refinement doesn't know about colour families — never
+            # let the update clobber the keyword extractor's COLOR_TARGET.
+            if not rule_set.get("COLOR_TARGET"):
+                rule_set["COLOR_TARGET"] = _kw_color
     return rule_set
 
 
@@ -258,7 +339,10 @@ def generate_rule_set(style_prompt: str,
 def _keyword_director_brief(style_prompt: str) -> DirectorBrief:
     text = (style_prompt or "").lower()
     niche = next((name for name, kws in _NICHE_KW.items() if any(kw in text for kw in kws)), "street")
-    color = next((name for name, kws in _COLOR_KW.items() if any(kw in text for kw in kws)), "natural")
+    # Word-boundary colour match (extract_color_terms) — the old substring
+    # scan would let "red" match inside "hundred".
+    _color_hits = extract_color_terms(style_prompt)
+    color = _color_hits[0] if _color_hits else "natural"
     return DirectorBrief(thematic_niche=niche, color_profile_target=color)
 
 

@@ -8,11 +8,11 @@ import { gc } from '../../lib/grading';
 import { regionGuide, tierColor, tierIcon, tierHeat } from '../../lib/regions';
 import type { RegionTier } from '../../lib/regions';
 
-/* â”€â”€ LoupeStage â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+/* ── LoupeStage ───────────────────────────────────────────────────
  * The centre preview: the photograph, the judge's-eye overlay and its
  * toggle, the critique heatmap + legend, the criteria annotations, the
  * prev/next arrows, the select toggle and the floating action bar.
- * Extracted verbatim from App.tsx during the views split â€” props carry
+ * Extracted verbatim from App.tsx during the views split — props carry
  * the same names as the App state they wrap, so the JSX is untouched. */
 export function LoupeStage({
   sel, selId, setSelId, loupePreviewFailed, setLoupePreviewFailed,

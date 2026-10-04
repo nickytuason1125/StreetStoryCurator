@@ -1,4 +1,4 @@
-﻿import glob, zipfile, os
+import glob, zipfile, os
 a = glob.glob('dist/FirstCut/_internal/*.pyz')
 print('pyz:', a)
 z = zipfile.ZipFile(a[0])

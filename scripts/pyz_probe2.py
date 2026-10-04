@@ -1,4 +1,4 @@
-﻿import os, glob
+import os, glob
 base = 'dist/FirstCut'
 print('root entries:')
 for e in sorted(os.listdir(base)):

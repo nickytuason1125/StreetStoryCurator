@@ -931,8 +931,11 @@ class SpecVLMPipeline:
                 breakdown     = aspect_scores,
             ))
 
+            # 0.51→0.65: the next stages (light 0.655, IQA 0.66→0.84) sit
+            # above this band. Ending at 0.86 made the runner's monotonic
+            # clamp freeze the bar at 86% through the whole IQA pass.
             _p(
-                0.51 + 0.35 * (i + 1) / n,
+                0.51 + 0.14 * (i + 1) / n,
                 f"Graded {i + 1}/{n} — {draft_score:.2f}",
             )
 

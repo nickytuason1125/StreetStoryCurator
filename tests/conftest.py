@@ -43,6 +43,17 @@ for _k in list(os.environ):
 # (test_floor_pauses_then_resumes_when_memory_recovers).
 os.environ["SIGLIP_PAUSE_MAX_WAIT_S"] = "0.05"
 
+# pyarrow/lancedb natives BEFORE anything that loads CUDA — the production
+# rule (lance_store.warm_native). Collection imports every test module in
+# order, so a module importing torch/onnxruntime (encode_worker) ahead of
+# test_frontier_lock's lance_store made pyarrow's native load fault with
+# 0xC0000005 and killed the whole session (2026-10-04). Non-fatal if absent.
+try:
+    import pyarrow  # noqa: F401,E402
+    import lancedb  # noqa: F401,E402
+except Exception:
+    pass
+
 
 import pytest
 

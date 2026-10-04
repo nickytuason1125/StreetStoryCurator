@@ -75,8 +75,11 @@ _MIN_FOCUS_FACE_FRAC = 0.01
 # smaller size in the DCT domain, which is nearly free.
 _LOAD_SIDE = 1600
 
-_detector = None          # cv2 detector, created once per process
-_last_size = None
+# One cv2 detector PER THREAD (2026-10-04). A detector is resized per call
+# (setInputSize), so a shared one cannot run concurrently; a per-thread copy of
+# the same model can — 67 ms/photo serial was ~15 s of a 600-RAW cull.
+import threading as _threading
+_tls = _threading.local()
 
 
 def available() -> bool:
@@ -98,16 +101,16 @@ def eye_state_available() -> bool:
 
 
 def _get_detector(w: int, h: int):
-    global _detector, _last_size
     import cv2
-    if _detector is None:
-        _detector = cv2.FaceDetectorYN.create(
+    det = getattr(_tls, "detector", None)
+    if det is None:
+        det = _tls.detector = cv2.FaceDetectorYN.create(
             _MODEL, "", (w, h), _CONF, _NMS, 5000)
-        _last_size = (w, h)
-    elif _last_size != (w, h):
-        _detector.setInputSize((w, h))
-        _last_size = (w, h)
-    return _detector
+        _tls.last_size = (w, h)
+    elif _tls.last_size != (w, h):
+        det.setInputSize((w, h))
+        _tls.last_size = (w, h)
+    return det
 
 
 def _sharpness(gray: np.ndarray) -> float:

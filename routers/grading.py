@@ -48,6 +48,12 @@ def _prewarm_folder_paths(folders: list) -> None:
     it is a warmth optimisation, never a correctness path.
     """
     try:
+        # The gallery first: every graded photo, in catalog order (2026-10-04).
+        from routers.misc import prewarm_current_catalog
+        prewarm_current_catalog()
+    except Exception:
+        pass
+    try:
         from routers.library import prewarm_thumbs
         cap = int(os.environ.get("FIRSTCUT_POSTGRADE_PREWARM", "300") or 300)
         for folder in folders:
@@ -473,8 +479,8 @@ async def grade_photos_v2_stream(req: GradeRequest):
     try:
         from src import memory_plan as _mp
         # Counting is a listdir, not a decode.
-        _exts = (".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff",
-                 ".rw2", ".raf", ".arw", ".cr2", ".cr3", ".nef", ".dng", ".orf")
+        from src.raw_support import RAW_EXTS as _raw_exts
+        _exts = (".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".bmp") + tuple(_raw_exts)
         for _fp in all_folders:
             if _fp in explicit_paths:
                 # Narrowed to specific files — count those, not the whole
@@ -1039,6 +1045,37 @@ async def personal_update(payload: dict):
         raise HTTPException(500, "Taste update failed — see the server log for details.")
 
 
+@router.get("/api/accuracy")
+async def accuracy_status():
+    """How often Strong/Mid/Weak matches the photographer's own ratings on
+    shoots the grader was not trained on — the number behind the header
+    badge. 'agree' is the judge's when it won its exam, else the incumbent's."""
+    import master_judge as _mj
+    raw = {}
+    try:
+        raw = json.loads(_mj._WEIGHTS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    promoted = bool(raw.get("promoted")) and bool(raw.get("agree_ci"))         and float(raw["agree_ci"][0]) > 0
+    return {"agree": raw.get("agree_judge") if promoted else raw.get("agree_base"),
+            "agree_base": raw.get("agree_base"), "n": int(raw.get("n") or 0),
+            "promoted": promoted, "history": raw.get("history", [])}
+
+
+@router.get("/api/teach/sample")
+async def teach_sample(n: int = 50):
+    """Up to n unrated photos from the current catalog, spread across the
+    machine-score range — the one-session taste calibration set."""
+    import server_impl as _si
+    import teach_sampler
+    try:
+        photos = json.loads(_si._CATALOG_PATH.read_text(encoding="utf-8")).get("photos", [])
+    except Exception:
+        photos = []
+    paths = teach_sampler.pick(photos, n=max(1, min(int(n), 200)))
+    return {"paths": paths, "available": len(photos)}
+
+
 @router.post("/api/personal/star")
 async def personal_star(payload: dict):
     """
@@ -1047,12 +1084,13 @@ async def personal_star(payload: dict):
     Stars map to grade labels (see ratings_store.grade_for_stars):
         4-5 → Strong ✅   2-3 → Mid ⚠️   1 → Weak ❌   0 → clear rating
 
-    Product rule (2026-09-22): a star sets ground truth for THIS photo only —
-    it must never train or retrain the grading model, or another photo's
-    score would silently drift as a side effect of rating this one. This
-    endpoint writes ratings_store + patches this photo's catalog grade and
-    stops there. (PersonalHead/DPO/MasterJudge training still exist as
-    explicit, separately-triggered features elsewhere — just not from here.)
+    Product rule (revised 2026-10-03 — the photographer: "The star ratings
+    are legit trained"): a star sets ground truth for THIS photo immediately,
+    and also feeds the taste learner. Every 25 new ratings a background refit
+    runs (master_judge.maybe_autofit); its result changes OTHER photos' grades
+    only if it beats the current grader on held-out shoots (bootstrap CI of
+    the 3-class agreement gain above zero). A lost challenge is recorded and
+    changes nothing. FIRSTCUT_MASTER_JUDGE_OFF=1 disables all of it.
     """
     try:
         path  = str(payload.get("path", "")).strip()
@@ -1119,8 +1157,26 @@ async def personal_star(payload: dict):
             if rows:
                 _rs.set_rating(path, stars, score=rows[0].get("score"),
                                 personal_score=rows[0].get("personal_score"))
+                # Features too, so the taste learner can retrain from the
+                # rating alone after the catalog is cleared or the file moves.
+                _bd_snap = rows[0].get("breakdown")
+                if isinstance(_bd_snap, str):
+                    try:
+                        _bd_snap = json.loads(_bd_snap)
+                    except Exception:
+                        _bd_snap = None
+                if isinstance(_bd_snap, dict) and _bd_snap:
+                    _rs.attach_features(path, _bd_snap)
         except Exception as _e_snap:
             print(f"[star] score snapshot skipped: {_e_snap}")
+
+        # Taste learning: never blocks — the refit runs on a daemon thread and
+        # can only change grading by winning its held-out exam.
+        try:
+            import master_judge as _mj
+            _mj.maybe_autofit()
+        except Exception as _e_fit:
+            print(f"[star] autofit check skipped: {_e_fit}")
 
         return JSONResponse({"ok": True, "stars": stars, "grade": star_grade,
                              "star_grade": star_grade})

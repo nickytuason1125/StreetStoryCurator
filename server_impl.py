@@ -118,11 +118,13 @@ _CATALOG_PATH = _DATA_DIR / "cache" / "catalog.json"
 # Path-safety helpers
 # ---------------------------------------------------------------------------
 
+# RAW types come from the ONE list (src/raw_support.RAW_EXTS). Hardcoded copies
+# here drifted: .crw (older Canon) was gradeable nowhere and its thumbnails 404'd.
+from src.raw_support import RAW_EXTS as _SHARED_RAW_EXTS
 _IMAGE_EXTS = frozenset({
     ".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff",
     ".bmp", ".gif", ".heic", ".heif",
-    ".arw", ".cr2", ".cr3", ".nef", ".orf", ".rw2", ".raf", ".dng", ".pef", ".srw",
-})
+}) | _SHARED_RAW_EXTS
 
 def _safe_image_path(raw: str) -> Path:
     """Resolve symlinks, normalise, and verify the path is an existing image file.
@@ -1173,7 +1175,16 @@ async def cache_control_middleware(request: Request, call_next):
     response = await call_next(request)
     path = request.url.path
 
-    if path.startswith("/api/"):
+    if path == "/api/thumb" and response.status_code == 200:
+        # A served thumbnail is cacheable (2026-10-04). Under the blanket
+        # no-store below, the windowed grid re-downloaded every tile each time
+        # it scrolled back into view or the view switched — shimmer + fade on
+        # every revisit. The server cache is keyed by path alone, so this adds
+        # no staleness it doesn't already have. Failures (404) stay no-store so
+        # the Thumb retry ladder keeps working.
+        response.headers["Cache-Control"] = "private, max-age=86400"
+
+    elif path.startswith("/api/"):
         # API responses: never cache
         response.headers["Cache-Control"] = "no-store"
 
@@ -1227,7 +1238,7 @@ _PREVIEW_DIR = _DATA_DIR / "cache" / "previews"
 _PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
 
 _HEIC_EXTS = frozenset({".heic", ".heif"})
-_RAW_EXTS = frozenset({".arw", ".cr2", ".cr3", ".nef", ".orf", ".rw2", ".raf", ".dng", ".pef", ".srw"})
+_RAW_EXTS = _SHARED_RAW_EXTS
 
 _PREVIEW_MAX = 200  # keep newest N previews; delete oldest beyond this
 

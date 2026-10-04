@@ -144,6 +144,51 @@ def _load_catalog_cached():
 _SLIM_CACHE: dict = {"key": None, "gz": b""}
 
 
+# Gallery thumbnail pre-build (2026-10-04). Background thumbnail jobs are
+# dropped while a cull runs and folder-open only pre-builds its first 600
+# files, so after a cull most gallery tiles rendered cold (10 of 12 sampled
+# photos had no thumbnail; 100-1200 ms each) as the user scrolled. Loading the
+# catalog queues every photo once per catalog version — behind every on-screen
+# request, and dropped again if a grade starts (ThumbQueue's own rules).
+_prewarmed_catalog_key = {"v": None}
+_prewarm_lock = threading.Lock()
+
+
+def _prewarm_catalog_thumbs(key, wait: bool = False) -> None:
+    from server_impl import _grading_active
+    if _grading_active.is_set():
+        return                      # would be dropped; try on the next load
+    with _prewarm_lock:
+        if _prewarmed_catalog_key["v"] == key:
+            return
+        _prewarmed_catalog_key["v"] = key
+
+    def _run():
+        try:
+            from routers.library import prewarm_thumbs
+            data = _load_catalog_cached() or {}
+            prewarm_thumbs([p["path"] for p in data.get("photos", [])
+                            if isinstance(p, dict) and p.get("path")])
+        except Exception as exc:
+            print(f"[catalog] thumbnail pre-build skipped: {exc}", flush=True)
+
+    if wait:
+        _run()
+    else:
+        # Path.resolve() per photo touches the disk — keep it off the loop.
+        threading.Thread(target=_run, daemon=True, name="catalog-thumbs").start()
+
+
+def prewarm_current_catalog() -> None:
+    """Grade-end hook: pre-build the just-written catalog's thumbnails even if
+    the frontend fetched the catalog a moment before the grade flag cleared."""
+    try:
+        st = _CATALOG_PATH.stat()
+        _prewarm_catalog_thumbs((_CATALOG_PATH.name, st.st_mtime, st.st_size), wait=True)
+    except Exception:
+        pass
+
+
 @router.get("/api/catalog")
 async def get_catalog(full: bool = False):
     _DATA_DIR, _atomic_write_text, analyzer = _impl()
@@ -163,6 +208,7 @@ async def get_catalog(full: bool = False):
         if not fallback and not full:
             st = _CATALOG_PATH.stat()
             key = (_CATALOG_PATH.name, st.st_mtime, st.st_size)
+            _prewarm_catalog_thumbs(key)
             with _CATALOG_CACHE_LOCK:
                 if _SLIM_CACHE["key"] == key and _SLIM_CACHE["gz"]:
                     return Response(content=_SLIM_CACHE["gz"],
@@ -335,14 +381,29 @@ async def clear_catalog():
     except Exception:
         pass  # marker, not source of truth — never block the clear on it
     _DATA_DIR, _atomic_write_text, analyzer = _impl()
-    try:
-        import catalog_store
-        catalog_store.back_up("catalog/clear", path=_CATALOG_PATH)
-    except Exception as _e:
-        # Never let the safety net stop the action the user asked for.
-        print(f"[catalog/clear] backup skipped: {_e}")
-        if _CATALOG_PATH.exists():
-            _CATALOG_PATH.unlink()
+    # The undo copy goes to catalog.json.cleared.bak — NOT .pre-regrade.bak.
+    # GET /api/catalog serves .pre-regrade.bak whenever no live catalog
+    # exists (failed-re-grade recovery), so parking a deliberate clear there
+    # resurrected every old photo on the next load: "clear cache doesn't
+    # clear" (2026-10-03). A stale .pre-regrade.bak is moved too, for the
+    # same reason — the user asked for nothing to come back.
+    _cleared = _CATALOG_PATH.with_name("catalog.json.cleared.bak")
+    _pre = _CATALOG_PATH.with_name("catalog.json.pre-regrade.bak")
+    # Stale backup first, live catalog last, so the newest grades are the
+    # ones left in the undo slot.
+    for _src in (_pre, _CATALOG_PATH):
+        if not _src.exists():
+            continue
+        try:
+            os.replace(str(_src), str(_cleared))
+            print(f"[catalog/clear] {_src.name} moved to {_cleared.name}")
+        except Exception as _e:
+            # Never let the safety net stop the action the user asked for.
+            print(f"[catalog/clear] backup of {_src.name} skipped: {_e}")
+            try:
+                _src.unlink()
+            except Exception:
+                pass
 
     # Start Fresh means a fresh GRADE, not just a fresh catalog view. Without
     # this block the pipeline still finds cached embeddings/quality scores on

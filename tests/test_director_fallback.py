@@ -110,20 +110,25 @@ def test_explicit_override_still_wins(monkeypatch):
 # ── the refusal must be legible ──────────────────────────────────────────────
 
 def test_skip_reason_names_the_numbers(monkeypatch):
-    """'It didn't run' is not actionable. 'Needed 6.6, had 1.4' is."""
+    """'It didn't run' is not actionable. 'Needed 10.7, had 1.4' is.
+
+    2026-09-19: loading moved into the disposable sidecar, so the refusal
+    now happens inside generate() before any sidecar import — same skip-
+    reporting contract, different code path.
+    """
     big = _FakeWeights(5.34)
     monkeypatch.setattr(local_llm, "model_path", lambda: big)
     monkeypatch.setattr(local_llm, "_setting", lambda n, d: 0.0)
     monkeypatch.setattr(local_llm, "_free_ram_gb", lambda: 1.4)
-    monkeypatch.setattr(local_llm, "_llm", None)
     monkeypatch.setattr(local_llm, "_load_attempted", False)
 
     need = local_llm.required_ram_gb()
-    assert local_llm._load() is None
+    answer = local_llm.generate("pick photos")
+    assert answer is None
     reason = local_llm.last_skip_reason()
     assert reason, "a refusal with no reason is the bug this test exists for"
     assert "1.4" in reason, reason
-    assert f"{need:.1f}" in reason, f"must name what it needed: {reason!r}"
+    assert f"~{need:.1f}" in reason, f"must name what it needed: {reason!r}"
 
 
 # ── the caller must be able to report it ─────────────────────────────────────
@@ -178,54 +183,53 @@ def test_ram_refusal_is_retried_when_memory_frees_up(monkeypatch):
     r"""Observed live: a Story run reported "only 2.0 GB RAM free" while 4.04 GB
     was actually free, and returned in 9.9s without loading anything.
 
-    _load() sets _load_attempted before the RAM check and then returns None on
-    every later call, so ONE refusal while Chrome was open disabled the text
-    model for the life of the server. Closing Chrome does not help; only
-    restarting the app does. That is indistinguishable, to a user, from the
-    feature being broken.
+    The RAM gate deliberately does NOT set _load_attempted (see the comment
+    at the gate in local_llm.generate), so ONE refusal while Chrome was open
+    must not disable the text model for the life of the server.
 
-    A missing file or an unloadable build is permanent and should latch.
+    A missing file or a genuine load failure is permanent and latches.
     Free memory is not.
     """
     weights = _FakeWeights(0.73)
     monkeypatch.setattr(local_llm, "model_path", lambda: weights)
     monkeypatch.setattr(local_llm, "_setting", lambda n, d: 0.0)
-    monkeypatch.setattr(local_llm, "_llm", None)
     monkeypatch.setattr(local_llm, "_load_attempted", False)
+    monkeypatch.setattr(local_llm, "_check_ollama_available", lambda: False)
 
     monkeypatch.setattr(local_llm, "_free_ram_gb", lambda: 0.2)
-    assert local_llm._load() is None, "should refuse when memory is short"
+    assert local_llm.generate("pick photos") is None, \
+        "should refuse when memory is short"
+    assert local_llm._load_attempted is False, \
+        "a transient RAM refusal must not latch"
 
-    # memory frees up; the next call must try again rather than stay latched
-    loaded = {}
-
-    class _FakeLlama:
-        def __init__(self, **kw):
-            loaded["yes"] = True
-
+    # memory frees up; the next call must reach the sidecar rather than
+    # stay refused
     import types
-    fake = types.ModuleType("llama_cpp")
-    fake.Llama = _FakeLlama
-    monkeypatch.setitem(sys.modules, "llama_cpp", fake)
+    fake = types.ModuleType("sidecar_client")
+    fake.infer = lambda payload: {"ok": True, "text": "READY"}
+    monkeypatch.setitem(sys.modules, "sidecar_client", fake)
     monkeypatch.setattr(local_llm, "_free_ram_gb", lambda: 8.0)
 
-    assert local_llm._load() is not None, "a RAM refusal must not latch"
-    assert loaded.get("yes"), "it never even tried to construct the model"
+    assert local_llm.generate("pick photos") == "READY", \
+        "a RAM refusal must not latch"
     assert local_llm.last_skip_reason() is None
 
 
-def test_missing_weights_still_latch(monkeypatch):
-    """A file that is not there will not appear between calls; retrying that
-    on every generate would spam the log for no reason."""
+def test_missing_weights_report_a_reason(monkeypatch):
+    """A file that is not there will not appear between calls. The current
+    (sidecar-era) behaviour reports a skip reason naming the missing file;
+    the refusals are cheap path checks, so no latch is needed."""
     class _Absent:
         name = "gone.gguf"
         def exists(self):
             return False
     monkeypatch.setattr(local_llm, "model_path", lambda: _Absent())
-    monkeypatch.setattr(local_llm, "_llm", None)
     monkeypatch.setattr(local_llm, "_load_attempted", False)
-    assert local_llm._load() is None
-    assert local_llm._load_attempted is True
+
+    assert local_llm.generate("pick photos") is None
+    reason = local_llm.last_skip_reason()
+    assert reason and "gone.gguf" in reason, \
+        f"a missing model must say so: {reason!r}"
 
 
 # ── the model's pick list is not trusted on faith ────────────────────────────
@@ -261,24 +265,35 @@ def _pool5():
 def test_a_short_pick_list_is_topped_up(monkeypatch):
     """Asking for 4 and getting 1 is not a curatorial judgement, it is a small
     model losing count. The user sees a sequence, not a parse error, so nothing
-    tells them the difference."""
+    tells the difference — except the informational note.
+
+    2026-09-21: an informational top-up is a director_note (art direction DID
+    run), not a director_fallback — so `reason` is None and the note travels
+    via LAST_DIRECTOR_NOTE.
+    """
     monkeypatch.setitem(sys.modules, "local_llm", _ShortList)
+    cd.LAST_DIRECTOR_NOTE = None
     paths, reason = cd.ask_local_art_director("sys", _pool5(), "Story", limit=4)
 
     assert len(paths) == 4, f"asked for 4, got {len(paths)}: {paths}"
     assert paths[0] == "/img/1.jpg", "the model's own pick must stay first"
     assert len(set(paths)) == 4, "topping up must not repeat a photo"
-    assert reason and "1" in reason, f"the top-up must be reported: {reason!r}"
+    assert reason is None, "a topped-up pick is still art direction, not a fallback"
+    assert cd.LAST_DIRECTOR_NOTE and "1 of 4" in cd.LAST_DIRECTOR_NOTE, \
+        f"the top-up must be reported as a note: {cd.LAST_DIRECTOR_NOTE!r}"
 
 
 def test_duplicates_and_out_of_range_are_dropped_then_topped_up(monkeypatch):
     monkeypatch.setitem(sys.modules, "local_llm", _DirtyList)
+    cd.LAST_DIRECTOR_NOTE = None
     paths, reason = cd.ask_local_art_director("sys", _pool5(), "Story", limit=4)
 
     assert len(paths) == 4
     assert len(set(paths)) == 4
     assert "/img/2.jpg" in paths and "/img/0.jpg" in paths
-    assert reason, "a repaired answer is not a clean one; say so"
+    assert reason is None, "a repaired answer is not a fallback; say so as a note"
+    assert cd.LAST_DIRECTOR_NOTE, \
+        "a repaired answer is not a clean one; the note must say so"
 
 
 def test_a_complete_answer_is_left_alone(monkeypatch):
@@ -300,6 +315,8 @@ def test_a_complete_answer_is_left_alone(monkeypatch):
 
 def test_top_up_cannot_exceed_the_pool(monkeypatch):
     monkeypatch.setitem(sys.modules, "local_llm", _ShortList)
+    cd.LAST_DIRECTOR_NOTE = None
     paths, reason = cd.ask_local_art_director("sys", _pool5(), "Story", limit=9)
     assert len(paths) == 5, "only five candidates exist"
-    assert reason
+    assert reason is None, "art direction ran; the shortfall is a note, not a fallback"
+    assert cd.LAST_DIRECTOR_NOTE and "1 of 9" in cd.LAST_DIRECTOR_NOTE

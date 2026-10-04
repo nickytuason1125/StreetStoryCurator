@@ -42,6 +42,9 @@ def _bd(tech: float, comp: float, light: float, narr: float, hc: float,
     bd = {name: named.get(name, 0.5) for name in mj.FEATURES}
     bd["_arch_w"] = arch or {"geo": 0.2, "night": 0.2, "layer": 0.2,
                               "messy": 0.2, "maxdoc": 0.2}
+    # Measured 2026-10 signals (mj.EXTRA) at neutral values; the flags that
+    # are absent-means-no are left out on purpose.
+    bd.update({"_subject_sharp": 0.7, "_subject_streak": 0.02, "_living": 1.0})
     return bd
 
 
@@ -100,7 +103,14 @@ def test_feature_vector_preserves_canonical_order_and_flags_missing():
     assert len(v) == len(mj.DESIGN) - 1    # minus the machine-score column
     partial = mj.feature_vector({"Technical": 0.1})
     assert partial[0] == 0.1
-    assert np.isnan(partial[1:]).all()     # everything missing is NaN, not 0
+    # Everything missing is NaN, not 0 — EXCEPT the flags the pipeline writes
+    # only when true (_pan, _smeared_subject, _bg_streak): absent means "no".
+    names = mj.DESIGN[1:]
+    for i, nm in enumerate(names[1:], start=1):
+        if nm in mj._ABSENT_IS_ZERO:
+            assert partial[i] == 0.0, nm
+        else:
+            assert np.isnan(partial[i]), nm
 
 
 # ── 3. the stratified holdout ────────────────────────────────────────────────
@@ -144,11 +154,16 @@ def test_fit_refuses_to_promote_a_loser(tmp_path):
         r["breakdown"]["_arch_w"] = {a: float(rng.uniform(0.05, 0.45))
                                      for a in mj.ARCHES}
     out = mj.fit_from_rows(rows, weights_path=tmp_path / "w.json")
-    assert out["promoted"] is False
-    assert "challenger lost" in out["reason"]
-    # and an unpromoted file must be invisible at grade time
-    assert mj.load(tmp_path / "w.json") is None
-    assert mj.blend_weight(tmp_path / "w.json") == 0.0
+    # The noise-fed FULL judge must never ship. Since 2026-10-03 a fit may
+    # instead promote a recalibration of the incumbent's own score — which
+    # uses no aspect features at all, so the noise cannot reach grading.
+    assert out["agree_ci"][0] > 0 or out["promoted"] is False
+    if out["promoted"]:
+        assert out["kind"] == "calibration" and out["features"] == ["(machine score)"]
+    else:
+        assert "challenger lost" in out["reason"]
+        assert mj.load(tmp_path / "w.json") is None
+        assert mj.blend_weight(tmp_path / "w.json") == 0.0
 
 
 def test_fit_refuses_tiny_baselines(tmp_path):
@@ -370,10 +385,15 @@ def test_promotion_refuses_a_loser(tmp_path):
         r["breakdown"]["_arch_w"] = {a: float(rng.uniform(0.05, 0.45))
                                      for a in mj.ARCHES}
     wp = tmp_path / "w.json"
-    mj.fit_from_rows(rows, weights_path=wp)          # loses → promoted False
+    out = mj.fit_from_rows(rows, weights_path=wp)    # the noise-fed full judge loses
     res = mj.promote_to_shipped(cache_path=wp, shipped_path=tmp_path / "s.json")
-    assert res["shipped"] is False
-    assert not (tmp_path / "s.json").exists()
+    if out["promoted"]:
+        # only the feature-free recalibration may ship — never the noise judge
+        assert out["kind"] == "calibration"
+        assert json.loads((tmp_path / "s.json").read_text())["features"] == ["(machine score)"]
+    else:
+        assert res["shipped"] is False
+        assert not (tmp_path / "s.json").exists()
 
 
 def test_won_exam_ships_and_grades_without_opt_in(tmp_path, monkeypatch):
@@ -402,9 +422,11 @@ def test_won_exam_ships_and_grades_without_opt_in(tmp_path, monkeypatch):
     assert np.isfinite(preds[0])
 
 
-def test_cache_opt_in_beats_shipped_fresher_locally(tmp_path, monkeypatch):
-    """A locally-promoted challenger (newer training data) outranks the
-    shipped master — but only when the user explicitly opted in."""
+def test_proven_local_judge_beats_shipped_without_opt_in(tmp_path, monkeypatch):
+    """A locally-promoted challenger that PROVED an agreement gain on held-out
+    shoots outranks the shipped master by default (2026-10-03 contract: the
+    photographer's ratings are ground truth). The opt-in flag is no longer
+    needed for a proven winner."""
     shipped = tmp_path / "master_judge_defaults.json"
     cache = tmp_path / "w.json"
     mj.fit_from_rows(_synthetic_rows(seed=11), weights_path=cache)   # promoted
@@ -414,14 +436,9 @@ def test_cache_opt_in_beats_shipped_fresher_locally(tmp_path, monkeypatch):
     monkeypatch.setattr(mj, "_SHIPPED_PATH", shipped)
     monkeypatch.delenv("FIRSTCUT_MASTER_JUDGE_OFF", raising=False)
 
-    # without opt-in → the SHIPPED master grades (local ratings never do)
     monkeypatch.delenv("FIRSTCUT_MASTER_JUDGE", raising=False)
     judge, _ = mj.active()
-    assert judge["_source"] == "shipped"
-
-    # with opt-in → the locally-promoted challenger takes over
-    monkeypatch.setenv("FIRSTCUT_MASTER_JUDGE", "1")
-    judge, _ = mj.active()
+    assert mj.load(cache)["agree_ci"][0] > 0
     assert judge["_source"] == "cache"
 
 
@@ -524,13 +541,14 @@ def test_kill_switch_beats_everything(tmp_path, monkeypatch):
     assert judge is None and w == 0.0
 
 
-def test_maybe_autofit_requires_opt_in(monkeypatch):
-    """Ratings are placeholder data: no background refit unless the judge is
-    explicitly enabled with FIRSTCUT_MASTER_JUDGE=1."""
-    monkeypatch.delenv("FIRSTCUT_MASTER_JUDGE", raising=False)
+def test_maybe_autofit_respects_kill_switch(monkeypatch):
+    """FIRSTCUT_MASTER_JUDGE_OFF=1 stops background refits entirely. (No real
+    fit may ever start from a test: it would retrain on the user's ratings.)"""
+    monkeypatch.setenv("FIRSTCUT_MASTER_JUDGE_OFF", "1")
+    monkeypatch.setattr(mj, "fit", lambda: pytest.fail("real fit started"))
     out = mj.maybe_autofit(n_now=9999)
     assert out["triggered"] is False
-    assert "opted in" in out["reason"]
+    assert "DISABLED" in out["reason"].upper()
 
 
 def test_maybe_autofit_respects_opt_in(tmp_path, monkeypatch):
