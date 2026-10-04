@@ -154,6 +154,16 @@ def free_ram_gb() -> float | None:
     """
     g = _global_memory_status()
     if g is not None:
+        if os.environ.get("FIRSTCUT_RAM_GATE", "commit").strip() != "physical":
+            # COMMIT headroom (2026-10-04, default): the resource whose
+            # exhaustion actually fails allocations. Low PHYSICAL free only
+            # means Windows trims idle apps' pages, which it does on demand —
+            # gating on it made culls wait for that to happen "by itself".
+            # Measured on the golden set with 2.5 GB held by another app:
+            # 223 s (160 s of it waiting) -> 56 s; 4 GB held (0.08 GB
+            # physical free at worst): 91.5 s, no crash; grades identical.
+            # FIRSTCUT_RAM_GATE=physical restores the old min(phys, commit).
+            return g[1]
         return min(g)
     try:
         import psutil
@@ -161,6 +171,20 @@ def free_ram_gb() -> float | None:
     except Exception:
         pass
     return None
+
+
+def physical_free_gb() -> float | None:
+    """Available PHYSICAL RAM — for optional work that only pays off when
+    memory is genuinely free (e.g. phase A running a second GPU worker
+    alongside the encode), never for crash-safety gates."""
+    g = _global_memory_status()
+    if g is not None:
+        return g[0]
+    try:
+        import psutil
+        return psutil.virtual_memory().available / 1e9
+    except Exception:
+        return None
 
 
 def commit_headroom_gb() -> float | None:

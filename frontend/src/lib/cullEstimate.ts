@@ -1,16 +1,17 @@
 /* Cull time estimate for the pre-grade dialog (2026-10-04).
  *
  * Measured with scripts/perf_guard.py on this pipeline (RTX 3060 Laptop,
- * 600 ARWs, real grade_runner): ~0.30 s per photo plus ~25 s of fixed start-up
- * when the machine has >= 3.5 GB free. Below that the encoder waits for memory
- * between chunks and detection can no longer overlap the encode — the same
- * cull measured roughly 2x slower. Re-measure (perf_guard) if the pipeline
- * changes; these are measurements, not targets.
+ * 600 ARWs, real grade_runner): ~0.30 s per photo plus ~25 s of fixed start-up.
+ * Since the RAM gate moved to commit headroom (2026-10-04) the cull no longer
+ * waits for other apps to release memory: with 2.5 GB held by another app it
+ * ran at full speed; only when physical free memory is nearly exhausted
+ * (~0.1 GB at worst) does paging cost ~1.45x. Re-measure (perf_guard
+ * --pressure) if the pipeline changes; these are measurements, not targets.
  */
 export const SECONDS_PER_PHOTO = 0.30;
 export const FIXED_SECONDS = 25;
-export const FULL_SPEED_FREE_GB = 3.5;
-export const LOW_RAM_FACTOR = 2;
+export const FULL_SPEED_FREE_GB = 1.5;
+export const LOW_RAM_FACTOR = 1.5;
 
 export interface CullEstimate {
   seconds: number;
@@ -32,8 +33,9 @@ export function cullEstimate(photoCount: number, freeGb: number | null): CullEst
   const slowedByRam = freeGb != null && freeGb < FULL_SPEED_FREE_GB;
   const seconds = slowedByRam ? base * LOW_RAM_FACTOR : base;
   const text = slowedByRam
-    ? `Estimated time: ${fmt(seconds)} — about twice as long as usual, because only ` +
-      `${freeGb!.toFixed(1)} GB of memory is free. Closing a few apps restores full speed (${fmt(base)}).`
+    ? `Estimated time: ${fmt(seconds)} — up to ~1.5x longer than usual, because only ` +
+      `${freeGb!.toFixed(1)} GB of memory is free. It is safe to start; closing a few apps ` +
+      `restores full speed (${fmt(base)}).`
     : `Estimated time: ${fmt(seconds)} for ${photoCount.toLocaleString()} photos.`;
   return { seconds, slowedByRam, text };
 }

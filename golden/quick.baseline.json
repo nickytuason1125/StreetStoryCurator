@@ -1,5 +1,5 @@
 {
- "commit": "2197895",
+ "commit": "576eccb",
  "counters": {
   "decode.dfine": 52,
   "decode.encode": 52,
@@ -12,11 +12,11 @@
   "dfine.images": 104,
   "model_load.dfine": 2,
   "model_load.nima": 2,
-  "model_load.onnx_vision": 2,
+  "model_load.onnx_vision": 1,
   "model_load.topiq": 2,
   "model_load.yunet": 2,
   "worker.detect": 2,
-  "worker.encode": 3,
+  "worker.encode": 2,
   "worker.iqa": 2
  },
  "grades": {
@@ -986,22 +986,22 @@
    "score": 0.48
   }
  },
- "recorded_at": "2026-10-04T19:55:58",
+ "recorded_at": "2026-10-04T21:13:51",
  "set": "quick",
  "timing": {
-  "median_wall_s": 60.95,
+  "median_wall_s": 49.599999999999994,
   "runs": [
    {
-    "cpu_mean": 22.4,
-    "free_min_gb": 1.79,
-    "free_start_gb": 5.78,
-    "wall_s": 60.2
+    "cpu_mean": 20.0,
+    "free_min_gb": 2.44,
+    "free_start_gb": 6.31,
+    "wall_s": 49.9
    },
    {
-    "cpu_mean": 22.4,
-    "free_min_gb": 1.52,
-    "free_start_gb": 5.29,
-    "wall_s": 61.7
+    "cpu_mean": 18.9,
+    "free_min_gb": 2.78,
+    "free_start_gb": 6.26,
+    "wall_s": 49.3
    }
   ]
  },

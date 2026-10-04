@@ -445,6 +445,14 @@ def _enforce_ram_floor() -> None:
         return
 
     def _free() -> float:
+        if os.environ.get("FIRSTCUT_RAM_GATE", "commit").strip() != "physical":
+            try:
+                import memory_plan as _mp_g
+                _c = _mp_g.commit_headroom_gb()
+                if _c is not None:
+                    return _c
+            except Exception:
+                pass
         return _ps.virtual_memory().available / 1e9
 
     # ── OOM is a PAUSE, not a death (2026-09-13) ─────────────────────────────

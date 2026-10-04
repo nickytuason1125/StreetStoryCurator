@@ -90,6 +90,8 @@ def main() -> None:
     try:
         import work_counters as _wc
         _wc.install_exit_flush("runner")
+        import proc_qos as _pq
+        _pq.opt_out_power_throttling()
     except Exception:
         pass
     q = _FileQueue(prog_path)

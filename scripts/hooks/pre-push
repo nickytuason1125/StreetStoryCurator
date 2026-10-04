@@ -25,8 +25,8 @@ echo "$changed" | tr ' ' '\n' | grep -Eq '^(src/|grade_runner\.py|grade_worker\.
     exit 0
 }
 
-echo "[pre-push] grading code changed — running the golden-grade check (~1-2 min)…"
-PYTHONIOENCODING=utf-8 "$PY" scripts/perf_guard.py check --set quick
+echo "[pre-push] grading code changed — running the golden-grade check (~2-3 min, incl. a memory-pressure run)…"
+PYTHONIOENCODING=utf-8 "$PY" scripts/perf_guard.py check --set quick --pressure 2.5
 rc=$?
 if [ $rc -eq 3 ]; then
     echo "[pre-push] WARNING: golden photo set not reachable (drive unplugged?) — NOT verified, push allowed"

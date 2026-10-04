@@ -45,6 +45,8 @@ def main():
     try:
         import work_counters as _wc
         _wc.install_exit_flush("iqa")
+        import proc_qos as _pq
+        _pq.opt_out_power_throttling()
         _wc.bump("worker.iqa")
     except Exception:
         pass

@@ -8,7 +8,8 @@ assert.equal(ok.seconds, FIXED_SECONDS + SECONDS_PER_PHOTO * 3000);
 assert.match(ok.text, /about 15 min/);
 const low = cullEstimate(3000, 1.2);
 assert.equal(low.slowedByRam, true);
-assert.equal(low.seconds, ok.seconds * 2);
+assert.equal(low.seconds, ok.seconds * 1.5);
 assert.match(low.text, /1\.2 GB/);
-assert.equal(cullEstimate(100, null).slowedByRam, false);   // unknown RAM: no false alarm
+assert.equal(cullEstimate(100, null).slowedByRam, false);
+assert.equal(cullEstimate(3000, 2.5).slowedByRam, false);   // 2.5 GB free: measured full speed   // unknown RAM: no false alarm
 console.log('cull-estimate: ok');

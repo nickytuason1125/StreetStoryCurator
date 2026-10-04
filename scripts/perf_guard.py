@@ -44,9 +44,14 @@ if not PY.exists():
     PY = Path(sys.executable)
 
 # Comparable-conditions rule for wall time.
-MIN_FREE_START_GB = 3.5
-MIN_FREE_DURING_GB = 0.5          # the cull itself uses ~3 GB; only catch external pressure
+# Since the RAM gate moved to commit headroom (2026-10-04) the cull ran at
+# full speed down to ~0.1-0.2 GB physical free (2.5 GB held elsewhere:
+# 1.04x); only near-exhaustion (0.08 GB) cost 1.45x. So timing is judged
+# unless physical memory was essentially exhausted.
+MIN_FREE_START_GB = 2.0
+MIN_FREE_DURING_GB = 0.15
 SLOWER_TOLERANCE = 0.15            # fail if median wall > baseline * 1.15
+PRESSURE_TOLERANCE = 0.30          # pressured run may be at most 1.3x the normal run
 # Counters that legitimately depend on free RAM (encode chunk plan → session
 # loads / worker spawns). Compared only when timing is comparable.
 # Scheduling-dependent: RAM-planned encode chunks, phase A on/off, and one
@@ -224,6 +229,37 @@ def comparable(t: dict) -> bool:
     return t["free_start_gb"] >= MIN_FREE_START_GB and t["free_min_gb"] >= MIN_FREE_DURING_GB
 
 
+# ── memory pressure (other apps holding RAM) ─────────────────────────────────
+
+_HOG = r"""
+import sys, time
+n = int(float(sys.argv[1]) * (1 << 30)); buf = bytearray(n)
+for i in range(0, n, 4096): buf[i] = 1          # touch: resident, like a real app
+open(sys.argv[2], "w").write("ready"); time.sleep(3600)
+"""
+
+
+class _MemoryHog:
+    """Hold `gb` of touched RAM in another process for the duration."""
+    def __init__(self, gb: float):
+        self.gb = gb
+        self.proc = None
+
+    def __enter__(self):
+        ready = Path(tempfile.mkdtemp(prefix="perfguard_hog_")) / "ready"
+        self.proc = subprocess.Popen([sys.executable, "-c", _HOG, str(self.gb), str(ready)])
+        for _ in range(600):
+            if ready.exists() or self.proc.poll() is not None:
+                break
+            time.sleep(0.1)
+        return self
+
+    def __exit__(self, *a):
+        if self.proc and self.proc.poll() is None:
+            self.proc.kill()
+            self.proc.wait(timeout=10)
+
+
 # ── record / check ────────────────────────────────────────────────────────────
 
 def cmd_record(args) -> int:
@@ -353,6 +389,23 @@ def cmd_check(args) -> int:
         else:
             print(f"PASS  timing: median {med:.1f} s vs baseline {bt:.1f} s ({ratio:.2f}x)")
 
+    # 3b. memory pressure — the cull must not stall when other apps hold RAM
+    if args.pressure:
+        import psutil
+        normal = statistics.median(r["wall_s"] for r in runs if r["rc"] == 0)
+        hold = min(args.pressure, max(0.0, psutil.virtual_memory().available / 2**30 - 0.5))
+        with _MemoryHog(hold):
+            pr = run_once(explicit, inject)
+        d = _diff_grades(base["grades"], pr["grades"]) if pr["rc"] == 0 else ["run failed"]
+        ratio = pr["wall_s"] / normal if normal else 0
+        verdict = (not d) and pr["rc"] == 0 and ratio <= 1 + PRESSURE_TOLERANCE
+        if not verdict:
+            failed = True
+        print(f"{'PASS' if verdict else 'FAIL'}  memory pressure ({hold:.1f} GB held by another "
+              f"process, {pr['free_min_gb']} GB free at worst): {pr['wall_s']:.1f} s vs "
+              f"{normal:.1f} s normal ({ratio:.2f}x, limit {1 + PRESSURE_TOLERANCE:.1f}x)"
+              + (f"; grades differ on {len(d)} photos" if d else "; grades identical"))
+
     # 4. versions — flagged
     v_now = versions()
     vdiff = [f"{sec}.{k}: {base['versions'].get(sec, {}).get(k)} -> {v_now.get(sec, {}).get(k)}"
@@ -374,6 +427,9 @@ def main() -> int:
         s.add_argument("--set", default="quick")
         s.add_argument("--repeat", type=int, default=1)
         if name == "check":
+            s.add_argument("--pressure", type=float, default=0.0, metavar="GB",
+                           help="also grade once while another process holds GB of RAM; "
+                                "fails if grades differ or it is >1.3x the normal run")
             s.add_argument("--inject", action="append", metavar="KEY=VAL",
                            help="self-test: set an env var for the graded run to prove "
                                 "the guard catches a regression")

@@ -948,6 +948,8 @@ def serve():
     try:
         import work_counters as _wc
         _wc.install_exit_flush("encode")
+        import proc_qos as _pq
+        _pq.opt_out_power_throttling()
         _wc.bump("worker.encode")
     except Exception:
         pass
@@ -1076,6 +1078,8 @@ def main():
     try:
         import work_counters as _wc
         _wc.install_exit_flush("encode")
+        import proc_qos as _pq
+        _pq.opt_out_power_throttling()
         _wc.bump("worker.encode")
     except Exception:
         pass

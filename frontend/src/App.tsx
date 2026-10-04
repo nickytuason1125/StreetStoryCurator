@@ -2775,7 +2775,7 @@ setCreativeDirectorNote('');
                 const row = {
                   clear:    { col:T.ink3,      text:`System memory clear — ${r.free?.toFixed(1)} GB free, plenty of headroom for a full cull.` },
                   tight:    { col:T.alarmWarn, text:`System memory tight — ${r.free?.toFixed(1)} GB free. Grading will run, but closing a few apps gives the best results.` },
-                  critical: { col:T.alarmCrit, text:`Low system memory — only ${r.free?.toFixed(1)} GB free, below the ~${r.min} GB needed. Close some apps before grading.` },
+                  critical: { col:T.alarmWarn, text:`Low system memory — only ${r.free?.toFixed(1)} GB free. Grading still runs safely (Windows pages idle apps out), just a little slower; closing a few apps restores full speed.` },
                 }[r.level]!;
                 return (
                   <div style={{ display:'flex', gap:10, padding:'10px 0', borderBottom:`1px solid ${T.line}` }}>

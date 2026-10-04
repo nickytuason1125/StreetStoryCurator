@@ -41,6 +41,8 @@ def main() -> int:
     try:
         import work_counters as _wc
         _wc.install_exit_flush("detect")
+        import proc_qos as _pq
+        _pq.opt_out_power_throttling()
         _wc.bump("worker.detect")
     except Exception:
         pass

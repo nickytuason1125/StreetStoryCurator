@@ -190,6 +190,9 @@ import sys, types; sys.path.insert(0, r"{_ROOT / 'src'}")
 # the floors under test and fakes a failure. The assumption is now explicit.
 import os as _os
 _os.environ["SIGLIP_TIER"] = "high"
+# These tests drive the floor through psutil (physical RAM); the default
+# gate is commit headroom since 2026-10-04, so select the gate they fake.
+_os.environ["FIRSTCUT_RAM_GATE"] = "physical"
 import psutil
 psutil.virtual_memory = lambda: types.SimpleNamespace(available=int({free_gb} * 1e9))
 import siglip2_encoder as s
@@ -272,6 +275,7 @@ def test_floor_pauses_then_resumes_when_memory_recovers():
 import sys, types, os, itertools; sys.path.insert(0, r"{_ROOT / 'src'}")
 os.environ["SIGLIP_TIER"] = "high"
 os.environ["SIGLIP_PAUSE_MAX_WAIT_S"] = "10"
+os.environ["FIRSTCUT_RAM_GATE"] = "physical"   # the fake below is physical RAM
 import psutil
 # Starved for the whole gate ride-out (initial + adaptive waits), THEN ample.
 # NOTE: the iterators are bound ONCE outside the lambda — recreating the chain

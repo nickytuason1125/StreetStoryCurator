@@ -941,7 +941,9 @@ def _phase_a_start(planned_paths: list) -> None:
         return
     try:
         import memory_plan as _mp_pa
-        _free = _mp_pa.free_ram_gb()
+        # PHYSICAL free on purpose: phase A is an optional overlap and was
+        # slower when two GPU workers had to page (measured at 0.9 GB free).
+        _free = _mp_pa.physical_free_gb()
         _need = float(os.environ.get("FIRSTCUT_PHASE_A_MIN_FREE_GB", "3.0"))
         if _free is not None and _free < _need:
             print(f"[v2] phase A skipped: {_free:.1f} GB free < {_need:.1f} GB "
