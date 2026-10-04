@@ -52,6 +52,10 @@ SLOWER_TOLERANCE = 0.15            # fail if median wall > baseline * 1.15
 # Scheduling-dependent: RAM-planned encode chunks, phase A on/off, and one
 # YuNet per decode thread that happened to get work.
 RAM_SENSITIVE = ("model_load.onnx_vision", "worker.encode", "worker.detect", "model_load.yunet")
+# Depends on cache state, not code: the text-probe encode only runs when the
+# probe cache (cache/probe_embs.*) is missing or its prompts changed. Reported,
+# never failed.
+CACHE_SENSITIVE = ("model_load.onnx_text",)
 
 
 # ── photo sets ────────────────────────────────────────────────────────────────
@@ -309,6 +313,11 @@ def cmd_check(args) -> int:
         a, b = ref_c.get(k, 0), got_c.get(k, 0)
         if k in RAM_SENSITIVE and not (timing_ok and base["timing"]["median_wall_s"]):
             continue
+        if k in CACHE_SENSITIVE:
+            if ref_c.get(k, 0) != got_c.get(k, 0):
+                print(f"NOTE  {k}: {ref_c.get(k, 0)} -> {got_c.get(k, 0)} (probe cache was "
+                      f"rebuilt this run — cache state, not a code change)")
+            continue
         if b > a:
             grew.append(f"{k}: {a} -> {b}")
         elif b < a:
@@ -324,7 +333,11 @@ def cmd_check(args) -> int:
 
     # 3. wall time — only under comparable conditions
     bt = base["timing"]["median_wall_s"]
-    if not bt:
+    rebuilt = [k for k in CACHE_SENSITIVE if got_c.get(k, 0) > ref_c.get(k, 0)]
+    if bt and rebuilt:
+        print(f"INCONCLUSIVE  timing: this run rebuilt a cache ({', '.join(rebuilt)}) — "
+              f"one-time work the baseline did not do. Re-run for a speed verdict.")
+    elif not bt:
         print("SKIP  timing: the baseline has no comparable-conditions timing")
     elif not timing_ok:
         r = runs[0]

@@ -322,3 +322,25 @@ class TestLanceSchemaLock:
         # force-frontier-gated) — see lance_store.py:149.
         captured = capsys.readouterr()
         assert "PURGING" in captured.out or "1152" in captured.out
+
+
+def test_mocked_encoder_never_wipes_the_real_probe_cache(tmp_path):
+    """2026-10-04: run_v2 with a MagicMock siglip2_encoder read a mock as the
+    encoder identity, called it a migration and deleted cache/probe_embs.*."""
+    from pathlib import Path as _P
+    cache = _P(__file__).resolve().parent.parent / "cache"
+    marker = cache / "probe_embs.hash"
+    if not marker.exists():
+        pytest.skip("no probe cache on this machine")
+    before = marker.read_bytes()
+    img = tmp_path / "shot.jpg"
+    img.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 256)
+    with patch.dict("sys.modules", {
+        "siglip2_encoder": MagicMock(SigLIP2Encoder=MagicMock(side_effect=RuntimeError("SigLIP-2 not installed"))),
+    }):
+        import grade_pipeline_v2
+        try:
+            grade_pipeline_v2.run_v2(str(tmp_path))
+        except Exception:
+            pass
+    assert marker.exists() and marker.read_bytes() == before

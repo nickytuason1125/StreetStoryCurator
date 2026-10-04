@@ -1823,7 +1823,10 @@ def run_v2(
                     _src_marker = (Path(__file__).resolve().parent.parent / "cache"
                                    / _tier_cache_name("encoder_source", ".txt"))
                     _prev_src = _src_marker.read_text(encoding="utf-8").strip() if _src_marker.exists() else ""
-                    if _prev_src != _enc_src:
+                    # Only a real encoder identity (a string) counts. A test's
+                    # mocked encoder module once looked like a migration and
+                    # wiped the user's real probe cache (2026-10-04).
+                    if isinstance(_enc_src, str) and _prev_src != _enc_src:
                         _src_changed = True
                         print(f"[v2] Encoder source changed ({_prev_src or 'none'} -> {_enc_src}) "
                               f"— re-encoding all images + clearing probe cache")
